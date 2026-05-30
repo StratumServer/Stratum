@@ -1,0 +1,157 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemAutoSaveGame.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemAutoSaveGame.cs
+index dbd4500..7a8b727 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemAutoSaveGame.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemAutoSaveGame.cs
+@@ -1,5 +1,6 @@
++using System;
+ using System.Threading;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Server;
+ 
+@@ -7,10 +8,12 @@ namespace Vintagestory.Server;
+ 
+ public class ServerSystemAutoSaveGame : ServerSystem
+ {
+ 	private long milliSecondsSinceSave;
+ 
++	private long stratumAutoSaveFirstDueMs = -1;
++
+ 	public ServerSystemAutoSaveGame(ServerMain server)
+ 		: base(server)
+ 	{
+ 		server.api.ChatCommands.Create("autosavenow").RequiresPrivilege(Privilege.controlserver).HandleWith(CmdAutosaveNow);
+ 	}
+@@ -22,10 +25,15 @@ public class ServerSystemAutoSaveGame : ServerSystem
+ 
+ 	public override void OnServerTick(float dt)
+ 	{
+ 		if (MagicNum.ServerAutoSave > 0 && (millisecondsSinceStart - milliSecondsSinceSave) / 1000 > MagicNum.ServerAutoSave && server.RunPhase == EnumServerRunPhase.RunGame && server.readyToAutoSave)
+ 		{
++			if (ShouldDelayStratumAutoSave())
++			{
++				return;
++			}
++
+ 			doAutoSave();
+ 		}
+ 	}
+ 
+ 	private TextCommandResult CmdAutosaveNow(TextCommandCallingArgs args)
+@@ -51,39 +59,95 @@ public class ServerSystemAutoSaveGame : ServerSystem
+ 		if (server.chunkThread.runOffThreadSaveNow)
+ 		{
+ 			ServerMain.Logger.Warning("Call to autosave, but server is already saving. May indicate a disk i/o bottleneck. Reduce autosave interval or improve file i/o. Will ignore this autosave call.");
+ 			return;
+ 		}
+-		ServerMain.FrameProfiler.Mark("autosave - preparing for autosave");
+-		if (!Monitor.TryEnter(server.suspendLock, 5000))
+-		{
+-			return;
+-		}
++		long stratumTimingStart = StratumRuntime.Timings.GetTimestamp();
++		int stratumAutoSaveDelaySeconds = GetStratumAutoSaveDelaySeconds();
+ 		try
+ 		{
+-			ServerMain.FrameProfiler.Mark("autosave - obtaining lock");
+-			if (!server.Suspend(newSuspendState: true, 3000))
++			ServerMain.FrameProfiler.Mark("autosave - preparing for autosave");
++			if (!Monitor.TryEnter(server.suspendLock, 5000))
+ 			{
+-				ServerMain.Logger.Notification("Unable to autosave, was not able to pause the server");
+-				server.Suspend(newSuspendState: false);
+ 				return;
+ 			}
+-			if (!server.Saving)
++			try
+ 			{
+-				server.Saving = true;
+-				ServerMain.FrameProfiler.Mark("autosave - pausing server");
+-				ServerMain.Logger.Notification("Autosaving game world. Notifying mods, then systems of save...");
+-				server.SendMessageToGroup(GlobalConstants.ServerInfoChatGroup, "Saving game world....", EnumChatType.Notification);
+-				ServerMain.FrameProfiler.Mark("autosave - notifying players");
+-				server.EventManager.TriggerGameWorldBeingSaved();
+-				server.Saving = false;
+-				milliSecondsSinceSave = millisecondsSinceStart;
++				ServerMain.FrameProfiler.Mark("autosave - obtaining lock");
++				if (!server.Suspend(newSuspendState: true, 3000))
++				{
++					ServerMain.Logger.Notification("Unable to autosave, was not able to pause the server");
++					server.Suspend(newSuspendState: false);
++					return;
++				}
++				if (!server.Saving)
++				{
++					server.Saving = true;
++					ServerMain.FrameProfiler.Mark("autosave - pausing server");
++					ServerMain.Logger.Notification("Autosaving game world. Notifying mods, then systems of save...");
++					server.SendMessageToGroup(GlobalConstants.ServerInfoChatGroup, "Saving game world....", EnumChatType.Notification);
++					ServerMain.FrameProfiler.Mark("autosave - notifying players");
++					server.EventManager.TriggerGameWorldBeingSaved();
++					server.Saving = false;
++					milliSecondsSinceSave = millisecondsSinceStart;
++					stratumAutoSaveFirstDueMs = -1;
++					StratumRuntime.PerformanceStats.RecordAutoSaveCompleted(stratumAutoSaveDelaySeconds);
++				}
++				server.Suspend(newSuspendState: false);
++				ServerMain.FrameProfiler.Mark("autosave");
++			}
++			finally
++			{
++				Monitor.Exit(server.suspendLock);
+ 			}
+-			server.Suspend(newSuspendState: false);
+-			ServerMain.FrameProfiler.Mark("autosave");
+ 		}
+ 		finally
+ 		{
+-			Monitor.Exit(server.suspendLock);
++			StratumRuntime.Timings.RecordElapsed("autosave", stratumTimingStart);
++		}
++	}
++
++	private bool ShouldDelayStratumAutoSave()
++	{
++		StratumAutoSaveConfig autoSave = StratumRuntime.Config.Performance.AutoSave;
++		if (!autoSave.Enabled || !autoSave.DelayDuringChunkPressure)
++		{
++			stratumAutoSaveFirstDueMs = -1;
++			return false;
++		}
++
++		if (stratumAutoSaveFirstDueMs < 0)
++		{
++			stratumAutoSaveFirstDueMs = millisecondsSinceStart;
++		}
++
++		int pendingColumnRequests = GetPendingChunkColumnQueueCount();
++		int workerColumnRequests = server.chunkThread?.requestedChunkColumns.Count ?? 0;
++		bool chunkPressure = pendingColumnRequests > Math.Max(0, autoSave.MaxPendingChunkColumns) || workerColumnRequests > Math.Max(0, autoSave.MaxWorkerChunkColumns);
++		int delaySeconds = GetStratumAutoSaveDelaySeconds();
++		if (!chunkPressure || delaySeconds >= Math.Max(0, autoSave.MaxDelaySeconds))
++		{
++			return false;
++		}
++
++		StratumRuntime.PerformanceStats.RecordAutoSaveDelayed(pendingColumnRequests, workerColumnRequests, delaySeconds);
++		return true;
++	}
++
++	private int GetStratumAutoSaveDelaySeconds()
++	{
++		if (stratumAutoSaveFirstDueMs < 0)
++		{
++			return 0;
++		}
++
++		return (int)Math.Max(0, (millisecondsSinceStart - stratumAutoSaveFirstDueMs) / 1000);
++	}
++
++	private int GetPendingChunkColumnQueueCount()
++	{
++		lock (server.requestedChunkColumnsLock)
++		{
++			return server.requestedChunkColumns.Count;
+ 		}
+ 	}
+ }

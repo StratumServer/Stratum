@@ -1,0 +1,132 @@
+diff --git a/VintagestoryApi/Common/Entity/EntityPlayer.cs b/VintagestoryApi/Common/Entity/EntityPlayer.cs
+index 7279e48..2501991 100644
+--- a/VintagestoryApi/Common/Entity/EntityPlayer.cs
++++ b/VintagestoryApi/Common/Entity/EntityPlayer.cs
+@@ -453,11 +453,12 @@ namespace Vintagestory.API.Common
+ 
+             if (player != null && player?.WorldData?.CurrentGameMode != EnumGameMode.Spectator)
+             {
+                 var controls = MountedOn != null ? MountedOn.Controls : servercontrols;
+ 
+-                PrevFrameCanStandUp = !controls.Sneak && canStandUp();
++                bool needsStandUpTest = !controls.Sneak && (!PrevFrameCanStandUp || OriginCollisionBox.Y2 < Properties.CollisionBoxSize.Y - 0.01f);
++                PrevFrameCanStandUp = !controls.Sneak && (!needsStandUpTest || canStandUp());
+                 bool moving = (controls.TriesToMove && Pos.Motion.LengthSq() > 0.00001) && !controls.NoClip && !controls.DetachedMode;
+                 bool walking = moving && OnGround;
+                 double newEyeheight = Properties.EyeHeight;
+                 double newModelHeight = Properties.CollisionBoxSize.Y;
+ 
+@@ -509,22 +510,29 @@ namespace Vintagestory.API.Common
+                 {
+                     secondsDead = Alive ? 0 : secondsDead + dt;
+                     updateLocalEyePosImmersiveFpMode(dt);
+                 }
+ 
++                double stepHeight = 0;
++                if (moving)
++                {
++                    double frequency = dt * controls.MovespeedMultiplier * GetWalkSpeedMultiplier(0.3) * (controls.Sprint ? 0.9 : 1.2) * (controls.Sneak ? 1.2f : 1);
+ 
+-                double frequency = dt * controls.MovespeedMultiplier * GetWalkSpeedMultiplier(0.3) * (controls.Sprint ? 0.9 : 1.2) * (controls.Sneak ? 1.2f : 1);
+-
+-                walkCounter = walking ? walkCounter + frequency : 0;
+-                walkCounter = walkCounter % GameMath.TWOPI;
++                    walkCounter = walking ? walkCounter + frequency : 0;
++                    walkCounter = walkCounter % GameMath.TWOPI;
+ 
+-                double sneakDiv = (controls.Sneak ? 5 : 1.8);
++                    double sneakDiv = (controls.Sneak ? 5 : 1.8);
+ 
+-                double amplitude = (FeetInLiquid ? 0.8 : 1 + (controls.Sprint ? 0.07 : 0)) / (3 * sneakDiv) * HeadBobbingAmplitude;
+-                double offset = -0.2 / sneakDiv;
++                    double amplitude = (FeetInLiquid ? 0.8 : 1 + (controls.Sprint ? 0.07 : 0)) / (3 * sneakDiv) * HeadBobbingAmplitude;
++                    double offset = -0.2 / sneakDiv;
+ 
+-                double stepHeight = -Math.Max(0, Math.Abs(GameMath.Sin(5.5f * walkCounter) * amplitude) + offset);
++                    stepHeight = -Math.Max(0, Math.Abs(GameMath.Sin(5.5f * walkCounter) * amplitude) + offset);
++                }
++                else
++                {
++                    walkCounter = 0;
++                }
+ 
+                 if (World.Side == EnumAppSide.Client)
+                 {
+                     ICoreClientAPI capi = World.Api as ICoreClientAPI;
+                     if (capi.Settings.Bool["viewBobbing"] && capi.Render.CameraType == EnumCameraMode.FirstPerson)
+@@ -677,20 +685,26 @@ namespace Vintagestory.API.Common
+             } else
+             {
+                 HandleSeraphHandAnimations(dt);
+             }
+ 
+-            bool isSelf = (Api as ICoreClientAPI)?.World.Player.PlayerUID == PlayerUID;
++            ICoreClientAPI capi = null;
++            bool isSelf = false;
++            if (World.Side == EnumAppSide.Client)
++            {
++                capi = Api as ICoreClientAPI;
++                isSelf = capi?.World.Player.PlayerUID == PlayerUID;
++            }
+ 
+             if (Api.Side == EnumAppSide.Server || !isSelf)
+             {
+                 updateEyeHeight(dt);
+             }
+ 
+             if (isSelf)
+             {
+-                alwaysRunIdle = (Api as ICoreClientAPI).Render.CameraType == EnumCameraMode.FirstPerson && !selfNowShadowPass && MountedOn==null;
++                alwaysRunIdle = capi.Render.CameraType == EnumCameraMode.FirstPerson && !selfNowShadowPass && MountedOn==null;
+             }
+ 
+             climateCondAccum += dt;
+             if (isSelf && World.Side == EnumAppSide.Client && climateCondAccum > 0.5f)
+             {
+@@ -796,10 +810,12 @@ namespace Vintagestory.API.Common
+         float strongWindAccum = 0;
+         bool haveHandUseOrHit;
+ 
+         public void HandleSeraphHandAnimations(float dt)
+         {
++            if (World.Side == EnumAppSide.Server && CanSkipStableServerHandAnimations()) return;
++
+             protectEyesFromWind(dt);
+ 
+             // Prevent this method from getting called for other players on the client side because it has incomplete information (servercontrols&interact are not synced to client)
+             // It's also not necessary to call this method because the server will sync the animations to the client
+             if (Api is ICoreClientAPI capi && capi.World.Player.PlayerUID != PlayerUID) return;
+@@ -943,10 +959,33 @@ namespace Vintagestory.API.Common
+                     plrAnimMngr.StartLeftHeldIdleAnim(nowHeldLeftIdleAnim);
+                 }
+             }
+         }
+ 
++        private bool CanSkipStableServerHandAnimations()
++        {
++            if (servercontrols.HandUse != EnumHandInteract.None || servercontrols.LeftMouseDown || servercontrols.RightMouseDown || haveHandUseOrHit)
++            {
++                return false;
++            }
++
++            ItemStack rightstack = RightHandItemSlot?.Itemstack;
++            if (RightHandItemSlot is ItemSlotSkill) rightstack = null;
++            if (rightstack != null || LeftHandItemSlot?.Itemstack != null)
++            {
++                return false;
++            }
++
++            PlayerAnimationManager plrAnimMngr = AnimManager as PlayerAnimationManager;
++            return plrAnimMngr != null &&
++                !plrAnimMngr.IsHeldUseActive() &&
++                !plrAnimMngr.IsHeldHitActive(1f) &&
++                !plrAnimMngr.IsLeftHeldActive() &&
++                !plrAnimMngr.IsRightHeldActive() &&
++                !plrAnimMngr.IsRightHeldReadyActive();
++        }
++
+         protected void protectEyesFromWind(float dt)
+         {
+             if (Api?.Side == EnumAppSide.Client && AnimManager != null)
+             {
+                 var climate = this.selfClimateCond;

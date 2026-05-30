@@ -1,0 +1,366 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerConfig.cs b/VintagestoryLib/Vintagestory.Server/ServerConfig.cs
+index 93750fa..405c556 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerConfig.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerConfig.cs
+@@ -4,10 +4,11 @@ using System.Drawing;
+ using System.IO;
+ using System.Linq;
+ using System.Reflection;
+ using System.Runtime.Serialization;
+ using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.MathTools;
+ using Vintagestory.API.Server;
+ using Vintagestory.Common;
+@@ -16,34 +17,44 @@ using Vintagestory.Server.Network;
+ namespace Vintagestory.Server;
+ 
+ [JsonObject(/*Could not decode attribute arguments.*/)]
+ public class ServerConfig : IServerConfig
+ {
++	[JsonIgnore]
+ 	public string LoadedConfigVersion;
+ 
+ 	private bool upnp;
+ 
+ 	private bool advertiseServer;
+ 
++	[JsonIgnore]
+ 	public bool RuntimeUpnp;
+ 
+ 	[JsonIgnore]
+ 	private int maxClients;
+ 
+ 	private bool temporaryIpBlockList;
+ 
+ 	public int? Seed;
+ 
++	[JsonIgnore]
+ 	internal PlayerRole DefaultRole;
+ 
++	[JsonIgnore]
+ 	public Dictionary<string, PlayerRole> RolesByCode = new Dictionary<string, PlayerRole>();
+ 
++	[JsonIgnore]
+ 	internal HashSet<string> RuntimePrivileveCodes = new HashSet<string>();
+ 
+ 	[JsonProperty]
+ 	public string FileEditWarning { get; set; }
+ 
++	public bool ShouldSerializeFileEditWarning()
++	{
++		return false;
++	}
++
+ 	[JsonProperty]
+ 	public string ConfigVersion { get; set; }
+ 
+ 	[JsonProperty]
+ 	public string ServerName { get; set; }
+@@ -197,10 +208,20 @@ public class ServerConfig : IServerConfig
+ 	public List<PlayerRole> Roles { get; set; }
+ 
+ 	[JsonProperty]
+ 	public string DefaultRoleCode { get; set; }
+ 
++	public bool ShouldSerializeRoles()
++	{
++		return false;
++	}
++
++	public bool ShouldSerializeDefaultRoleCode()
++	{
++		return false;
++	}
++
+ 	[JsonProperty]
+ 	public string[] ModPaths { get; set; }
+ 
+ 	[JsonProperty]
+ 	public EnumProtectionLevel AntiAbuse { get; set; }
+@@ -262,11 +283,11 @@ public class ServerConfig : IServerConfig
+ 	public bool CorruptionProtection { get; set; }
+ 
+ 	[JsonProperty]
+ 	public bool RegenerateCorruptChunks { get; set; }
+ 
+-	List<IPlayerRole> IServerConfig.Roles => ((IEnumerable<PlayerRole>)Roles).Select((System.Func<PlayerRole, IPlayerRole>)((PlayerRole e) => e)).ToList();
++	List<IPlayerRole> IServerConfig.Roles => ((IEnumerable<PlayerRole>)(Roles ?? new List<PlayerRole>())).Select((System.Func<PlayerRole, IPlayerRole>)((PlayerRole e) => e)).ToList();
+ 
+ 	[JsonProperty]
+ 	public int ChatRateLimitMs { get; set; }
+ 
+ 	[JsonProperty]
+@@ -331,12 +352,13 @@ public class ServerConfig : IServerConfig
+ 	}
+ 
+ 	public ServerConfig()
+ 	{
+ 		ConfigVersion = "1.7";
+-		ServerName = "Vintage Story Server";
+-		WelcomeMessage = Lang.GetUnformatted("survive-and-star-trek");
++		ServerName = "Stratum Server";
++		ServerDescription = "A Stratum-powered Vintage Story server built for secure, high-performance community play.";
++		WelcomeMessage = "Welcome to Stratum.";
+ 		DefaultRoleCode = "suplayer";
+ 		MasterserverUrl = "http://masterserver.vintagestory.at/api/v1/servers/";
+ 		ModDbUrl = "https://mods.vintagestory.at/";
+ 		VerifyPlayerAuth = true;
+ 		AdvertiseServer = false;
+@@ -390,11 +412,11 @@ public class ServerConfig : IServerConfig
+ 		DisableModSafetyCheck = false;
+ 		DisableAutoRemap = false;
+ 		WorldConfig = new StartServerArgs
+ 		{
+ 			SaveFileLocation = Path.Combine(GamePaths.Saves, GamePaths.DefaultSaveFilenameWithoutExtension + ".vcdbs"),
+-			WorldName = "A new world",
++			WorldName = "Stratum World",
+ 			AllowCreativeMode = true,
+ 			PlayStyle = "surviveandbuild",
+ 			PlayStyleLangCode = "surviveandbuild-bands",
+ 			WorldType = "standard"
+ 		};
+@@ -433,39 +455,77 @@ public class ServerConfig : IServerConfig
+ 		{
+ 			value.GrantPrivilege(privilege);
+ 		}
+ 	}
+ 
+-	[OnDeserialized]
+-	internal void OnDeserializedMethod(StreamingContext context)
++	public void SetRoles(List<PlayerRole> roles, string defaultRoleCode = null)
++	{
++		Roles = roles ?? new List<PlayerRole>();
++		if (!string.IsNullOrWhiteSpace(defaultRoleCode))
++		{
++			DefaultRoleCode = defaultRoleCode;
++		}
++		RebuildRoleLookup();
++		ValidateDefaultRole();
++	}
++
++	private void RebuildRoleLookup()
+ 	{
+-		if (Roles != null && Roles.Count > 0)
++		RolesByCode.Clear();
++		if (Roles == null)
+ 		{
+-			RolesByCode.Clear();
+-			foreach (PlayerRole role in Roles)
++			return;
++		}
++
++		foreach (PlayerRole role in Roles)
++		{
++			if (role == null || string.IsNullOrWhiteSpace(role.Code))
+ 			{
+-				RolesByCode[role.Code] = role;
+-				if (role.AutoGrant)
++				continue;
++			}
++
++			if (role.AutoGrant)
++			{
++				if (role.Privileges != null)
+ 				{
+-					if (role.Privileges != null)
+-					{
+-						role.Privileges = role.Privileges.Union(Privilege.AllCodes()).ToList();
+-					}
+-					else
+-					{
+-						role.Privileges = Privilege.AllCodes().ToList();
+-					}
++					role.Privileges = role.Privileges.Union(Privilege.AllCodes()).ToList();
++				}
++				else
++				{
++					role.Privileges = Privilege.AllCodes().ToList();
+ 				}
+ 			}
++
++			RolesByCode[role.Code] = role;
++		}
++	}
++
++	private void ValidateDefaultRole()
++	{
++		if (!RolesByCode.ContainsKey(DefaultRoleCode))
++		{
++			ServerMain.Logger.Fatal("You have configured a default group code " + DefaultRoleCode + " but no such group exists! Killing server");
++			Environment.Exit(0);
++			return;
+ 		}
+-		if (ConfigVersion == "1.0" && RolesByCode.Count == 0)
++		DefaultRole = RolesByCode[DefaultRoleCode];
++	}
++
++	[OnDeserialized]
++	internal void OnDeserializedMethod(StreamingContext context)
++	{
++		if (Roles == null || Roles.Count == 0)
+ 		{
+ 			InitializeRoles();
+ 		}
++		else
++		{
++			RebuildRoleLookup();
++		}
+ 		if (GameVersion.IsLowerVersionThan(ConfigVersion, "1.1.0"))
+ 		{
+-			WelcomeMessage = Lang.GetUnformatted("survive-and-star-trek");
++			WelcomeMessage = "Welcome to Stratum.";
+ 		}
+ 		if (GameVersion.IsLowerVersionThan(ConfigVersion, "1.3"))
+ 		{
+ 			foreach (KeyValuePair<string, PlayerRole> item in RolesByCode)
+ 			{
+@@ -515,21 +575,15 @@ public class ServerConfig : IServerConfig
+ 		if (GameVersion.IsLowerVersionThan(ConfigVersion, "1.10"))
+ 		{
+ 			TryGrantPrivilege("sumod", Privilege.manageotherplayergroups);
+ 			TryGrantPrivilege("crmod", Privilege.manageotherplayergroups);
+ 		}
+-		if (!RolesByCode.ContainsKey(DefaultRoleCode))
+-		{
+-			ServerMain.Logger.Fatal("You have configured a default group code " + DefaultRoleCode + " but no such group exists! Killing server");
+-			Environment.Exit(0);
+-			return;
+-		}
+ 		if (ServerIdentifier == null)
+ 		{
+ 			ServerIdentifier = Guid.NewGuid().ToString();
+ 		}
+-		DefaultRole = RolesByCode[DefaultRoleCode];
++		ValidateDefaultRole();
+ 		LoadedConfigVersion = ConfigVersion;
+ 		ConfigVersion = "1.10";
+ 		if (LoadedConfigVersion != ConfigVersion)
+ 		{
+ 			Save();
+@@ -576,10 +630,11 @@ public class ServerConfig : IServerConfig
+ 	}
+ 
+ 	public void InitializeRoles()
+ 	{
+ 		Roles = new List<PlayerRole>();
++		RolesByCode.Clear();
+ 		Roles.Add(new PlayerRole
+ 		{
+ 			Code = "suvisitor",
+ 			Name = "Survival Visitor",
+ 			Description = "Can only visit this world and chat but not use/place/break anything",
+@@ -762,32 +817,97 @@ public class ServerConfig : IServerConfig
+ 			Color = Color.LightBlue,
+ 			DefaultGameMode = EnumGameMode.Survival,
+ 			AutoGrant = true
+ 		});
+ 		Roles.Sort();
+-		foreach (PlayerRole role in Roles)
++		RebuildRoleLookup();
++		GrantStratumDefaults();
++		ValidateDefaultRole();
++	}
++
++	private static readonly string[] StratumPlayerPrivileges = new[]
++	{
++		"stratum.spawn",
++		"stratum.tpa",
++		"stratum.home",
++		"stratum.sethome",
++		"stratum.delhome",
++		"stratum.seen",
++		"stratum.near",
++		"stratum.back",
++		"stratum.msg",
++		"stratum.info",
++		"stratum.report"
++	};
++
++	private static readonly string[] StratumStaffPrivileges = new[]
++	{
++		"setspawn",
++		"stratum.tpahere",
++		"stratum.whois",
++		"stratum.staffchat",
++		"stratum.chatcontrol",
++		"stratum.staffbroadcast",
++		"stratum.vanish",
++		"stratum.freeze",
++		"stratum.revive",
++		"stratum.jail",
++		"stratum.warn",
++		"stratum.mute",
++		"stratum.notes",
++		"stratum.reports",
++		"stratum.privacy.bypass"
++	};
++
++	private static readonly string[] StratumPlayerRoleCodes = new[]
++	{
++		"limitedsuplayer",
++		"limitedcrplayer",
++		"suplayer",
++		"crplayer",
++		"sumod",
++		"crmod"
++	};
++
++	private static readonly string[] StratumStaffRoleCodes = new[]
++	{
++		"sumod",
++		"crmod"
++	};
++
++	private void GrantStratumDefaults()
++	{
++		foreach (string roleCode in StratumPlayerRoleCodes)
+ 		{
+-			if (role.AutoGrant)
++			foreach (string privilege in StratumPlayerPrivileges)
+ 			{
+-				if (role.Privileges != null)
+-				{
+-					role.Privileges = role.Privileges.Union(Privilege.AllCodes()).ToList();
+-				}
+-				else
+-				{
+-					role.Privileges = Privilege.AllCodes().ToList();
+-				}
++				TryGrantPrivilege(roleCode, privilege);
+ 			}
+ 		}
+-		foreach (PlayerRole role2 in Roles)
++		foreach (string roleCode in StratumStaffRoleCodes)
+ 		{
+-			RolesByCode[role2.Code] = role2;
++			foreach (string privilege in StratumStaffPrivileges)
++			{
++				TryGrantPrivilege(roleCode, privilege);
++			}
+ 		}
+-		DefaultRole = RolesByCode[DefaultRoleCode];
+ 	}
+ 
+ 	public void Save()
+ 	{
+-		string contents = JsonConvert.SerializeObject((object)this, (Formatting)1);
++		JsonSerializer serializer = JsonSerializer.Create(new JsonSerializerSettings
++		{
++			NullValueHandling = NullValueHandling.Ignore
++		});
++		JObject config = JObject.FromObject(this, serializer);
++		config.Remove(nameof(LoadedConfigVersion));
++		config.Remove(nameof(RuntimeUpnp));
++		config.Remove(nameof(DefaultRole));
++		config.Remove(nameof(Roles));
++		config.Remove(nameof(RolesByCode));
++		config.Remove(nameof(RuntimePrivileveCodes));
++		config.Remove(nameof(DefaultRoleCode));
++		config.Remove(nameof(FileEditWarning));
++		string contents = config.ToString((Formatting)1);
+ 		File.WriteAllText(Path.Combine(GamePaths.Config, "serverconfig.json"), contents);
+ 	}
+ }

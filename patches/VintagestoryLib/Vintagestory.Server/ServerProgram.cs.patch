@@ -1,0 +1,17 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerProgram.cs b/VintagestoryLib/Vintagestory.Server/ServerProgram.cs
+index b3219a5..f29fb59 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerProgram.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerProgram.cs
+@@ -74,11 +74,11 @@ public class ServerProgram
+ 			GamePaths.CustomLogPath = progArgs.LogPath;
+ 		}
+ 		if (progArgs.PrintVersion)
+ 		{
+ 			Console.WriteLine();
+-			Console.Write("1.22.3");
++			Console.Write(StratumInfo.FullName + " (Vintage Story " + StratumInfo.BaseGameVersion + ")");
+ 		}
+ 		else if (progArgs.PrintHelp)
+ 		{
+ 			Console.WriteLine();
+ 			Console.Write(progArgs.GetUsage(val));

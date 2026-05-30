@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <!-- Path to a vanilla Vintage Story install. After-build deploy copies dlls/exes here. -->
+    <VSInstall>A:\VintageStory</VSInstall>
+
+    <!-- Path where StratumServer overlay is staged. Used by the StratumServer deploy targets. -->
+    <StratumInstall>A:\StratumServer</StratumInstall>
+
+    <!-- Set to true to run BuildStratumOutputs / DeployStratumServer from StratumServer.csproj.
+         Leave unset for a plain `dotnet build`. -->
+    <StratumDeploy>true</StratumDeploy>
+  </PropertyGroup>
+</Project>

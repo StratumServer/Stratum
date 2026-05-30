@@ -1,0 +1,46 @@
+name: Performance problem
+description: TPS drops, lag spikes, high CPU or memory use.
+labels: ["type: performance"]
+body:
+  - type: input
+    id: stratum-version
+    attributes:
+      label: Stratum version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Server hardware
+      placeholder: "Ryzen 5 5600, 32 GB RAM, NVMe"
+    validations:
+      required: true
+  - type: input
+    id: players
+    attributes:
+      label: Player count when problem occurs
+      placeholder: "8"
+    validations:
+      required: true
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What you observe
+      description: TPS numbers, frame time, memory graphs. Be specific.
+    validations:
+      required: true
+  - type: textarea
+    id: timings
+    attributes:
+      label: Timings or profiler output
+      description: If you have a profiler dump or timings report, paste or attach it.
+  - type: textarea
+    id: world
+    attributes:
+      label: World details
+      description: World size, age, generated chunks, anything unusual built.
+  - type: textarea
+    id: mods
+    attributes:
+      label: Mods loaded

@@ -1,0 +1,68 @@
+name: Bug report
+description: Something is broken or behaves differently from vanilla.
+labels: ["type: bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, confirm the bug also reproduces on a current Stratum build. If it only happens on vanilla, report it upstream.
+  - type: input
+    id: stratum-version
+    attributes:
+      label: Stratum version
+      description: From the server startup banner, or `StratumInfo.Version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: base-version
+    attributes:
+      label: Base game version
+      placeholder: "1.22.3"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and .NET runtime
+      placeholder: "Windows Server 2022, .NET 10.0.0"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps. Mention any mods loaded.
+      placeholder: |
+        1. Start server with default config
+        2. Join with one player
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log
+      description: Paste relevant log lines, or attach the full log. No screenshots of text.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I confirmed this does not happen on a stock vanilla server.
+          required: true
+        - label: I am running the latest Stratum release.
+          required: true

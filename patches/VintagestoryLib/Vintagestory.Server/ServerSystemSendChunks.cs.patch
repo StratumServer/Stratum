@@ -1,0 +1,451 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
+index 277d286..0724298 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
+@@ -1,10 +1,11 @@
+ using System;
+ using System.Collections.Generic;
+ using System.Diagnostics;
+ using System.Threading;
+ using Vintagestory.API.Common;
++using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Datastructures;
+ using Vintagestory.API.MathTools;
+ using Vintagestory.API.Server;
+ using Vintagestory.Common.Database;
+@@ -25,10 +26,22 @@ internal class ServerSystemSendChunks : ServerSystem
+ 
+ 	private Dictionary<long, Packet_ServerChunk> packetsWithEntities = new Dictionary<long, Packet_ServerChunk>();
+ 
+ 	private Dictionary<long, Packet_ServerChunk> packetsWithoutEntities = new Dictionary<long, Packet_ServerChunk>();
+ 
++	private int stratumClientBudgetRotation;
++
++	private long stratumNextChunkRequestCleanupMs;
++
++	private int stratumPrioritizedChunkRingsThisTick;
++
++	private readonly List<ConnectedClient> stratumChunkBudgetClientOrder = new List<ConnectedClient>();
++
++	private readonly List<long> stratumForceSendMapChunkRetry = new List<long>(1);
++
++	private readonly Dictionary<long, StratumTrackedChunkColumnRequest> stratumTrackedChunkColumnRequests = new Dictionary<long, StratumTrackedChunkColumnRequest>();
++
+ 	public override void Dispose()
+ 	{
+ 		chunkPackets = null;
+ 		chunksToSend = null;
+ 		mapChunksToSend = null;
+@@ -54,46 +67,120 @@ internal class ServerSystemSendChunks : ServerSystem
+ 	{
+ 		if (server.RunPhase != EnumServerRunPhase.RunGame)
+ 		{
+ 			return;
+ 		}
++		long stratumTimingStart = StratumRuntime.Timings.GetTimestamp();
++		StratumChunkSendingConfig stratumChunkSending = StratumRuntime.Config.Performance.ChunkSending;
++		StratumChunkGenerationConfig stratumChunkGeneration = StratumRuntime.Config.Performance.ChunkGeneration;
++		StratumChunkRequestManagementConfig stratumChunkRequestManagement = StratumRuntime.Config.Performance.ChunkRequestManagement;
++		int stratumCancelledColumnRequests = CleanupStratumChunkColumnRequests(stratumChunkRequestManagement);
++		stratumPrioritizedChunkRingsThisTick = 0;
++		bool stratumBudgetEnabled = stratumChunkSending.Enabled;
++		int stratumChunkBudget = stratumBudgetEnabled ? Math.Max(1, stratumChunkSending.MaxChunksPerServerTick) : int.MaxValue;
++		int startingStratumChunkBudget = stratumChunkBudget;
++		bool stratumGenerationBudgetEnabled = stratumChunkGeneration.Enabled;
++		int stratumColumnRequestBudget = stratumGenerationBudgetEnabled ? Math.Max(1, stratumChunkGeneration.MaxColumnRequestsPerServerTick) : int.MaxValue;
++		int startingStratumColumnRequestBudget = stratumColumnRequestBudget;
++		int stratumChunksSent = 0;
++		int stratumDeferredClients = 0;
++		int stratumColumnRequests = 0;
++		int stratumGenerationDeferredClients = 0;
+ 		packetsWithEntities.Clear();
+ 		packetsWithoutEntities.Clear();
+ 		IPlayer[] allOnlinePlayers = server.AllOnlinePlayers;
+ 		foreach (IMiniDimension value in server.LoadedMiniDimensions.Values)
+ 		{
+ 			value.CollectChunksForSending(allOnlinePlayers);
+ 		}
+-		foreach (ConnectedClient value2 in server.Clients.Values)
++		List<ConnectedClient> clients = GetStratumChunkBudgetClientOrder();
++		foreach (ConnectedClient value2 in clients)
+ 		{
+ 			if (value2.State.ConnectedOrPlaying())
+ 			{
+-				sendAndEnqueueChunks(value2);
++				stratumChunksSent += sendAndEnqueueChunks(value2, ref stratumChunkBudget, stratumChunkSending, ref stratumColumnRequestBudget, stratumChunkGeneration, stratumChunkRequestManagement, out bool deferredChunks, out bool deferredGeneration, out int columnRequests);
++				stratumColumnRequests += columnRequests;
++				if (deferredChunks)
++				{
++					stratumDeferredClients++;
++				}
++				if (deferredGeneration)
++				{
++					stratumGenerationDeferredClients++;
++				}
+ 			}
+ 		}
+ 		packetsWithEntities.Clear();
+ 		packetsWithoutEntities.Clear();
++		StratumRuntime.PerformanceStats.RecordChunkSendTick(startingStratumChunkBudget, stratumChunksSent, stratumDeferredClients, startingStratumColumnRequestBudget, stratumColumnRequests, stratumGenerationDeferredClients, GetPendingChunkColumnQueueCount(), server.chunkThread?.requestedChunkColumns.Count ?? 0, stratumCancelledColumnRequests, stratumPrioritizedChunkRingsThisTick);
++		StratumRuntime.Timings.RecordElapsed("chunk.pipeline", stratumTimingStart);
++	}
++
++	private List<ConnectedClient> GetStratumChunkBudgetClientOrder()
++	{
++		List<ConnectedClient> clients = stratumChunkBudgetClientOrder;
++		clients.Clear();
++		foreach (ConnectedClient client in server.Clients.Values)
++		{
++			clients.Add(client);
++		}
++
++		int count = clients.Count;
++		if (count <= 1)
++		{
++			return clients;
++		}
++
++		int offset = stratumClientBudgetRotation % count;
++		stratumClientBudgetRotation = (stratumClientBudgetRotation + 1) % count;
++		if (offset == 0)
++		{
++			return clients;
++		}
++
++		clients.Reverse(0, offset);
++		clients.Reverse(offset, count - offset);
++		clients.Reverse();
++		return clients;
+ 	}
+ 
+ 	private void OnClientLeaveChunk(ClientStatistics clientstats)
+ 	{
+ 		clientstats.client.CurrentChunkSentRadius = 0;
+ 	}
+ 
+-	private void sendAndEnqueueChunks(ConnectedClient client)
++	private int sendAndEnqueueChunks(ConnectedClient client, ref int stratumChunkBudget, StratumChunkSendingConfig stratumChunkSending, ref int stratumColumnRequestBudget, StratumChunkGenerationConfig stratumChunkGeneration, StratumChunkRequestManagementConfig stratumChunkRequestManagement, out bool deferredChunks, out bool deferredGeneration, out int columnRequests)
+ 	{
++		deferredChunks = false;
++		deferredGeneration = false;
++		columnRequests = 0;
+ 		int val = (int)Math.Ceiling((float)client.WorldData.Viewdistance / (float)MagicNum.ServerChunkSize);
+ 		int num = Math.Min(server.Config.MaxChunkRadius, val);
+ 		if (client.CurrentChunkSentRadius > num && client.forceSendChunks.Count == 0 && client.forceSendMapChunks.Count == 0)
+ 		{
+-			return;
++			return 0;
+ 		}
+ 		chunksToSend.Clear();
+ 		mapChunksToSend.Clear();
+ 		toRemove.Clear();
+ 		int num2 = MagicNum.ChunksToSendPerTick * ((!client.IsLocalConnection) ? 1 : 8);
+-		List<long> list = new List<long>(1);
++		bool applyStratumBudget = stratumChunkSending.Enabled && (!client.IsLocalConnection || stratumChunkSending.IncludeLocalClients);
++		if (applyStratumBudget)
++		{
++			num2 = Math.Min(num2, Math.Max(1, stratumChunkSending.MaxChunksPerClientTick));
++			num2 = Math.Min(num2, Math.Max(0, stratumChunkBudget));
++			deferredChunks = num2 <= 0 && (client.forceSendChunks.Count > 0 || client.CurrentChunkSentRadius < num);
++		}
++		List<long> list = stratumForceSendMapChunkRetry;
++		list.Clear();
++		int columnRequestBudget = MagicNum.ChunksColumnsToRequestPerTick * ((!client.IsLocalConnection) ? 1 : 4);
++		bool applyStratumGenerationBudget = stratumChunkGeneration.Enabled && (!client.IsLocalConnection || stratumChunkGeneration.IncludeLocalClients);
++		if (applyStratumGenerationBudget)
++		{
++			columnRequestBudget = Math.Min(columnRequestBudget, Math.Max(1, stratumChunkGeneration.MaxColumnRequestsPerClientTick));
++			columnRequestBudget = Math.Min(columnRequestBudget, Math.Max(0, stratumColumnRequestBudget));
++		}
+ 		foreach (long forceSendMapChunk in client.forceSendMapChunks)
+ 		{
+ 			Vec2i vec2i = server.WorldMap.MapChunkPosFromChunkIndex2D(forceSendMapChunk);
+ 			server.loadedMapChunks.TryGetValue(forceSendMapChunk, out var value);
+ 			if (value != null)
+@@ -125,18 +212,22 @@ internal class ServerSystemSendChunks : ServerSystem
+ 					chunk = loadedChunk,
+ 					pos = pos,
+ 					withEntities = true
+ 				});
+ 				num2--;
++				if (applyStratumBudget)
++				{
++					stratumChunkBudget--;
++				}
+ 				toRemove.Add(forceSendChunk);
+ 			}
+ 		}
+ 		foreach (long item3 in toRemove)
+ 		{
+ 			client.forceSendChunks.Remove(item3);
+ 		}
+-		if (num2 > 0 && server.SendChunks && client.CurrentChunkSentRadius < num && loadSendableChunksAtCurrentRadius(client, num2, client.Player.Entity.Pos.Dimension) == 0 && ++client.CurrentChunkSentRadius <= num && loadSendableChunksAtCurrentRadius(client, num2, client.Player.Entity.Pos.Dimension) == 0)
++		if (num2 > 0 && server.SendChunks && client.CurrentChunkSentRadius < num && LoadSendableChunksAtBudget(client, ref num2, ref stratumChunkBudget, applyStratumBudget, ref columnRequestBudget, ref stratumColumnRequestBudget, applyStratumGenerationBudget, stratumChunkRequestManagement, ref columnRequests, ref deferredGeneration, client.Player.Entity.Pos.Dimension) == 0 && ++client.CurrentChunkSentRadius <= num && LoadSendableChunksAtBudget(client, ref num2, ref stratumChunkBudget, applyStratumBudget, ref columnRequestBudget, ref stratumColumnRequestBudget, applyStratumGenerationBudget, stratumChunkRequestManagement, ref columnRequests, ref deferredGeneration, client.Player.Entity.Pos.Dimension) == 0)
+ 		{
+ 			client.CurrentChunkSentRadius++;
+ 		}
+ 		foreach (ServerMapChunkWithCoord item4 in mapChunksToSend)
+ 		{
+@@ -203,16 +294,31 @@ internal class ServerSystemSendChunks : ServerSystem
+ 				server.SendPacketFast(client.Id, value3.ToPacket(vec3i.X, vec3i.Z));
+ 				client.SetMapRegionSent(forceSendMapRegion);
+ 			}
+ 		}
+ 		client.forceSendMapRegions.Clear();
++		return chunksToSend.Count;
+ 	}
+ 
+-	private int loadSendableChunksAtCurrentRadius(ConnectedClient client, int countChunks, int dimension)
++	private int LoadSendableChunksAtBudget(ConnectedClient client, ref int clientChunkBudget, ref int stratumChunkBudget, bool applyStratumBudget, ref int columnRequestBudget, ref int stratumColumnRequestBudget, bool applyStratumGenerationBudget, StratumChunkRequestManagementConfig stratumChunkRequestManagement, ref int columnRequests, ref bool deferredGeneration, int dimension)
++	{
++		int before = chunksToSend.Count;
++		int result = loadSendableChunksAtCurrentRadius(client, clientChunkBudget, ref columnRequestBudget, ref stratumColumnRequestBudget, applyStratumGenerationBudget, stratumChunkRequestManagement, ref columnRequests, ref deferredGeneration, dimension);
++		int added = chunksToSend.Count - before;
++		clientChunkBudget -= added;
++		if (applyStratumBudget)
++		{
++			stratumChunkBudget -= added;
++		}
++
++		return result;
++	}
++
++	private int loadSendableChunksAtCurrentRadius(ConnectedClient client, int countChunks, ref int columnRequestBudget, ref int stratumColumnRequestBudget, bool applyStratumGenerationBudget, StratumChunkRequestManagementConfig stratumChunkRequestManagement, ref int columnRequests, ref bool deferredGeneration, int dimension)
+ 	{
+-		int num = MagicNum.ChunksColumnsToRequestPerTick * ((!client.IsLocalConnection) ? 1 : 4);
+ 		Vec2i[] octagonPoints = ShapeUtil.GetOctagonPoints((int)client.Position.X / MagicNum.ServerChunkSize, (int)client.Position.Z / MagicNum.ServerChunkSize, client.CurrentChunkSentRadius);
++		PrioritizeStratumChunkCandidates(client, octagonPoints, stratumChunkRequestManagement);
+ 		int num2 = 0;
+ 		int num3 = dimension * 1024;
+ 		for (int i = 0; i < octagonPoints.Length; i++)
+ 		{
+ 			int x = octagonPoints[i].X;
+@@ -258,41 +364,224 @@ internal class ServerSystemSendChunks : ServerSystem
+ 					}
+ 					num2++;
+ 				}
+ 				else
+ 				{
+-					if (num <= 0)
++					if (columnRequestBudget <= 0)
+ 					{
++						if (server.AutoGenerateChunks && !server.ChunkColumnRequested.ContainsKey(num4))
++						{
++							deferredGeneration = true;
++							num2++;
++						}
+ 						continue;
+ 					}
+ 					if (!server.ChunkColumnRequested.ContainsKey(num4) && server.AutoGenerateChunks)
+ 					{
+ 						server.ChunkColumnRequested[num4] = 1;
++						TrackStratumChunkColumnRequest(num4, x, y);
+ 						lock (server.requestedChunkColumnsLock)
+ 						{
+ 							server.requestedChunkColumns.Enqueue(num4);
+ 						}
+-						num--;
++						columnRequestBudget--;
++						columnRequests++;
++						if (applyStratumGenerationBudget)
++						{
++							stratumColumnRequestBudget--;
++						}
+ 					}
+ 					num2++;
+ 				}
+ 			}
+ 		}
+ 		return num2;
+ 	}
+ 
++	private void PrioritizeStratumChunkCandidates(ConnectedClient client, Vec2i[] octagonPoints, StratumChunkRequestManagementConfig config)
++	{
++		if (octagonPoints.Length <= 1 || !config.Enabled || !config.PrioritizeMovingDirection || config.ForwardPredictionBlocks <= 0)
++		{
++			return;
++		}
++
++		EntityPos position = client.Position;
++		if (position == null)
++		{
++			return;
++		}
++
++		double horizontalSpeedSquared = position.Motion.X * position.Motion.X + position.Motion.Z * position.Motion.Z;
++		if (horizontalSpeedSquared < config.MinimumMovementSpeed * config.MinimumMovementSpeed)
++		{
++			return;
++		}
++
++		double inverseHorizontalSpeed = 1.0 / Math.Sqrt(horizontalSpeedSquared);
++		double projectedChunkX = (position.X + position.Motion.X * inverseHorizontalSpeed * config.ForwardPredictionBlocks) / MagicNum.ServerChunkSize;
++		double projectedChunkZ = (position.Z + position.Motion.Z * inverseHorizontalSpeed * config.ForwardPredictionBlocks) / MagicNum.ServerChunkSize;
++		Array.Sort(octagonPoints, (left, right) => GetStratumProjectedChunkDistance(left, projectedChunkX, projectedChunkZ).CompareTo(GetStratumProjectedChunkDistance(right, projectedChunkX, projectedChunkZ)));
++		stratumPrioritizedChunkRingsThisTick++;
++	}
++
++	private static double GetStratumProjectedChunkDistance(Vec2i chunkPos, double projectedChunkX, double projectedChunkZ)
++	{
++		double deltaX = chunkPos.X - projectedChunkX;
++		double deltaZ = chunkPos.Y - projectedChunkZ;
++		return deltaX * deltaX + deltaZ * deltaZ;
++	}
++
++	private void TrackStratumChunkColumnRequest(long mapChunkIndex, int chunkX, int chunkZ)
++	{
++		stratumTrackedChunkColumnRequests[mapChunkIndex] = new StratumTrackedChunkColumnRequest(chunkX, chunkZ, server.ElapsedMilliseconds);
++	}
++
++	private int CleanupStratumChunkColumnRequests(StratumChunkRequestManagementConfig config)
++	{
++		if (!config.Enabled || !config.CancelStalePendingRequests)
++		{
++			stratumTrackedChunkColumnRequests.Clear();
++			return 0;
++		}
++
++		long nowMs = server.ElapsedMilliseconds;
++		if (nowMs < stratumNextChunkRequestCleanupMs)
++		{
++			return 0;
++		}
++
++		stratumNextChunkRequestCleanupMs = nowMs + config.CleanupIntervalMilliseconds;
++		int inspectedRequests = 0;
++		int cancelledRequests = 0;
++		List<long> requestsToForget = null;
++
++		foreach (KeyValuePair<long, StratumTrackedChunkColumnRequest> entry in stratumTrackedChunkColumnRequests)
++		{
++			if (++inspectedRequests > config.MaxTrackedRequestsPerCleanup)
++			{
++				break;
++			}
++
++			long mapChunkIndex = entry.Key;
++			StratumTrackedChunkColumnRequest request = entry.Value;
++			if (!server.ChunkColumnRequested.ContainsKey(mapChunkIndex))
++			{
++				(requestsToForget ??= new List<long>()).Add(mapChunkIndex);
++				continue;
++			}
++
++			if (nowMs - request.RequestedAtMilliseconds < config.MinimumPendingAgeSeconds * 1000L)
++			{
++				continue;
++			}
++
++			if (cancelledRequests >= config.MaxCancelledRequestsPerCleanup || IsStratumChunkColumnStillWanted(request, config))
++			{
++				continue;
++			}
++
++			if (RemovePendingStratumChunkColumnRequest(mapChunkIndex))
++			{
++				cancelledRequests++;
++			}
++
++			(requestsToForget ??= new List<long>()).Add(mapChunkIndex);
++		}
++
++		if (requestsToForget != null)
++		{
++			foreach (long mapChunkIndex in requestsToForget)
++			{
++				stratumTrackedChunkColumnRequests.Remove(mapChunkIndex);
++			}
++		}
++
++		return cancelledRequests;
++	}
++
++	private bool RemovePendingStratumChunkColumnRequest(long mapChunkIndex)
++	{
++		lock (server.requestedChunkColumnsLock)
++		{
++			if (!server.requestedChunkColumns.Contains(mapChunkIndex))
++			{
++				return false;
++			}
++
++			server.requestedChunkColumns.Remove(mapChunkIndex);
++		}
++
++		server.ChunkColumnRequested.TryRemove(mapChunkIndex, out _);
++		return true;
++	}
++
++	private bool IsStratumChunkColumnStillWanted(StratumTrackedChunkColumnRequest request, StratumChunkRequestManagementConfig config)
++	{
++		foreach (ConnectedClient client in server.Clients.Values)
++		{
++			if (!client.State.ConnectedOrPlaying() || client.Position == null)
++			{
++				continue;
++			}
++
++			int clientChunkX = (int)client.Position.X / MagicNum.ServerChunkSize;
++			int clientChunkZ = (int)client.Position.Z / MagicNum.ServerChunkSize;
++			int viewDistanceChunks = Math.Min(server.Config.MaxChunkRadius, (int)Math.Ceiling((float)client.WorldData.Viewdistance / (float)MagicNum.ServerChunkSize)) + config.MaxDistanceBeyondViewChunks;
++			int distanceX = Math.Abs(request.ChunkX - clientChunkX);
++			int distanceZ = Math.Abs(request.ChunkZ - clientChunkZ);
++			if (Math.Max(distanceX, distanceZ) <= viewDistanceChunks)
++			{
++				return true;
++			}
++		}
++
++		return false;
++	}
++
++	private int GetPendingChunkColumnQueueCount()
++	{
++		lock (server.requestedChunkColumnsLock)
++		{
++			return server.requestedChunkColumns.Count;
++		}
++	}
++
+ 	private Packet_ServerChunk collectChunk(ServerChunk serverChunk, int chunkX, int chunkY, int chunkZ, ConnectedClient client, bool withEntities)
+ 	{
+ 		long num = server.WorldMap.ChunkIndex3D(chunkX, chunkY, chunkZ);
+ 		client.SetChunkSent(num);
+ 		chunksSent++;
+ 		Dictionary<long, Packet_ServerChunk> dictionary = (withEntities ? packetsWithEntities : packetsWithoutEntities);
+ 		if (dictionary.TryGetValue(num, out var value))
+ 		{
+ 			return value;
+ 		}
+-		return dictionary[num] = serverChunk.ToPacket(chunkX, chunkY, chunkZ, withEntities);
++		long stratumTimingStart = StratumRuntime.Timings.GetTimestamp();
++		try
++		{
++			return dictionary[num] = serverChunk.ToPacket(chunkX, chunkY, chunkZ, withEntities);
++		}
++		finally
++		{
++			StratumRuntime.Timings.RecordElapsed("chunk.serialize", stratumTimingStart);
++		}
++	}
++
++	private sealed class StratumTrackedChunkColumnRequest
++	{
++		public StratumTrackedChunkColumnRequest(int chunkX, int chunkZ, long requestedAtMilliseconds)
++		{
++			ChunkX = chunkX;
++			ChunkZ = chunkZ;
++			RequestedAtMilliseconds = requestedAtMilliseconds;
++		}
++
++		public int ChunkX { get; }
++
++		public int ChunkZ { get; }
++
++		public long RequestedAtMilliseconds { get; }
+ 	}
+ 
+ 	public static string performanceTest(ServerMain server)
+ 	{
+ 		Stopwatch stopwatch = null;

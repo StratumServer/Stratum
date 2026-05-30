@@ -1,0 +1,48 @@
+diff --git a/VintagestoryApi/Common/Model/Animation/AnimationManager.cs b/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
+index 573ec12..8374c39 100644
+--- a/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
++++ b/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
+@@ -448,18 +448,40 @@ namespace Vintagestory.API.Common
+         /// <param name="dt"></param>
+         public virtual void OnServerTick(float dt)
+         {
+             if (Animator != null)
+             {
+-                Animator.CalculateMatrices = !entity.Alive || entity.requirePosesOnServer;
+-                Animator.OnFrame(ActiveAnimationsByAnimCode, dt);
+-                AdjustCollisionBoxToAnimation = ActiveAnimationsByAnimCode.Any(anim => anim.Value.AdjustCollisionBox);
++                var activeAnimations = ActiveAnimationsByAnimCode;
++                bool needsAnimationFrame = activeAnimations.Count > 0 || !entity.Alive || entity.requirePosesOnServer || Triggers != null;
++                if (needsAnimationFrame)
++                {
++                    Animator.CalculateMatrices = !entity.Alive || entity.requirePosesOnServer;
++                    Animator.OnFrame(activeAnimations, dt);
++                    AdjustCollisionBoxToAnimation = HasAdjustCollisionBoxAnimation(activeAnimations);
++                }
++                else
++                {
++                    AdjustCollisionBoxToAnimation = false;
++                }
+             }
+ 
+             runTriggers();
+         }
+ 
++        private static bool HasAdjustCollisionBoxAnimation(Dictionary<string, AnimationMetaData> activeAnimations)
++        {
++            foreach (var animation in activeAnimations)
++            {
++                if (animation.Value.AdjustCollisionBox)
++                {
++                    return true;
++                }
++            }
++
++            return false;
++        }
++
+         public bool RunWhilePaused = false;
+ 
+         /// <summary>
+         /// The event fired each time the client ticks.
+         /// </summary>

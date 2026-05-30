@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <FrameworkVersion>net10.0</FrameworkVersion>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS1591;CS1572;CS1573;CS1570;CS0649;CS0414;CS0169;CS0162;CS0168</NoWarn>
+  </PropertyGroup>
+
+  <Import Project="Directory.Build.local.props" Condition="Exists('Directory.Build.local.props')" />
+</Project>

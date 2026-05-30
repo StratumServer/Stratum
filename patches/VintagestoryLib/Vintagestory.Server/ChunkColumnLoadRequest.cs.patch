@@ -1,0 +1,38 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
+index 04b25be..fd3a909 100644
+--- a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
++++ b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
+@@ -46,13 +46,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+ 
+ 	public EnumWorldGenPass CurrentIncompletePass
+ 	{
+ 		get
+ 		{
+-			if (MapChunk != null)
++			ServerMapChunk mapChunk = MapChunk;
++			if (mapChunk != null)
+ 			{
+-				return MapChunk.CurrentIncompletePass;
++				return mapChunk.CurrentIncompletePass;
+ 			}
+ 			return EnumWorldGenPass.None;
+ 		}
+ 		set
+ 		{
+@@ -62,13 +63,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+ 
+ 	public int CurrentIncompletePass_AsInt
+ 	{
+ 		get
+ 		{
+-			if (MapChunk != null)
++			ServerMapChunk mapChunk = MapChunk;
++			if (mapChunk != null)
+ 			{
+-				return MapChunk.currentpass;
++				return mapChunk.currentpass;
+ 			}
+ 			return 0;
+ 		}
+ 	}
+ 

@@ -1,0 +1,40 @@
+diff --git a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs
+index 719a68b..5cfa8f7 100644
+--- a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs
++++ b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs
+@@ -196,22 +196,32 @@ public class ServerUdpNetwork : ServerSystem
+ 		if (flag)
+ 		{
+ 			message = new AnimationPacket(entity);
+ 			entity.AnimManager.AnimationsDirty = false;
+ 		}
+-		foreach (ConnectedClient value in server.Clients.Values)
++		// Stratum: batch the animation/tags TCP send across all viewers so the channel
++		// serializes the packet ONCE instead of N times (was per-viewer SendPacket inside loop).
++		// At ~545 player-position packets/sec * ~108 viewers, this removes ~58k redundant
++		// serializations/sec from the main thread.
++		ICollection<ConnectedClient> stratumClients = server.Clients.Values;
++		List<IServerPlayer> stratumAnimViewers = (flag && stratumClients.Count > 1) ? new List<IServerPlayer>(stratumClients.Count) : null;
++		foreach (ConnectedClient value in stratumClients)
+ 		{
+ 			ServerPlayer player2 = value.Player;
+ 			if (player2 != null && player2 != player && value.TrackedEntities.Contains(entity.EntityId))
+ 			{
+ 				ImmediateUdpQueue.QueuePacket(value, packet2);
+-				if (flag)
++				if (stratumAnimViewers != null)
+ 				{
+-					physicsManager.AnimationsAndTagsChannel.SendPacket(message, player2);
++					stratumAnimViewers.Add(player2);
+ 				}
+ 			}
+ 		}
++		if (stratumAnimViewers != null && stratumAnimViewers.Count > 0)
++		{
++			physicsManager.AnimationsAndTagsChannel.SendPacket(message, stratumAnimViewers.ToArray());
++		}
+ 	}
+ 
+ 	private void SendSinglePositionPacket(ServerPlayer player, Entity entity, int currentTick)
+ 	{
+ 		Packet_UdpPacket packet = new Packet_UdpPacket

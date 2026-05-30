@@ -1,0 +1,23 @@
+diff --git a/VintagestoryApi/Common/Collectible/Collectible.cs b/VintagestoryApi/Common/Collectible/Collectible.cs
+index 37c8ea5..a8773de 100644
+--- a/VintagestoryApi/Common/Collectible/Collectible.cs
++++ b/VintagestoryApi/Common/Collectible/Collectible.cs
+@@ -2780,15 +2780,13 @@ namespace Vintagestory.API.Common
+ 
+             if (state != null)
+             {
+                 TransitionState smeltedState = smeltedStack.Collectible.UpdateAndGetTransitionState(world, new DummySlot(smeltedStack), EnumTransitionType.Perish);
+ 
+-                if (smeltedState != null)
+-                {
+-                    float nowTransitionedHours = state.TransitionedHours / (state.TransitionHours + state.FreshHours) * 0.8f * (smeltedState.TransitionHours + smeltedState.FreshHours) - 1;
+-                    smeltedStack.Collectible.SetTransitionState(smeltedStack, EnumTransitionType.Perish, Math.Max(0, nowTransitionedHours));
+-                }
++                float nowTransitionedHours = (state.TransitionedHours / (state.TransitionHours + state.FreshHours)) * 0.8f * (smeltedState.TransitionHours + smeltedState.FreshHours) - 1;
++
++                smeltedStack.Collectible.SetTransitionState(smeltedStack, EnumTransitionType.Perish, Math.Max(0, nowTransitionedHours));
+             }
+ 
+             int batchSize = 1;
+ 
+             if (outputSlot.Itemstack == null)

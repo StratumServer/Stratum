@@ -1,0 +1,50 @@
+name: Crash or stack trace
+description: The server crashed or threw an unhandled exception.
+labels: ["type: crash"]
+body:
+  - type: input
+    id: stratum-version
+    attributes:
+      label: Stratum version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: base-version
+    attributes:
+      label: Base game version
+      placeholder: "1.22.3"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and .NET runtime
+      placeholder: "Ubuntu 24.04, .NET 10.0.0"
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Stack trace
+      description: Paste the full trace. If the log is large, attach it as a file.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What was happening
+      description: What was the server doing when it crashed. Player count, world age, recent actions.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Leave blank if the crash is random.
+  - type: textarea
+    id: mods
+    attributes:
+      label: Mods loaded
+      description: List any mods. Try to reproduce without them if possible.

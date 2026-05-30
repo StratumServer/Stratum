@@ -1,0 +1,1004 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
+index 750557a..4d65852 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
+@@ -1,8 +1,11 @@
+ using System;
++using System.Collections.Concurrent;
+ using System.Collections.Generic;
+-using System.Linq;
++using System.Diagnostics;
++using System.Threading;
++using System.Threading.Tasks;
+ using Vintagestory.API.Client;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Datastructures;
+@@ -22,13 +25,91 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 
+ 	private Dictionary<string, List<string>> deathMessagesCache;
+ 
+ 	private int skippedDespawnTicks;
+ 
++	private ConcurrentDictionary<long, StratumEntityTickState> stratumEntityTickStates = new ConcurrentDictionary<long, StratumEntityTickState>();
++
++	// Rate-limited error reporting for parallel region ticking (experimental Folia mode).
++	// Avoids per-entity NPE spam in the console when worker threads hit unsafe API access.
++	private long stratumParallelTickFailures;
++	private long stratumParallelTickFailuresLastReportMs;
++	private string stratumParallelTickFailureSample;
++
++	private List<EntityPos> stratumPlayerPositions = new List<EntityPos>();
++
++	// Stratum: compact snapshot of player positions used by hot per-entity tier-tick math.
++	// Storing as a value-type array avoids EntityPos pointer chasing and torn reads from the
++	// parallel region pass (snapshot is taken once on main thread, then read-only thereafter).
++	private struct StratumPlayerPosSnap
++	{
++		public double X;
++		public double Y;
++		public double Z;
++		public int Dimension;
++	}
++	private StratumPlayerPosSnap[] stratumPlayerPosSnap = Array.Empty<StratumPlayerPosSnap>();
++	private int stratumPlayerPosSnapCount;
++	private double stratumNearSqCached;
++	private double stratumMidSqCached;
++	private double stratumFarSqCached;
++	private int stratumNearTickIntervalCached = 1;
++	private int stratumMidTickIntervalCached = 1;
++	private int stratumFarTickIntervalCached = 1;
++	private int stratumVeryFarTickIntervalCached = 1;
++
++	// Stratum ambient fauna tier cache. Refreshed in BuildStratumPlayerPositions alongside the
++	// other tier caches so the hot tick path only reads two fields.
++	private string[] stratumAmbientPrefixesCached = Array.Empty<string>();
++	private int stratumAmbientMultiplierCached = 1;
++	private bool stratumAmbientTierEnabledCached;
++
++	// Stratum hard-despawn cache. Refreshed once per tick from config.
++	private bool stratumHardDespawnEnabledCached;
++	private double stratumHardDespawnSqCached;
++	private float stratumHardDespawnGraceSecondsCached;
++	private bool stratumHardDespawnExemptIfNamedCached;
++	private string[] stratumHardDespawnExemptPrefixesCached = Array.Empty<string>();
++
++	// Round-robin cursor (in eligible-creature index space) so the per-tick creature budget
++	// rotates fairly across all creatures over successive ticks.
++	private int stratumCreatureRoundRobinCursor;
++
++	private readonly List<KeyValuePair<Entity, EntityDespawnData>> stratumEntitiesToDespawn = new List<KeyValuePair<Entity, EntityDespawnData>>();
++
++	private readonly List<ConnectedClient> stratumPlayerDeathNotifications = new List<ConnectedClient>();
++
++	private readonly BlockFilter stratumSelectionBlockFilter;
++
++	private readonly EntityFilter stratumSelectionEntityFilter;
++
++	private ConnectedClient stratumSelectionClient;
++
++	private EntityPlayer stratumSelectionPlayerEntity;
++
++	private sealed class StratumEntityTickState
++	{
++		public int SkippedTicks;
++
++		public float AccumulatedDeltaTime;
++
++		// Stratum ambient-fauna tier: resolved once per entity (StartsWith against the configured
++		// prefix list) and cached so the per-tick check is a couple of field reads.
++		public bool AmbientResolved;
++
++		public bool IsAmbient;
++
++		// Stratum hard-despawn tracking: seconds the entity has been continuously beyond
++		// HardDespawnDistanceBlocks from every player. Reset when a player re-enters range.
++		public float FarSecondsAccumulated;
++	}
++
+ 	public ServerSystemEntitySimulation(ServerMain server)
+ 		: base(server)
+ 	{
++		stratumSelectionBlockFilter = StratumSelectionBlockFilter;
++		stratumSelectionEntityFilter = StratumSelectionEntityFilter;
+ 		server.RegisterGameTickListener(UpdateEvery1000ms, 1000);
+ 		server.EventManager.OnGameWorldBeingSaved += EventManager_OnGameWorldBeingSaved;
+ 		server.RegisterGameTickListener(UpdateEvery100ms, 100);
+ 		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
+ 		server.PacketHandlers[17] = HandleEntityInteraction;
+@@ -43,26 +124,33 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
+ 	}
+ 
+ 	private void EventManager_OnPlayerChat(IServerPlayer byPlayer, int channelId, ref string message, ref string data, BoolRef consumed)
+ 	{
++		string messageBody = StratumChatFormatter.FormatMessageBody(message);
++		if (StratumChatFormatter.TryFormat(byPlayer, messageBody, out string stratumMessage))
++		{
++			message = stratumMessage;
++			return;
++		}
++
+ 		if (byPlayer.HasPrivilege("staffentitlement"))
+ 		{
+ 			double[] color = GlobalConstants.playerColorByEntitlement["staff"];
+-			message = string.Format("<font color=\"" + VtmlUtil.toHexColor(color) + "\"><strong>" + Lang.Get("serverstaffchatprefix") + " {0}:</strong></font> {1}", byPlayer.PlayerName, message);
++			message = string.Format("<font color=\"" + VtmlUtil.toHexColor(color) + "\"><strong>" + Lang.Get("serverstaffchatprefix") + " {0}:</strong></font> {1}", byPlayer.PlayerName, messageBody);
+ 			return;
+ 		}
+ 		if (byPlayer.Entitlements.Count > 0)
+ 		{
+ 			Entitlement entitlement = byPlayer.Entitlements[0];
+ 			if (GlobalConstants.playerColorByEntitlement.TryGetValue(entitlement.Code, out var value))
+ 			{
+-				message = string.Format("<font color=\"" + VtmlUtil.toHexColor(value) + "\"><strong>{0}:</strong></font> {1}", byPlayer.PlayerName, message);
++				message = string.Format("<font color=\"" + VtmlUtil.toHexColor(value) + "\"><strong>{0}:</strong></font> {1}", byPlayer.PlayerName, messageBody);
+ 				return;
+ 			}
+ 		}
+-		message = $"<strong>{byPlayer.PlayerName}:</strong> {message}";
++		message = $"<strong>{byPlayer.PlayerName}:</strong> {messageBody}";
+ 	}
+ 
+ 	private void EventManager_OnGameWorldBeingSaved()
+ 	{
+ 		if (server.RunPhase != EnumServerRunPhase.Shutdown)
+@@ -97,46 +185,79 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 		physicsManager.ForceClientUpdateTick(clientStats.client);
+ 	}
+ 
+ 	public override void OnServerTick(float dt)
+ 	{
++		long stratumSelectionTimingStart = StratumRuntime.Timings.GetTimestamp();
++		int stratumSelectionTraces = 0;
++		int stratumLookedAtBlocks = 0;
+ 		foreach (ConnectedClient value in server.Clients.Values)
+ 		{
+ 			ConnectedClient client = value;
+-			ServerPlayer player;
+ 			if (client.IsPlayingClient)
+ 			{
+-				player = client.Player;
+-				player.Entity.PreviousBlockSelection = player.Entity.BlockSelection?.Position.Copy();
+-				server.RayTraceForSelection(player, ref player.Entity.BlockSelection, ref player.Entity.EntitySelection, bFilter, eFilter);
+-				if (player.Entity.BlockSelection != null)
++				ServerPlayer player = client.Player;
++				EntityPlayer entityPlayer = player.Entity;
++				UpdateStratumPreviousBlockSelection(entityPlayer);
++				stratumSelectionClient = client;
++				stratumSelectionPlayerEntity = entityPlayer;
++				try
+ 				{
+-					bool firstTick = player.Entity.PreviousBlockSelection == null || player.Entity.BlockSelection.Position != player.Entity.PreviousBlockSelection;
+-					server.BlockAccessor.GetBlock(player.Entity.BlockSelection.Position).OnBeingLookedAt(player, player.Entity.BlockSelection, firstTick);
++					server.RayTraceForSelection(player, ref entityPlayer.BlockSelection, ref entityPlayer.EntitySelection, stratumSelectionBlockFilter, stratumSelectionEntityFilter);
+ 				}
+-			}
+-			bool bFilter(BlockPos pos, Block block)
+-			{
+-				if (block != null && block.RenderPass == EnumChunkRenderPass.Meta)
++				finally
+ 				{
+-					return client.WorldData.RenderMetaBlocks;
++					stratumSelectionClient = null;
++					stratumSelectionPlayerEntity = null;
+ 				}
+-				return true;
+-			}
+-			bool eFilter(Entity e)
+-			{
+-				if (e.IsInteractable)
++				stratumSelectionTraces++;
++				if (entityPlayer.BlockSelection != null)
+ 				{
+-					return e.EntityId != player.Entity.EntityId;
++					bool firstTick = entityPlayer.PreviousBlockSelection == null || entityPlayer.BlockSelection.Position != entityPlayer.PreviousBlockSelection;
++					server.BlockAccessor.GetBlock(entityPlayer.BlockSelection.Position).OnBeingLookedAt(player, entityPlayer.BlockSelection, firstTick);
++					stratumLookedAtBlocks++;
+ 				}
+-				return false;
+ 			}
+ 		}
++		StratumRuntime.PerformanceStats.RecordEntitySelectionTick(stratumSelectionTraces, stratumLookedAtBlocks);
++		StratumRuntime.Timings.RecordElapsed("entity.selection", stratumSelectionTimingStart);
+ 		TickEntities(dt);
+ 		SendPlayerEntityDeaths();
+ 	}
+ 
++	private static void UpdateStratumPreviousBlockSelection(EntityPlayer entityPlayer)
++	{
++		BlockPos currentPosition = entityPlayer.BlockSelection?.Position;
++		if (currentPosition == null)
++		{
++			entityPlayer.PreviousBlockSelection = null;
++			return;
++		}
++
++		if (entityPlayer.PreviousBlockSelection == null)
++		{
++			entityPlayer.PreviousBlockSelection = currentPosition.Copy();
++			return;
++		}
++
++		entityPlayer.PreviousBlockSelection.Set(currentPosition, currentPosition.dimension);
++	}
++
++	private bool StratumSelectionBlockFilter(BlockPos pos, Block block)
++	{
++		if (block != null && block.RenderPass == EnumChunkRenderPass.Meta)
++		{
++			return stratumSelectionClient?.WorldData.RenderMetaBlocks == true;
++		}
++		return true;
++	}
++
++	private bool StratumSelectionEntityFilter(Entity entity)
++	{
++		return entity.IsInteractable && entity.EntityId != stratumSelectionPlayerEntity?.EntityId;
++	}
++
+ 	private void UpdateEvery100ms(float t1)
+ 	{
+ 		SendEntityDespawns();
+ 		int count = server.DelayedSpawnQueue.Count;
+ 		if (count <= 0)
+@@ -185,19 +306,145 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 		}
+ 	}
+ 
+ 	private void TickEntities(float dt)
+ 	{
+-		List<KeyValuePair<Entity, EntityDespawnData>> list = new List<KeyValuePair<Entity, EntityDespawnData>>();
++		long stratumTimingStart = StratumRuntime.Timings.GetTimestamp();
++		List<KeyValuePair<Entity, EntityDespawnData>> list = stratumEntitiesToDespawn;
++		list.Clear();
++		StratumEntityTickingConfig stratumEntityTicking = StratumRuntime.Config.Performance.EntityTicking;
++		StratumRegionTickingConfig stratumRegionTicking = StratumRuntime.Config.Performance.RegionTicking;
++		BuildStratumPlayerPositions();
++		if (stratumRegionTicking.Enabled)
++		{
++			TickEntitiesRegionParallel(dt, stratumEntityTicking, stratumRegionTicking, list);
++			ServerMain.FrameProfiler.Enter("despawning");
++			foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
++			{
++				server.DespawnEntity(item.Key, item.Value);
++				ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
++			}
++			ServerMain.FrameProfiler.Leave();
++			list.Clear();
++			StratumRuntime.Timings.RecordElapsed("entity.tick", stratumTimingStart);
++			return;
++		}
++		int stratumEntitiesSeen = 0;
++		int stratumEntitiesTicked = 0;
++		int stratumEntitiesThrottled = 0;
++		int stratumPlayerEntitiesTicked = 0;
++		int stratumCreatureEntitiesTicked = 0;
++		int stratumInanimateEntitiesTicked = 0;
++		int stratumDimensionSkippedEntities = 0;
++		long stratumPlayerEntityTickTicks = 0L;
++		long stratumCreatureEntityTickTicks = 0L;
++		long stratumInanimateEntityTickTicks = 0L;
++		bool stratumRecordEntityCategoryTimings = StratumRuntime.Timings.Enabled;
++		StratumEntityBehaviorTimings.SetEnabled(stratumRecordEntityCategoryTimings);
++		int stratumCreatureBudget = Math.Max(0, stratumEntityTicking.MaxCreatureTicksPerTick);
++		int stratumCreatureEligibleSeen = 0;
++		int stratumCreatureBudgetTicked = 0;
++		int stratumCreatureSkipBefore = (stratumCreatureBudget > 0) ? Math.Max(0, stratumCreatureRoundRobinCursor) : 0;
+ 		ServerMain.FrameProfiler.Enter("tickentities");
+ 		foreach (Entity value in server.LoadedEntities.Values)
+ 		{
+-			if (!Dimensions.ShouldNotTick(value.Pos, value.Api))
++			stratumEntitiesSeen++;
++
++			// Stratum hard-despawn: cull creatures that have been beyond range of every player
++			// for the configured grace period. Runs before throttling/ticking so we don't waste
++			// budget on an entity that's about to unload.
++			if (EvaluateStratumHardDespawn(value, dt, out EntityDespawnData hardReason))
+ 			{
++				stratumEntityTickStates.TryRemove(value.EntityId, out _);
++				list.Add(new KeyValuePair<Entity, EntityDespawnData>(value, hardReason));
++				stratumEntitiesThrottled++;
++				continue;
++			}
++
++			bool shouldTickDimension = !Dimensions.ShouldNotTick(value.Pos, value.Api);
++			if (shouldTickDimension)
++			{
++				if (ShouldThrottleStratumEntityTick(value, stratumEntityTicking, dt, out float tickDeltaTime))
++				{
++					stratumEntitiesThrottled++;
++					continue;
++				}
++				// Per-tick creature budget: if we've hit the cap (or are still rotating past
++				// the cursor offset), force-throttle by deferring this creature's tick. The
++				// accumulated delta time will be paid out on the next tick that this creature
++				// is allowed through.
++				if (stratumCreatureBudget > 0 && value is not EntityPlayer && value.IsCreature)
++				{
++					bool defer;
++					if (stratumCreatureEligibleSeen < stratumCreatureSkipBefore)
++					{
++						defer = true;
++					}
++					else if (stratumCreatureBudgetTicked >= stratumCreatureBudget)
++					{
++						defer = true;
++					}
++					else
++					{
++						defer = false;
++						stratumCreatureBudgetTicked++;
++					}
++					stratumCreatureEligibleSeen++;
++					if (defer)
++					{
++						if (!stratumEntityTickStates.TryGetValue(value.EntityId, out StratumEntityTickState st))
++						{
++							st = new StratumEntityTickState();
++							stratumEntityTickStates[value.EntityId] = st;
++						}
++						st.SkippedTicks++;
++						st.AccumulatedDeltaTime += tickDeltaTime;
++						stratumEntitiesThrottled++;
++						continue;
++					}
++				}
+ 				try
+ 				{
+-					value.OnGameTick(dt);
++					bool stratumIsPlayerEntity = value is EntityPlayer;
++					bool stratumIsCreatureEntity = !stratumIsPlayerEntity && value.IsCreature;
++					long stratumEntityTickStart = stratumRecordEntityCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
++					try
++					{
++					value.OnGameTick(tickDeltaTime);
++					}
++					finally
++					{
++						if (stratumRecordEntityCategoryTimings)
++						{
++							long stratumEntityTickElapsed = Stopwatch.GetTimestamp() - stratumEntityTickStart;
++							if (stratumIsPlayerEntity)
++							{
++								stratumPlayerEntityTickTicks += stratumEntityTickElapsed;
++							}
++							else if (stratumIsCreatureEntity)
++							{
++								stratumCreatureEntityTickTicks += stratumEntityTickElapsed;
++							}
++							else
++							{
++								stratumInanimateEntityTickTicks += stratumEntityTickElapsed;
++							}
++						}
++					}
++					stratumEntitiesTicked++;
++					if (stratumIsPlayerEntity)
++					{
++						stratumPlayerEntitiesTicked++;
++					}
++					else if (stratumIsCreatureEntity)
++					{
++						stratumCreatureEntitiesTicked++;
++					}
++					else
++					{
++						stratumInanimateEntitiesTicked++;
++					}
+ 				}
+ 				catch (Exception e)
+ 				{
+ 					if (value is EntityPlayer entityPlayer)
+ 					{
+@@ -209,12 +456,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
+ 						ServerMain.Logger.Error(e);
+ 					}
+ 				}
+ 			}
++			else
++			{
++				stratumDimensionSkippedEntities++;
++			}
+ 			if (value.ShouldDespawn)
+ 			{
++				stratumEntityTickStates.TryRemove(value.EntityId, out _);
+ 				list.Add(new KeyValuePair<Entity, EntityDespawnData>(value, value.DespawnReason));
+ 			}
+ 		}
+ 		ServerMain.FrameProfiler.Enter("despawning");
+ 		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
+@@ -222,27 +474,553 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 			server.DespawnEntity(item.Key, item.Value);
+ 			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
+ 		}
+ 		ServerMain.FrameProfiler.Leave();
+ 		ServerMain.FrameProfiler.Leave();
++		list.Clear();
++		StratumRuntime.PerformanceStats.RecordEntityTick(stratumEntitiesSeen, stratumEntitiesTicked, stratumEntitiesThrottled, stratumPlayerEntitiesTicked, stratumCreatureEntitiesTicked, stratumInanimateEntitiesTicked, stratumDimensionSkippedEntities);
++		StratumRuntime.Timings.RecordMeasuredTicks("entity.tick.players", stratumPlayerEntityTickTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("entity.tick.creatures", stratumCreatureEntityTickTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("entity.tick.inanimate", stratumInanimateEntityTickTicks);
++		// Advance the round-robin cursor in eligible-creature index space so the next tick
++		// services a different slice of the creature population.
++		if (stratumCreatureBudget > 0 && stratumCreatureEligibleSeen > 0)
++		{
++			int adv = Math.Min(stratumCreatureBudget, stratumCreatureEligibleSeen);
++			stratumCreatureRoundRobinCursor = (stratumCreatureRoundRobinCursor + adv) % stratumCreatureEligibleSeen;
++		}
++		else
++		{
++			stratumCreatureRoundRobinCursor = 0;
++		}
++		if (stratumRecordEntityCategoryTimings)
++		{
++			foreach (StratumEntityBehaviorTimings.Measurement measurement in StratumEntityBehaviorTimings.Drain())
++			{
++				StratumRuntime.Timings.RecordMeasuredTicks(measurement.Name, measurement.ElapsedTicks);
++			}
++		}
++		StratumRuntime.Timings.RecordElapsed("entity.tick", stratumTimingStart);
++	}
++
++	// Folia-style regionized parallel entity ticking.
++	//
++	// WARNING: this dispatches Entity.OnGameTick concurrently across worker threads, partitioned
++	// by world region (RegionSizeChunks). Many vanilla and modded entity behaviors are NOT
++	// thread-safe ╬ô├ç├╢ they may read/write the world's BlockAccessor, spawn or despawn entities,
++	// or touch shared mod state. Using this is opt-in and experimental. Validate with your
++	// mod set under load before enabling in production.
++	//
++	// Safety scaffolding:
++	//  - Players always tick on the main thread first (cheap and almost always touch shared state).
++	//  - Non-player entities are snapshotted into per-region buckets; iteration order within a
++	//    region is sequential, regions are parallel.
++	//  - Per-entity tick state lives in a ConcurrentDictionary (no cross-region contention since
++	//    keys are unique per entity).
++	//  - Each region runs inside its own try/catch so one region's failure doesn't kill others.
++	//  - The per-tick creature budget (round-robin) is disabled in parallel mode (the ordering
++	//    fairness assumption doesn't hold).
++	private void TickEntitiesRegionParallel(float dt, StratumEntityTickingConfig entityCfg, StratumRegionTickingConfig regionCfg, List<KeyValuePair<Entity, EntityDespawnData>> despawnList)
++	{
++		int regionShift = Math.Max(1, regionCfg.RegionSizeChunks);
++		int workerThreads = regionCfg.WorkerThreads > 0 ? regionCfg.WorkerThreads : Math.Max(1, Environment.ProcessorCount - 2);
++		int minPerRegion = Math.Max(1, regionCfg.MinEntitiesPerRegion);
++
++		// Snapshot players + non-players, bucket non-players by region.
++		var players = new List<Entity>(64);
++		var regions = new Dictionary<long, List<Entity>>(64);
++		foreach (Entity entity in server.LoadedEntities.Values)
++		{
++			if (entity is EntityPlayer)
++			{
++				players.Add(entity);
++				continue;
++			}
++			int rx = ((int)entity.Pos.X / MagicNum.ServerChunkSize) / regionShift;
++			int rz = ((int)entity.Pos.Z / MagicNum.ServerChunkSize) / regionShift;
++			long key = ((long)rx << 32) ^ (uint)rz;
++			if (!regions.TryGetValue(key, out List<Entity> bucket))
++			{
++				bucket = new List<Entity>(32);
++				regions[key] = bucket;
++			}
++			bucket.Add(entity);
++		}
++
++		bool recordCategoryTimings = StratumRuntime.Timings.Enabled;
++		StratumEntityBehaviorTimings.SetEnabled(recordCategoryTimings);
++
++		// Player tick on main thread (sequential).
++		int seen = 0, ticked = 0, throttled = 0;
++		int playersTicked = 0, creaturesTicked = 0, inanimateTicked = 0, dimSkipped = 0;
++		long playerTicks = 0L, creatureTicks = 0L, inanimateTicks = 0L;
++
++		ServerMain.FrameProfiler.Enter("tickentities-parallel");
++		foreach (Entity p in players)
++		{
++			seen++;
++			if (Dimensions.ShouldNotTick(p.Pos, p.Api))
++			{
++				dimSkipped++;
++				continue;
++			}
++			long t0 = recordCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
++			try { p.OnGameTick(dt); }
++			catch (Exception e)
++			{
++				ServerMain.Logger.Warning("Exception while ticking player {0}: ", ((EntityPlayer)p).GetName());
++				ServerMain.Logger.Error(e);
++			}
++			if (recordCategoryTimings) playerTicks += Stopwatch.GetTimestamp() - t0;
++			ticked++; playersTicked++;
++			if (p.ShouldDespawn)
++			{
++				stratumEntityTickStates.TryRemove(p.EntityId, out _);
++				lock (despawnList) despawnList.Add(new KeyValuePair<Entity, EntityDespawnData>(p, p.DespawnReason));
++			}
++		}
++
++		// Parallel region pass for non-players.
++		var po = new ParallelOptions { MaxDegreeOfParallelism = workerThreads };
++		var regionList = new List<List<Entity>>(regions.Count);
++		var serialList = new List<Entity>(64);
++		foreach (var kv in regions)
++		{
++			if (kv.Value.Count >= minPerRegion) regionList.Add(kv.Value);
++			else serialList.AddRange(kv.Value);
++		}
++		int seenP = 0, tickedP = 0, throttledP = 0, creaturesTickedP = 0, inanimateTickedP = 0, dimSkippedP = 0;
++		long creatureTicksP = 0L, inanimateTicksP = 0L;
++
++		void TickOne(Entity value)
++		{
++			Interlocked.Increment(ref seenP);
++			if (EvaluateStratumHardDespawn(value, dt, out EntityDespawnData hardReasonP))
++			{
++				stratumEntityTickStates.TryRemove(value.EntityId, out _);
++				lock (despawnList) despawnList.Add(new KeyValuePair<Entity, EntityDespawnData>(value, hardReasonP));
++				Interlocked.Increment(ref throttledP);
++				return;
++			}
++			bool shouldTickDimension = !Dimensions.ShouldNotTick(value.Pos, value.Api);
++			if (!shouldTickDimension)
++			{
++				Interlocked.Increment(ref dimSkippedP);
++			}
++			else
++			{
++				if (ShouldThrottleStratumEntityTick(value, entityCfg, dt, out float tickDeltaTime))
++				{
++					Interlocked.Increment(ref throttledP);
++				}
++				else
++				{
++					bool isCreature = value.IsCreature;
++					long t0 = recordCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
++					try { value.OnGameTick(tickDeltaTime); }
++					catch (Exception e)
++					{
++						Interlocked.Increment(ref stratumParallelTickFailures);
++						if (stratumParallelTickFailureSample == null)
++						{
++							string diag = string.Format("[diag World={0} World.FrameProfiler={1} ServerMain.FrameProfiler={2} entity.Api={3} entity.Alive={4}]",
++								value.World != null,
++								value.World?.FrameProfiler != null,
++								ServerMain.FrameProfiler != null,
++								value.Api != null,
++								value.Alive);
++							stratumParallelTickFailureSample = string.Format("{0} ({1}): {2} {3}\n{4}", value.GetName(), value.Properties?.Class, e.GetType().Name + ": " + e.Message, diag, e.StackTrace);
++						}
++					}
++					if (recordCategoryTimings)
++					{
++						long el = Stopwatch.GetTimestamp() - t0;
++						if (isCreature) Interlocked.Add(ref creatureTicksP, el);
++						else Interlocked.Add(ref inanimateTicksP, el);
++					}
++					Interlocked.Increment(ref tickedP);
++					if (isCreature) Interlocked.Increment(ref creaturesTickedP);
++					else Interlocked.Increment(ref inanimateTickedP);
++				}
++			}
++			if (value.ShouldDespawn)
++			{
++				stratumEntityTickStates.TryRemove(value.EntityId, out _);
++				lock (despawnList) despawnList.Add(new KeyValuePair<Entity, EntityDespawnData>(value, value.DespawnReason));
++			}
++		}
++
++		try
++		{
++			Parallel.ForEach(regionList, po, (bucket) =>
++			{
++				try
++				{
++					for (int i = 0; i < bucket.Count; i++)
++					{
++						TickOne(bucket[i]);
++					}
++				}
++				catch (Exception e)
++				{
++					ServerMain.Logger.Error("Stratum region tick failed: {0}", e);
++				}
++			});
++		}
++		catch (AggregateException ae)
++		{
++			ServerMain.Logger.Error("Stratum parallel tick aggregate exception: {0}", ae);
++		}
++		// Tail: regions that didn't meet the parallelism threshold, on main thread.
++		foreach (Entity e in serialList) TickOne(e);
++
++		seen += seenP; ticked += tickedP; throttled += throttledP;
++		creaturesTicked += creaturesTickedP; inanimateTicked += inanimateTickedP; dimSkipped += dimSkippedP;
++		creatureTicks += creatureTicksP; inanimateTicks += inanimateTicksP;
++
++		ServerMain.FrameProfiler.Leave();
++
++		// Periodic summary of suppressed parallel-tick exceptions.
++		long failuresNow = Interlocked.Read(ref stratumParallelTickFailures);
++		if (failuresNow > 0)
++		{
++			long nowMs = Environment.TickCount64;
++			if (nowMs - stratumParallelTickFailuresLastReportMs >= 5000)
++			{
++				stratumParallelTickFailuresLastReportMs = nowMs;
++				long delta = Interlocked.Exchange(ref stratumParallelTickFailures, 0);
++				string sample = System.Threading.Interlocked.Exchange(ref stratumParallelTickFailureSample, null);
++				ServerMain.Logger.Warning("[Stratum] RegionTicking suppressed {0} entity tick exception(s) in the last 5s. Sample: {1}", delta, sample ?? "<n/a>");
++			}
++		}
++
++		StratumRuntime.PerformanceStats.RecordEntityTick(seen, ticked, throttled, playersTicked, creaturesTicked, inanimateTicked, dimSkipped);
++		StratumRuntime.Timings.RecordMeasuredTicks("entity.tick.players", playerTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("entity.tick.creatures", creatureTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("entity.tick.inanimate", inanimateTicks);
++		// Round-robin not applicable in parallel mode.
++		stratumCreatureRoundRobinCursor = 0;
++		if (recordCategoryTimings)
++		{
++			foreach (StratumEntityBehaviorTimings.Measurement measurement in StratumEntityBehaviorTimings.Drain())
++			{
++				StratumRuntime.Timings.RecordMeasuredTicks(measurement.Name, measurement.ElapsedTicks);
++			}
++		}
++	}
++
++	private void BuildStratumPlayerPositions()
++	{
++		stratumPlayerPositions.Clear();
++		int snapCount = 0;
++		foreach (ConnectedClient client in server.Clients.Values)
++		{
++			if (client.IsPlayingClient && client.Entityplayer != null)
++			{
++				stratumPlayerPositions.Add(client.Entityplayer.Pos);
++				snapCount++;
++			}
++		}
++		// Mirror into a compact struct array so the per-entity tier-tick loop reads cache-friendly
++		// value data instead of chasing into EntityPos objects (which have ~20 fields each).
++		if (stratumPlayerPosSnap.Length < snapCount)
++		{
++			stratumPlayerPosSnap = new StratumPlayerPosSnap[Math.Max(snapCount, stratumPlayerPosSnap.Length * 2)];
++		}
++		int i = 0;
++		foreach (EntityPos p in stratumPlayerPositions)
++		{
++			stratumPlayerPosSnap[i].X = p.X;
++			stratumPlayerPosSnap[i].Y = p.Y;
++			stratumPlayerPosSnap[i].Z = p.Z;
++			stratumPlayerPosSnap[i].Dimension = p.Dimension;
++			i++;
++		}
++		stratumPlayerPosSnapCount = snapCount;
++
++		// Cache squared distance thresholds & tick intervals once per tick instead of
++		// re-deriving them per entity inside GetStratumTierTickInterval.
++		StratumEntityTickingConfig cfg = StratumRuntime.Config.Performance.EntityTicking;
++		int near = Math.Max(0, cfg.NearDistanceBlocks);
++		int mid = Math.Max(near, cfg.MidDistanceBlocks);
++		int far = Math.Max(mid, cfg.FarEntityDistanceBlocks);
++		stratumNearSqCached = (double)near * near;
++		stratumMidSqCached = (double)mid * mid;
++		stratumFarSqCached = (double)far * far;
++		stratumMidTickIntervalCached = Math.Max(1, cfg.MidTickInterval);
++		stratumFarTickIntervalCached = Math.Max(1, cfg.FarEntityTickInterval);
++		stratumVeryFarTickIntervalCached = Math.Max(1, cfg.VeryFarTickInterval);
++
++		stratumAmbientTierEnabledCached = cfg.AmbientFaunaTierEnabled;
++		stratumAmbientMultiplierCached = Math.Max(1, cfg.AmbientFaunaTickMultiplier);
++		List<string> prefixSrc = cfg.AmbientFaunaCodePrefixes;
++		if (prefixSrc == null || prefixSrc.Count == 0)
++		{
++			stratumAmbientPrefixesCached = Array.Empty<string>();
++		}
++		else if (stratumAmbientPrefixesCached.Length != prefixSrc.Count)
++		{
++			stratumAmbientPrefixesCached = prefixSrc.ToArray();
++		}
++
++		stratumHardDespawnEnabledCached = cfg.HardDespawnEnabled;
++		int hardDist = Math.Max(32, cfg.HardDespawnDistanceBlocks);
++		stratumHardDespawnSqCached = (double)hardDist * hardDist;
++		stratumHardDespawnGraceSecondsCached = Math.Max(1, cfg.HardDespawnGracePeriodSeconds);
++		stratumHardDespawnExemptIfNamedCached = cfg.HardDespawnExemptIfNamed;
++		List<string> exemptSrc = cfg.HardDespawnExemptCodePrefixes;
++		if (exemptSrc == null || exemptSrc.Count == 0)
++		{
++			stratumHardDespawnExemptPrefixesCached = Array.Empty<string>();
++		}
++		else if (stratumHardDespawnExemptPrefixesCached.Length != exemptSrc.Count)
++		{
++			stratumHardDespawnExemptPrefixesCached = exemptSrc.ToArray();
++		}
++	}
++
++	// Returns true if the entity was marked for hard despawn this tick. Caller should add the
++	// entity to the per-tick despawn list and skip ticking. Safe to call from worker threads in
++	// the region-parallel path because each entity is owned by exactly one region bucket and the
++	// only mutated state is its own StratumEntityTickState entry plus its own ShouldDespawn/
++	// DespawnReason fields.
++	private bool EvaluateStratumHardDespawn(Entity entity, float dt, out EntityDespawnData reason)
++	{
++		reason = default;
++		if (!stratumHardDespawnEnabledCached) return false;
++		if (entity is EntityPlayer) return false;
++		if (!entity.IsCreature) return false;
++		if (entity.ShouldDespawn) return false;
++		if (stratumPlayerPosSnapCount == 0) return false; // no players online ╬ô├ç├╢ leave entities alone
++
++		string codePath = entity.Code?.Path;
++		if (codePath != null)
++		{
++			string[] prefixes = stratumHardDespawnExemptPrefixesCached;
++			for (int i = 0; i < prefixes.Length; i++)
++			{
++				if (codePath.StartsWith(prefixes[i], StringComparison.Ordinal)) return false;
++			}
++		}
++
++		if (stratumHardDespawnExemptIfNamedCached)
++		{
++			string named = entity.WatchedAttributes?.GetTreeAttribute("nametag")?.GetString("name");
++			if (!string.IsNullOrEmpty(named)) return false;
++		}
++
++		double ex = entity.Pos.X, ey = entity.Pos.Y, ez = entity.Pos.Z;
++		int ed = entity.Pos.Dimension;
++		double bestSq = double.MaxValue;
++		for (int i = 0; i < stratumPlayerPosSnapCount; i++)
++		{
++			ref StratumPlayerPosSnap p = ref stratumPlayerPosSnap[i];
++			if (p.Dimension != ed) continue;
++			double dx = p.X - ex, dy = p.Y - ey, dz = p.Z - ez;
++			double sq = dx * dx + dy * dy + dz * dz;
++			if (sq < bestSq) bestSq = sq;
++		}
++
++		if (bestSq <= stratumHardDespawnSqCached)
++		{
++			if (stratumEntityTickStates.TryGetValue(entity.EntityId, out StratumEntityTickState st0) && st0.FarSecondsAccumulated != 0f)
++			{
++				st0.FarSecondsAccumulated = 0f;
++			}
++			return false;
++		}
++
++		if (!stratumEntityTickStates.TryGetValue(entity.EntityId, out StratumEntityTickState st))
++		{
++			st = new StratumEntityTickState();
++			stratumEntityTickStates[entity.EntityId] = st;
++		}
++		st.FarSecondsAccumulated += dt;
++		if (st.FarSecondsAccumulated < stratumHardDespawnGraceSecondsCached) return false;
++
++		reason = new EntityDespawnData { Reason = EnumDespawnReason.Unload };
++		entity.DespawnReason = reason;
++		return true;
++	}
++
++	private bool ShouldThrottleStratumEntityTick(Entity entity, StratumEntityTickingConfig config, float dt, out float tickDeltaTime)
++	{
++		tickDeltaTime = dt;
++		if (!config.Enabled || entity is EntityPlayer || stratumPlayerPositions.Count == 0)
++		{
++			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			return false;
++		}
++
++		if ((entity.IsCreature && !config.ThrottleCreatures) || (!entity.IsCreature && !config.ThrottleInanimate))
++		{
++			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			return false;
++		}
++
++		if (config.SkipMovingEntities && IsStratumMovingEntity(entity, config.MovingEntitySpeedThreshold))
++		{
++			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			return false;
++		}
++
++		// Tiered ticking: pick interval based on distance to nearest player.
++		int tickInterval = GetStratumTierTickInterval(entity, config);
++
++		// Stratum ambient-fauna tier (Paper-style): cosmetic mobs like fish/butterflies/bees don't
++		// need 30Hz AI even when a player is right next to them. Multiplies the distance-band interval.
++		bool stratumIsAmbient = false;
++		if (stratumAmbientTierEnabledCached && entity.IsCreature && stratumAmbientPrefixesCached.Length > 0)
++		{
++			stratumEntityTickStates.TryGetValue(entity.EntityId, out StratumEntityTickState ambientState);
++			if (ambientState == null)
++			{
++				ambientState = new StratumEntityTickState();
++				stratumEntityTickStates[entity.EntityId] = ambientState;
++			}
++			if (!ambientState.AmbientResolved)
++			{
++				string codePath = entity.Code?.Path;
++				if (codePath != null)
++				{
++					string[] prefixes = stratumAmbientPrefixesCached;
++					for (int pi = 0; pi < prefixes.Length; pi++)
++					{
++						if (codePath.StartsWith(prefixes[pi], StringComparison.Ordinal))
++						{
++							ambientState.IsAmbient = true;
++							break;
++						}
++					}
++				}
++				ambientState.AmbientResolved = true;
++			}
++			stratumIsAmbient = ambientState.IsAmbient;
++			if (stratumIsAmbient)
++			{
++				tickInterval *= stratumAmbientMultiplierCached;
++			}
++		}
++
++		if (tickInterval <= 1)
++		{
++			// Keep state if we just cached the ambient resolution, otherwise we'd re-resolve every
++			// tick. State object is tiny; OnDespawn paths handle removal.
++			if (!stratumAmbientTierEnabledCached || !entity.IsCreature)
++			{
++				stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			}
++			return false;
++		}
++
++		if (!stratumEntityTickStates.TryGetValue(entity.EntityId, out StratumEntityTickState state))
++		{
++			state = new StratumEntityTickState();
++			stratumEntityTickStates[entity.EntityId] = state;
++		}
++
++		state.SkippedTicks++;
++		state.AccumulatedDeltaTime += dt;
++		if (state.SkippedTicks < tickInterval)
++		{
++			return true;
++		}
++
++		tickDeltaTime = state.AccumulatedDeltaTime;
++		state.SkippedTicks = 0;
++		state.AccumulatedDeltaTime = 0f;
++		return false;
++	}
++
++	private int GetStratumTierTickInterval(Entity entity, StratumEntityTickingConfig config)
++	{
++		// Hot path: ~4600 entities * tick. Read cached thresholds and use the value-snap array
++		// so the inner loop is dense doubles. Early-exit at "near" since result can't get tighter.
++		double nearSq = stratumNearSqCached;
++		double midSq = stratumMidSqCached;
++		double farSq = stratumFarSqCached;
++		StratumPlayerPosSnap[] snaps = stratumPlayerPosSnap;
++		int snapCount = stratumPlayerPosSnapCount;
++		EntityPos epos = entity.Pos;
++		double ex = epos.X, ey = epos.Y, ez = epos.Z;
++		int edim = epos.Dimension;
++		double nearestSq = double.MaxValue;
++		for (int i = 0; i < snapCount; i++)
++		{
++			ref StratumPlayerPosSnap p = ref snaps[i];
++			if (p.Dimension != edim) continue;
++			double dx = p.X - ex;
++			double dy = p.Y - ey;
++			double dz = p.Z - ez;
++			double dsq = dx * dx + dy * dy + dz * dz;
++			if (dsq < nearestSq)
++			{
++				nearestSq = dsq;
++				if (nearestSq <= nearSq)
++				{
++					return 1; // Already inside near band; result can't change.
++				}
++			}
++		}
++		if (nearestSq == double.MaxValue) return stratumVeryFarTickIntervalCached;
++		if (nearestSq <= midSq) return stratumMidTickIntervalCached;
++		if (nearestSq <= farSq) return stratumFarTickIntervalCached;
++		return stratumVeryFarTickIntervalCached;
++	}
++
++	private static bool IsStratumMovingEntity(Entity entity, double movingEntitySpeedThreshold)
++	{
++		Vec3d motion = entity.Pos.Motion;
++		double thresholdSquared = movingEntitySpeedThreshold * movingEntitySpeedThreshold;
++		return motion.X * motion.X + motion.Y * motion.Y + motion.Z * motion.Z > thresholdSquared;
++	}
++
++	private bool HasStratumNearbyPlayer(Entity entity, int distanceBlocks)
++	{
++		double distanceSquared = (double)distanceBlocks * distanceBlocks;
++		StratumPlayerPosSnap[] snaps = stratumPlayerPosSnap;
++		int snapCount = stratumPlayerPosSnapCount;
++		EntityPos epos = entity.Pos;
++		double ex = epos.X, ey = epos.Y, ez = epos.Z;
++		int edim = epos.Dimension;
++		for (int i = 0; i < snapCount; i++)
++		{
++			ref StratumPlayerPosSnap p = ref snaps[i];
++			if (p.Dimension != edim) continue;
++			double dx = p.X - ex;
++			double dy = p.Y - ey;
++			double dz = p.Z - ez;
++			if (dx * dx + dy * dy + dz * dz <= distanceSquared) return true;
++		}
++		return false;
+ 	}
+ 
+ 	private void HandleEntityInteraction(Packet_Client packet, ConnectedClient client)
+ 	{
+ 		ServerPlayer player = client.Player;
+ 		if (player.WorldData.CurrentGameMode == EnumGameMode.Spectator)
+ 		{
+ 			return;
+ 		}
+ 		Packet_EntityInteraction p = packet.EntityInteraction;
+-		Entity[] entitiesAround = server.GetEntitiesAround(player.Entity.Pos.XYZ, player.WorldData.PickingRange + 10f, player.WorldData.PickingRange + 10f, (Entity e) => e.EntityId == p.EntityId);
+-		if (entitiesAround == null || entitiesAround.Length == 0)
++		// Stratum: lookup by EntityId is O(1); the original spatial scan + filter walked all
++		// nearby entities just to find one by ID, then enforced range below anyway.
++		Entity entity = server.GetEntityById(p.EntityId);
++		if (entity == null)
+ 		{
+-			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found in his range!");
++			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found!");
++			return;
++		}
++		EntityPos playerPos = player.Entity.Pos;
++		double pickingRange = player.WorldData.PickingRange + 10f;
++		double entityDx = entity.Pos.X - playerPos.X;
++		double entityDz = entity.Pos.Z - playerPos.Z;
++		if (entityDx * entityDx + entityDz * entityDz > pickingRange * pickingRange)
++		{
++			ServerMain.Logger.Debug("HandleEntityInteraction from " + client.PlayerName + " rejected: entity " + p.EntityId + " not in range!");
+ 			return;
+ 		}
+-		Entity entity = entitiesAround[0];
+ 		Cuboidd cuboidd = entity.SelectionBox.ToDouble().Translate(entity.Pos.X, entity.Pos.Y, entity.Pos.Z);
+ 		EntityPos pos = client.Entityplayer.Pos;
+ 		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
+ 		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
+ 		double x = pos.X + client.Entityplayer.LocalEyePos.X;
+@@ -390,11 +1168,20 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 	{
+ 		if (deathMessagesCache == null)
+ 		{
+ 			GenDeathMessagesCache();
+ 		}
+-		List<ConnectedClient> list = server.Clients.Values.Where((ConnectedClient client) => client.State.ConnectedOrPlaying() && !client.Entityplayer.Alive && client.Entityplayer.DeadNotify).ToList();
++		List<ConnectedClient> list = stratumPlayerDeathNotifications;
++		list.Clear();
++		foreach (ConnectedClient client in server.Clients.Values)
++		{
++			if (client.State.ConnectedOrPlaying() && !client.Entityplayer.Alive && client.Entityplayer.DeadNotify)
++			{
++				list.Add(client);
++			}
++		}
++
+ 		if (list.Count == 0)
+ 		{
+ 			return;
+ 		}
+ 		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
+@@ -428,10 +1215,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 			else
+ 			{
+ 				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));
+ 			}
+ 		}
++		list.Clear();
+ 	}
+ 
+ 	private string GetDeathMessage(ConnectedClient client, DamageSource src)
+ 	{
+ 		if (src == null)

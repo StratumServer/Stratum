@@ -1,0 +1,44 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/StartServerArgs.cs b/VintagestoryLib/Vintagestory.Common/StartServerArgs.cs
+index 418a76c..cd2b7bb 100644
+--- a/VintagestoryLib/Vintagestory.Common/StartServerArgs.cs
++++ b/VintagestoryLib/Vintagestory.Common/StartServerArgs.cs
+@@ -1,7 +1,9 @@
+ using System.Collections.Generic;
++using System.Runtime.Serialization;
+ using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Datastructures;
+ 
+ namespace Vintagestory.Common;
+ 
+@@ -49,10 +51,28 @@ public class StartServerArgs
+ 
+ 	public string Language;
+ 
+ 	public bool IsNew;
+ 
++	public StartServerArgs()
++	{
++		NormalizeWorldConfiguration();
++	}
++
++	[OnDeserialized]
++	internal void OnDeserializedMethod(StreamingContext context)
++	{
++		NormalizeWorldConfiguration();
++	}
++
+ 	public StartServerArgs Clone()
+ 	{
+-		return (StartServerArgs)MemberwiseClone();
++		StartServerArgs clone = (StartServerArgs)MemberwiseClone();
++		clone.NormalizeWorldConfiguration();
++		return clone;
++	}
++
++	private void NormalizeWorldConfiguration()
++	{
++		WorldConfiguration ??= new JsonObject(JToken.Parse("{}"));
+ 	}
+ }

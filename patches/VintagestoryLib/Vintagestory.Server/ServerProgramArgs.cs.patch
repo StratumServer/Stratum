@@ -1,0 +1,53 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs b/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
+index 849be87..d129b0a 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
+@@ -5,11 +5,11 @@ using CommandLine.Text;
+ 
+ namespace Vintagestory.Server;
+ 
+ public class ServerProgramArgs
+ {
+-	[Option('v', "version", HelpText = "Print game version and exit")]
++	[Option('v', "version", HelpText = "Print Stratum and base game version information and exit")]
+ 	public bool PrintVersion { get; set; }
+ 
+ 	[Option('h', "help", HelpText = "Print help info and exit")]
+ 	public bool PrintHelp { get; set; }
+ 
+@@ -20,20 +20,20 @@ public class ServerProgramArgs
+ 	public bool TraceLog { get; set; }
+ 
+ 	[Option("append", HelpText = "Do not overwrite log files")]
+ 	public bool Append { get; set; }
+ 
+-	[Option("genconfig", HelpText = "Generate a new default serverconfig.json and exit. Warning, this deletes any existing config.")]
++	[Option("genconfig", HelpText = "Generate new default serverconfig.json and serverroles.json files and exit. Warning, this deletes any existing config.")]
+ 	public bool GenConfigAndExit { get; set; }
+ 
+-	[Option("setconfig", HelpText = "Set a config value and exit. Generates a serverconfig.json if it doesn't exist. Use the format --setconfig=\"{ key: 3, foo: 'value' }\"")]
++	[Option("setconfig", HelpText = "Set a serverconfig.json value and exit. Generates config files if they don't exist. Use the format --setconfig=\"{ key: 3, foo: 'value' }\"")]
+ 	public string SetConfigAndExit { get; set; }
+ 
+ 	[Option("withconfig", HelpText = "Can be used to override any config value. Launches the server. Use the format --withconfig=\"{ key: 3, foo: 'value' }\"")]
+ 	public string WithConfig { get; set; }
+ 
+-	[Option("dataPath", HelpText = "Set a custom data path, default is Environment.SpecialFolder.ApplicationData")]
++	[Option("dataPath", HelpText = "Set a custom data path. Stratum defaults to the local Data folder when omitted.")]
+ 	public string DataPath { get; set; }
+ 
+ 	[Option("logPath", HelpText = "Default logs folder is in dataPath/Logs/. This option can only set an absolute path.")]
+ 	public string LogPath { get; set; }
+ 
+@@ -62,9 +62,10 @@ public class ServerProgramArgs
+ 	public int ArchiveLogFileMaxSizeMb { get; set; } = 1024;
+ 
+ 	public string GetUsage(ParserResult<ServerProgramArgs> parser)
+ 	{
+ 		HelpText obj = HelpText.AutoBuild<ServerProgramArgs>(parser, (Func<HelpText, HelpText>)((HelpText h) => h), (Func<Example, Example>)((Example e) => e), false, 80);
+-		obj.Heading = "Vintage Story Server 1.22.3";
++		obj.Heading = StratumInfo.FullName + " server (Vintage Story " + StratumInfo.BaseGameVersion + ")";
++		obj.Copyright = string.Empty;
+ 		return ((object)obj).ToString();
+ 	}
+ }

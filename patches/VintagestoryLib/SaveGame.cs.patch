@@ -1,0 +1,17 @@
+diff --git a/VintagestoryLib/SaveGame.cs b/VintagestoryLib/SaveGame.cs
+index fb5472f..2d9b1e9 100644
+--- a/VintagestoryLib/SaveGame.cs
++++ b/VintagestoryLib/SaveGame.cs
+@@ -254,11 +254,11 @@ public class SaveGame : ISaveGame
+ 	public static void SetNewWorldConfig(SaveGame savegame, ServerMain server)
+ 	{
+ 		ServerConfig config = server.Config;
+ 		WorldConfig worldConfig = new WorldConfig(server.Api.ModLoader.Mods.Select((Mod m) => (ModContainer)m).ToList());
+ 		worldConfig.selectPlayStyle(server.Config.WorldConfig.PlayStyle);
+-		if (config.WorldConfig.WorldConfiguration.Token.HasValues)
++		if (config.WorldConfig.WorldConfiguration?.Token?.HasValues == true)
+ 		{
+ 			Dictionary<string, WorldConfigurationValue> dictionary = new Dictionary<string, WorldConfigurationValue>();
+ 			worldConfig.loadWorldConfigValues(config.WorldConfig.WorldConfiguration, dictionary);
+ 			worldConfig.updateJWorldConfigFrom(dictionary);
+ 		}

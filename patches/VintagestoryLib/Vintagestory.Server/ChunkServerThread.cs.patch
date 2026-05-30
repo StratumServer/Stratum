@@ -1,0 +1,67 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
+index ee7d12d..07e051a 100644
+--- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
++++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
+@@ -12,10 +12,12 @@ namespace Vintagestory.Server;
+ 
+ public class ChunkServerThread : ServerThread, IChunkProvider
+ {
+ 	internal GameDatabase gameDatabase;
+ 
++	internal StratumChunkReadPool stratumReadPool;
++
+ 	internal ConcurrentIndexedFifoQueue<ChunkColumnLoadRequest> requestedChunkColumns;
+ 
+ 	internal IndexedFifoQueue<ChunkColumnLoadRequest> peekingChunkColumns;
+ 
+ 	internal Dictionary<long, ServerMapRegion> peekingMapRegions = new Dictionary<long, ServerMapRegion>(8);
+@@ -101,15 +103,21 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 		return peekingChunkColumns.GetByIndex(index);
+ 	}
+ 
+ 	internal ServerChunk GetGeneratingChunk(int chunkX, int chunkY, int chunkZ)
+ 	{
++		if (chunkY < 0)
++		{
++			return null;
++		}
++
+ 		long index = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
+ 		ChunkColumnLoadRequest chunkColumnLoadRequest = (peekMode ? peekingChunkColumns.GetByIndex(index) : requestedChunkColumns.GetByIndex(index));
+-		if (chunkColumnLoadRequest != null && chunkColumnLoadRequest.CurrentIncompletePass > EnumWorldGenPass.None && chunkY >= 0 && chunkY < chunkColumnLoadRequest.Chunks.Length)
++		ServerChunk[] chunks = chunkColumnLoadRequest?.Chunks;
++		if (chunks != null && chunkY < chunks.Length && chunkColumnLoadRequest.CurrentIncompletePass_AsInt > 0)
+ 		{
+-			return chunkColumnLoadRequest.Chunks[chunkY];
++			return chunks[chunkY];
+ 		}
+ 		return null;
+ 	}
+ 
+ 	internal ServerMapChunk GetMapChunk(long index2d)
+@@ -143,11 +151,11 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 	IWorldChunk IChunkProvider.GetUnpackedChunkFast(int chunkX, int chunkY, int chunkZ, bool notRecentlyAccessed)
+ 	{
+ 		ServerChunk generatingChunk = GetGeneratingChunk(chunkX, chunkY, chunkZ);
+ 		if (generatingChunk != null)
+ 		{
+-			((IWorldChunk)generatingChunk).Unpack();
++			generatingChunk.Unpack();
+ 			return generatingChunk;
+ 		}
+ 		return generatingChunk;
+ 	}
+ 
+@@ -193,11 +201,11 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 		server.loadedMapChunks.TryGetValue(index2d, out var value);
+ 		if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
+ 		{
+ 			return true;
+ 		}
+-		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, (long index2d2) => new ChunkColumnLoadRequest(index2d2, chunkX, chunkZ, server.serverConsoleId, -1, server));
++		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, static (index2d2, state) => new ChunkColumnLoadRequest(index2d2, state.chunkX, state.chunkZ, state.server.serverConsoleId, -1, state.server), (chunkX, chunkZ, server));
+ 		if (orAdd.CurrentIncompletePass_AsInt < minPass)
+ 		{
+ 			if (orAdd.untilPass < minPass)
+ 			{
+ 				if (orAdd.untilPass < 0)

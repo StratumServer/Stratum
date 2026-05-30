@@ -1,0 +1,98 @@
+diff --git a/VSEssentials/Systems/WorldMap/EntityLayer/SystemRemotePlayerTracking.cs b/VSEssentials/Systems/WorldMap/EntityLayer/SystemRemotePlayerTracking.cs
+index 95d7ca4..e472518 100644
+--- a/VSEssentials/Systems/WorldMap/EntityLayer/SystemRemotePlayerTracking.cs
++++ b/VSEssentials/Systems/WorldMap/EntityLayer/SystemRemotePlayerTracking.cs
+@@ -128,18 +128,39 @@ namespace Vintagestory.GameContent
+             ((IServerNetworkChannel)channel).SendPacket(packet, player); // Always track the  client player
+ 
+             // We only show the player to themselves if they're in spectator mode or hide other players is on
+             if (api.World.Config.GetBool("mapHideOtherPlayers") || player.WorldData.CurrentGameMode == EnumGameMode.Spectator)
+             {
++                // Even when globally hidden, a server-side disclosure hook can still allow specific
++                // receivers (e.g. staff, group members) to see the pin.
++                if (PlayerMapDisclosureHook.AllowMapPinDisclosure != null)
++                {
++                    foreach (var playerToReceive in api.World.AllOnlinePlayers.Cast<IServerPlayer>())
++                    {
++                        if (playerToReceive.PlayerUID == player.PlayerUID) continue;
++                        bool? allow = PlayerMapDisclosureHook.AllowMapPinDisclosure(player, playerToReceive);
++                        if (allow == true)
++                        {
++                            ((IServerNetworkChannel)channel).SendPacket(MaybeSnap(packet, player, playerToReceive), playerToReceive);
++                        }
++                        else
++                        {
++                            ((IServerNetworkChannel)channel).SendPacket(despawnPacket, playerToReceive);
++                        }
++                    }
++                    return;
++                }
++
+                 ((IServerNetworkChannel)channel).BroadcastPacket(despawnPacket, player);
+                 return;
+             }
+ 
+             double playerRenderDistance = api.World.Config.GetFloat("mapPlayerRenderDistance", 1000);
+ 
+-            if (playerRenderDistance < 0) // We know that all players will see this player
++            if (playerRenderDistance < 0 && PlayerMapDisclosureHook.AllowMapPinDisclosure == null)
+             {
++                // We know that all players will see this player and no hook is registered.
+                 ((IServerNetworkChannel)channel).BroadcastPacket(packet, player);
+                 return;
+             }
+ 
+             int[] ourGroups = player.Groups.Select(group => group.GroupUid).ToArray();
+@@ -147,22 +168,48 @@ namespace Vintagestory.GameContent
+ 
+             foreach (var playerToReceive in api.World.AllOnlinePlayers.Cast<IServerPlayer>())
+             {
+                 if (playerToReceive.PlayerUID == player.PlayerUID) continue;
+ 
+-                // Check whether the player who will receive the packet can track this player
+-                if (playerToReceive.Entity?.Pos.HorDistanceTo(playerPos) <= playerRenderDistance ||
+-                    (shouldCheckGroups && playerToReceive.Groups.Any(group => ourGroups.Contains(group.GroupUid))))
++                bool? hookDecision = PlayerMapDisclosureHook.AllowMapPinDisclosure?.Invoke(player, playerToReceive);
++                if (hookDecision == false)
+                 {
+-                    ((IServerNetworkChannel)channel).SendPacket(packet, playerToReceive);
++                    ((IServerNetworkChannel)channel).SendPacket(despawnPacket, playerToReceive);
++                    continue;
++                }
++
++                bool defaultAllow =
++                    playerRenderDistance < 0
++                    || playerToReceive.Entity?.Pos.HorDistanceTo(playerPos) <= playerRenderDistance
++                    || (shouldCheckGroups && playerToReceive.Groups.Any(group => ourGroups.Contains(group.GroupUid)));
++
++                if (hookDecision == true || defaultAllow)
++                {
++                    ((IServerNetworkChannel)channel).SendPacket(MaybeSnap(packet, player, playerToReceive), playerToReceive);
+                     continue;
+                 }
+ 
+                 ((IServerNetworkChannel)channel).SendPacket(despawnPacket, playerToReceive);
+             }
+         }
+ 
++        private static PacketPlayerPosition MaybeSnap(PacketPlayerPosition packet, IServerPlayer sender, IServerPlayer receiver)
++        {
++            int? snap = PlayerMapDisclosureHook.CoordinateSnap?.Invoke(sender, receiver);
++            if (snap == null || snap.Value <= 0) return packet;
++
++            int grid = snap.Value;
++            return new PacketPlayerPosition
++            {
++                PlayerUid = packet.PlayerUid,
++                PosX = System.Math.Floor(packet.PosX / grid) * grid + grid / 2.0,
++                PosZ = System.Math.Floor(packet.PosZ / grid) * grid + grid / 2.0,
++                Yaw = packet.Yaw,
++                Despawn = packet.Despawn
++            };
++        }
++
+         private void ServerEvent_PlayerJoin(IServerPlayer byPlayer)
+         {
+             playerQueue.Enqueue(byPlayer);
+         }
+ 

@@ -1,0 +1,22 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/CmdPlayer.cs b/VintagestoryLib/Vintagestory.Server/CmdPlayer.cs
+index 8af710f..48cc033 100644
+--- a/VintagestoryLib/Vintagestory.Server/CmdPlayer.cs
++++ b/VintagestoryLib/Vintagestory.Server/CmdPlayer.cs
+@@ -821,10 +821,17 @@ public class CmdPlayer : ServerSystem
+ 		{
+ 			server.SendOwnPlayerData(clientByPlayername.Player, sendInventory: false, sendPrivileges: true);
+ 			string message = ((playerRole.PrivilegeLevel > playerRole2.PrivilegeLevel) ? Lang.Get("You've been promoted to role {0}", playerRole.Name) : Lang.Get("You've been demoted to role {0}", playerRole.Name));
+ 			server.SendMessage(clientByPlayername.Player, GlobalConstants.CurrentChatGroup, message, EnumChatType.Notification);
+ 			server.SendRoles(clientByPlayername.Player);
++
++			// Stratum: refresh nametag prefix + entitlement-colour for the new role and re-broadcast
++			// player data so other connected clients repaint the tag without needing to reconnect.
++			if (StratumNametags.RefreshFor(clientByPlayername.Player))
++			{
++				server.BroadcastPlayerData(clientByPlayername.Player, sendInventory: false, sendPrivileges: false);
++			}
+ 		}
+ 		return TextCommandResult.Success(Lang.Get("Ok, role {0} assigned to {1}", playerRole.Name, targetPlayer.Name));
+ 	}
+ 
+ 	private TextCommandResult removeDenyPrivilege(PlayerUidName targetPlayer, TextCommandCallingArgs args)

@@ -1,0 +1,17 @@
+diff --git a/VintagestoryApi/Common/Entity/EntityAgent.cs b/VintagestoryApi/Common/Entity/EntityAgent.cs
+index dba29eb..2ad23f4 100644
+--- a/VintagestoryApi/Common/Entity/EntityAgent.cs
++++ b/VintagestoryApi/Common/Entity/EntityAgent.cs
+@@ -733,11 +733,11 @@ namespace Vintagestory.API.Common
+                         Pos.Pitch = 0;
+                     }
+                 }
+             }
+ 
+-            World.FrameProfiler.Mark("entityAgent-ticking");
++            World?.FrameProfiler?.Mark("entityAgent-ticking");
+             base.OnGameTick(dt);
+         }
+ 
+ 
+         protected virtual void SpawnSnowStepParticles()

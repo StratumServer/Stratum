@@ -1,0 +1,38 @@
+diff --git a/VSEssentials/Entity/AI/TasksRefactored/AiTaskBase.cs b/VSEssentials/Entity/AI/TasksRefactored/AiTaskBase.cs
+index 9c21f1b..4177f14 100644
+--- a/VSEssentials/Entity/AI/TasksRefactored/AiTaskBase.cs
++++ b/VSEssentials/Entity/AI/TasksRefactored/AiTaskBase.cs
+@@ -232,20 +232,10 @@ public class AiTaskBaseConfig
+     /// Maximum duration after which task will be stopped if has not been stopped already.<br/>
+     /// If less or equal to 0, duration will be ignored.
+     /// </summary>
+     [JsonProperty] public int MaxDurationMs = 0;
+ 
+-    /// <summary>
+-    /// If set, checks if the entity is at least this domesticated generation
+-    /// </summary>
+-    [JsonProperty] public int? MinGeneration;
+-
+-    /// <summary>
+-    /// If set, checks if the entity is not higher than this domesticated generation
+-    /// </summary>
+-    [JsonProperty] public int? MaxGeneration;
+-
+     /// <summary>
+     /// Determines how long ago last attack should be for this task to consider being recently attacked.<br/>
+     /// Is used to clear attacked-by entity.
+     /// </summary>
+     [JsonProperty] public int RecentlyAttackedTimeoutMs = 30000;
+@@ -635,12 +625,10 @@ public abstract class AiTaskBaseR : IAiTask
+         if (!CheckExecutionChance()) return false;
+         if (!CheckCooldowns()) return false;
+         if (!CheckEntityState()) return false;
+         if (!CheckEmotionStates()) return false;
+         if (!CheckEntityLightLevel()) return false;
+-        if (Config.MinGeneration != null && entity.WatchedAttributes.GetInt("generation") < Config.MinGeneration) return false;
+-        if (Config.MaxGeneration != null && entity.WatchedAttributes.GetInt("generation") > Config.MaxGeneration) return false;
+ 
+         currentDayTimeInaccuracy = (float)entity.World.Rand.NextDouble() * Config.DayTimeFrameInaccuracy - Config.DayTimeFrameInaccuracy / 2;
+ 
+         if (!CheckDayTimeFrames()) return false;
+         if (!CheckTemperature()) return false;

@@ -1,0 +1,1083 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
+index 2c2605d..808d701 100644
+--- a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
++++ b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
+@@ -101,10 +101,23 @@ public class PhysicsManager : LoadBalancedTask
+ 			}
+ 			return true;
+ 		}
+ 	}
+ 
++	private readonly struct PreparedStateChangePacket
++	{
++		public readonly byte[] PacketBytes;
++
++		public readonly bool Compressed;
++
++		public PreparedStateChangePacket(byte[] packetBytes, bool compressed)
++		{
++			PacketBytes = packetBytes;
++			Compressed = compressed;
++		}
++	}
++
+ 	private const int HiResTrackingRange = 2500;
+ 
+ 	public const float AttributesToClientsInterval = 0.2f;
+ 
+ 	private const int firstTick = 1;
+@@ -133,10 +146,18 @@ public class PhysicsManager : LoadBalancedTask
+ 
+ 	private float physicsTickAccum;
+ 
+ 	private float attrUpdateAccum;
+ 
++	private long stratumLastStateUpdateMs;
++
++	private long stratumLastTickablesLogMs;
++
++	private int stratumParallelHits;
++
++	private int stratumSerialHits;
++
+ 	private readonly List<IPhysicsTickable> tickables = new List<IPhysicsTickable>();
+ 
+ 	private ServerSystemEntitySimulation es;
+ 
+ 	private List<Packet_EntityAttributes> cliententitiesFullUpdate = new List<Packet_EntityAttributes>();
+@@ -157,10 +178,16 @@ public class PhysicsManager : LoadBalancedTask
+ 
+ 	private ConcurrentDictionary<long, EntityTagPacket> entitiesTagPackets;
+ 
+ 	private FastMemoryStream[] entitiesUpdateReusableBuffers;
+ 
++	private List<Packet_EntityPosition>[] clientPositionUpdates;
++
++	private List<AnimationPacket>[] clientAnimationUpdates;
++
++	private List<EntityTagPacket>[] clientTagUpdates;
++
+ 	private double[] positions = new double[3];
+ 
+ 	private readonly EntityDespawnData outofRangeDespawnData = new EntityDespawnData
+ 	{
+ 		Reason = EnumDespawnReason.OutOfRange
+@@ -168,12 +195,34 @@ public class PhysicsManager : LoadBalancedTask
+ 
+ 	private List<long> alreadyTracked = new List<long>();
+ 
+ 	private List<Entity> newlyTracked = new List<Entity>();
+ 
++	private readonly List<Entity> priorityEntitySpawnList = new List<Entity>(1);
++
++	private readonly List<AnimationPacket> stateChangeAnimationPackets = new List<AnimationPacket>();
++
++	private readonly List<Packet_Entity> stateChangeEntityPackets = new List<Packet_Entity>();
++
++	private readonly Dictionary<long, Packet_Entity> stateChangeEntityPacketCache = new Dictionary<long, Packet_Entity>();
++
++	private readonly Dictionary<long, PreparedStateChangePacket> stateChangePlayerDataPacketCache = new Dictionary<long, PreparedStateChangePacket>();
++
++	private readonly Dictionary<long, AnimationPacket> stateChangeAnimationPacketCache = new Dictionary<long, AnimationPacket>();
++
++	private readonly BoxedPacket stateChangeSerializedPacket = new BoxedPacket();
++
++	private readonly FastMemoryStream stateChangeEntityBuffer = new FastMemoryStream();
++
++	private readonly BinaryWriter stateChangeEntityWriter;
++
+ 	private List<ConnectedClient> ClientList;
+ 
++	private readonly FastMemoryStream nonTickableAttributeBuffer = new FastMemoryStream(64);
++
++	private readonly Action sendAttributesTask;
++
+ 	private ConcurrentBag<Entity> stateChanges = new ConcurrentBag<Entity>();
+ 
+ 	private PhysicsOffthreadTasks offthreadProcess;
+ 
+ 	private int currentTick;
+@@ -184,24 +233,46 @@ public class PhysicsManager : LoadBalancedTask
+ 
+ 	public PhysicsManager(ICoreServerAPI sapi, ServerUdpNetwork udpNetwork)
+ 	{
+ 		this.sapi = sapi;
+ 		this.udpNetwork = udpNetwork;
++		stateChangeEntityWriter = new BinaryWriter(stateChangeEntityBuffer);
++		sendAttributesTask = SendAttributesForCurrentClientList;
+ 		AnimationsAndTagsChannel = sapi.Network.RegisterChannel("EntityAnims");
+ 		AnimationsAndTagsChannel.RegisterMessageType<AnimationPacket>().RegisterMessageType<BulkAnimationPacket>().RegisterMessageType<EntityTagPacket>();
+-		maxPhysicsThreads = Math.Clamp(MagicNum.MaxPhysicsThreads, 1, 8);
+-		if (sapi.Server.ReducedServerThreads)
++		int stratumPhysicsMaxThreads = StratumRuntime.Config.Performance.Physics.MaxThreadsOverride;
++		int baseMaxPhysicsThreads;
++		if (stratumPhysicsMaxThreads > 0)
+ 		{
++			// Explicit override wins -- ignore both MagicNum (which is 1) and ReducedServerThreads.
++			baseMaxPhysicsThreads = stratumPhysicsMaxThreads;
++		}
++		else
++		{
++			// MagicNum.MaxPhysicsThreads is 1 in vanilla. Use a sensible Stratum default instead:
++			// up to 4, but never more than ProcessorCount - 1, and at least 2 on multicore boxes.
++			int cpus = Math.Max(1, Environment.ProcessorCount);
++			baseMaxPhysicsThreads = Math.Clamp(cpus - 1, 2, 4);
++			if (cpus <= 2) baseMaxPhysicsThreads = 1;
++		}
++		maxPhysicsThreads = Math.Clamp(baseMaxPhysicsThreads, 1, 8);
++		if (sapi.Server.ReducedServerThreads && stratumPhysicsMaxThreads <= 0)
++		{
++			// Honour --reducedthreads only when there's no explicit Stratum override.
+ 			maxPhysicsThreads = 1;
+ 		}
++		ServerMain.Logger.Notification("[Stratum] PhysicsManager init: maxThreads=" + maxPhysicsThreads + " (override=" + stratumPhysicsMaxThreads + ", reducedThreads=" + sapi.Server.ReducedServerThreads + ", cpus=" + Environment.ProcessorCount + ")");
+ 		entitiesFullUpdate = new Dictionary<long, Packet_EntityAttributes>[maxPhysicsThreads];
+ 		entitiesPartialUpdate = new Dictionary<long, Packet_EntityAttributeUpdate>[maxPhysicsThreads];
+ 		entitiesDebugUpdate = new Dictionary<long, Packet_EntityAttributes>[maxPhysicsThreads];
+ 		entitiesPositionPackets = new Dictionary<long, Packet_EntityPosition>[maxPhysicsThreads];
+ 		entitiesAnimPackets = new Dictionary<long, AnimationPacket>[maxPhysicsThreads];
+ 		entitiesTagPackets = new ConcurrentDictionary<long, EntityTagPacket>(maxPhysicsThreads, 32);
+ 		entitiesUpdateReusableBuffers = new FastMemoryStream[maxPhysicsThreads];
++		clientPositionUpdates = new List<Packet_EntityPosition>[maxPhysicsThreads];
++		clientAnimationUpdates = new List<AnimationPacket>[maxPhysicsThreads];
++		clientTagUpdates = new List<EntityTagPacket>[maxPhysicsThreads];
+ 		for (int i = 0; i < entitiesFullUpdate.Length; i++)
+ 		{
+ 			entitiesFullUpdate[i] = new Dictionary<long, Packet_EntityAttributes>();
+ 		}
+ 		for (int j = 0; j < entitiesPartialUpdate.Length; j++)
+@@ -221,10 +292,13 @@ public class PhysicsManager : LoadBalancedTask
+ 			entitiesAnimPackets[m] = new Dictionary<long, AnimationPacket>();
+ 		}
+ 		for (int n = 0; n < entitiesUpdateReusableBuffers.Length; n++)
+ 		{
+ 			entitiesUpdateReusableBuffers[n] = new FastMemoryStream();
++			clientPositionUpdates[n] = new List<Packet_EntityPosition>();
++			clientAnimationUpdates[n] = new List<AnimationPacket>();
++			clientTagUpdates[n] = new List<EntityTagPacket>();
+ 		}
+ 		server = sapi.World as ServerMain;
+ 		loadBalancer = new LoadBalancer(this, ServerMain.Logger);
+ 		loadBalancer.CreateDedicatedThreads(maxPhysicsThreads, "physicsManager", server.Serverthreads);
+ 		offthreadProcess = new PhysicsOffthreadTasks(this);
+@@ -251,13 +325,25 @@ public class PhysicsManager : LoadBalancedTask
+ 		attrUpdateAccum = 0.2f;
+ 	}
+ 
+ 	public void ServerTick(float dt)
+ 	{
++		long stratumPhysicsTimingStart = StratumRuntime.Timings.GetTimestamp();
++		long stratumSectionTimingStart = stratumPhysicsTimingStart;
++		bool stratumRecordBehaviorTimings = StratumRuntime.Timings.Enabled;
++		StratumEntityBehaviorTimings.SetEnabled(stratumRecordBehaviorTimings);
++		StratumPhysicsConfig stratumPhysics = StratumRuntime.Config.Performance.Physics;
++		int stratumMaxPhysicsTicksPerServerTick = stratumPhysics.Enabled ? stratumPhysics.MaxCatchUpTicksPerServerTick : int.MaxValue;
++		bool stratumOverloadedTick = stratumPhysics.Enabled && dt * 1000f >= stratumPhysics.OverloadedTickThresholdMs;
++		StratumRuntime.PreviousTickOverloaded = stratumOverloadedTick;
++		if (stratumOverloadedTick)
++		{
++			stratumMaxPhysicsTicksPerServerTick = Math.Min(stratumMaxPhysicsTicksPerServerTick, stratumPhysics.OverloadedMaxCatchUpTicksPerServerTick);
++		}
+ 		ServerMain.FrameProfiler.Enter("physicsmanager-servertick");
+ 		IPhysicsTickable result;
+-		while (!toAdd.IsEmpty && toAdd.TryDequeue(out result))
++		while (toAdd.TryDequeue(out result))
+ 		{
+ 			if (result != null && result.Entity != null)
+ 			{
+ 				if (result.Entity.ServerBehaviorsThreadsafe == null)
+ 				{
+@@ -268,11 +354,11 @@ public class PhysicsManager : LoadBalancedTask
+ 					tickables.Add(result);
+ 				}
+ 			}
+ 		}
+ 		IPhysicsTickable result2;
+-		while (!toRemove.IsEmpty && toRemove.TryDequeue(out result2))
++		while (toRemove.TryDequeue(out result2))
+ 		{
+ 			if (result2 != null)
+ 			{
+ 				tickables.Remove(result2);
+ 			}
+@@ -287,30 +373,81 @@ public class PhysicsManager : LoadBalancedTask
+ 				ServerMain.Logger.Warning("Over 400ms tick. Skipping {0} physics ticks.", num);
+ 			}
+ 			physicsTickAccum %= 0.4f;
+ 		}
+ 		ServerMain.FrameProfiler.Mark("physicsmanager-preparation");
+-		ticksToDo = (int)(physicsTickAccum / (1f / 30f));
+-		physicsTickAccum -= (float)ticksToDo * (1f / 30f);
++		StratumRuntime.Timings.RecordElapsed("physics.prepare", stratumSectionTimingStart);
++		float stratumPhysicsStep = 1f / 30f;
++		int stratumRequestedPhysicsTicks = (int)(physicsTickAccum / stratumPhysicsStep);
++		if (stratumRequestedPhysicsTicks > stratumMaxPhysicsTicksPerServerTick)
++		{
++			ticksToDo = stratumMaxPhysicsTicksPerServerTick;
++			physicsTickAccum = 0f;
++		}
++		else
++		{
++			ticksToDo = stratumRequestedPhysicsTicks;
++			physicsTickAccum -= (float)ticksToDo * stratumPhysicsStep;
++		}
++		stratumSectionTimingStart = StratumRuntime.Timings.GetTimestamp();
+ 		long num2 = Environment.TickCount + 1000;
+ 		while (offthreadProcess.Busy() && Environment.TickCount < num2)
+ 		{
+ 			Thread.Sleep(0);
+ 		}
+ 		ServerMain.FrameProfiler.Mark("physicsmanager-waitingOnPreviousTick");
++		StratumRuntime.Timings.RecordElapsed("physics.waitPrevious", stratumSectionTimingStart);
++		stratumSectionTimingStart = StratumRuntime.Timings.GetTimestamp();
+ 		BuildClientList(server.Clients.Values);
+ 		attrUpdateAccum += dt;
+-		if (attrUpdateAccum >= 0.2f)
++		bool stratumDoStateUpdate = false;
++		if (attrUpdateAccum >= AttributesToClientsInterval)
+ 		{
+-			attrUpdateAccum = 0f;
++			stratumDoStateUpdate = true;
++			int stratumMinimumStateUpdateIntervalMs = stratumPhysics.Enabled ? stratumPhysics.MinimumStateUpdateIntervalMs : 0;
++			if (stratumOverloadedTick)
++			{
++				stratumMinimumStateUpdateIntervalMs = Math.Max(stratumMinimumStateUpdateIntervalMs, stratumPhysics.OverloadedStateUpdateIntervalMs);
++			}
++			if (stratumMinimumStateUpdateIntervalMs > 0)
++			{
++				long nowMs = Environment.TickCount64;
++				if (stratumLastStateUpdateMs != 0L && nowMs - stratumLastStateUpdateMs < stratumMinimumStateUpdateIntervalMs)
++				{
++					stratumDoStateUpdate = false;
++				}
++				else
++				{
++					stratumLastStateUpdateMs = nowMs;
++				}
++			}
++
++			if (stratumDoStateUpdate)
++			{
++				attrUpdateAccum = 0f;
++			}
+ 		}
+ 		ServerMain.FrameProfiler.Mark("physicsmanager-buildclientlist");
++		StratumRuntime.Timings.RecordElapsed("physics.buildClientList", stratumSectionTimingStart);
+ 		int num3 = 1;
+ 		if (ticksToDo > 0)
+ 		{
++			stratumSectionTimingStart = StratumRuntime.Timings.GetTimestamp();
+ 			stateChanges.Clear();
+-			if (tickables.Count > 800 && maxPhysicsThreads > 1)
++			bool stratumGoParallel = tickables.Count > StratumRuntime.Config.Performance.Physics.ParallelThreshold && maxPhysicsThreads > 1;
++			if (stratumGoParallel) stratumParallelHits++; else stratumSerialHits++;
++			{
++				long stratumNowMs = Environment.TickCount64;
++				if (stratumLastTickablesLogMs == 0L || stratumNowMs - stratumLastTickablesLogMs > 30000L)
++				{
++					stratumLastTickablesLogMs = stratumNowMs;
++					ServerMain.Logger.Notification("[Stratum] PhysicsManager tickables=" + tickables.Count + " threshold=" + StratumRuntime.Config.Performance.Physics.ParallelThreshold + " maxThreads=" + maxPhysicsThreads + " parallel/serial last30s=" + stratumParallelHits + "/" + stratumSerialHits);
++					stratumParallelHits = 0;
++					stratumSerialHits = 0;
++				}
++			}
++			if (stratumGoParallel)
+ 			{
+ 				num3 = maxPhysicsThreads;
+ 				loadBalancer.SynchroniseWorkToMainThread(this);
+ 				loadBalancer.AwaitCompletionOnAllThreads(num3);
+ 				ServerMain.FrameProfiler.Mark("physicsmanager-waitingForSlowestThread");
+@@ -341,26 +478,31 @@ public class PhysicsManager : LoadBalancedTask
+ 				{
+ 					ServerMain.Logger.Error(e);
+ 				}
+ 			}
+ 			ServerMain.FrameProfiler.Mark("physicsmanager-afterphysicstick");
++			StratumRuntime.Timings.RecordElapsed("physics.tickWork", stratumSectionTimingStart);
+ 		}
+-		SendPositionsForNonTickableEntities(attrUpdateAccum == 0f);
++		stratumSectionTimingStart = StratumRuntime.Timings.GetTimestamp();
++		SendPositionsForNonTickableEntities(stratumDoStateUpdate);
+ 		ServerMain.FrameProfiler.Mark("physicsmanager-nontickables");
+-		if (attrUpdateAccum == 0f)
++		StratumRuntime.Timings.RecordElapsed("physics.nonTickables", stratumSectionTimingStart);
++		if (stratumDoStateUpdate)
+ 		{
++			stratumSectionTimingStart = StratumRuntime.Timings.GetTimestamp();
+ 			foreach (ConnectedClient client in ClientList)
+ 			{
+ 				UpdateTrackedEntityLists(client, num3);
+ 			}
+ 			ServerMain.FrameProfiler.Mark("physicsmanager-updatetrackedentitylists");
++			StratumRuntime.Timings.RecordElapsed("physics.updateTrackedLists", stratumSectionTimingStart);
++			stratumSectionTimingStart = StratumRuntime.Timings.GetTimestamp();
+ 			SendTrackedEntitiesStateChanges();
+-			offthreadProcess.QueueAsyncTask(delegate
+-			{
+-				SendAttributesViaTCP(ClientList);
+-			});
++			StratumRuntime.Timings.RecordElapsed("physics.sendStateChanges", stratumSectionTimingStart);
++			offthreadProcess.QueueAsyncTask(sendAttributesTask);
+ 		}
++		stratumSectionTimingStart = StratumRuntime.Timings.GetTimestamp();
+ 		Entity[] spawnsToSend = null;
+ 		int num4 = 0;
+ 		lock (server.EntitySpawnSendQueue)
+ 		{
+ 			List<Entity> entitySpawnSendQueue = server.EntitySpawnSendQueue;
+@@ -398,16 +540,31 @@ public class PhysicsManager : LoadBalancedTask
+ 					ServerMain.spawnSendQueue--;
+ 				});
+ 			}
+ 			ServerMain.FrameProfiler.Mark("physicsmanager-sendspawns");
+ 		}
++		StratumRuntime.Timings.RecordElapsed("physics.sendSpawns", stratumSectionTimingStart);
++		if (stratumRecordBehaviorTimings)
++		{
++			foreach (StratumEntityBehaviorTimings.Measurement measurement in StratumEntityBehaviorTimings.Drain())
++			{
++				StratumRuntime.Timings.RecordMeasuredTicks(measurement.Name, measurement.ElapsedTicks);
++			}
++		}
++		StratumRuntime.Timings.RecordElapsed("physics.manager", stratumPhysicsTimingStart);
+ 		ServerMain.FrameProfiler.Leave();
+ 	}
+ 
++	private void SendAttributesForCurrentClientList()
++	{
++		SendAttributesViaTCP(ClientList);
++	}
++
++
+ 	private void BuildClientList(ICollection<ConnectedClient> values)
+ 	{
+-		List<ConnectedClient> list = (ClientList = new List<ConnectedClient>());
++		List<ConnectedClient> list = (ClientList = new List<ConnectedClient>(values.Count));
+ 		foreach (ConnectedClient value in values)
+ 		{
+ 			if (value.State.ConnectedOrPlaying() && value.Entityplayer != null)
+ 			{
+ 				list.Add(value);
+@@ -462,10 +619,25 @@ public class PhysicsManager : LoadBalancedTask
+ 		UpdateTrackedEntityLists(client, 1);
+ 	}
+ 
+ 	private bool UpdateTrackedEntityState(Entity entity, List<ConnectedClient> clients, int zeroBasedThreadNum)
+ 	{
++		if (clients.Count == 0)
++		{
++			entity.IsTracked = 0;
++			if (!(entity is EntityPlayer))
++			{
++				CompletePositionUpdate(entity);
++			}
++			entity.NearestPlayerDistance = float.PositiveInfinity;
++			if (!entity.AlwaysActive && entity.State == EnumEntityState.Active)
++			{
++				entity.State = EnumEntityState.Inactive;
++				return true;
++			}
++			return false;
++		}
+ 		EntityPos pos = entity.Pos;
+ 		double x = pos.X;
+ 		double y = pos.Y;
+ 		double z = pos.Z;
+ 		double num = double.MaxValue;
+@@ -536,10 +708,15 @@ public class PhysicsManager : LoadBalancedTask
+ 		List<long> list2 = alreadyTracked;
+ 		list2.EnsureCapacity(trackedEntities.Count);
+ 		List<Entity> list3 = newlyTracked;
+ 		foreach (Entity item in list)
+ 		{
++			if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
++			{
++				continue;
++			}
++
+ 			long entityId;
+ 			if (trackedEntities.Remove(entityId = item.EntityId))
+ 			{
+ 				list2.Add(entityId);
+ 			}
+@@ -550,10 +727,15 @@ public class PhysicsManager : LoadBalancedTask
+ 		}
+ 		for (int i = 1; i < threadCount; i++)
+ 		{
+ 			foreach (Entity item2 in threadedTrackedEntities[i])
+ 			{
++				if (StratumStaffCommandState.ShouldHideEntityFromClient(item2, client))
++				{
++					continue;
++				}
++
+ 				long entityId;
+ 				if (trackedEntities.Remove(entityId = item2.EntityId))
+ 				{
+ 					list2.Add(entityId);
+ 				}
+@@ -593,60 +775,150 @@ public class PhysicsManager : LoadBalancedTask
+ 		list3.Clear();
+ 	}
+ 
+ 	public void SendTrackedEntitiesStateChanges()
+ 	{
+-		List<AnimationPacket> list = new List<AnimationPacket>();
+-		FastMemoryStream fastMemoryStream = null;
+-		try
++		List<AnimationPacket> list = stateChangeAnimationPackets;
++		List<Packet_Entity> entityPackets = stateChangeEntityPackets;
++		Dictionary<long, Packet_Entity> entityPacketCache = stateChangeEntityPacketCache;
++		Dictionary<long, PreparedStateChangePacket> playerDataPacketCache = stateChangePlayerDataPacketCache;
++		Dictionary<long, AnimationPacket> animationPacketCache = stateChangeAnimationPacketCache;
++		FastMemoryStream fastMemoryStream = stateChangeEntityBuffer;
++		BinaryWriter writer = stateChangeEntityWriter;
++		bool stratumRecordSectionTimings = StratumRuntime.Timings.Enabled;
++		long stratumPlayerPacketTicks = 0L;
++		long stratumFullEntityBuildTicks = 0L;
++		long stratumFullEntitySendTicks = 0L;
++		long stratumAnimationTicks = 0L;
++		long stratumDespawnTicks = 0L;
++		foreach (ConnectedClient client in ClientList)
+ 		{
+-			foreach (ConnectedClient client in ClientList)
++			if (client.entitiesNowInRange.Count > 0)
+ 			{
+-				if (client.entitiesNowInRange.Count > 0)
++				list.Clear();
++				entityPackets.Clear();
++				foreach (EntityInRange item in client.entitiesNowInRange)
+ 				{
+-					list.Clear();
+-					if (fastMemoryStream == null)
++					Entity entity = item.Entity;
++					if (entity is EntityPlayer entityPlayer)
+ 					{
+-						fastMemoryStream = new FastMemoryStream();
+-					}
+-					foreach (EntityInRange item in client.entitiesNowInRange)
+-					{
+-						Entity entity = item.Entity;
+-						if (entity is EntityPlayer entityPlayer)
++						long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
++						server.PlayersByUid.TryGetValue(entityPlayer.PlayerUID, out var value);
++						if (value != null)
+ 						{
+-							server.PlayersByUid.TryGetValue(entityPlayer.PlayerUID, out var value);
+-							if (value != null)
++							if (client.IsSinglePlayerClient)
+ 							{
+ 								server.SendPacket(item.ForClientId, ((ServerWorldPlayerData)value.WorldData).ToPacketForOtherPlayers(value));
+ 							}
++							else
++							{
++								long entityId = entity.EntityId;
++								if (!playerDataPacketCache.TryGetValue(entityId, out PreparedStateChangePacket preparedPacket))
++								{
++									Packet_Server packet = ((ServerWorldPlayerData)value.WorldData).ToPacketForOtherPlayers(value);
++									stateChangeSerializedPacket.Serialize(packet);
++									byte[] packetBytes = client.Socket.PreparePacketForSending(stateChangeSerializedPacket, server.Config.CompressPackets, out bool compressed);
++									preparedPacket = new PreparedStateChangePacket(packetBytes, compressed);
++									playerDataPacketCache[entityId] = preparedPacket;
++								}
++								server.SendPreparedPacket(client, preparedPacket.PacketBytes, preparedPacket.Compressed);
++							}
+ 						}
++						if (stratumRecordSectionTimings)
++						{
++							stratumPlayerPacketTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
++						}
++					}
++					long entityIdForPacket = entity.EntityId;
++					if (!entityPacketCache.TryGetValue(entityIdForPacket, out Packet_Entity entityPacket))
++					{
++						long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
+ 						fastMemoryStream.Reset();
+-						BinaryWriter writer = new BinaryWriter(fastMemoryStream);
+-						server.SendPacket(item.ForClientId, ServerPackets.GetFullEntityPacket(entity, fastMemoryStream, writer));
+-						if (entity.AnimManager != null)
++						entityPacket = ServerPackets.GetEntityPacket(entity, fastMemoryStream, writer);
++						entityPacketCache[entityIdForPacket] = entityPacket;
++						if (stratumRecordSectionTimings)
++						{
++							stratumFullEntityBuildTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
++						}
++					}
++					entityPackets.Add(entityPacket);
++					if (entity.AnimManager != null)
++					{
++						long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
++						long entityId = entity.EntityId;
++						if (!animationPacketCache.TryGetValue(entityId, out AnimationPacket animationPacket))
++						{
++							animationPacket = new AnimationPacket(entity);
++							animationPacketCache[entityId] = animationPacket;
++						}
++						list.Add(animationPacket);
++						if (stratumRecordSectionTimings)
++						{
++							stratumAnimationTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
++						}
++					}
++				}
++				if (entityPackets.Count > 0)
++				{
++					long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
++					Packet_Server packet = new Packet_Server
++					{
++						Id = 40,
++						Entities = new Packet_Entities
+ 						{
+-							list.Add(new AnimationPacket(entity));
++							Entities = entityPackets.ToArray(),
++							EntitiesCount = entityPackets.Count,
++							EntitiesLength = entityPackets.Count
+ 						}
++					};
++					if (client.IsSinglePlayerClient)
++					{
++						server.SendPacket(client.Id, packet);
++					}
++					else
++					{
++						stateChangeSerializedPacket.Serialize(packet);
++						byte[] packetBytes = client.Socket.PreparePacketForSending(stateChangeSerializedPacket, server.Config.CompressPackets, out bool compressed);
++						server.SendPreparedPacket(client, packetBytes, compressed);
++					}
++					if (stratumRecordSectionTimings)
++					{
++						stratumFullEntitySendTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
+ 					}
++					entityPackets.Clear();
++				}
++				if (list.Count > 0)
++				{
+ 					BulkAnimationPacket message = new BulkAnimationPacket
+ 					{
+ 						Packets = list.ToArray()
+ 					};
+ 					AnimationsAndTagsChannel.SendPacket(message, client.Player);
+-					client.entitiesNowInRange.Clear();
++					list.Clear();
+ 				}
+-				if (client.entitiesNowOutOfRange.Count > 0)
++				client.entitiesNowInRange.Clear();
++			}
++			if (client.entitiesNowOutOfRange.Count > 0)
++			{
++				long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
++				server.SendPacket(client.Id, ServerPackets.GetEntityDespawnPacket(client.entitiesNowOutOfRange));
++				if (stratumRecordSectionTimings)
+ 				{
+-					server.SendPacket(client.Id, ServerPackets.GetEntityDespawnPacket(client.entitiesNowOutOfRange));
+-					client.entitiesNowOutOfRange.Clear();
++					stratumDespawnTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
+ 				}
++				client.entitiesNowOutOfRange.Clear();
+ 			}
+ 		}
+-		finally
+-		{
+-			fastMemoryStream?.Dispose();
+-		}
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.sendStatePlayerPackets", stratumPlayerPacketTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.sendStateFullEntityBuild", stratumFullEntityBuildTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.sendStateFullEntitySend", stratumFullEntitySendTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.sendStateAnimations", stratumAnimationTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.sendStateDespawns", stratumDespawnTicks);
++		entityPackets.Clear();
++		entityPacketCache.Clear();
++		playerDataPacketCache.Clear();
++		animationPacketCache.Clear();
+ 		ServerMain.FrameProfiler.Mark("physicsmanager-sendstatechanged");
+ 	}
+ 
+ 	public void GatherUpdatePacketsFromAllThreads()
+ 	{
+@@ -781,14 +1053,24 @@ public class PhysicsManager : LoadBalancedTask
+ 		return result;
+ 	}
+ 
+ 	public void SendPositionsAndAnimations(Dictionary<long, Packet_EntityPosition> entityPositionPackets, Dictionary<long, AnimationPacket> entityAnimPackets, int zeroBasedThreadNum, bool stateUpdateTick)
+ 	{
+-		List<Packet_EntityPosition> list = new List<Packet_EntityPosition>();
+-		List<AnimationPacket> list2 = new List<AnimationPacket>();
+-		List<EntityTagPacket> list3 = new List<EntityTagPacket>();
++		List<Packet_EntityPosition> list = clientPositionUpdates[zeroBasedThreadNum];
++		List<AnimationPacket> list2 = clientAnimationUpdates[zeroBasedThreadNum];
++		List<EntityTagPacket> list3 = clientTagUpdates[zeroBasedThreadNum];
+ 		ConcurrentDictionary<long, EntityTagPacket> concurrentDictionary = entitiesTagPackets;
++		list.Clear();
++		list2.Clear();
++		list3.Clear();
++		bool hasPositionPackets = entityPositionPackets.Count > 0;
++		bool hasAnimationPackets = entityAnimPackets.Count > 0;
++		bool hasTagPackets = !concurrentDictionary.IsEmpty;
++		if (!hasPositionPackets && !hasAnimationPackets && !hasTagPackets)
++		{
++			return;
++		}
+ 		foreach (ConnectedClient client in ClientList)
+ 		{
+ 			list.Clear();
+ 			list2.Clear();
+ 			list3.Clear();
+@@ -796,41 +1078,41 @@ public class PhysicsManager : LoadBalancedTask
+ 			{
+ 				List<Entity> list4 = client.threadedTrackedEntities[zeroBasedThreadNum];
+ 				foreach (Entity item in list4)
+ 				{
+ 					long entityId = item.EntityId;
+-					if (entityPositionPackets.TryGetValue(entityId, out var value))
++					if (hasPositionPackets && entityPositionPackets.TryGetValue(entityId, out var value))
+ 					{
+ 						list.Add(value);
+ 					}
+-					if (entityAnimPackets.TryGetValue(entityId, out var value2))
++					if (hasAnimationPackets && entityAnimPackets.TryGetValue(entityId, out var value2))
+ 					{
+ 						list2.Add(value2);
+ 					}
+-					if (concurrentDictionary.TryGetValue(entityId, out var value3))
++					if (hasTagPackets && concurrentDictionary.TryGetValue(entityId, out var value3))
+ 					{
+ 						list3.Add(value3);
+ 					}
+ 				}
+-				if (entityAnimPackets.TryGetValue(client.Entityplayer.EntityId, out var value4) && !list4.Contains(client.Entityplayer))
++				if (hasAnimationPackets && entityAnimPackets.TryGetValue(client.Entityplayer.EntityId, out var value4) && !list4.Contains(client.Entityplayer))
+ 				{
+ 					list2.Add(value4);
+ 				}
+ 			}
+ 			else
+ 			{
+ 				foreach (long trackedEntity in client.TrackedEntities)
+ 				{
+-					if (entityPositionPackets.TryGetValue(trackedEntity, out var value5))
++					if (hasPositionPackets && entityPositionPackets.TryGetValue(trackedEntity, out var value5))
+ 					{
+ 						list.Add(value5);
+ 					}
+-					if (entityAnimPackets.TryGetValue(trackedEntity, out var value6))
++					if (hasAnimationPackets && entityAnimPackets.TryGetValue(trackedEntity, out var value6))
+ 					{
+ 						list2.Add(value6);
+ 					}
+-					if (concurrentDictionary.TryGetValue(trackedEntity, out var value7))
++					if (hasTagPackets && concurrentDictionary.TryGetValue(trackedEntity, out var value7))
+ 					{
+ 						list3.Add(value7);
+ 					}
+ 				}
+ 			}
+@@ -882,25 +1164,31 @@ public class PhysicsManager : LoadBalancedTask
+ 		foreach (ConnectedClient client in clientList)
+ 		{
+ 			client.EntitySpawnsToSend.Clear();
+ 		}
+ 		int num2 = 0;
++		int positionCount = count * 3;
+ 		for (int i = 0; i < spawnsToSend.Length; i++)
+ 		{
+ 			Entity entity = spawnsToSend[i];
+ 			if (entity == null)
+ 			{
+ 				continue;
+ 			}
+ 			EntityPos pos = entity.Pos;
+ 			long entityId = entity.EntityId;
+ 			bool flag = false;
+-			for (int j = 0; j < array.Length && j < count; j += 3)
++			for (int j = 0, clientIndex = 0; j < positionCount; j += 3, clientIndex++)
+ 			{
+ 				if (pos.InRangeOf(array[j], array[j + 1], array[j + 2], num))
+ 				{
+-					ConnectedClient connectedClient = clientList[j / 3];
++					ConnectedClient connectedClient = clientList[clientIndex];
++					if (StratumStaffCommandState.ShouldHideEntityFromClient(entity, connectedClient))
++					{
++						continue;
++					}
++
+ 					connectedClient.TrackedEntities.Add(entityId);
+ 					connectedClient.EntitySpawnsToSend.Add(entity);
+ 					flag = true;
+ 				}
+ 			}
+@@ -990,11 +1278,14 @@ public class PhysicsManager : LoadBalancedTask
+ 		return ServerPackets.getEntityPositionPacket(entity.Pos, entity, 1);
+ 	}
+ 
+ 	internal void SendPrioritySpawn(Entity entity, ICollection<ConnectedClient> clientList)
+ 	{
+-		Packet_Server entitySpawnPacket = ServerPackets.GetEntitySpawnPacket(new List<Entity>(1) { entity });
++		priorityEntitySpawnList.Clear();
++		priorityEntitySpawnList.Add(entity);
++		Packet_Server entitySpawnPacket = ServerPackets.GetEntitySpawnPacket(priorityEntitySpawnList);
++		priorityEntitySpawnList.Clear();
+ 		Packet_EntityPosition entityPosition = DoFirstPhysicsTick(entity, 1f / 15f);
+ 		Packet_Server packet = new Packet_Server
+ 		{
+ 			Id = 80,
+ 			EntityPosition = entityPosition
+@@ -1026,16 +1317,29 @@ public class PhysicsManager : LoadBalancedTask
+ 		if (threadNumber == 0)
+ 		{
+ 			threadNumber = 1;
+ 			num = 1;
+ 		}
+-		int num2 = 480;
+-		int num3 = num2 + (count - num2) * (threadNumber - 1) / num;
+-		int num4 = num2 + (count - num2) * threadNumber / num;
+-		if (threadNumber == 1)
++		int num3;
++		int num4;
++		if (StratumRuntime.Config.Performance.Physics.EvenThreadPartition && num > 1)
+ 		{
+-			num3 = 0;
++			// Stratum: even partition across threads (vanilla overloads thread 1).
++			int chunk = (count + num - 1) / num;
++			num3 = (threadNumber - 1) * chunk;
++			num4 = Math.Min(num3 + chunk, count);
++			if (num3 > count) num3 = count;
++		}
++		else
++		{
++			int num2 = 480;
++			num3 = num2 + (count - num2) * (threadNumber - 1) / num;
++			num4 = num2 + (count - num2) * threadNumber / num;
++			if (threadNumber == 1)
++			{
++				num3 = 0;
++			}
+ 		}
+ 		Dictionary<long, Packet_EntityPosition> dictionary = entitiesPositionPackets[threadNumber - 1];
+ 		Dictionary<long, AnimationPacket> dictionary2 = entitiesAnimPackets[threadNumber - 1];
+ 		dictionary.Clear();
+ 		dictionary2.Clear();
+@@ -1097,10 +1401,19 @@ public class PhysicsManager : LoadBalancedTask
+ 		try
+ 		{
+ 			int num5 = -1;
+ 			float deltaTime = deltaT;
+ 			bool flag = attrUpdateAccum == 0f;
++			// Stratum: Paper-style EAR. Cache strides and band radii once per DoWork.
++			StratumPhysicsConfig stratumPhysCfg = StratumRuntime.Config.Performance.Physics;
++			bool stratumEarEnabled = stratumPhysCfg.ActivationRangeEnabled;
++			int stratumMidStride = stratumEarEnabled ? Math.Max(1, stratumPhysCfg.FarTrackedTickStride) : 1;
++			int stratumFarStride = stratumEarEnabled ? Math.Max(1, stratumPhysCfg.FarBandTickStride) : 1;
++			int stratumUntrackedBehaviorStride = stratumEarEnabled ? Math.Max(1, stratumPhysCfg.UntrackedBehaviorTickStride) : 1;
++			float stratumNearRadius = stratumPhysCfg.NearActivationRadiusBlocks;
++			float stratumMidRadius = stratumPhysCfg.MidActivationRadiusBlocks;
++			long stratumStrideSalt = currentTick;
+ 			while (++num5 < ticksToDo)
+ 			{
+ 				int num6 = (ticksToDo - num5 + 1) % 2;
+ 				num5 += num6;
+ 				bool flag2 = num5 == ticksToDo - 1;
+@@ -1108,20 +1421,113 @@ public class PhysicsManager : LoadBalancedTask
+ 				bool forceUpdate = (num5 + currentTick) % 30 <= num6;
+ 				for (int j = num3; j < num4; j++)
+ 				{
+ 					IPhysicsTickable physicsTickable2 = list[j];
+ 					Entity entity = physicsTickable2.Entity;
+-					if (flag3)
++					// Stratum EAR: distance-banded stride using Entity.NearestPlayerDistance.
++					// IsTracked is binary (0=untracked, 1/2=tracked) so on solo/low-pop servers
++					// nearly all entities fall in the same band. NearestPlayerDistance gives us
++					// finer granularity that benefits any player count.
++					byte stratumTracked = entity.IsTracked;
++					int stratumEntityStride;
++					// Always-tick exemptions: short-lived dynamic entities where stride-skipping is
++					// visually jarring (items hanging in mid-air, projectiles teleporting, blocks
++					// frozen mid-fall). Paper exempts these for the same reason.
++					bool stratumAlwaysTick = entity is EntityPlayer
++						|| entity is EntityItem
++						|| entity is IProjectile
++						|| (entity.Code?.Path is string stratumCodePath
++							&& (stratumCodePath.StartsWith("blockfalling", StringComparison.Ordinal)
++								|| stratumCodePath.StartsWith("arrow-", StringComparison.Ordinal)));
++					if (!stratumEarEnabled || stratumAlwaysTick)
++					{
++						stratumEntityStride = 1;
++					}
++					else if (stratumTracked == 0)
++					{
++						stratumEntityStride = stratumUntrackedBehaviorStride;
++					}
++					else
++					{
++						float stratumDist = entity.NearestPlayerDistance;
++						if (stratumDist < stratumNearRadius)
++						{
++							stratumEntityStride = 1;
++						}
++						else if (stratumDist < stratumMidRadius)
++						{
++							stratumEntityStride = stratumMidStride;
++						}
++						else
++						{
++							stratumEntityStride = stratumFarStride;
++						}
++					}
++					bool stratumDoThisStep = stratumEntityStride <= 1
++						|| ((stratumStrideSalt + entity.EntityId) % stratumEntityStride) == 0L;
++					if (flag3 && stratumDoThisStep)
+ 					{
+ 						EntityBehavior[] serverBehaviorsThreadsafe = entity.ServerBehaviorsThreadsafe;
++						bool stratumRecordBehaviorTimings = StratumEntityBehaviorTimings.Enabled;
++						string stratumEntityCategory = stratumRecordBehaviorTimings ? (entity is EntityPlayer ? "players" : entity.IsCreature ? "creatures" : "inanimate") : null;
+ 						for (int k = 0; k < serverBehaviorsThreadsafe.Length; k++)
+ 						{
+-							serverBehaviorsThreadsafe[k].OnGameTick(deltaTime);
+-							frameProfilerUtil?.Mark(serverBehaviorsThreadsafe[k].ProfilerName);
++							EntityBehavior behavior = serverBehaviorsThreadsafe[k];
++							if (stratumRecordBehaviorTimings)
++							{
++								long stratumBehaviorStart = StratumEntityBehaviorTimings.GetTimestamp();
++								try
++								{
++									behavior.OnGameTick(deltaTime);
++								}
++								finally
++								{
++									StratumEntityBehaviorTimings.RecordThreadSafe(stratumEntityCategory, behavior.StratumTimingName, stratumBehaviorStart);
++								}
++							}
++							else
++							{
++								behavior.OnGameTick(deltaTime);
++							}
++							frameProfilerUtil?.Mark(behavior.ProfilerName);
+ 						}
+ 					}
+ 					if (entity.IsTracked == 0)
++					{
++						// Stratum: vanilla skips OnPhysicsTick AND BuildPositionPacket whenever
++						// IsTracked==0. Under load the state-update tick falls behind, so freshly
++						// spawned items / projectiles / falling blocks stay flagged untracked even
++						// while clients already have them in TrackedEntities via the spawn path.
++						// Result is the visual "floating + spinning" item that snaps to the ground
++						// once a state-update tick finally runs.
++						//
++						// For our always-tick set, run physics AND build the position packet so
++						// nearby clients (who already have the entity from PrepareEntitySpawns ->
++						// client.TrackedEntities.Add) keep getting motion updates. SendPositions
++						// routes by client.TrackedEntities on non-stateUpdate ticks, so this works
++						// without waiting for UpdateTrackedEntityLists to catch up.
++						if (stratumAlwaysTick)
++						{
++							if (!((physicsTickable2 as PhysicsBehaviorBase)?.mountableSupplier?.Controller is EntityPlayer { Alive: not false }))
++							{
++								physicsTickable2.OnPhysicsTick(dt);
++								if (num6 != 0)
++								{
++									physicsTickable2.OnPhysicsTick(dt);
++								}
++								BuildPositionPacket(entity, forceUpdate, dictionary, dictionary2);
++							}
++						}
++						if (flag2)
++						{
++							entity.PositionTicked = true;
++						}
++						continue;
++					}
++					// Stratum EAR: skip OnPhysicsTick / position packet build for far-tracked entities
++					// on off-stride frames. Still mark PositionTicked at end so the entity isn't stuck.
++					if (!stratumDoThisStep)
+ 					{
+ 						if (flag2)
+ 						{
+ 							entity.PositionTicked = true;
+ 						}
+@@ -1196,49 +1602,153 @@ public class PhysicsManager : LoadBalancedTask
+ 		if (doBuildAttributes)
+ 		{
+ 			eFullUpdate = entitiesFullUpdate[0];
+ 			ePartialUpdate = entitiesPartialUpdate[0];
+ 			eDebugUpdate = entitiesDebugUpdate[0];
+-			ms = new FastMemoryStream(64);
++			ms = nonTickableAttributeBuffer;
++			ms.Reset();
+ 		}
+ 		float deltaTime = deltaT;
+ 		FrameProfilerUtil frameProfiler = ServerMain.FrameProfiler;
++		bool stratumRecordSectionTimings = StratumRuntime.Timings.Enabled;
++		long stratumThreadsafeBehaviorTicks = 0L;
++		long stratumTrackingTicks = 0L;
++		long stratumPositionPacketTicks = 0L;
++		long stratumAttributePacketTicks = 0L;
++		// Stratum: same distance-banded behavior stride as DoWork's EAR, applied to the non-tickable
++		// path. Tracking and packet building remain unconditional so far entities still sync state to
++		// clients; only the (expensive) threadsafe behavior loop is throttled. Same always-tick exemptions.
++		StratumPhysicsConfig stratumPhysCfgNT = StratumRuntime.Config.Performance.Physics;
++		bool stratumEarEnabledNT = stratumPhysCfgNT.ActivationRangeEnabled;
++		int stratumMidStrideNT = stratumEarEnabledNT ? Math.Max(1, stratumPhysCfgNT.FarTrackedTickStride) : 1;
++		int stratumFarStrideNT = stratumEarEnabledNT ? Math.Max(1, stratumPhysCfgNT.FarBandTickStride) : 1;
++		int stratumUntrackedStrideNT = stratumEarEnabledNT ? Math.Max(1, stratumPhysCfgNT.UntrackedBehaviorTickStride) : 1;
++		float stratumNearRadiusNT = stratumPhysCfgNT.NearActivationRadiusBlocks;
++		float stratumMidRadiusNT = stratumPhysCfgNT.MidActivationRadiusBlocks;
++		long stratumStrideSaltNT = currentTick;
+ 		foreach (Entity value in server.LoadedEntities.Values)
+ 		{
+ 			if (value.PositionTicked)
+ 			{
+ 				value.PositionTicked = false;
+ 				continue;
+ 			}
+-			EntityBehavior[] serverBehaviorsThreadsafe = value.ServerBehaviorsThreadsafe;
+-			foreach (EntityBehavior entityBehavior in serverBehaviorsThreadsafe)
++			if (!(!doBuildAttributes && value.State == EnumEntityState.Inactive && value.IsTracked == 0))
+ 			{
+-				entityBehavior.OnGameTick(deltaTime);
+-				frameProfiler.Mark(entityBehavior.ProfilerName);
++				// Stratum: distance-band gate on behaviors only.
++				bool stratumDoBehaviors;
++				if (!stratumEarEnabledNT)
++				{
++					stratumDoBehaviors = true;
++				}
++				else
++				{
++					bool stratumAlwaysTickNT = value is EntityPlayer
++						|| value is EntityItem
++						|| value is IProjectile
++						|| (value.Code?.Path is string stratumCodePathNT
++							&& (stratumCodePathNT.StartsWith("blockfalling", StringComparison.Ordinal)
++								|| stratumCodePathNT.StartsWith("arrow-", StringComparison.Ordinal)));
++					if (stratumAlwaysTickNT)
++					{
++						stratumDoBehaviors = true;
++					}
++					else
++					{
++						int stratumStrideNT;
++						byte stratumTrackedNT = value.IsTracked;
++						if (stratumTrackedNT == 0)
++						{
++							stratumStrideNT = stratumUntrackedStrideNT;
++						}
++						else
++						{
++							float stratumDistNT = value.NearestPlayerDistance;
++							stratumStrideNT = (stratumDistNT < stratumNearRadiusNT) ? 1
++								: (stratumDistNT < stratumMidRadiusNT) ? stratumMidStrideNT
++								: stratumFarStrideNT;
++						}
++						stratumDoBehaviors = stratumStrideNT <= 1
++							|| ((stratumStrideSaltNT + value.EntityId) % stratumStrideNT) == 0L;
++					}
++				}
++				if (stratumDoBehaviors)
++				{
++				long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
++				EntityBehavior[] serverBehaviorsThreadsafe = value.ServerBehaviorsThreadsafe;
++				bool stratumRecordBehaviorTimings = StratumEntityBehaviorTimings.Enabled;
++				string stratumEntityCategory = stratumRecordBehaviorTimings ? (value is EntityPlayer ? "players" : value.IsCreature ? "creatures" : "inanimate") : null;
++				foreach (EntityBehavior entityBehavior in serverBehaviorsThreadsafe)
++				{
++					if (stratumRecordBehaviorTimings)
++					{
++						long stratumBehaviorStart = StratumEntityBehaviorTimings.GetTimestamp();
++						try
++						{
++							entityBehavior.OnGameTick(deltaTime);
++						}
++						finally
++						{
++							StratumEntityBehaviorTimings.RecordThreadSafe(stratumEntityCategory, entityBehavior.StratumTimingName, stratumBehaviorStart);
++						}
++					}
++					else
++					{
++						entityBehavior.OnGameTick(deltaTime);
++					}
++					frameProfiler.Mark(entityBehavior.ProfilerName);
++				}
++				if (stratumRecordSectionTimings)
++				{
++					stratumThreadsafeBehaviorTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
++				}
++				}
+ 			}
+-			if (doBuildAttributes && UpdateTrackedEntityState(value, ClientList, 0))
++			if (doBuildAttributes)
+ 			{
+-				ActiveStateChanged(value);
++				long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
++				if (UpdateTrackedEntityState(value, ClientList, 0))
++				{
++					ActiveStateChanged(value);
++				}
++				if (stratumRecordSectionTimings)
++				{
++					stratumTrackingTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
++				}
+ 			}
+ 			if (value.IsTracked == 0)
+ 			{
+ 				continue;
+ 			}
+ 			if (ticksToDo > 0)
+ 			{
++				long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
+ 				BuildPositionPacket(value, forceUpdate, dictionary, dictionary2);
++				if (stratumRecordSectionTimings)
++				{
++					stratumPositionPacketTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
++				}
+ 			}
+ 			if (doBuildAttributes)
+ 			{
++				long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
+ 				EntityTagPacket entityTagPacket = BuildAttributesPackets(value, ms, entityDebugMode, eFullUpdate, ePartialUpdate, eDebugUpdate);
+ 				if (entityTagPacket != null)
+ 				{
+ 					entitiesTagPackets[value.EntityId] = entityTagPacket;
+ 				}
+ 				frameProfiler.Mark("physicstick-buildattrpacket");
++				if (stratumRecordSectionTimings)
++				{
++					stratumAttributePacketTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
++				}
+ 			}
+ 		}
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.nonTickableBehaviors", stratumThreadsafeBehaviorTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.nonTickableTracking", stratumTrackingTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.nonTickablePositionPackets", stratumPositionPacketTicks);
++		StratumRuntime.Timings.RecordMeasuredTicks("physics.nonTickableAttributePackets", stratumAttributePacketTicks);
+ 		if (dictionary.Count + dictionary2.Count + dictionary3.Count > 0)
+ 		{
+ 			SendPositionsAndAnimations(dictionary, dictionary2, 0, doBuildAttributes);
+ 		}
+ 		dictionary.Clear();
+@@ -1262,11 +1772,25 @@ public class PhysicsManager : LoadBalancedTask
+ 
+ 	public void StartWorkerThread(int threadNum)
+ 	{
+ 		try
+ 		{
+-			while (tickables.Count < 120)
++			// Stratum: vanilla hardcoded `tickables.Count < 120` here, which created a dead zone
++			// when our ParallelThreshold (default 32) said "go parallel" but workers were still
++			// sleeping. Main would Pulse to nobody and then spin a full second waiting for the
++			// thread completion counter. Use the configured threshold instead so workers wake
++			// up at the same point that the main thread decides to dispatch to them.
++			int stratumWorkerGateThreshold;
++			try
++			{
++				stratumWorkerGateThreshold = Math.Max(1, StratumRuntime.Config.Performance.Physics.ParallelThreshold);
++			}
++			catch
++			{
++				stratumWorkerGateThreshold = 32;
++			}
++			while (tickables.Count < stratumWorkerGateThreshold)
+ 			{
+ 				if (ShouldExit())
+ 				{
+ 					return;
+ 				}

@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/Forks/">
+    <Project Path="VintagestoryApi/VintagestoryAPI.csproj" />
+    <Project Path="VSEssentials/VSEssentialsMod.csproj" />
+    <Project Path="VSSurvivalMod/VSSurvivalMod.csproj" />
+  </Folder>
+  <Folder Name="/Vanilla/">
+    <Project Path="Cairo/Cairo.csproj" />
+    <Project Path="VintagestoryLib/VintagestoryLib.csproj" />
+    <Project Path="VintagestoryServer/VintagestoryServer.csproj" />
+  </Folder>
+  <Folder Name="/Stratum/">
+    <Project Path="StratumServer/StratumServer.csproj" />
+  </Folder>
+</Solution>

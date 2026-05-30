@@ -1,0 +1,81 @@
+diff --git a/VintagestoryApi/Common/FrameProfilerUtil.cs b/VintagestoryApi/Common/FrameProfilerUtil.cs
+index 7be434b..e8b39b5 100644
+--- a/VintagestoryApi/Common/FrameProfilerUtil.cs
++++ b/VintagestoryApi/Common/FrameProfilerUtil.cs
+@@ -55,10 +55,15 @@ namespace Vintagestory.API.Common
+         Stopwatch stopwatch = new Stopwatch();
+         ProfileEntryRange rootEntry;
+         ProfileEntryRange currentEntry;
+         string beginText;
+         Action<string> onLogoutputHandler;
++        // Thread that owns this profiler instance. Captured on first Begin().
++        // Mark/Enter/Leave/End calls from any other thread are no-ops; the profiler's
++        // internal Dictionary state isn't thread-safe and parallel entity ticking would
++        // otherwise NPE inside MarkInternal/Enter.
++        int ownerThreadId;
+ 
+         public FrameProfilerUtil(Action<string> onLogoutputHandler)
+         {
+             this.onLogoutputHandler = onLogoutputHandler;
+             stopwatch.Start();
+@@ -78,20 +83,22 @@ namespace Vintagestory.API.Common
+         /// Called by the game engine for each render frame or server tick
+         /// </summary>
+         public void Begin(string beginText = null, params object[] args)
+         {
+             if (!Enabled && !PrintSlowTicks) return;
++            ownerThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+ 
+             this.beginText = beginText == null ? null : String.Format(beginText, args);
+             currentEntry = null;
+             rootEntry = Enter("all");
+         }
+ 
+ 
+         public ProfileEntryRange Enter(string code)
+         {
+             if (!Enabled && !PrintSlowTicks) return null;
++            if (ownerThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId != ownerThreadId) return null;
+ 
+             long elapsedTicks = stopwatch.ElapsedTicks;
+             if (currentEntry == null) return currentEntry = new ProfileEntryRange()
+             {
+                 Code = code,
+@@ -126,11 +133,12 @@ namespace Vintagestory.API.Common
+         /// <summary>
+         /// Same as <see cref="Mark(string)"/> when <see cref="Enter(string)"/> was called before.
+         /// </summary>
+         public void Leave()
+         {
+-            if (!Enabled && !PrintSlowTicks || currentEntry == null) return;
++            if (!Enabled && !PrintSlowTicks) return;
++            if (ownerThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId != ownerThreadId) return;
+ 
+             long elapsedTicks = stopwatch.ElapsedTicks;
+             currentEntry.ElapsedTicks += elapsedTicks - currentEntry.Start;
+             currentEntry.LastMark = elapsedTicks;
+ 
+@@ -152,10 +160,11 @@ namespace Vintagestory.API.Common
+         /// <param name="code"></param>
+         /// <param name="param"></param>
+         public void Mark(string code, object param)
+         {
+             if (!Enabled && !PrintSlowTicks) return;
++            if (ownerThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId != ownerThreadId) return;
+             if (code == null) throw new ArgumentNullException("marker name may not be null!");
+ 
+             MarkInternal(code + param);
+         }
+ 
+@@ -164,10 +173,11 @@ namespace Vintagestory.API.Common
+         /// </summary>
+         /// <param name="code"></param>
+         public void Mark(string code)
+         {
+             if (!Enabled && !PrintSlowTicks) return;
++            if (ownerThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId != ownerThreadId) return;
+             if (code == null) throw new ArgumentNullException("marker name may not be null!");
+ 
+             MarkInternal(code);
+         }
+ 

@@ -1,0 +1,126 @@
+diff --git a/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs b/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs
+index a571d72..21dc684 100644
+--- a/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs
++++ b/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs
+@@ -1,12 +1,15 @@
+ using System;
++using System.Linq;
++using System.Reflection;
+ using Vintagestory.API;
+ using Vintagestory.API.Client;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Datastructures;
+ using Vintagestory.API.MathTools;
++using Vintagestory.API.Server;
+ 
+ #nullable disable
+ 
+ namespace Vintagestory.GameContent
+ {
+@@ -191,10 +194,17 @@ namespace Vintagestory.GameContent
+ 
+         public double ownPosRepulseX, ownPosRepulseY, ownPosRepulseZ;
+         public float mySize;
+         protected int dimension;
+ 
++        // Stratum: Paper-style max-entity-collisions cap. Once an entity has applied push
++        // forces from N neighbours in a single tick we stop walking the partition for the
++        // remainder of that tick. Prevents O(N^2) blowup when many agents cluster (mob
++        // piles, herds, traders crowding a player). 0 disables the cap.
++        public static int StratumMaxCollisionsPerEntity = 12;
++        private int stratumPushCount;
++
+         public override void UpdateColSelBoxes()
+         {
+             touchdist = entity.touchDistance;
+         }
+ 
+@@ -217,21 +227,22 @@ namespace Vintagestory.GameContent
+             if (eagent?.MountedOn != null) return;
+             if (entity.World.ElapsedMilliseconds < 2000) return;
+ 
+             var pushVector = this.pushVector;
+             pushVector.Set(0, 0, 0);
++            stratumPushCount = 0;
+ 
+             mySize = entity.SelectionBox.Length * entity.SelectionBox.Height * (eagent != null && eagent.Controls.Sneak ? 2 : 1);
+             dimension = entity.Pos.Dimension;
+ 
+             if (cworld != null && entity != cworld.Player.Entity)
+             {
+                 WalkEntity(cworld.Player.Entity);
+             }
+             else
+             {
+-                partitionUtil.WalkEntities(ownPosRepulseX, ownPosRepulseY, ownPosRepulseZ, touchdist + partitionUtil.LargestTouchDistance + 0.1, WalkEntity, IsInRangePartition, EnumEntitySearchType.Creatures);
++                partitionUtil.WalkEntities(ownPosRepulseX, ownPosRepulseY, ownPosRepulseZ, touchdist + partitionUtil.LargestTouchDistance + 0.1, WalkEntity, null, EnumEntitySearchType.Creatures);
+             }
+ 
+             if (pushVector.X == 0 && pushVector.Z == 0 && pushVector.Y == 0) return;
+ 
+             pushVector.X = GameMath.Clamp(pushVector.X, -3, 3) / 30;
+@@ -282,21 +293,61 @@ namespace Vintagestory.GameContent
+ 
+             if (ourEntity.OnGround) pushDiff *= 3;
+ 
+             pushVector.Add(px * pushDiff, py * pushDiff * 0.75, pz * pushDiff);
+ 
++            // Stratum: hard cap on collision pairs per entity per tick. Returning false stops
++            // EntityPartitioning.WalkEntities for this caller. We only count neighbours that
++            // actually contributed a push (passed the distance gate above), so non-overlapping
++            // entities in the search radius don't count against the cap.
++            int cap = StratumMaxCollisionsPerEntity;
++            if (cap > 0 && ++stratumPushCount >= cap) return false;
++
+             return true;
+         }
+ 
+ 
+         public override string PropertyName()
+         {
+             return "repulseagents";
+         }
+ 
++    }
++
++    /// <summary>
++    /// Stratum: bridges StratumConfig.Performance.EntityCollisions (defined in VintagestoryLib,
++    /// internal) into the public static cap on EntityBehaviorRepulseAgents. Reflection is used
++    /// so VSEssentials does not need to reference VintagestoryLib directly.
++    /// </summary>
++    public class StratumRepulseRuntimeConfig : ModSystem
++    {
++        public override bool ShouldLoad(EnumAppSide forSide) => forSide == EnumAppSide.Server;
+ 
+-        private bool IsInRangePartition(Entity e, double posX, double posY, double posZ, double radiusSq)
++        public override double ExecuteOrder() => 0.05;
++
++        public override void StartServerSide(ICoreServerAPI api)
+         {
+-            return true;
++            try
++            {
++                Assembly libAsm = AppDomain.CurrentDomain.GetAssemblies()
++                    .FirstOrDefault(a => a.GetName().Name == "VintagestoryLib");
++                Type runtimeT = libAsm?.GetType("Vintagestory.Server.StratumRuntime");
++                object cfg = runtimeT?.GetProperty("Config", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null);
++                object perf = cfg?.GetType().GetProperty("Performance")?.GetValue(cfg);
++                object ec = perf?.GetType().GetProperty("EntityCollisions")?.GetValue(perf);
++                if (ec != null)
++                {
++                    bool enabled = (bool)(ec.GetType().GetProperty("Enabled")?.GetValue(ec) ?? true);
++                    int cap = (int)(ec.GetType().GetProperty("MaxCollisionsPerEntity")?.GetValue(ec) ?? 12);
++                    EntityBehaviorRepulseAgents.StratumMaxCollisionsPerEntity = enabled ? Math.Max(0, cap) : 0;
++                    api.Logger.Notification("Stratum: repulse-agents collision cap = {0} (enabled={1}).",
++                        EntityBehaviorRepulseAgents.StratumMaxCollisionsPerEntity, enabled);
++                }
++            }
++            catch (Exception e)
++            {
++                api.Logger.Warning("Stratum repulse-agents config read failed, using default cap {0}: {1}",
++                    EntityBehaviorRepulseAgents.StratumMaxCollisionsPerEntity, e.Message);
++            }
+         }
+     }
+ }

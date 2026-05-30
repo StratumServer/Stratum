@@ -1,0 +1,36 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
+index 1d4be19..8145794 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
+@@ -21,10 +21,19 @@ internal class ServerSystemCommands : ServerSystem
+ 		new CmdEntity(server);
+ 		new CmdGive(server);
+ 		new CmdDebug(server);
+ 		new CmdStop(server);
+ 		new CmdStats(server);
++		new CmdStratum(server);
++		new CmdStratumUtility(server);
++		new CmdStratumEssentials(server);
++		new CmdStratumStaffCommands(server);
++		new StratumLoginProtection(server);
++		new StratumNametags(server);
++		new StratumEntityCaps(server);
++		new Nimbus.CmdNimbus(server);
++		Nimbus.NimbusBackend.MaybeStart(server);
+ 		new CmdInfo(server);
+ 		new CmdChunk(server);
+ 		new CmdModDBUtil(server);
+ 		if (!server.IsDedicatedServer)
+ 		{
+@@ -33,6 +42,11 @@ internal class ServerSystemCommands : ServerSystem
+ 		new CmdSetBlock(server);
+ 		new CmdExecuteAs(server);
+ 		new CmdActivate(server);
+ 		new CmdTime(server);
+ 	}
++
++	public override void OnBeginShutdown()
++	{
++		Nimbus.NimbusBackend.MaybeStop();
++	}
+ }

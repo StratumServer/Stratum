@@ -1,0 +1,45 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemUpnp.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemUpnp.cs
+index 606df4d..6f60906 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemUpnp.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemUpnp.cs
+@@ -17,17 +17,17 @@ public class ServerSystemUpnp : ServerSystem
+ 
+ 	private IPAddress ipaddr;
+ 
+ 	private INatDevice monoNatDevice;
+ 
+-	private Mapping mapping;
++	private Open.Nat.Mapping mapping;
+ 
+-	private Mapping mappingUdp;
++	private Open.Nat.Mapping mappingUdp;
+ 
+-	private Mapping monoNatMapping;
++	private Mono.Nat.Mapping monoNatMapping;
+ 
+-	private Mapping monoNatMappingUdp;
++	private Mono.Nat.Mapping monoNatMappingUdp;
+ 
+ 	private bool wasOn;
+ 
+ 	private long renewListenerId;
+ 
+@@ -64,14 +64,14 @@ public class ServerSystemUpnp : ServerSystem
+ 		//IL_0089: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0093: Expected O, but got Unknown
+ 		//IL_00b1: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_00bb: Expected O, but got Unknown
+ 		int num = ((!server.Config.UpnpInfiniteLifetime) ? 600 : 0);
+-		mapping = new Mapping((Protocol)0, server.CurrentPort, server.CurrentPort, num, "Vintage Story TCP");
+-		mappingUdp = new Mapping((Protocol)1, server.CurrentPort, server.CurrentPort, num, "Vintage Story UDP");
+-		monoNatMapping = new Mapping((Protocol)0, server.CurrentPort, server.CurrentPort, num, "Vintage Story TCP");
+-		monoNatMappingUdp = new Mapping((Protocol)1, server.CurrentPort, server.CurrentPort, num, "Vintage Story UDP");
++		mapping = new Open.Nat.Mapping((Open.Nat.Protocol)0, server.CurrentPort, server.CurrentPort, num, "Vintage Story TCP");
++		mappingUdp = new Open.Nat.Mapping((Open.Nat.Protocol)1, server.CurrentPort, server.CurrentPort, num, "Vintage Story UDP");
++		monoNatMapping = new Mono.Nat.Mapping((Mono.Nat.Protocol)0, server.CurrentPort, server.CurrentPort, num, "Vintage Story TCP");
++		monoNatMappingUdp = new Mono.Nat.Mapping((Mono.Nat.Protocol)1, server.CurrentPort, server.CurrentPort, num, "Vintage Story UDP");
+ 		wasOn = server.Config.Upnp;
+ 		if (wasOn && server.IsDedicatedServer)
+ 		{
+ 			Initiate();
+ 		}

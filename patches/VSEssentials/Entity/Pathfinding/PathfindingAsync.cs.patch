@@ -1,0 +1,134 @@
+diff --git a/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs b/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs
+index 48a886b..f6b6b52 100644
+--- a/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs
++++ b/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs
+@@ -1,15 +1,44 @@
+ using System;
+ using System.Collections.Concurrent;
++using System.Collections.Generic;
+ using System.Diagnostics;
++using System.Linq;
++using System.Reflection;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Server;
+ 
+ #nullable disable
+ 
+ namespace Vintagestory.Essentials
+ {
++    // Satellite worker ΓÇö each instance owns its own AStar and pulls from the shared queue.
++    internal class PathfindingAsyncWorker : IAsyncServerSystem
++    {
++        private readonly PathfindingAsync owner;
++        public AStar Astar;
++
++        public PathfindingAsyncWorker(PathfindingAsync owner, ICoreServerAPI api)
++        {
++            this.owner = owner;
++            Astar = new AStar(api);
++        }
++
++        public int OffThreadInterval() => 5;
++
++        public void OnSeparateThreadTick()
++        {
++            owner.ProcessQueue(Astar, 100);
++        }
++
++        public void ThreadDispose()
++        {
++            Astar?.Dispose();
++            Astar = null;
++        }
++    }
++
+     public class PathfindingAsync : ModSystem, IAsyncServerSystem
+     {
+         protected ICoreServerAPI api;
+         // This system has its own AStar classes to avoid potential cross-thread issues with others (e.g. Essentials.PathfindSystem)
+         protected AStar astar_offthread;
+@@ -17,10 +46,14 @@ namespace Vintagestory.Essentials
+         protected bool isShuttingDown;
+         public ConcurrentQueue<PathfinderTask> PathfinderTasks = new ConcurrentQueue<PathfinderTask>();
+         protected readonly Stopwatch totalTime = new Stopwatch();
+         protected long lastTickTimeMs;
+ 
++        // Stratum: extra worker threads beyond the built-in single ai-pathfinding thread.
++        private readonly List<PathfindingAsyncWorker> stratumExtraWorkers = new List<PathfindingAsyncWorker>();
++        private int stratumMaxQueued;
++
+         public override bool ShouldLoad(EnumAppSide forSide)
+         {
+             return forSide == EnumAppSide.Server;
+         }
+ 
+@@ -33,10 +66,53 @@ namespace Vintagestory.Essentials
+ 
+             api.Event.ServerRunPhase(EnumServerRunPhase.Shutdown, () => isShuttingDown = true);
+             api.Event.RegisterGameTickListener(OnMainThreadTick, 20);
+ 
+             api.Server.AddServerThread("ai-pathfinding", this);
++
++            StartStratumExtraWorkers();
++        }
++
++        private void StartStratumExtraWorkers()
++        {
++            // Read Stratum config reflectively (lives in VintagestoryLib, internal) to avoid a hard dependency.
++            int extra = 0;
++            int maxQueued = 0;
++            bool asyncEnabled = true;
++            try
++            {
++                Assembly libAsm = AppDomain.CurrentDomain.GetAssemblies()
++                    .FirstOrDefault(a => a.GetName().Name == "VintagestoryLib");
++                Type runtimeT = libAsm?.GetType("Vintagestory.Server.StratumRuntime");
++                object cfg = runtimeT?.GetProperty("Config", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null);
++                object perf = cfg?.GetType().GetProperty("Performance")?.GetValue(cfg);
++                object pf = perf?.GetType().GetProperty("Pathfinding")?.GetValue(perf);
++                if (pf != null)
++                {
++                    asyncEnabled = (bool)(pf.GetType().GetProperty("Async")?.GetValue(pf) ?? true);
++                    int workers = (int)(pf.GetType().GetProperty("WorkerThreads")?.GetValue(pf) ?? 0);
++                    if (workers <= 0) workers = Math.Max(2, Environment.ProcessorCount / 2);
++                    // We already have one built-in worker thread; add (workers - 1) extras.
++                    extra = Math.Max(0, workers - 1);
++                    maxQueued = (int)(pf.GetType().GetProperty("MaxQueued")?.GetValue(pf) ?? 0);
++                }
++            }
++            catch (Exception e)
++            {
++                api.Logger.Warning("Stratum pathfinding config read failed, using defaults: {0}", e.Message);
++            }
++
++            stratumMaxQueued = maxQueued;
++            if (!asyncEnabled || extra <= 0) return;
++
++            for (int i = 0; i < extra; i++)
++            {
++                var worker = new PathfindingAsyncWorker(this, api);
++                stratumExtraWorkers.Add(worker);
++                api.Server.AddServerThread("ai-pathfinding-" + (i + 2), worker);
++            }
++            api.Logger.Notification("Stratum: pathfinding running on {0} parallel worker threads.", 1 + extra);
+         }
+ 
+ 
+         public int OffThreadInterval()
+         {
+@@ -110,10 +186,15 @@ namespace Vintagestory.Essentials
+         }
+ 
+ 
+         public void EnqueuePathfinderTask(PathfinderTask task)
+         {
++            if (stratumMaxQueued > 0 && PathfinderTasks.Count >= stratumMaxQueued)
++            {
++                // Drop oldest to keep the queue bounded under sustained load.
++                PathfinderTasks.TryDequeue(out _);
++            }
+             PathfinderTasks.Enqueue(task);
+         }
+ 
+ 
+         public override void Dispose()

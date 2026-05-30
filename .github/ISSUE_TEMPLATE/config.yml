@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discord
+    url: https://discord.gg/pd24fawhsD
+    about: Ask questions or get help from the community.
+  - name: Vanilla bug
+    url: https://github.com/anegostudios/VintageStory-Issues/issues
+    about: If the same problem happens on a stock vanilla server, report it upstream instead.

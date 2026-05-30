@@ -1,0 +1,59 @@
+# Build output
+**/bin/
+**/obj/
+**/*.lscache
+**/*.user
+**/*.suo
+**/.vs/
+
+# Distribution staging
+/dist/
+build.log
+build_output.txt
+
+# Closed-source vanilla VS source. Reconstructed locally by scripts/bootstrap.ps1
+# from the official server zip plus patches/. Never committed.
+/VintagestoryLib/
+/VintagestoryServer/
+/Vintagestory/
+/Cairo/
+/VSCrashReporter/
+/VSCrashReporterLib/
+
+# Open-source Anego forks. Reconstructed by scripts/bootstrap.ps1 from upstream
+# at the SHAs pinned in forks.json, then patches/<name>/*.patch is applied on top.
+/VintagestoryApi/
+/VSEssentials/
+/VSSurvivalMod/
+
+# Separate repos. Clone alongside this one if you need them.
+/StratumUI/
+/StratumServerGui/
+/StratumLoadTester/
+/Nimbus/
+/ModAuth/
+/ModMaker/
+/VsNpc/
+/VSCreativeMod/
+
+# Local-only assets (logos, etc.)
+/Assets/
+
+# Scratch dirs for the bootstrap/patch tools
+/.vanilla/
+/.baseline/
+/.vanilla-zips/
+
+# Reconstituted working tree for decompiled projects. Built by scripts/bootstrap.ps1
+# from .baseline/ plus patches/ + sources/. Never committed.
+/baseline/
+
+# Editor / OS
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local secrets / per-machine config
+*.local.json
+*.local.props

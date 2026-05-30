@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PowerShell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y powershell
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Bootstrap working tree
+        shell: pwsh
+        run: ./scripts/bootstrap.ps1
+
+      - name: Publish StratumServer
+        run: |
+          dotnet publish StratumServer/StratumServer.csproj \
+            -c Release \
+            -r linux-x64 --self-contained false \
+            -o publish/linux-x64
+          dotnet publish StratumServer/StratumServer.csproj \
+            -c Release \
+            -r win-x64 --self-contained false \
+            -o publish/win-x64
+
+      - name: Stage release payload
+        shell: pwsh
+        run: ./scripts/pack-release.ps1 -PublishRoot publish -OutDir release-out
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release-out/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true

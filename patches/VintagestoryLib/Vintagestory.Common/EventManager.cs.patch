@@ -1,0 +1,268 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/EventManager.cs b/VintagestoryLib/Vintagestory.Common/EventManager.cs
+index 842d31f..bfcaf6e 100644
+--- a/VintagestoryLib/Vintagestory.Common/EventManager.cs
++++ b/VintagestoryLib/Vintagestory.Common/EventManager.cs
+@@ -1,11 +1,13 @@
+ using System;
+ using System.Collections.Concurrent;
+ using System.Collections.Generic;
++using System.Diagnostics;
+ using System.Threading;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.MathTools;
++using Vintagestory.Server;
+ 
+ namespace Vintagestory.Common;
+ 
+ public abstract class EventManager
+ {
+@@ -27,10 +29,12 @@ public abstract class EventManager
+ 
+ 	internal Dictionary<BlockPos, DelayedCallbackBlock> SingleDelayedCallbacksBlock = new Dictionary<BlockPos, DelayedCallbackBlock>();
+ 
+ 	private List<DelayedCallback> deletable = new List<DelayedCallback>();
+ 
++	private List<BlockPos> singleDelayedCallbackBlockKeys = new List<BlockPos>();
++
+ 	public abstract ILogger Logger { get; }
+ 
+ 	public abstract string CommandPrefix { get; }
+ 
+ 	public abstract long InWorldEllapsedMs { get; }
+@@ -133,30 +137,116 @@ public abstract class EventManager
+ 	}
+ 
+ 	public virtual void TriggerGameTick(long ellapsedMilliseconds, IWorldAccessor world)
+ 	{
+ 		FrameProfilerUtil frameProfiler = world.FrameProfiler;
++		StratumEventTickConfig stratumEvtCfg = StratumRuntime.Config?.Performance?.EventTick;
++		bool stratumRecordSubsections = stratumEvtCfg != null && stratumEvtCfg.Enabled && stratumEvtCfg.RecordSubsectionTimings && StratumRuntime.Timings.Enabled;
++		int stratumSlowBlockThresholdMs = stratumEvtCfg != null ? stratumEvtCfg.SlowBlockListenerThresholdMs : 0;
++		int stratumSlowEntityThresholdMs = stratumEvtCfg != null ? stratumEvtCfg.SlowEntityListenerThresholdMs : 0;
++		long stratumSectionStart = stratumRecordSubsections ? Stopwatch.GetTimestamp() : 0L;
++
+ 		List<GameTickListener> gameTickListenersEntity = GameTickListenersEntity;
++		long stratumSlowEntityTicks = stratumSlowEntityThresholdMs > 0 ? (Stopwatch.Frequency / 1000L) * stratumSlowEntityThresholdMs : long.MaxValue;
++		// Stratum: Paper-style adaptive entity-listener throttle. When the previous server tick
++		// was overloaded, multiply the effective interval of non-critical listeners by a
++		// configurable factor so they fire less often and yield CPU back to the main tick.
++		// Critical listeners (interval <= AdaptiveCriticalIntervalMs) are exempt ╬ô├ç├╢ those are
++		// physics, packet dispatch, AI scan, etc. and need to keep their cadence.
++		bool stratumAdaptiveThrottle = stratumEvtCfg != null
++			&& stratumEvtCfg.Enabled
++			&& stratumEvtCfg.AdaptiveThrottleWhenOverloaded
++			&& stratumEvtCfg.AdaptiveOverloadedMultiplier > 1
++			&& StratumRuntime.PreviousTickOverloaded;
++		int stratumAdaptiveMul = stratumAdaptiveThrottle ? Math.Max(1, stratumEvtCfg!.AdaptiveOverloadedMultiplier) : 1;
++		int stratumAdaptiveCritMs = stratumEvtCfg != null ? Math.Max(0, stratumEvtCfg.AdaptiveCriticalIntervalMs) : 50;
++		int stratumEntityListenersThrottled = 0;
+ 		for (int i = 0; i < gameTickListenersEntity.Count; i++)
+ 		{
+ 			GameTickListener gameTickListener = gameTickListenersEntity[i];
+-			if (gameTickListener != null && ellapsedMilliseconds - gameTickListener.LastUpdateMilliseconds > gameTickListener.Millisecondinterval)
++			if (gameTickListener == null)
+ 			{
+-				gameTickListener.OnTriggered(ellapsedMilliseconds);
++				continue;
++			}
++			int stratumEffectiveInterval = gameTickListener.Millisecondinterval;
++			if (stratumAdaptiveThrottle && stratumEffectiveInterval > stratumAdaptiveCritMs)
++			{
++				stratumEffectiveInterval *= stratumAdaptiveMul;
+ 			}
++			if (ellapsedMilliseconds - gameTickListener.LastUpdateMilliseconds > stratumEffectiveInterval)
++			{
++				if (stratumSlowEntityThresholdMs > 0)
++				{
++					long stratumLStart = Stopwatch.GetTimestamp();
++					gameTickListener.OnTriggered(ellapsedMilliseconds);
++					long stratumLElapsed = Stopwatch.GetTimestamp() - stratumLStart;
++					if (stratumLElapsed >= stratumSlowEntityTicks)
++					{
++						StratumRuntime.Timings.RecordMeasuredTicks("eventTick.gtEntity.slow." + (gameTickListener.ProfilerName ?? "unknown"), stratumLElapsed);
++					}
++				}
++				else
++				{
++					gameTickListener.OnTriggered(ellapsedMilliseconds);
++				}
++			}
++			else if (stratumAdaptiveThrottle && stratumEffectiveInterval != gameTickListener.Millisecondinterval)
++			{
++				stratumEntityListenersThrottled++;
++			}
++		}
++		if (stratumAdaptiveThrottle && stratumEntityListenersThrottled > 0)
++		{
++			StratumRuntime.Timings.RecordMeasuredTicks("eventTick.gtEntity.throttled", stratumEntityListenersThrottled);
+ 		}
+ 		frameProfiler.Mark("tick-gtentity");
++		if (stratumRecordSubsections)
++		{
++			StratumRuntime.Timings.RecordElapsed("eventTick.gtEntity", stratumSectionStart);
++			stratumSectionStart = Stopwatch.GetTimestamp();
++		}
++
+ 		List<GameTickListenerBlock> gameTickListenersBlock = GameTickListenersBlock;
++		int blockListenersReady = 0;
++		int blockListenersTriggered = 0;
++		int blockListenersSkipped = 0;
++		long stratumSlowThresholdTicks = stratumSlowBlockThresholdMs > 0 ? (Stopwatch.Frequency / 1000L) * stratumSlowBlockThresholdMs : long.MaxValue;
+ 		for (int j = 0; j < gameTickListenersBlock.Count; j++)
+ 		{
+ 			GameTickListenerBlock gameTickListenerBlock = gameTickListenersBlock[j];
+ 			if (gameTickListenerBlock != null && ellapsedMilliseconds - gameTickListenerBlock.LastUpdateMilliseconds > gameTickListenerBlock.Millisecondinterval)
+ 			{
+-				gameTickListenerBlock.OnTriggered(world, gameTickListenerBlock.Pos, ellapsedMilliseconds);
++				blockListenersReady++;
++				if (ShouldTriggerBlockGameTick(gameTickListenerBlock, ellapsedMilliseconds, world))
++				{
++					long stratumListenerStart = stratumSlowBlockThresholdMs > 0 ? Stopwatch.GetTimestamp() : 0L;
++					gameTickListenerBlock.OnTriggered(world, gameTickListenerBlock.Pos, ellapsedMilliseconds);
++					if (stratumSlowBlockThresholdMs > 0)
++					{
++						long stratumListenerElapsed = Stopwatch.GetTimestamp() - stratumListenerStart;
++						if (stratumListenerElapsed >= stratumSlowThresholdTicks)
++						{
++							StratumRuntime.Timings.RecordMeasuredTicks("eventTick.gtBlock.slow." + (gameTickListenerBlock.ProfilerName ?? "unknown"), stratumListenerElapsed);
++						}
++					}
++					blockListenersTriggered++;
++				}
++				else
++				{
++					gameTickListenerBlock.LastUpdateMilliseconds = ellapsedMilliseconds;
++					blockListenersSkipped++;
++				}
+ 			}
+ 		}
++		RecordBlockGameTickListeners(blockListenersReady, blockListenersTriggered, blockListenersSkipped);
+ 		frameProfiler.Mark("tick-gtblock");
++		if (stratumRecordSubsections)
++		{
++			StratumRuntime.Timings.RecordElapsed("eventTick.gtBlock", stratumSectionStart);
++			stratumSectionStart = Stopwatch.GetTimestamp();
++		}
++
+ 		deletable.Clear();
+ 		foreach (KeyValuePair<long, DelayedCallback> item in DelayedCallbacksEntity)
+ 		{
+ 			if (ellapsedMilliseconds - item.Value.CallAtEllapsedMilliseconds >= 0)
+ 			{
+@@ -168,10 +258,16 @@ public abstract class EventManager
+ 		frameProfiler.Mark("tick-dcentity");
+ 		foreach (DelayedCallback item2 in deletable)
+ 		{
+ 			DelayedCallbacksEntity.TryRemove(item2.ListenerId, out var _);
+ 		}
++		if (stratumRecordSubsections)
++		{
++			StratumRuntime.Timings.RecordElapsed("eventTick.dcEntity", stratumSectionStart);
++			stratumSectionStart = Stopwatch.GetTimestamp();
++		}
++
+ 		List<DelayedCallbackBlock> delayedCallbacksBlock = DelayedCallbacksBlock;
+ 		for (int k = 0; k < delayedCallbacksBlock.Count; k++)
+ 		{
+ 			DelayedCallbackBlock delayedCallbackBlock = delayedCallbacksBlock[k];
+ 			if (ellapsedMilliseconds - delayedCallbackBlock.CallAtEllapsedMilliseconds >= 0)
+@@ -182,21 +278,28 @@ public abstract class EventManager
+ 			}
+ 		}
+ 		Dictionary<BlockPos, DelayedCallbackBlock> singleDelayedCallbacksBlock = SingleDelayedCallbacksBlock;
+ 		if (singleDelayedCallbacksBlock.Count > 0)
+ 		{
+-			foreach (BlockPos item3 in new List<BlockPos>(singleDelayedCallbacksBlock.Keys))
++			singleDelayedCallbackBlockKeys.Clear();
++			singleDelayedCallbackBlockKeys.AddRange(singleDelayedCallbacksBlock.Keys);
++			foreach (BlockPos item3 in singleDelayedCallbackBlockKeys)
+ 			{
+ 				DelayedCallbackBlock delayedCallbackBlock2 = singleDelayedCallbacksBlock[item3];
+ 				if (ellapsedMilliseconds - delayedCallbackBlock2.CallAtEllapsedMilliseconds >= 0)
+ 				{
+ 					singleDelayedCallbacksBlock.Remove(item3);
+ 					delayedCallbackBlock2.Handler(world, delayedCallbackBlock2.Pos, (float)(ellapsedMilliseconds - delayedCallbackBlock2.CallAtEllapsedMilliseconds) / 1000f);
+ 				}
+ 			}
++			singleDelayedCallbackBlockKeys.Clear();
+ 		}
+ 		frameProfiler.Mark("tick-dcblock");
++		if (stratumRecordSubsections)
++		{
++			StratumRuntime.Timings.RecordElapsed("eventTick.dcBlock", stratumSectionStart);
++		}
+ 	}
+ 
+ 	public virtual void TriggerGameTickDebug(long ellapsedMilliseconds, IWorldAccessor world)
+ 	{
+ 		List<GameTickListener> gameTickListenersEntity = GameTickListenersEntity;
+@@ -208,19 +311,33 @@ public abstract class EventManager
+ 				gameTickListener.OnTriggered(ellapsedMilliseconds);
+ 				world.FrameProfiler.Mark("gmle", gameTickListener.ProfilerName);
+ 			}
+ 		}
+ 		List<GameTickListenerBlock> gameTickListenersBlock = GameTickListenersBlock;
++		int blockListenersReady = 0;
++		int blockListenersTriggered = 0;
++		int blockListenersSkipped = 0;
+ 		for (int j = 0; j < gameTickListenersBlock.Count; j++)
+ 		{
+ 			GameTickListenerBlock gameTickListenerBlock = gameTickListenersBlock[j];
+ 			if (gameTickListenerBlock != null && ellapsedMilliseconds - gameTickListenerBlock.LastUpdateMilliseconds > gameTickListenerBlock.Millisecondinterval)
+ 			{
+-				gameTickListenerBlock.OnTriggered(world, gameTickListenerBlock.Pos, ellapsedMilliseconds);
+-				world.FrameProfiler.Mark("gmlb", gameTickListenerBlock.ProfilerName);
++				blockListenersReady++;
++				if (ShouldTriggerBlockGameTick(gameTickListenerBlock, ellapsedMilliseconds, world))
++				{
++					gameTickListenerBlock.OnTriggered(world, gameTickListenerBlock.Pos, ellapsedMilliseconds);
++					world.FrameProfiler.Mark("gmlb", gameTickListenerBlock.ProfilerName);
++					blockListenersTriggered++;
++				}
++				else
++				{
++					gameTickListenerBlock.LastUpdateMilliseconds = ellapsedMilliseconds;
++					blockListenersSkipped++;
++				}
+ 			}
+ 		}
++		RecordBlockGameTickListeners(blockListenersReady, blockListenersTriggered, blockListenersSkipped);
+ 		deletable.Clear();
+ 		foreach (KeyValuePair<long, DelayedCallback> item in DelayedCallbacksEntity)
+ 		{
+ 			if (ellapsedMilliseconds - item.Value.CallAtEllapsedMilliseconds >= 0)
+ 			{
+@@ -249,20 +366,32 @@ public abstract class EventManager
+ 		Dictionary<BlockPos, DelayedCallbackBlock> singleDelayedCallbacksBlock = SingleDelayedCallbacksBlock;
+ 		if (singleDelayedCallbacksBlock.Count <= 0)
+ 		{
+ 			return;
+ 		}
+-		foreach (BlockPos item3 in new List<BlockPos>(singleDelayedCallbacksBlock.Keys))
++		singleDelayedCallbackBlockKeys.Clear();
++		singleDelayedCallbackBlockKeys.AddRange(singleDelayedCallbacksBlock.Keys);
++		foreach (BlockPos item3 in singleDelayedCallbackBlockKeys)
+ 		{
+ 			DelayedCallbackBlock delayedCallbackBlock2 = singleDelayedCallbacksBlock[item3];
+ 			if (ellapsedMilliseconds - delayedCallbackBlock2.CallAtEllapsedMilliseconds >= 0)
+ 			{
+ 				singleDelayedCallbacksBlock.Remove(item3);
+ 				delayedCallbackBlock2.Handler(world, delayedCallbackBlock2.Pos, (float)(ellapsedMilliseconds - delayedCallbackBlock2.CallAtEllapsedMilliseconds) / 1000f);
+ 				world.FrameProfiler.Mark("sdcb", delayedCallbackBlock2.ProfileName);
+ 			}
+ 		}
++		singleDelayedCallbackBlockKeys.Clear();
++	}
++
++	protected virtual bool ShouldTriggerBlockGameTick(GameTickListenerBlock listener, long ellapsedMilliseconds, IWorldAccessor world)
++	{
++		return true;
++	}
++
++	protected virtual void RecordBlockGameTickListeners(int ready, int triggered, int skipped)
++	{
+ 	}
+ 
+ 	public virtual long AddGameTickListener(Action<float> handler, int millisecondInterval, int initialDelayOffsetMs = 0)
+ 	{
+ 		return AddGameTickListener(handler, null, millisecondInterval, initialDelayOffsetMs);

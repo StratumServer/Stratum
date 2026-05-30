@@ -1,0 +1,264 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/GameMain.cs b/VintagestoryLib/Vintagestory.Common/GameMain.cs
+index 48c8694..f7fd804 100644
+--- a/VintagestoryLib/Vintagestory.Common/GameMain.cs
++++ b/VintagestoryLib/Vintagestory.Common/GameMain.cs
+@@ -29,10 +29,21 @@ public abstract class GameMain : IWorldIntersectionSupplier
+ 
+ 	private EntitySelection entitySelTmp = new EntitySelection();
+ 
+ 	private static readonly Vec3d MidVec3d = new Vec3d(0.5, 0.5, 0.5);
+ 
++	[ThreadStatic]
++	private static List<Entity> reusableEntitiesAround;
++
++	[ThreadStatic]
++	private static int reusableEntitiesAroundDepth;
++
++	[ThreadStatic]
++	private static EntityFilter rayTraceEntityFilter;
++
++	private static readonly ActionConsumable<Entity> RayTraceEntityMatches = MatchesRayTraceEntity;
++
+ 	public Block WaterBlock { get; set; }
+ 
+ 	public System.Collections.Generic.OrderedDictionary<IRecipeIngredientBase, List<IRecipeBase>> FastSearchRecipesByIngredient { get; }
+ 
+ 	public abstract ClassRegistry ClassRegistryInt { get; set; }
+@@ -130,39 +141,65 @@ public abstract class GameMain : IWorldIntersectionSupplier
+ 	{
+ 		interesectionTester.LoadRayAndPos(ray);
+ 		interesectionTester.bsTester = supplier;
+ 		float num = (float)ray.Length;
+ 		blockSelection = interesectionTester.GetSelectedBlock(num, bfilter);
+-		Entity[] entitiesAround = supplier.GetEntitiesAround(ray.origin, num, num, (Entity entity3) => efilter == null || efilter(entity3));
+ 		Entity entity = null;
+ 		double num2 = double.MaxValue;
+-		foreach (Entity entity2 in entitiesAround)
++		if (ReferenceEquals(supplier, this))
+ 		{
+-			int selectionBoxIndex = 0;
+-			if (entity2.IntersectsRay(ray, interesectionTester, out var intersectionDistance, ref selectionBoxIndex) && intersectionDistance < num2)
++			FindNearestRayIntersectingEntity(ray, num, efilter, ref entity, ref num2);
++		}
++		else
++		{
++			EntityFilter previousFilter = rayTraceEntityFilter;
++			rayTraceEntityFilter = efilter;
++			try
++			{
++				Entity[] entitiesAround = supplier.GetEntitiesAround(ray.origin, num, num, RayTraceEntityMatches);
++				foreach (Entity entity2 in entitiesAround)
++				{
++					int selectionBoxIndex = 0;
++					if (entity2.IntersectsRay(ray, interesectionTester, out var intersectionDistance, ref selectionBoxIndex) && intersectionDistance < num2)
++					{
++						entity = entity2;
++						num2 = intersectionDistance;
++						entitySelTmp.SelectionBoxIndex = selectionBoxIndex;
++						entitySelTmp.Entity = entity2;
++						entitySelTmp.Face = interesectionTester.hitOnBlockFace;
++						entitySelTmp.HitPosition = interesectionTester.hitPosition.SubCopy(entity2.Pos.X, entity2.Pos.Y, entity2.Pos.Z);
++						entitySelTmp.Position = entity2.Pos.XYZ;
++					}
++				}
++			}
++			finally
+ 			{
+-				entity = entity2;
+-				num2 = intersectionDistance;
+-				entitySelTmp.SelectionBoxIndex = selectionBoxIndex;
+-				entitySelTmp.Entity = entity2;
+-				entitySelTmp.Face = interesectionTester.hitOnBlockFace;
+-				entitySelTmp.HitPosition = interesectionTester.hitPosition.SubCopy(entity2.Pos.X, entity2.Pos.Y, entity2.Pos.Z);
+-				entitySelTmp.Position = entity2.Pos.XYZ;
++				rayTraceEntityFilter = previousFilter;
+ 			}
+ 		}
+ 		entitySelection = null;
+ 		if (entity == null)
+ 		{
+ 			return;
+ 		}
+ 		if (blockSelection != null)
+ 		{
+ 			BlockPos position = blockSelection.Position;
+-			Vec3d pos = new Vec3d(position.X, position.InternalY, position.Z).Add(blockSelection.HitPosition);
+-			Vec3d pos2 = new Vec3d(entity.Pos.X, entity.Pos.Y, entity.Pos.Z).Add(entitySelTmp.HitPosition);
+-			float num4 = ray.origin.SquareDistanceTo(pos2);
+-			float num5 = ray.origin.SquareDistanceTo(pos);
++			double entityX = entity.Pos.X + entitySelTmp.HitPosition.X;
++			double entityY = entity.Pos.Y + entitySelTmp.HitPosition.Y;
++			double entityZ = entity.Pos.Z + entitySelTmp.HitPosition.Z;
++			double blockX = position.X + blockSelection.HitPosition.X;
++			double blockY = position.InternalY + blockSelection.HitPosition.Y;
++			double blockZ = position.Z + blockSelection.HitPosition.Z;
++			double entityDeltaX = ray.origin.X - entityX;
++			double entityDeltaY = ray.origin.Y - entityY;
++			double entityDeltaZ = ray.origin.Z - entityZ;
++			double blockDeltaX = ray.origin.X - blockX;
++			double blockDeltaY = ray.origin.Y - blockY;
++			double blockDeltaZ = ray.origin.Z - blockZ;
++			double num4 = entityDeltaX * entityDeltaX + entityDeltaY * entityDeltaY + entityDeltaZ * entityDeltaZ;
++			double num5 = blockDeltaX * blockDeltaX + blockDeltaY * blockDeltaY + blockDeltaZ * blockDeltaZ;
+ 			if (num4 < num5)
+ 			{
+ 				blockSelection = null;
+ 				entitySelection = entitySelTmp.Clone();
+ 			}
+@@ -171,10 +208,71 @@ public abstract class GameMain : IWorldIntersectionSupplier
+ 		{
+ 			entitySelection = entitySelTmp.Clone();
+ 		}
+ 	}
+ 
++	private static bool MatchesRayTraceEntity(Entity entity)
++	{
++		return rayTraceEntityFilter == null || rayTraceEntityFilter(entity);
++	}
++
++	private void FindNearestRayIntersectingEntity(Ray ray, float range, EntityFilter efilter, ref Entity selectedEntity, ref double nearestDistance)
++	{
++		int chunkX1 = (int)((ray.origin.X - range) / 32.0);
++		int chunkX2 = (int)((ray.origin.X + range) / 32.0);
++		int chunkY1 = (int)((ray.origin.Y - range) / 32.0);
++		int chunkY2 = (int)((ray.origin.Y + range) / 32.0);
++		int chunkZ1 = (int)((ray.origin.Z - range) / 32.0);
++		int chunkZ2 = (int)((ray.origin.Z + range) / 32.0);
++		float rangeSq = range * range;
++		for (int chunkX = chunkX1; chunkX <= chunkX2; chunkX++)
++		{
++			for (int chunkY = chunkY1; chunkY <= chunkY2; chunkY++)
++			{
++				for (int chunkZ = chunkZ1; chunkZ <= chunkZ2; chunkZ++)
++				{
++					IWorldChunk chunk = World.BlockAccessor.GetChunk(chunkX, chunkY, chunkZ);
++					Entity[] entities = chunk?.Entities;
++					if (entities == null)
++					{
++						continue;
++					}
++
++					for (int i = 0; i < entities.Length; i++)
++					{
++						Entity entity = entities[i];
++						if (entity == null)
++						{
++							if (i >= chunk.EntitiesCount)
++							{
++								break;
++							}
++							continue;
++						}
++
++						if (entity.State == EnumEntityState.Despawned || (efilter != null && !efilter(entity)) || !entity.InRangeOf(ray.origin, rangeSq, range))
++						{
++							continue;
++						}
++
++						int selectionBoxIndex = 0;
++						if (entity.IntersectsRay(ray, interesectionTester, out double intersectionDistance, ref selectionBoxIndex) && intersectionDistance < nearestDistance)
++						{
++							selectedEntity = entity;
++							nearestDistance = intersectionDistance;
++							entitySelTmp.SelectionBoxIndex = selectionBoxIndex;
++							entitySelTmp.Entity = entity;
++							entitySelTmp.Face = interesectionTester.hitOnBlockFace;
++							entitySelTmp.HitPosition = interesectionTester.hitPosition.SubCopy(entity.Pos.X, entity.Pos.Y, entity.Pos.Z);
++							entitySelTmp.Position = entity.Pos.XYZ;
++						}
++					}
++				}
++			}
++		}
++	}
++
+ 	public void RayTraceForSelection(IPlayer player, ref BlockSelection blockSelection, ref EntitySelection entitySelection, BlockFilter bfilter = null, EntityFilter efilter = null)
+ 	{
+ 		Vec3d fromPos = player.Entity.Pos.XYZ.Add(player.Entity.LocalEyePos);
+ 		RayTraceForSelection(fromPos, player.Entity.Pos.Pitch, player.Entity.Pos.Yaw, player.WorldData.PickingRange, ref blockSelection, ref entitySelection, bfilter, efilter);
+ 	}
+@@ -208,47 +306,61 @@ public abstract class GameMain : IWorldIntersectionSupplier
+ 		int num2 = (int)((position.X + (double)horRange) / 32.0);
+ 		int num3 = (int)((position.Y - (double)vertRange) / 32.0);
+ 		int num4 = (int)((position.Y + (double)vertRange) / 32.0);
+ 		int num5 = (int)((position.Z - (double)horRange) / 32.0);
+ 		int num6 = (int)((position.Z + (double)horRange) / 32.0);
+-		List<Entity> list = new List<Entity>();
+-		float horRangeSq = horRange * horRange;
+-		if (matches == null)
++		bool reuseList = reusableEntitiesAroundDepth == 0;
++		reusableEntitiesAroundDepth++;
++		List<Entity> list = reuseList ? (reusableEntitiesAround ??= new List<Entity>()) : new List<Entity>();
++		if (reuseList)
+ 		{
+-			matches = (Entity e) => true;
++			list.Clear();
+ 		}
+-		for (int num7 = num; num7 <= num2; num7++)
++
++		float horRangeSq = horRange * horRange;
++		try
+ 		{
+-			for (int num8 = num3; num8 <= num4; num8++)
++			for (int num7 = num; num7 <= num2; num7++)
+ 			{
+-				for (int num9 = num5; num9 <= num6; num9++)
++				for (int num8 = num3; num8 <= num4; num8++)
+ 				{
+-					IWorldChunk chunk = World.BlockAccessor.GetChunk(num7, num8, num9);
+-					Entity[] array = chunk?.Entities;
+-					if (array == null)
++					for (int num9 = num5; num9 <= num6; num9++)
+ 					{
+-						continue;
+-					}
+-					for (int num10 = 0; num10 < array.Length; num10++)
+-					{
+-						Entity entity = array[num10];
+-						if (entity == null)
++						IWorldChunk chunk = World.BlockAccessor.GetChunk(num7, num8, num9);
++						Entity[] array = chunk?.Entities;
++						if (array == null)
+ 						{
+-							if (num10 >= chunk.EntitiesCount)
+-							{
+-								break;
+-							}
++							continue;
+ 						}
+-						else if (entity.State != EnumEntityState.Despawned && matches(entity) && entity.InRangeOf(position, horRangeSq, vertRange))
++						for (int num10 = 0; num10 < array.Length; num10++)
+ 						{
+-							list.Add(entity);
++							Entity entity = array[num10];
++							if (entity == null)
++							{
++								if (num10 >= chunk.EntitiesCount)
++								{
++									break;
++								}
++							}
++							else if (entity.State != EnumEntityState.Despawned && (matches == null || matches(entity)) && entity.InRangeOf(position, horRangeSq, vertRange))
++							{
++								list.Add(entity);
++							}
+ 						}
+ 					}
+ 				}
+ 			}
++			return list.Count == 0 ? Array.Empty<Entity>() : list.ToArray();
++		}
++		finally
++		{
++			if (reuseList)
++			{
++				list.Clear();
++			}
++			reusableEntitiesAroundDepth--;
+ 		}
+-		return list.ToArray();
+ 	}
+ 
+ 	public Entity[] GetEntitiesInsideCuboid(BlockPos startPos, BlockPos endPos, ActionConsumable<Entity> matches = null)
+ 	{
+ 		int num = Math.Min(startPos.X, endPos.X);

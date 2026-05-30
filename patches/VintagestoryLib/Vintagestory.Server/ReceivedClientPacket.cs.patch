@@ -1,0 +1,32 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ReceivedClientPacket.cs b/VintagestoryLib/Vintagestory.Server/ReceivedClientPacket.cs
+index aaadc69..a6abeaf 100644
+--- a/VintagestoryLib/Vintagestory.Server/ReceivedClientPacket.cs
++++ b/VintagestoryLib/Vintagestory.Server/ReceivedClientPacket.cs
+@@ -6,23 +6,26 @@ public class ReceivedClientPacket
+ 
+ 	internal readonly Packet_Client packet;
+ 
+ 	internal readonly string disconnectReason;
+ 
++	internal readonly int byteLength;
++
+ 	internal readonly ReceivedClientPacketType type;
+ 
+ 	public ReceivedClientPacket(ConnectedClient client)
+ 	{
+ 		type = ReceivedClientPacketType.NewConnection;
+ 		this.client = client;
+ 	}
+ 
+-	public ReceivedClientPacket(ConnectedClient client, Packet_Client packet)
++	public ReceivedClientPacket(ConnectedClient client, Packet_Client packet, int byteLength = 0)
+ 	{
+ 		type = ReceivedClientPacketType.PacketReceived;
+ 		this.client = client;
+ 		this.packet = packet;
++		this.byteLength = byteLength;
+ 	}
+ 
+ 	public ReceivedClientPacket(ConnectedClient client, string reason)
+ 	{
+ 		type = ReceivedClientPacketType.Disconnect;

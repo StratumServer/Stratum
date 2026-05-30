@@ -1,0 +1,39 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
+index d4a0736..f1eadb8 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
+@@ -1,5 +1,6 @@
++using System;
+ using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+@@ -238,13 +239,24 @@ public class ServerPackets
+ 		};
+ 	}
+ 
+ 	public static Packet_Server GetEntityDespawnPacket(List<EntityDespawn> despawns)
+ 	{
+-		long[] entityId = despawns.Select((EntityDespawn item) => item.EntityId).ToArray();
+-		int[] despawnReason = despawns.Select((EntityDespawn item) => (int)((item.DespawnData != null) ? item.DespawnData.Reason : EnumDespawnReason.Death)).ToArray();
+-		int[] deathDamageSource = despawns.Select((EntityDespawn item) => (int)((item.DespawnData != null) ? ((item.DespawnData.DamageSourceForDeath != null) ? item.DespawnData.DamageSourceForDeath.Source : EnumDamageSource.Unknown) : EnumDamageSource.Block)).ToArray();
++		int count = despawns.Count;
++		long[] entityId = count == 0 ? Array.Empty<long>() : new long[count];
++		int[] despawnReason = count == 0 ? Array.Empty<int>() : new int[count];
++		int[] deathDamageSource = count == 0 ? Array.Empty<int>() : new int[count];
++
++		for (int index = 0; index < count; index++)
++		{
++			EntityDespawn item = despawns[index];
++			EntityDespawnData despawnData = item.DespawnData;
++			entityId[index] = item.EntityId;
++			despawnReason[index] = (int)((despawnData != null) ? despawnData.Reason : EnumDespawnReason.Death);
++			deathDamageSource[index] = (int)((despawnData != null) ? ((despawnData.DamageSourceForDeath != null) ? despawnData.DamageSourceForDeath.Source : EnumDamageSource.Unknown) : EnumDamageSource.Block);
++		}
++
+ 		Packet_EntityDespawn packet_EntityDespawn = new Packet_EntityDespawn();
+ 		packet_EntityDespawn.SetEntityId(entityId);
+ 		packet_EntityDespawn.SetDeathDamageSource(deathDamageSource);
+ 		packet_EntityDespawn.SetDespawnReason(despawnReason);
+ 		return new Packet_Server

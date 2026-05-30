@@ -1,0 +1,48 @@
+diff --git a/VintagestoryApi/Common/Collectible/Block/BlockEntity.cs b/VintagestoryApi/Common/Collectible/Block/BlockEntity.cs
+index fcc230c..4f1742b 100644
+--- a/VintagestoryApi/Common/Collectible/Block/BlockEntity.cs
++++ b/VintagestoryApi/Common/Collectible/Block/BlockEntity.cs
+@@ -128,10 +128,11 @@ namespace Vintagestory.API.Common
+         /// <param name="initialDelayOffsetMs"></param>
+         /// <returns></returns>
+         public virtual long RegisterGameTickListener(Action<float> onGameTick, int millisecondInterval, int initialDelayOffsetMs = 0)
+         {
+             if (Dimensions.ShouldNotTick(Pos, Api)) return 0L;
++            if (initialDelayOffsetMs == 0) initialDelayOffsetMs = StratumComputeInitialDelay(Pos, millisecondInterval);
+             long listenerId = Api.Event.RegisterGameTickListener(onGameTick, Pos, TickingExceptionHandler, millisecondInterval, initialDelayOffsetMs);
+             if (TickHandlers == null) TickHandlers = new List<long>(1);
+             TickHandlers.Add(listenerId);
+             return listenerId;
+         }
+@@ -144,16 +145,31 @@ namespace Vintagestory.API.Common
+         /// <param name="initialDelayOffsetMs"></param>
+         /// <returns></returns>
+         public virtual long RegisterGameTickListener(Action<IWorldAccessor, BlockPos, float> onGameTick, int millisecondInterval, int initialDelayOffsetMs = 0)
+         {
+             if (Dimensions.ShouldNotTick(Pos, Api)) return 0L;
++            if (initialDelayOffsetMs == 0) initialDelayOffsetMs = StratumComputeInitialDelay(Pos, millisecondInterval);
+             long listenerId = Api.Event.RegisterGameTickListener(onGameTick, Pos, TickingExceptionHandler, millisecondInterval, initialDelayOffsetMs);
+             if (TickHandlers == null) TickHandlers = new List<long>(1);
+             TickHandlers.Add(listenerId);
+             return listenerId;
+         }
+ 
++        // Stratum: when > 0, BE tick listeners registered with initialDelayOffsetMs=0 are spread
++        // by Pos.GetHashCode() % min(this, millisecondInterval) so that BEs registered together
++        // (e.g. on chunk load) don't all fire on the same future tick. Set by VintagestoryLib at
++        // server startup from StratumConfig.Performance.BlockEntityInit.
++        public static int StratumDefaultInitialDelaySpreadMs = 0;
++
++        private static int StratumComputeInitialDelay(BlockPos pos, int millisecondInterval)
++        {
++            int spread = StratumDefaultInitialDelaySpreadMs;
++            if (spread <= 0 || millisecondInterval <= 1 || pos == null) return 0;
++            int window = spread < millisecondInterval ? spread : millisecondInterval;
++            return (int)((uint)pos.GetHashCode() % (uint)window);
++        }
++
+         /// <summary>
+         /// Removes a registered game tick listener from the game.
+         /// </summary>
+         /// <param name="listenerId">the ID of the listener to unregister.</param>
+         public virtual void UnregisterGameTickListener(long listenerId)

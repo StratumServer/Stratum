@@ -1,0 +1,16 @@
+diff --git a/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs b/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs
+index 711b1bb..f307888 100644
+--- a/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs
++++ b/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs
+@@ -49,10 +49,11 @@ namespace Vintagestory.GameContent
+             tmp.Set(entity.Pos.X, entity.Pos.InternalY + entity.SelectionBox.Y1 + entity.SelectionBox.Y2 / 2, entity.Pos.Z);
+             Entity[] entities = entity.World.GetEntitiesAround(tmp, 1.5f, 1.5f, entityMatcher);
+             if (entities.Length == 0)
+             {
+                 unconsumedDeltaTime = 0;
++                waitTicks = 2;
+                 return;
+             }
+ 
+ 
+             deltaTime = System.Math.Min(1f, deltaTime + unconsumedDeltaTime);

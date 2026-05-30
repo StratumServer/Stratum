@@ -1,0 +1,370 @@
+﻿{
+  "ConfigVersion": 1,
+  "Diagnostics": {
+    "LogStartupSummary": true,
+    "RunStartupPreflight": true,
+    "LogPreflightWarnings": true
+  },
+  "Hardening": {
+    "PreserveVanillaProtocol": true,
+    "PacketMonitoring": true,
+    "BlockBreakGuards": true,
+    "InventoryGuards": false,
+    "EntityGuards": false
+  },
+  "PacketLimits": {
+    "Enabled": true,
+    "DropViolations": true,
+    "LogViolations": false,
+    "KickViolations": true,
+    "KickInvalidPackets": true,
+    "KickOversizedCustomPackets": true,
+    "KickAfterViolations": 8,
+    "KickMessage": "Disconnected by Stratum packet protection",
+    "WindowSeconds": 5,
+    "DefaultMaxPackets": 300,
+    "MovementMaxPackets": 420,
+    "InventoryMaxPackets": 90,
+    "BlockInteractionMaxPackets": 140,
+    "EntityInteractionMaxPackets": 140,
+    "HandInteractionMaxPackets": 90,
+    "CustomPacketMaxPackets": 120,
+    "CustomPacketMaxBytes": 262144
+  },
+  "BlockBreakGuards": {
+    "Enabled": true,
+    "RequireServerSelection": true,
+    "DropViolations": true,
+    "LogViolations": false,
+    "KickViolations": true,
+    "KickAfterViolations": 3,
+    "ViolationWindowSeconds": 10,
+    "RequiredProgressRatio": 0.8,
+    "GraceSeconds": 0.25,
+    "MinimumTrackedBreakSeconds": 0.15,
+    "KickMessage": "Disconnected by Stratum block break protection"
+  },
+  "ClientModPolicy": {
+    "Enabled": true,
+    "StrictWhitelist": true,
+    "IncludeServerUniversalMods": true,
+    "AllowModIds": [],
+    "LogPolicyOnStartup": true
+  },
+  "CrowdSpawn": {
+    "Enabled": true,
+    "MinimumNearbyPlayers": 24,
+    "DetectionRadiusBlocks": 48,
+    "SpreadRadiusBlocks": 64,
+    "SafePositionTries": 15,
+    "IncludeReturningPlayers": false
+  },
+  "LoadTesting": {
+    "AllowUnauthenticatedClients": false,
+    "RequiredPlayerNamePrefix": "StratumBot",
+    "RequiredPlayerUidPrefix": "stratum-loadtest-",
+    "LogAcceptedClients": true
+  },
+  "Performance": {
+    "ChunkSending": {
+      "Enabled": true,
+      "MaxChunksPerServerTick": 384,
+      "MaxChunksPerClientTick": 64,
+      "IncludeLocalClients": false
+    },
+    "ChunkGeneration": {
+      "Enabled": true,
+      "MaxColumnRequestsPerServerTick": 32,
+      "MaxColumnRequestsPerClientTick": 4,
+      "IncludeLocalClients": false
+    },
+    "ChunkRequestManagement": {
+      "Enabled": true,
+      "CancelStalePendingRequests": true,
+      "MinimumPendingAgeSeconds": 3,
+      "MaxDistanceBeyondViewChunks": 2,
+      "CleanupIntervalMilliseconds": 1000,
+      "MaxTrackedRequestsPerCleanup": 512,
+      "MaxCancelledRequestsPerCleanup": 128,
+      "PrioritizeMovingDirection": true,
+      "ForwardPredictionBlocks": 48,
+      "MinimumMovementSpeed": 0.05
+    },
+    "Pregen": {
+      "Enabled": true,
+      "MaxColumnsPerSecond": 32,
+      "MaxScansPerSecond": 4096,
+      "MaxPendingColumnQueue": 256,
+      "MaxWorkerColumnQueue": 512,
+      "MaxLoadedChunkColumns": 4096,
+      "MaxRadiusChunks": 1000,
+      "MaxAreaColumns": 1000000,
+      "PauseWhenPlayersOnline": true,
+      "PauseBelowTps": 20.0,
+      "ProgressLogIntervalSeconds": 60
+    },
+    "SimulationDistance": {
+      "Enabled": true,
+      "LimitRandomTicks": true,
+      "RandomTickDistanceBlocks": 96,
+      "LimitBlockGameTickListeners": true,
+      "BlockGameTickListenerDistanceBlocks": 128,
+      "TickForceLoadedBlockListeners": true
+    },
+    "Physics": {
+      "Enabled": true,
+      "MaxCatchUpTicksPerServerTick": 2,
+      "OverloadedMaxCatchUpTicksPerServerTick": 1,
+      "MinimumStateUpdateIntervalMs": 500,
+      "OverloadedStateUpdateIntervalMs": 1500,
+      "OverloadedTickThresholdMs": 60,
+      "ActivationRangeEnabled": true,
+      "FarTrackedTickStride": 2,
+      "UntrackedBehaviorTickStride": 4,
+      "NearActivationRadiusBlocks": 24.0,
+      "MidActivationRadiusBlocks": 60.0,
+      "FarBandTickStride": 3
+    },
+    "EntityTicking": {
+      "Enabled": true,
+      "FarEntityDistanceBlocks": 96,
+      "FarEntityTickInterval": 5,
+      "ThrottleCreatures": true,
+      "ThrottleInanimate": true,
+      "SkipMovingEntities": true,
+      "MovingEntitySpeedThreshold": 0.01,
+      "AmbientFaunaTierEnabled": true,
+      "AmbientFaunaTickMultiplier": 2,
+      "AmbientFaunaCodePrefixes": [
+        "fish-", "butterfly-", "dragonfly-", "bee-", "rat-",
+        "chicken-", "hen-", "rooster-", "pig-", "sheep-"
+      ]
+    },
+    "AutoSave": {
+      "Enabled": true,
+      "DelayDuringChunkPressure": true,
+      "IncrementalDirtyFlush": true,
+      "MaxPendingChunkColumns": 256,
+      "MaxWorkerChunkColumns": 512,
+      "MaxDelaySeconds": 120,
+      "IncrementalFlushIntervalSeconds": 10,
+      "MaxLoadedChunksPerFlush": 256,
+      "MaxMapChunksPerFlush": 128,
+      "MaxLoadedChunkScansPerFlush": 4096,
+      "MaxMapChunkScansPerFlush": 2048,
+      "SaveScanRefreshSeconds": 30
+    },
+    "BlockTicks": {
+      "Enabled": true,
+      "MaxChunksPerPass": 512,
+      "MaxRandomTicksPerChunk": 8,
+      "MaxMainThreadBlockTicksPerPass": 5000,
+      "AdaptiveUnderOverload": true,
+      "OverloadTickMs": 45,
+      "OverloadScale": 0.5,
+      "OverloadFloor": 2
+    },
+    "Timings": {
+      "EnabledOnStartup": false,
+      "ReportTopEntries": 30,
+      "SlowSampleThresholdMs": 50.0
+    },
+    "EventTick": {
+      "Enabled": true,
+      "RecordSubsectionTimings": true,
+      "SlowBlockListenerThresholdMs": 5,
+      "SlowEntityListenerThresholdMs": 5,
+      "AdaptiveThrottleWhenOverloaded": true,
+      "AdaptiveOverloadedMultiplier": 2,
+      "AdaptiveCriticalIntervalMs": 50
+    },
+    "EntityCollisions": {
+      "Enabled": true,
+      "MaxCollisionsPerEntity": 12
+    },
+    "BlockEntityInit": {
+      "Enabled": true,
+      "MaxStaggerMs": 250
+    },
+    "TimerResolution": {
+      "Enabled": true,
+      "PeriodMs": 1
+    }
+  },
+  "Commands": {
+    "Enabled": true,
+    "Spawn": {
+      "Enabled": true,
+      "Privilege": "stratum.spawn"
+    },
+    "SetSpawn": {
+      "Enabled": true,
+      "Privilege": "setspawn"
+    },
+    "TeleportRequests": {
+      "Request": {
+        "Enabled": true,
+        "Privilege": "stratum.tpa"
+      },
+      "Here": {
+        "Enabled": true,
+        "Privilege": "stratum.tpahere"
+      },
+      "AllowTpaHere": true,
+      "TimeoutSeconds": 60,
+      "CooldownSeconds": 15,
+      "WarmupSeconds": 5,
+      "TeleportCooldownSeconds": 30,
+      "CancelMoveDistanceBlocks": 0.35,
+      "CancelOnMove": true,
+      "CancelOnDamage": true,
+      "BypassWarmupForStaff": true
+    },
+    "Homes": {
+      "Home": {
+        "Enabled": true,
+        "Privilege": "stratum.home"
+      },
+      "SetHome": {
+        "Enabled": true,
+        "Privilege": "stratum.sethome"
+      },
+      "DeleteHome": {
+        "Enabled": true,
+        "Privilege": "stratum.delhome"
+      },
+      "DefaultMaxHomes": 3,
+      "MaxHomesByRole": {
+        "suvisitor": 0,
+        "crvisitor": 0,
+        "limitedsuplayer": 1,
+        "limitedcrplayer": 1,
+        "suplayer": 3,
+        "crplayer": 3,
+        "sumod": 10,
+        "crmod": 10,
+        "admin": 50
+      }
+    },
+    "Seen": {
+      "Enabled": true,
+      "Privilege": "stratum.seen"
+    },
+    "Whois": {
+      "Enabled": true,
+      "Privilege": "stratum.whois"
+    },
+    "Near": {
+      "Enabled": true,
+      "Privilege": "stratum.near"
+    },
+    "Back": {
+      "Enabled": true,
+      "Privilege": "stratum.back"
+    },
+    "Message": {
+      "Enabled": true,
+      "Privilege": "stratum.msg"
+    },
+    "StaffChat": {
+      "Enabled": true,
+      "Privilege": "stratum.staffchat"
+    },
+    "ChatControl": {
+      "Enabled": true,
+      "Privilege": "stratum.chatcontrol"
+    },
+    "StaffBroadcast": {
+      "Enabled": true,
+      "Privilege": "stratum.staffbroadcast"
+    },
+    "InfoCommands": {
+      "Enabled": true,
+      "Privilege": "stratum.info"
+    },
+    "Vanish": {
+      "Enabled": true,
+      "Privilege": "stratum.vanish"
+    },
+    "Freeze": {
+      "Enabled": true,
+      "Privilege": "stratum.freeze"
+    },
+    "Jail": {
+      "Enabled": true,
+      "Privilege": "stratum.jail"
+    },
+    "Warn": {
+      "Enabled": true,
+      "Privilege": "stratum.warn"
+    },
+    "Mute": {
+      "Enabled": true,
+      "Privilege": "stratum.mute"
+    },
+    "Notes": {
+      "Enabled": true,
+      "Privilege": "stratum.notes"
+    },
+    "Report": {
+      "Enabled": true,
+      "Privilege": "stratum.report",
+      "CooldownSeconds": 60,
+      "CooldownBypassForStaff": true
+    },
+    "ReportManage": {
+      "Enabled": true,
+      "Privilege": "stratum.reports"
+    },
+    "NearDefaultRadiusBlocks": 128,
+    "NearMaxRadiusBlocks": 512,
+    "SlowmodeMaxSeconds": 3600,
+    "ClearChatLines": 80,
+    "JailSettings": {
+      "Location": {
+        "Set": false,
+        "X": 0.0,
+        "Y": 0.0,
+        "Z": 0.0,
+        "Dimension": 0,
+        "Yaw": 0.0,
+        "Pitch": 0.0
+      },
+      "MaxDistanceBlocks": 6.0,
+      "ReturnOnUnjail": true
+    }
+  },
+  "Chat": {
+    "Enabled": true,
+    "RolePrefixesEnabled": true,
+    "LinkifyUrls": true,
+    "PrefixFormat": "[{tag}]",
+    "RulesText": "Rules: be respectful, no griefing, no cheating, no harassment, and do not abuse exploits.",
+    "DiscordUrl": "",
+    "WebsiteUrl": "",
+    "MotdText": "Welcome to this Stratum server.",
+    "RolePrefixes": {
+      "admin": {
+        "Enabled": true,
+        "Tag": "Admin",
+        "Color": "#ff5f57",
+        "Bold": true,
+        "Priority": 100
+      },
+      "sumod": {
+        "Enabled": true,
+        "Tag": "Mod",
+        "Color": "#4cc9f0",
+        "Bold": true,
+        "Priority": 50
+      },
+      "crmod": {
+        "Enabled": true,
+        "Tag": "Mod",
+        "Color": "#4cc9f0",
+        "Bold": true,
+        "Priority": 50
+      }
+    }
+  }
+}

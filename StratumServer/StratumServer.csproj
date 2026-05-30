@@ -1,0 +1,120 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>StratumServer</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>StratumServer</RootNamespace>
+    <Configurations>Debug;Release;PerfTest</Configurations>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\VintagestoryLib\Vintagestory\Server\StratumInfo.cs" Link="StratumInfo.cs" />
+  </ItemGroup>
+
+  <Target Name="BuildStratumOutputs" Condition="'$(StratumDeploy)' == 'true'">
+    <Message Importance="High" Text="Building Stratum server outputs" />
+    <MSBuild Projects="..\VintagestoryLib\VintagestoryLib.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);SkipDeployToVSInstall=true" />
+    <MSBuild Projects="..\VSEssentials\VSEssentialsMod.csproj"
+         Targets="Build"
+         Properties="Configuration=$(Configuration);SkipDeployToVSInstall=true" />
+    <MSBuild Projects="..\VSSurvivalMod\VSSurvivalMod.csproj"
+         Targets="Build"
+         Properties="Configuration=$(Configuration);SkipDeployToVSInstall=true" />
+    <MSBuild Projects="..\StratumUI\StratumUI.csproj"
+         Targets="Build"
+         Properties="Configuration=$(Configuration);SkipDeployToVSInstall=true" />
+    <MSBuild Projects="..\StratumServerGui\StratumServerGui.csproj"
+         Targets="Build"
+         Properties="Configuration=$(Configuration)"
+         ContinueOnError="true" />
+    <MSBuild Projects="$(MSBuildProjectFullPath)"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);SkipDeployToVSInstall=true" />
+  </Target>
+
+  <Target Name="DeployStratumServer" DependsOnTargets="BuildStratumOutputs" Condition="'$(StratumDeploy)' == 'true'">
+    <PropertyGroup>
+      <_StratumLibOutput>..\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)</_StratumLibOutput>
+      <_StratumApiOutput>..\bin\$(Configuration)\$(TargetFramework)</_StratumApiOutput>
+      <_StratumModOutput>..\bin\$(Configuration)\$(TargetFramework)</_StratumModOutput>
+      <_StratumUIPackage>$(StratumInstall)\Mods\StratumUI</_StratumUIPackage>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <_StratumRootFiles Include="$(VSInstall)\credits.txt" Condition="Exists('$(VSInstall)\credits.txt')" />
+      <_StratumRootFiles Include="$(VSInstall)\cimgui.dll" Condition="Exists('$(VSInstall)\cimgui.dll')" />
+      <_StratumRootFiles Include="$(VSInstall)\VintagestoryAPI.xml" Condition="Exists('$(VSInstall)\VintagestoryAPI.xml')" />
+      <_StratumRootFiles Include="$(VSInstall)\VSCrashReporterLib.dll" Condition="Exists('$(VSInstall)\VSCrashReporterLib.dll')" />
+
+      <_StratumRootFiles Include="$(TargetDir)StratumServer.exe" />
+      <_StratumRootFiles Include="$(TargetDir)StratumServer.dll" />
+      <_StratumRootFiles Include="$(TargetDir)StratumServer.deps.json" />
+      <_StratumRootFiles Include="$(TargetDir)StratumServer.runtimeconfig.json" />
+      <_StratumRootFiles Include="$(TargetDir)StratumServer.pdb" Condition="Exists('$(TargetDir)StratumServer.pdb')" />
+
+      <_StratumLibFiles Include="$(_StratumLibOutput)\**\*" />
+      <_StratumApiFiles Include="$(_StratumApiOutput)\VintagestoryAPI.*" />
+      <_StratumApiFiles Include="$(_StratumApiOutput)\cairo-sharp.*" />
+      <_StratumRootModFiles Include="$(_StratumModOutput)\VSEssentials.dll" />
+      <_StratumRootModFiles Include="$(_StratumModOutput)\VSEssentials.pdb" Condition="Exists('$(_StratumModOutput)\VSEssentials.pdb')" />
+      <_StratumRootModFiles Include="$(_StratumModOutput)\VSSurvivalMod.dll" />
+      <_StratumRootModFiles Include="$(_StratumModOutput)\VSSurvivalMod.pdb" Condition="Exists('$(_StratumModOutput)\VSSurvivalMod.pdb')" />
+      <_StratumModFiles Include="$(_StratumModOutput)\StratumUI.dll" />
+      <_StratumModFiles Include="$(_StratumModOutput)\StratumUI.pdb" Condition="Exists('$(_StratumModOutput)\StratumUI.pdb')" />
+      <_StratumModFiles Include="..\StratumUI\modinfo.json" />
+
+      <_StratumGuiFiles Include="..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.exe" Condition="Exists('..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.exe')" />
+      <_StratumGuiFiles Include="..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.dll" Condition="Exists('..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.dll')" />
+      <_StratumGuiFiles Include="..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.runtimeconfig.json" Condition="Exists('..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.runtimeconfig.json')" />
+      <_StratumGuiFiles Include="..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.deps.json" Condition="Exists('..\StratumServerGui\bin\$(Configuration)\net10.0-windows\StratumServerGui.deps.json')" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(StratumInstall)" />
+    <MakeDir Directories="$(StratumInstall)\Mods" />
+    <MakeDir Directories="$(_StratumUIPackage)" />
+  <MakeDir Directories="$(StratumInstall)\Data" />
+  <Copy SourceFiles="$(MSBuildProjectDirectory)\stratum.default.json"
+      DestinationFiles="$(StratumInstall)\Data\stratum.json"
+      Condition="!Exists('$(StratumInstall)\Data\stratum.json')" />
+        <Message Importance="High" Text="Overlaying Stratum launcher and patched server assemblies into $(StratumInstall)" />
+    <Delete Files="$(StratumInstall)\Mods\StratumUI.dll;$(StratumInstall)\Mods\StratumUI.pdb"
+            TreatErrorsAsWarnings="true" />
+    <Copy SourceFiles="@(_StratumRootFiles)"
+          DestinationFolder="$(StratumInstall)"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_StratumLibFiles)"
+          DestinationFiles="@(_StratumLibFiles->'$(StratumInstall)\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_StratumApiFiles)"
+          DestinationFolder="$(StratumInstall)"
+          SkipUnchangedFiles="true" />
+        <Copy SourceFiles="@(_StratumRootModFiles)"
+          DestinationFolder="$(StratumInstall)\Mods"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_StratumModFiles)"
+          DestinationFolder="$(_StratumUIPackage)"
+          SkipUnchangedFiles="true" />
+
+    <Copy SourceFiles="@(_StratumGuiFiles)"
+          DestinationFolder="$(StratumInstall)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_StratumGuiFiles)' != ''" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\Start-StratumServerGui.bat"
+          DestinationFolder="$(StratumInstall)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(MSBuildProjectDirectory)\Start-StratumServerGui.bat')" />
+
+    <!-- Prune root-level dlls that duplicate a same-size copy in Lib\. The runtime's
+         AssemblyResolver + native PATH already probe Lib\, so the duplicates in root are
+         pure bloat from the bulk VintagestoryLib bin copy. Size-match only, so locally
+         patched libs (cairo-sharp etc.) where root differs from Lib are left alone. -->
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$libDir = '$(StratumInstall)\Lib'; if (Test-Path $libDir) { Get-ChildItem $libDir -File | ForEach-Object { $r = Join-Path '$(StratumInstall)' $_.Name; if ((Test-Path $r) -and (Get-Item $r).Length -eq $_.Length) { Remove-Item $r -Force; Write-Host ('  pruned root duplicate: ' + $_.Name) } } }&quot;"
+          IgnoreExitCode="true" />
+
+        <Message Importance="High" Text="Stratum overlay deployed to $(StratumInstall). Copy assets, Lib, and base Mods there from $(VSInstall) if they are missing or stale; StratumUI is deployed to Mods\StratumUI automatically." />
+  </Target>
+</Project>

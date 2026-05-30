@@ -1,0 +1,64 @@
+diff --git a/VintagestoryApi/Common/Entity/Entity.cs b/VintagestoryApi/Common/Entity/Entity.cs
+index aafb4f0..b986563 100644
+--- a/VintagestoryApi/Common/Entity/Entity.cs
++++ b/VintagestoryApi/Common/Entity/Entity.cs
+@@ -1045,22 +1045,56 @@ namespace Vintagestory.API.Common.Entities
+ 
+                 // We include this check in case a mod changed the Behaviors without using .AddBehavior() or .RemoveBehavior()
+                 if (Properties.Server.Behaviors.Count != ServerBehaviorsMainThread.Length + ServerBehaviorsThreadsafe.Length) CacheServerBehaviors();
+ 
+                 var serverBehaviors = ServerBehaviorsMainThread;     // Thread-safe behaviors will be ticked from PhysicsManager
+-                if (World.FrameProfiler.Enabled)
++                bool stratumRecordBehaviorTimings = StratumEntityBehaviorTimings.Enabled;
++                string stratumEntityCategory = stratumRecordBehaviorTimings ? (this is EntityPlayer ? "players" : IsCreature ? "creatures" : "inanimate") : null;
++                var fp = World?.FrameProfiler;
++                if (fp != null && fp.Enabled)
+                 {
+-                    var profiler = World.FrameProfiler;
++                    var profiler = fp;
+                     profiler.Enter("behaviors");
+                     for (int i = 0; i < serverBehaviors.Length; i++)
+                     {
+                         EntityBehavior behavior = serverBehaviors[i];
+-                        behavior.OnGameTick(dt);
++                        if (stratumRecordBehaviorTimings)
++                        {
++                            long stratumBehaviorStart = StratumEntityBehaviorTimings.GetTimestamp();
++                            try
++                            {
++                                behavior.OnGameTick(dt);
++                            }
++                            finally
++                            {
++                                StratumEntityBehaviorTimings.Record(stratumEntityCategory, behavior.StratumTimingName, stratumBehaviorStart);
++                            }
++                        }
++                        else
++                        {
++                            behavior.OnGameTick(dt);
++                        }
+                         profiler.Mark(behavior.ProfilerName);
+                     }
+                     profiler.Leave();
+                 }
++                else if (stratumRecordBehaviorTimings)
++                {
++                    for (int i = 0; i < serverBehaviors.Length; i++)
++                    {
++                        EntityBehavior behavior = serverBehaviors[i];
++                        long stratumBehaviorStart = StratumEntityBehaviorTimings.GetTimestamp();
++                        try
++                        {
++                            behavior.OnGameTick(dt);
++                        }
++                        finally
++                        {
++                            StratumEntityBehaviorTimings.Record(stratumEntityCategory, behavior.StratumTimingName, stratumBehaviorStart);
++                        }
++                    }
++                }
+                 else
+                 {
+                     for (int i = 0; i < serverBehaviors.Length; i++)
+                     {
+                         serverBehaviors[i].OnGameTick(dt);

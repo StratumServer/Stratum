@@ -1,0 +1,91 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs b/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs
+index 0eaff16..7e4a1e9 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs
+@@ -13,10 +13,16 @@ namespace Vintagestory.Server;
+ 
+ public class ServerEventManager : EventManager
+ {
+ 	internal ServerMain server;
+ 
++	private readonly HashSet<long> stratumActiveBlockTickColumns = new HashSet<long>();
++
++	private long stratumActiveBlockTickColumnsBuiltAtMs = -1;
++
++	private int stratumActiveBlockTickColumnsDistanceBlocks = -1;
++
+ 	public Dictionary<EnumServerRunPhase, List<Action>> serverRunPhaseDelegates;
+ 
+ 	public List<WorldGenThreadDelegate> WorldgenBlockAccessor = new List<WorldGenThreadDelegate>();
+ 
+ 	public Dictionary<string, WorldGenHandler> WorldgenHandlers = new Dictionary<string, WorldGenHandler>();
+@@ -27,10 +33,69 @@ public class ServerEventManager : EventManager
+ 
+ 	public override string CommandPrefix => "/";
+ 
+ 	public override long InWorldEllapsedMs => server.ElapsedMilliseconds;
+ 
++	protected override bool ShouldTriggerBlockGameTick(GameTickListenerBlock listener, long ellapsedMilliseconds, IWorldAccessor world)
++	{
++		StratumSimulationDistanceConfig config = StratumRuntime.Config.Performance.SimulationDistance;
++		if (!config.Enabled || !config.LimitBlockGameTickListeners || listener?.Pos == null)
++		{
++			return true;
++		}
++
++		BlockPos pos = listener.Pos;
++		int chunkX = pos.X / MagicNum.ServerChunkSize;
++		int chunkZ = pos.Z / MagicNum.ServerChunkSize;
++		if (config.TickForceLoadedBlockListeners && server.forceLoadedChunkColumns.Contains(server.WorldMap.MapChunkIndex2D(chunkX, chunkZ)))
++		{
++			return true;
++		}
++
++		EnsureStratumActiveBlockTickColumns(ellapsedMilliseconds, config);
++		return stratumActiveBlockTickColumns.Contains(server.WorldMap.ChunkIndex3D(chunkX, 0, chunkZ, pos.dimension));
++	}
++
++	protected override void RecordBlockGameTickListeners(int ready, int triggered, int skipped)
++	{
++		StratumRuntime.PerformanceStats.RecordBlockGameTickListeners(ready, triggered, skipped);
++	}
++
++	private void EnsureStratumActiveBlockTickColumns(long ellapsedMilliseconds, StratumSimulationDistanceConfig config)
++	{
++		if (stratumActiveBlockTickColumnsBuiltAtMs == ellapsedMilliseconds && stratumActiveBlockTickColumnsDistanceBlocks == config.BlockGameTickListenerDistanceBlocks)
++		{
++			return;
++		}
++
++		stratumActiveBlockTickColumns.Clear();
++		stratumActiveBlockTickColumnsBuiltAtMs = ellapsedMilliseconds;
++		stratumActiveBlockTickColumnsDistanceBlocks = config.BlockGameTickListenerDistanceBlocks;
++		int radiusChunks = (int)Math.Ceiling((double)config.BlockGameTickListenerDistanceBlocks / MagicNum.ServerChunkSize);
++		foreach (ConnectedClient client in server.Clients.Values)
++		{
++			if (!client.IsPlayingClient || client.Position == null)
++			{
++				continue;
++			}
++
++			int centerChunkX = (int)client.Position.X / MagicNum.ServerChunkSize;
++			int centerChunkZ = (int)client.Position.Z / MagicNum.ServerChunkSize;
++			int dimension = client.Position.Dimension;
++			for (int x = centerChunkX - radiusChunks; x <= centerChunkX + radiusChunks; x++)
++			{
++				for (int z = centerChunkZ - radiusChunks; z <= centerChunkZ + radiusChunks; z++)
++				{
++					if (server.WorldMap.IsValidChunkPos(x, 0, z))
++					{
++						stratumActiveBlockTickColumns.Add(server.WorldMap.ChunkIndex3D(x, 0, z, dimension));
++					}
++				}
++			}
++		}
++	}
++
+ 	public event Action OnSaveGameCreated;
+ 
+ 	public event Action OnSaveGameLoaded;
+ 
+ 	public event Action AssetsFirstLoaded;

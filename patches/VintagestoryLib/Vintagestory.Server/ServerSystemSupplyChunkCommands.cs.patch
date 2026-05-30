@@ -1,0 +1,25 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunkCommands.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunkCommands.cs
+index f9611ee..3333e67 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunkCommands.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunkCommands.cs
+@@ -1,6 +1,6 @@
+-using System;
++Γê⌐ΓòùΓöÉusing System;
+ using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
+ using System.Text;
+ using ProtoBuf;
+@@ -429,11 +429,11 @@ internal class ServerSystemSupplyChunkCommands : ServerSystem
+ 					val.SetPixel(item.chunkX, item.chunkZ, new SKColor((byte)20, (byte)20, (byte)20, byte.MaxValue));
+ 					continue;
+ 				}
+ 				int currentIncompletePass_AsInt = item.CurrentIncompletePass_AsInt;
+ 				SKColor pixel = val.GetPixel(item.chunkX, item.chunkZ);
+-				((SKColor)(ref val2))._002Ector((byte)(5 + ((SKColor)(ref pixel)).Red), (byte)(currentIncompletePass_AsInt * 30), (byte)(currentIncompletePass_AsInt * 30), byte.MaxValue);
++				val2 = new SKColor((byte)(5 + pixel.Red), (byte)(currentIncompletePass_AsInt * 30), (byte)(currentIncompletePass_AsInt * 30), byte.MaxValue);
+ 				val.SetPixel(item.chunkX - chunkPos.X, item.chunkZ - chunkPos.Z, val2);
+ 			}
+ 		}
+ 		int num3 = 0;
+ 		while (File.Exists("serverchunks" + num3 + ".png"))

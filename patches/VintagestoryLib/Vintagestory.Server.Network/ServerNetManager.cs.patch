@@ -1,0 +1,66 @@
+diff --git a/VintagestoryLib/Vintagestory.Server.Network/ServerNetManager.cs b/VintagestoryLib/Vintagestory.Server.Network/ServerNetManager.cs
+index f33469f..a869bfe 100644
+--- a/VintagestoryLib/Vintagestory.Server.Network/ServerNetManager.cs
++++ b/VintagestoryLib/Vintagestory.Server.Network/ServerNetManager.cs
+@@ -2,10 +2,11 @@ using System;
+ using System.Net;
+ using System.Net.Sockets;
+ using System.Threading;
+ using System.Threading.Tasks;
+ using Vintagestory.API.Common;
++using Vintagestory.Server.Nimbus;
+ 
+ namespace Vintagestory.Server.Network;
+ 
+ public class ServerNetManager : IDisposable
+ {
+@@ -70,10 +71,49 @@ public class ServerNetManager : IDisposable
+ 					socket.Disconnect(reuseSocket: false);
+ 					continue;
+ 				}
+ 				socket.ReceiveBufferSize = 4096;
+ 				TcpNetConnection tcpNetConnection = new TcpNetConnection(socket);
++
++				// PROXY protocol v2: when this peer is a configured trusted proxy, consume the
++				// header before any game bytes so we can re-stamp the connection with the real
++				// client IP for bans/logs. Untrusted peers are never inspected.
++				if (NimbusBackend.Enabled
++					&& NimbusBackend.Config != null
++					&& NimbusBackend.Config.TrustedProxyCidrs != null
++					&& NimbusBackend.Config.TrustedProxyCidrs.Count > 0
++					&& socket.RemoteEndPoint is IPEndPoint peerEp
++					&& NimbusBackend.Config.IsTrustedProxyAddress(peerEp.Address))
++				{
++					ProxyProtocolV2Reader.Result parsed = null;
++					try
++					{
++						parsed = await ProxyProtocolV2Reader.ReadAsync(socket,
++							NimbusBackend.Config.ProxyProtocolReadTimeoutMs, cancellationToken);
++					}
++					catch (Exception ex)
++					{
++						ServerMain.Logger.Warning("Nimbus: dropping connection from trusted proxy {0}: malformed PROXY v2 header ({1})", text, ex.Message);
++						try { socket.Close(); } catch { }
++						continue;
++					}
++					if (parsed != null)
++					{
++						tcpNetConnection.IpEndpoint = new IPEndPoint(parsed.SourceAddress, parsed.SourcePort);
++						tcpNetConnection.Address = parsed.SourceAddress.ToString();
++						ServerMain.Logger.VerboseDebug("Nimbus: PROXY v2 header from {0} -> real client {1}:{2}", text, tcpNetConnection.Address, parsed.SourcePort);
++
++						// Re-apply blocklist against the now-known real client IP.
++						if (TcpNetConnection.TemporaryIpBlockList && TcpNetConnection.blockedIps.Contains(tcpNetConnection.Address))
++						{
++							ServerMain.Logger.Notification("Client " + tcpNetConnection.Address + " disconnected, blacklisted (via PROXY v2)");
++							try { socket.Close(); } catch { }
++							continue;
++						}
++					}
++				}
++
+ 				tcpNetConnection.ReceivedMessage += NewConnReceivedMessage;
+ 				tcpNetConnection.Disconnected += NewConnDisconnected;
+ 				tcpNetConnection.StartReceiving();
+ 			}
+ 			catch

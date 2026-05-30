@@ -1,0 +1,137 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs
+index 425b841..d054939 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs
+@@ -8,10 +8,13 @@ using Vintagestory.Common;
+ 
+ namespace Vintagestory.Server;
+ 
+ public class ServerSystemLoadConfig : ServerSystem
+ {
++	private const string ServerConfigFileName = "serverconfig.json";
++	private const string ServerRolesFileName = "serverroles.json";
++
+ 	public ServerSystemLoadConfig(ServerMain server)
+ 		: base(server)
+ 	{
+ 		server.EventManager.OnSaveGameLoaded += OnSaveGameLoaded;
+ 	}
+@@ -53,11 +56,11 @@ public class ServerSystemLoadConfig : ServerSystem
+ 		}
+ 	}
+ 
+ 	public static void EnsureConfigExists(ServerMain server)
+ 	{
+-		string path = "serverconfig.json";
++		string path = ServerConfigFileName;
+ 		if (!File.Exists(Path.Combine(GamePaths.Config, path)))
+ 		{
+ 			ServerMain.Logger.Notification("serverconfig.json not found, creating new one");
+ 			GenerateConfig(server);
+ 			SaveConfig(server);
+@@ -116,11 +119,11 @@ public class ServerSystemLoadConfig : ServerSystem
+ 	}
+ 
+ 	public static void LoadConfig(ServerMain server)
+ 	{
+ 		//IL_0026: Expected O, but got Unknown
+-		string path = "serverconfig.json";
++		string path = ServerConfigFileName;
+ 		try
+ 		{
+ 			string text = File.ReadAllText(Path.Combine(GamePaths.Config, path));
+ 			server.Config = JsonConvert.DeserializeObject<ServerConfig>(text);
+ 		}
+@@ -139,10 +142,11 @@ public class ServerSystemLoadConfig : ServerSystem
+ 			ServerMain.Logger?.Notification("The deserialized serverconfig.json was null? Creating new one.");
+ 			server.Config = new ServerConfig();
+ 			server.Config.InitializeRoles();
+ 			SaveConfig(server);
+ 		}
++		bool saveAfterRolesLoad = false;
+ 		if (server.progArgs.WithConfig != null)
+ 		{
+ 			JObject val;
+ 			using (TextReader textReader = new StreamReader(Path.Combine(GamePaths.Config, path)))
+ 			{
+@@ -152,19 +156,71 @@ public class ServerSystemLoadConfig : ServerSystem
+ 			}
+ 			JToken obj2 = JToken.Parse(server.progArgs.WithConfig);
+ 			JObject val2 = (JObject)(object)((obj2 is JObject) ? obj2 : null);
+ 			((JContainer)val).Merge((object)val2);
+ 			server.Config = ((JToken)val).ToObject<ServerConfig>();
++			saveAfterRolesLoad = true;
++		}
++		LoadRolesConfig(server);
++		if (saveAfterRolesLoad)
++		{
+ 			SaveConfig(server);
+ 		}
+ 		Logger.LogFileSplitAfterLine = server.Config.LogFileSplitAfterLine;
+ 		if (server.progArgs.MaxClients != null && int.TryParse(server.progArgs.MaxClients, out var result))
+ 		{
+ 			server.Config.MaxClientsProgArgs = result;
+ 		}
+ 	}
+ 
++	private static void LoadRolesConfig(ServerMain server)
++	{
++		string rolesPath = Path.Combine(GamePaths.Config, ServerRolesFileName);
++		if (!File.Exists(rolesPath))
++		{
++			SaveRolesConfig(server);
++			return;
++		}
++
++		try
++		{
++			string text = File.ReadAllText(rolesPath);
++			ServerRolesConfig rolesConfig = JsonConvert.DeserializeObject<ServerRolesConfig>(text);
++			if (rolesConfig?.Roles == null || rolesConfig.Roles.Count == 0)
++			{
++				ServerMain.Logger.Warning("serverroles.json has no roles, keeping current in-memory roles and rewriting the role file.");
++				SaveRolesConfig(server);
++				return;
++			}
++
++			server.Config.SetRoles(rolesConfig.Roles, rolesConfig.DefaultRoleCode);
++		}
++		catch (JsonReaderException ex)
++		{
++			JsonReaderException e = ex;
++			ServerMain.Logger.Error("Failed to read serverroles.json");
++			ServerMain.Logger.Error((Exception)(object)e);
++			ServerMain.Logger.StoryEvent("Failed to read serverroles.json. Did you modify it? See server-main.log for the affected line. Will stop the server.");
++			server.Stop("serverroles.json read error", EnumExitMode.HardExit);
++		}
++	}
++
++	private static void SaveRolesConfig(ServerMain server)
++	{
++		ServerRolesConfig rolesConfig = new ServerRolesConfig
++		{
++			FileEditWarning = "Role definitions live here. Server runtime settings live in serverconfig.json, and Stratum feature settings live in stratum.json.",
++			DefaultRoleCode = server.Config.DefaultRoleCode,
++			Roles = server.Config.Roles
++		};
++		string contents = JsonConvert.SerializeObject((object)rolesConfig, (Formatting)1, new JsonSerializerSettings
++		{
++			NullValueHandling = NullValueHandling.Ignore
++		});
++		File.WriteAllText(Path.Combine(GamePaths.Config, ServerRolesFileName), contents);
++	}
++
+ 	public static void SaveConfig(ServerMain server)
+ 	{
+ 		if (server.Standalone)
+ 		{
+ 			server.Config.FileEditWarning = "";
+@@ -172,7 +228,8 @@ public class ServerSystemLoadConfig : ServerSystem
+ 		else
+ 		{
+ 			server.Config.FileEditWarning = "PLEASE NOTE: This file is also loaded when you start a single player world. If you want to run a dedicated server without affecting single player, we recommend you install the game into a different folder and run the server from there.";
+ 		}
+ 		server.Config.Save();
++		SaveRolesConfig(server);
+ 	}
+ }

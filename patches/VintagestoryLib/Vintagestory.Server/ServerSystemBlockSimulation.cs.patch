@@ -1,0 +1,328 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
+index 5b0cc42..1dcd1f3 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
+@@ -14,10 +14,12 @@ using Vintagestory.Common.Database;
+ 
+ namespace Vintagestory.Server;
+ 
+ public class ServerSystemBlockSimulation : ServerSystem
+ {
++	private const int DevCommandBlockUsePacketId = 24112;
++
+ 	private class BlockPosWithExtraObject
+ 	{
+ 		public BlockPos pos;
+ 
+ 		public object extra;
+@@ -52,10 +54,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 
+ 	private BlockPos tmpPos = new BlockPos(0);
+ 
+ 	private FluidBlockPos tmpLiquidPos = new FluidBlockPos();
+ 
++	private int stratumBlockTickRotation;
++
+ 	public ServerSystemBlockSimulation(ServerMain server)
+ 		: base(server)
+ 	{
+ 		server.RegisterGameTickListener(UpdateEvery100ms, 100);
+ 		server.PacketHandlers[3] = HandleBlockPlaceOrBreak;
+@@ -319,13 +323,95 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 	}
+ 
+ 	private void HandleBlockEntityPacket(Packet_Client packet, ConnectedClient client)
+ 	{
+ 		Packet_BlockEntityPacket blockEntityPacket = packet.BlockEntityPacket;
++		if (blockEntityPacket?.Packetid == DevCommandBlockUsePacketId && TryHandleDevCommandBlockUse(blockEntityPacket, client))
++		{
++			return;
++		}
+ 		server.WorldMap.GetBlockEntity(new BlockPos(blockEntityPacket.X, blockEntityPacket.Y, blockEntityPacket.Z))?.OnReceivedClientPacket(client.Player, blockEntityPacket.Packetid, blockEntityPacket.Data);
+ 	}
+ 
++	private bool TryHandleDevCommandBlockUse(Packet_BlockEntityPacket packet, ConnectedClient client)
++	{
++		BlockPos pos = new BlockPos(packet.X, packet.Y, packet.Z);
++		BlockEntity be = server.WorldMap.GetBlockEntity(pos);
++		if (be == null || !IsDevCommandBlockTarget(be)) return true;
++
++		if (TypeIsOrInherits(be.GetType(), "Vintagestory.GameContent.BlockEntityTicker"))
++		{
++			FireTickerAdjacent(pos);
++			return true;
++		}
++
++		Block block = server.BlockAccessor.GetBlock(pos);
++		Caller caller = new Caller
++		{
++			Type = EnumCallerType.Block,
++			Pos = pos.ToVec3d()
++		};
++		block?.Activate(server, caller, new BlockSelection
++		{
++			Position = pos,
++			Face = BlockFacing.UP,
++			HitPosition = new Vec3d(0.5, 0.5, 0.5),
++			SelectionBoxIndex = 0
++		});
++		return true;
++	}
++
++	private void FireTickerAdjacent(BlockPos pos)
++	{
++		Caller caller = new Caller
++		{
++			CallerPrivileges = new[] { "*" },
++			Pos = pos.ToVec3d(),
++			Type = EnumCallerType.Block
++		};
++
++		BlockFacing[] facings = { BlockFacing.NORTH, BlockFacing.EAST, BlockFacing.SOUTH, BlockFacing.WEST };
++		for (int i = 0; i < facings.Length; i++)
++		{
++			BlockFacing facing = facings[i];
++			BlockPos sidePos = pos.AddCopy(facing);
++			Block block = server.BlockAccessor.GetBlock(sidePos);
++			block?.Activate(server, caller, new BlockSelection
++			{
++				Position = sidePos,
++				Face = facing.Opposite,
++				HitPosition = new Vec3d(0.5, 0.5, 0.5),
++				SelectionBoxIndex = 0
++			});
++		}
++	}
++
++	private static bool IsDevCommandBlockTarget(BlockEntity be)
++	{
++		Type type = be.GetType();
++		if (TypeIsOrInherits(type, "Vintagestory.GameContent.BlockEntityCommands")) return true;
++		if (TypeIsOrInherits(type, "Vintagestory.GameContent.BlockEntityGuiConfigurableCommands")) return true;
++		if (TypeIsOrInherits(type, "Vintagestory.GameContent.BlockEntityConditional")) return true;
++		if (TypeIsOrInherits(type, "Vintagestory.GameContent.BlockEntityTicker")) return true;
++
++		if (be.Behaviors == null) return false;
++		foreach (BlockEntityBehavior behavior in be.Behaviors)
++		{
++			if (behavior != null && TypeIsOrInherits(behavior.GetType(), "Vintagestory.GameContent.BEBehaviorJonasHydraulicPump")) return true;
++		}
++		return false;
++	}
++
++	private static bool TypeIsOrInherits(Type type, string fullName)
++	{
++		for (Type cur = type; cur != null && cur != typeof(object); cur = cur.BaseType)
++		{
++			if (cur.FullName == fullName) return true;
++		}
++		return false;
++	}
++
+ 	internal void HandleBlockPlaceOrBreak(Packet_Client packet, ConnectedClient client)
+ 	{
+ 		Packet_ClientBlockPlaceOrBreak blockPlaceOrBreak = packet.BlockPlaceOrBreak;
+ 		BlockSelection blockSelection = new BlockSelection
+ 		{
+@@ -363,10 +449,21 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 				worldChunk.BreakDecor(server, blockSelection.Position, blockSelection.Face);
+ 				worldChunk.MarkModified();
+ 			}
+ 			return;
+ 		}
++		if (blockPlaceOrBreak.Mode == 0 && !StratumRuntime.BlockBreakGuard.TryAcceptBreak(server, client, blockSelection, out string disconnectReason))
++		{
++			RevertBlockInteractions(client.Player, blockSelection.Position);
++			if (disconnectReason != null)
++			{
++				server.DisconnectPlayer(client, null, disconnectReason);
++				StratumRuntime.PacketLimiter.ForgetClient(client.Id);
++				StratumRuntime.BlockBreakGuard.ForgetClient(client.Id);
++			}
++			return;
++		}
+ 		Block block = server.WorldMap.RelaxedBlockAccess.GetBlock(blockSelection.Position, 2);
+ 		int oldBlockId = ((!block.SideSolid.Any) ? server.WorldMap.RelaxedBlockAccess.GetBlock(blockSelection.Position).Id : block.BlockId);
+ 		ItemStack withItemStack = client.Player.inventoryMgr.ActiveHotbarSlot?.Itemstack;
+ 		if (!TryModifyBlockInWorld(client.Player, blockPlaceOrBreak))
+ 		{
+@@ -791,12 +888,20 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 	{
+ 		if (server.RunPhase != EnumServerRunPhase.RunGame)
+ 		{
+ 			return;
+ 		}
+-		int num = 0;
+-		while (!queuedTicks.IsEmpty && num < server.Config.MaxMainThreadBlockTicks)
++		long stratumTimingStart = StratumRuntime.Timings.GetTimestamp();
++		StratumBlockTickConfig stratumBlockTicks = StratumRuntime.Config.Performance.BlockTicks;
++		int queuedBefore = queuedTicks.Count;
++		int maxMainThreadBlockTicks = server.Config.MaxMainThreadBlockTicks;
++		if (stratumBlockTicks.Enabled)
++		{
++			maxMainThreadBlockTicks = Math.Min(maxMainThreadBlockTicks, Math.Max(1, stratumBlockTicks.MaxMainThreadBlockTicksPerPass));
++		}
++		int processedTicks = 0;
++		while (!queuedTicks.IsEmpty && processedTicks < maxMainThreadBlockTicks)
+ 		{
+ 			if (!queuedTicks.TryDequeue(out var result))
+ 			{
+ 				continue;
+ 			}
+@@ -825,22 +930,32 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			catch (Exception e)
+ 			{
+ 				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
+ 				ServerMain.Logger.Error(e);
+ 			}
+-			num++;
++			processedTicks++;
+ 		}
++		StratumRuntime.PerformanceStats.RecordMainThreadBlockTicks(queuedBefore, processedTicks, queuedTicks.Count);
++		StratumRuntime.Timings.RecordElapsed("block.queuedTicks", stratumTimingStart);
+ 	}
+ 
+ 	public override void OnSeparateThreadTick()
+ 	{
+ 		if (server.RunPhase != EnumServerRunPhase.RunGame)
+ 		{
+ 			return;
+ 		}
++		long stratumTimingStart = StratumRuntime.Timings.GetTimestamp();
+ 		chunksToBeTicked.Clear();
++		StratumPerformanceConfig stratumPerformance = StratumRuntime.Config.Performance;
++		StratumSimulationDistanceConfig stratumSimulationDistance = stratumPerformance.SimulationDistance;
+ 		int blockTickChunkRange = server.Config.BlockTickChunkRange;
++		if (stratumSimulationDistance.Enabled && stratumSimulationDistance.LimitRandomTicks)
++		{
++			int simulationChunkRange = (int)Math.Ceiling((double)stratumSimulationDistance.RandomTickDistanceBlocks / MagicNum.ServerChunkSize);
++			blockTickChunkRange = Math.Min(blockTickChunkRange, simulationChunkRange);
++		}
+ 		lock (clientIdsLock)
+ 		{
+ 			foreach (int clientId in clientIds)
+ 			{
+ 				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
+@@ -875,34 +990,107 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 						}
+ 					}
+ 				}
+ 			}
+ 		}
++		StratumBlockTickConfig stratumBlockTicks = stratumPerformance.BlockTicks;
++		int chunksSeen = chunksToBeTicked.Count;
++		int maxChunksToTick = stratumBlockTicks.Enabled ? Math.Min(chunksSeen, Math.Max(1, stratumBlockTicks.MaxChunksPerPass)) : chunksSeen;
++		int rotationOffset = chunksSeen > maxChunksToTick && maxChunksToTick > 0 ? stratumBlockTickRotation % chunksSeen : 0;
++		int chunkOrdinal = 0;
++		int chunksTicked = 0;
++		int randomTickAttempts = 0;
++		// Stratum: self-tuning random-tick budget. When recent average tick exceeds OverloadTickMs,
++		// scale the per-chunk random-tick cap down. Plant growth / fluid spread are deferrable; freeing
++		// CPU here lets the server claw back tps without operator intervention.
++		int stratumAdaptiveRandomTicksPerChunk = -1;
++		if (stratumBlockTicks.Enabled && stratumBlockTicks.AdaptiveUnderOverload)
++		{
++			StatsCollection statsRecent = server.StatsCollector[GameMath.Mod(server.StatsCollectorIndex - 1, server.StatsCollector.Length)];
++			if (statsRecent != null && statsRecent.ticksTotal > 0)
++			{
++				double avgMs = (double)statsRecent.tickTimeTotal / statsRecent.ticksTotal;
++				if (avgMs > stratumBlockTicks.OverloadTickMs)
++				{
++					int baseCap = Math.Max(0, stratumBlockTicks.MaxRandomTicksPerChunk);
++					int scaled = (int)Math.Floor(baseCap * stratumBlockTicks.OverloadScale);
++					stratumAdaptiveRandomTicksPerChunk = Math.Max(stratumBlockTicks.OverloadFloor, scaled);
++				}
++			}
++		}
+ 		foreach (KeyValuePair<long, ServerChunk> item in chunksToBeTicked)
+ 		{
++			if (chunkOrdinal++ < rotationOffset)
++			{
++				continue;
++			}
++
++			if (chunksTicked >= maxChunksToTick)
++			{
++				break;
++			}
++
+ 			try
+ 			{
+-				tickChunk(item.Key, item.Value);
++				randomTickAttempts += tickChunk(item.Key, item.Value, stratumBlockTicks, stratumAdaptiveRandomTicksPerChunk);
++				chunksTicked++;
+ 			}
+ 			catch (Exception e)
+ 			{
+ 				ServerMain.Logger.Warning("Exception thrown when trying to tick a chunk.");
+ 				ServerMain.Logger.Warning(e);
+ 			}
+ 		}
++		if (chunksTicked < maxChunksToTick && rotationOffset > 0)
++		{
++			chunkOrdinal = 0;
++			foreach (KeyValuePair<long, ServerChunk> item in chunksToBeTicked)
++			{
++				if (chunkOrdinal++ >= rotationOffset || chunksTicked >= maxChunksToTick)
++				{
++					break;
++				}
++
++				try
++				{
++					randomTickAttempts += tickChunk(item.Key, item.Value, stratumBlockTicks, stratumAdaptiveRandomTicksPerChunk);
++					chunksTicked++;
++				}
++				catch (Exception e)
++				{
++					ServerMain.Logger.Warning("Exception thrown when trying to tick a chunk.");
++					ServerMain.Logger.Warning(e);
++				}
++			}
++		}
++		if (chunksSeen > 0)
++		{
++			stratumBlockTickRotation = (rotationOffset + Math.Max(1, maxChunksToTick)) % chunksSeen;
++		}
++		StratumRuntime.PerformanceStats.RecordBlockTickPass(chunksSeen, chunksTicked, Math.Max(0, chunksSeen - chunksTicked), randomTickAttempts, blockTickChunkRange);
++		StratumRuntime.Timings.RecordElapsed("block.randomTicks", stratumTimingStart);
+ 	}
+ 
+-	private void tickChunk(long index3d, ServerChunk chunk)
++	private int tickChunk(long index3d, ServerChunk chunk, StratumBlockTickConfig stratumBlockTicks, int stratumAdaptiveCap = -1)
+ 	{
+ 		ChunkPos chunkPos = server.WorldMap.ChunkPosFromChunkIndex3D(index3d);
+ 		int num = 32 * chunkPos.X;
+ 		int num2 = 32 * chunkPos.Y;
+ 		int num3 = 32 * chunkPos.Z;
+ 		tmpPos.SetDimension(chunkPos.Dimension);
+ 		tmpLiquidPos.SetDimension(chunkPos.Dimension);
+ 		chunk.Unpack();
+-		float num4 = (int)((float)server.Config.RandomBlockTicksPerChunk * server.Calendar.SpeedOfTime / 60f);
++		int randomBlockTicksPerChunk = server.Config.RandomBlockTicksPerChunk;
++		if (stratumBlockTicks.Enabled)
++		{
++			randomBlockTicksPerChunk = Math.Min(randomBlockTicksPerChunk, Math.Max(0, stratumBlockTicks.MaxRandomTicksPerChunk));
++		}
++		if (stratumAdaptiveCap >= 0)
++		{
++			randomBlockTicksPerChunk = Math.Min(randomBlockTicksPerChunk, stratumAdaptiveCap);
++		}
++		float num4 = (int)((float)randomBlockTicksPerChunk * server.Calendar.SpeedOfTime / 60f);
+ 		int num5 = (int)num4 + ((server.rand.Value.NextDouble() < (double)(num4 - (float)(int)num4)) ? 1 : 0);
+ 		for (int i = 0; i < num5; i++)
+ 		{
+ 			int num6 = rand.Next(32);
+ 			int num7 = rand.Next(32);
+@@ -918,10 +1106,11 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			if (fluid != 0)
+ 			{
+ 				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));
+ 			}
+ 		}
++		return num5;
+ 	}
+ 
+ 	private bool tryTickBlock(Block block, BlockPos atPos)
+ 	{
+ 		if (!block.ShouldReceiveServerGameTicks(server.api.World, atPos, rand, out var extra))

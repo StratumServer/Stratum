@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest a change or addition.
+labels: ["type: feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Stratum focuses on server performance and admin tooling. Gameplay or content changes belong in a mod, not in Stratum.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is the actual problem you're trying to solve. Not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This is a server-side change. It does not require a custom client.
+          required: true

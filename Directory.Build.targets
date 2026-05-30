@@ -1,0 +1,49 @@
+<Project>
+	<!--
+	Optional local deploy: copies build outputs into an existing Vintage Story
+	install for in-place testing. Activated by setting VSInstall in
+	Directory.Build.local.props. Only the projects that are part of a Stratum
+	server build are listed.
+	-->
+	<Target Name="DeployToVSInstall" AfterTargets="Build" Condition="'$(SkipDeployToVSInstall)' != 'true' and '$(VSInstall)' != ''">
+		<PropertyGroup>
+			<_DeployRoot>$(VSInstall)</_DeployRoot>
+			<_DeployModsDir>$(VSInstall)\Mods</_DeployModsDir>
+			<_DeployLibDir>$(VSInstall)\Lib</_DeployLibDir>
+		</PropertyGroup>
+
+		<!-- Server runtime libs -->
+		<Copy Condition="'$(AssemblyName)' == 'VintagestoryAPI' or '$(AssemblyName)' == 'VintagestoryLib'"
+		      SourceFiles="$(TargetPath);$(TargetDir)$(AssemblyName).pdb"
+		      DestinationFolder="$(_DeployRoot)"
+		      SkipUnchangedFiles="true"
+		      ContinueOnError="false" />
+
+		<!-- Server entry-point executables -->
+		<ItemGroup Condition="'$(AssemblyName)' == 'VintagestoryServer' or '$(AssemblyName)' == 'StratumServer'">
+			<_LauncherFiles Include="$(TargetDir)$(AssemblyName).exe" />
+			<_LauncherFiles Include="$(TargetDir)$(AssemblyName).dll" />
+			<_LauncherFiles Include="$(TargetDir)$(AssemblyName).pdb" />
+			<_LauncherFiles Include="$(TargetDir)$(AssemblyName).runtimeconfig.json" />
+		</ItemGroup>
+		<Copy Condition="'$(AssemblyName)' == 'VintagestoryServer' or '$(AssemblyName)' == 'StratumServer'"
+		      SourceFiles="@(_LauncherFiles)"
+		      DestinationFolder="$(_DeployRoot)"
+		      SkipUnchangedFiles="true"
+		      ContinueOnError="true" />
+
+		<!-- Native interop wrapper -->
+		<Copy Condition="'$(AssemblyName)' == 'cairo-sharp'"
+		      SourceFiles="$(TargetPath);$(TargetDir)$(AssemblyName).pdb"
+		      DestinationFolder="$(_DeployLibDir)"
+		      SkipUnchangedFiles="true"
+		      ContinueOnError="true" />
+
+		<!-- Shipped base mods -->
+		<Copy Condition="'$(AssemblyName)' == 'VSEssentials' or '$(AssemblyName)' == 'VSSurvivalMod'"
+		      SourceFiles="$(TargetPath);$(TargetDir)$(AssemblyName).pdb"
+		      DestinationFolder="$(_DeployModsDir)"
+		      SkipUnchangedFiles="true"
+		      ContinueOnError="true" />
+	</Target>
+</Project>

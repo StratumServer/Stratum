@@ -1,0 +1,26 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ChunkLookupRequest.cs b/VintagestoryLib/Vintagestory.Server/ChunkLookupRequest.cs
+index 99ef7c2..bdd84e1 100644
+--- a/VintagestoryLib/Vintagestory.Server/ChunkLookupRequest.cs
++++ b/VintagestoryLib/Vintagestory.Server/ChunkLookupRequest.cs
+@@ -12,13 +12,21 @@ internal class ChunkLookupRequest
+ 
+ 	public int chunkZ;
+ 
+ 	public Action<bool> onTested;
+ 
++	public bool Exists;
++
+ 	public ChunkLookupRequest(int chunkX, int chunkY, int chunkZ, Action<bool> onTested)
+ 	{
+ 		this.chunkX = chunkX;
+ 		this.chunkY = chunkY;
+ 		this.chunkZ = chunkZ;
+ 		this.onTested = onTested;
+ 	}
++
++	public void Complete()
++	{
++		onTested(Exists);
++		ServerMain.FrameProfiler.Mark("MTT-TestExists");
++	}
+ }

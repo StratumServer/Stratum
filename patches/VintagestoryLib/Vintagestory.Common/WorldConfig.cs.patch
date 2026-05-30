@@ -1,0 +1,106 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/WorldConfig.cs b/VintagestoryLib/Vintagestory.Common/WorldConfig.cs
+index 9b123e7..310f349 100644
+--- a/VintagestoryLib/Vintagestory.Common/WorldConfig.cs
++++ b/VintagestoryLib/Vintagestory.Common/WorldConfig.cs
+@@ -196,24 +196,24 @@ public class WorldConfig
+ 			foreach (WorldConfigurationAttribute worldConfigurationAttribute in worldConfigAttributes)
+ 			{
+ 				switch (worldConfigurationAttribute.DataType)
+ 				{
+ 				case EnumDataType.Bool:
+-					val2[worldConfigurationAttribute.Code] = JToken.op_Implicit((bool)worldConfigurationAttribute.TypedDefault);
++					val2[worldConfigurationAttribute.Code] = (JToken)((bool)worldConfigurationAttribute.TypedDefault);
+ 					break;
+ 				case EnumDataType.DoubleInput:
+ 				case EnumDataType.DoubleRange:
+-					val2[worldConfigurationAttribute.Code] = JToken.op_Implicit((double)worldConfigurationAttribute.TypedDefault);
++					val2[worldConfigurationAttribute.Code] = (JToken)((double)worldConfigurationAttribute.TypedDefault);
+ 					break;
+ 				case EnumDataType.IntInput:
+ 				case EnumDataType.IntRange:
+-					val2[worldConfigurationAttribute.Code] = JToken.op_Implicit((int)worldConfigurationAttribute.TypedDefault);
++					val2[worldConfigurationAttribute.Code] = (JToken)((int)worldConfigurationAttribute.TypedDefault);
+ 					break;
+ 				case EnumDataType.String:
+ 				case EnumDataType.DropDown:
+ 				case EnumDataType.StringRange:
+-					val2[worldConfigurationAttribute.Code] = JToken.op_Implicit((string)worldConfigurationAttribute.TypedDefault);
++					val2[worldConfigurationAttribute.Code] = (JToken)((string)worldConfigurationAttribute.TypedDefault);
+ 					break;
+ 				}
+ 			}
+ 		}
+ 		return new JsonObject(val);
+@@ -227,24 +227,24 @@ public class WorldConfig
+ 		{
+ 			object value = item.Value.Value;
+ 			switch (item.Value.Attribute.DataType)
+ 			{
+ 			case EnumDataType.Bool:
+-				val[item.Key] = JToken.op_Implicit((bool)value);
++				val[item.Key] = (JToken)((bool)value);
+ 				break;
+ 			case EnumDataType.DoubleInput:
+ 			case EnumDataType.DoubleRange:
+-				val[item.Key] = JToken.op_Implicit((double)value);
++				val[item.Key] = (JToken)((double)value);
+ 				break;
+ 			case EnumDataType.IntInput:
+ 			case EnumDataType.IntRange:
+-				val[item.Key] = JToken.op_Implicit((int)value);
++				val[item.Key] = (JToken)((int)value);
+ 				break;
+ 			case EnumDataType.String:
+ 			case EnumDataType.DropDown:
+ 			case EnumDataType.StringRange:
+-				val[item.Key] = JToken.op_Implicit((string)value);
++				val[item.Key] = (JToken)((string)value);
+ 				break;
+ 			}
+ 		}
+ 	}
+ 
+@@ -346,24 +346,24 @@ public class WorldConfig
+ 			{
+ 				object value = item.Value.Value;
+ 				switch (item.Value.Attribute.DataType)
+ 				{
+ 				case EnumDataType.Bool:
+-					val[item.Key] = JToken.op_Implicit((bool)value);
++					val[item.Key] = (JToken)((bool)value);
+ 					break;
+ 				case EnumDataType.DoubleInput:
+ 				case EnumDataType.DoubleRange:
+-					val[item.Key] = JToken.op_Implicit((double)value);
++					val[item.Key] = (JToken)((double)value);
+ 					break;
+ 				case EnumDataType.IntInput:
+ 				case EnumDataType.IntRange:
+-					val[item.Key] = JToken.op_Implicit((int)value);
++					val[item.Key] = (JToken)((int)value);
+ 					break;
+ 				case EnumDataType.String:
+ 				case EnumDataType.DropDown:
+ 				case EnumDataType.StringRange:
+-					val[item.Key] = JToken.op_Implicit((string)value);
++					val[item.Key] = (JToken)((string)value);
+ 					break;
+ 				}
+ 			}
+ 		}
+ 		StringBuilder stringBuilder = new StringBuilder();
+@@ -399,12 +399,12 @@ public class WorldConfig
+ 		return stringBuilder.ToString();
+ 	}
+ 
+ 	public string ToJson()
+ 	{
+-		jworldconfig.Token[(object)"playstyle"] = JToken.op_Implicit(playstylecode);
+-		jworldconfig.Token[(object)"worldHeight"] = JToken.op_Implicit(MapsizeY);
++		jworldconfig.Token[(object)"playstyle"] = (JToken)(playstylecode);
++		jworldconfig.Token[(object)"worldHeight"] = (JToken)(MapsizeY);
+ 		return jworldconfig.ToString();
+ 	}
+ 
+ 	public void FromJson(string json)
+ 	{

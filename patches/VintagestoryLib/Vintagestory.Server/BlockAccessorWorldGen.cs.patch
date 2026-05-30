@@ -1,0 +1,74 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
+index 33c394d..6c3601a 100644
+--- a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
++++ b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
+@@ -133,22 +133,25 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+ 		return chunkdbthread.GetMapRegion(regionX, regionZ);
+ 	}
+ 
+ 	public override int GetBlockId(int posX, int posY, int posZ, int layer)
+ 	{
+-		long num = worldmap.ChunkIndex3D(ChunkPos.FromPosition(posX, posY, posZ, 0));
++		int chunkX = posX / MagicNum.ServerChunkSize;
++		int chunkY = posY / MagicNum.ServerChunkSize;
++		int chunkZ = posZ / MagicNum.ServerChunkSize;
++		long num = worldmap.ChunkIndex3D(chunkX, chunkY, chunkZ);
+ 		ServerChunk serverChunk;
+ 		if (cachedChunkIndex3d == num)
+ 		{
+ 			serverChunk = chunkCached;
+ 		}
+ 		else
+ 		{
+-			serverChunk = chunkdbthread.GetGeneratingChunkAtPos(posX, posY, posZ);
++			serverChunk = chunkdbthread.GetGeneratingChunk(chunkX, chunkY, chunkZ);
+ 			if (serverChunk == null)
+ 			{
+-				serverChunk = worldmap.GetChunkAtPos(posX, posY, posZ) as ServerChunk;
++				serverChunk = worldmap.GetChunk(chunkX, chunkY, chunkZ) as ServerChunk;
+ 			}
+ 			if (serverChunk != null)
+ 			{
+ 				serverChunk.Unpack();
+ 				cachedChunkIndex3d = num;
+@@ -159,11 +162,11 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+ 		{
+ 			return serverChunk.Data.GetBlockId(worldmap.ChunkSizedIndex3D(posX & MagicNum.ServerChunkSizeMask, posY & MagicNum.ServerChunkSizeMask, posZ & MagicNum.ServerChunkSizeMask), layer);
+ 		}
+ 		if (RuntimeEnv.DebugOutOfRangeBlockAccess)
+ 		{
+-			ServerMain.Logger.Notification("Tried to get block outside generating chunks! (at pos {0}, {1}, {2} = chunk {3}, {4}, {5}). ", posX, posY, posZ, posX / MagicNum.ServerChunkSize, posY / MagicNum.ServerChunkSize, posZ / MagicNum.ServerChunkSize);
++			ServerMain.Logger.Notification("Tried to get block outside generating chunks! (at pos {0}, {1}, {2} = chunk {3}, {4}, {5}). ", posX, posY, posZ, chunkX, chunkY, chunkZ);
+ 			ServerMain.Logger.Notification(new StackTrace()?.ToString() ?? "");
+ 		}
+ 		else
+ 		{
+ 			ServerMain.Logger.Notification("Tried to get block outside generating chunks! Set RuntimeEnv.DebugOutOfRangeBlockAccess to debug.");
+@@ -220,21 +223,22 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+ 	}
+ 
+ 	protected int SetSolidBlock(ServerChunk chunk, BlockPos pos, Block newBlock, int blockId)
+ 	{
+ 		chunk.Unpack();
++		var data = chunk.Data;
+ 		int index3d = worldmap.ChunkSizedIndex3D(pos.X & MagicNum.ServerChunkSizeMask, pos.Y & MagicNum.ServerChunkSizeMask, pos.Z & MagicNum.ServerChunkSizeMask);
+-		int blockId2 = chunk.Data.GetBlockId(index3d, 1);
++		int blockId2 = data.GetBlockId(index3d, 1);
+ 		if (blockId2 != 0 && worldmap.Blocks[blockId2].EntityClass != null)
+ 		{
+ 			chunk.RemoveBlockEntity(pos);
+-			((ServerMapChunk)chunk.MapChunk).NewBlockEntities.Remove(pos);
++			chunk.serverMapChunk.NewBlockEntities.Remove(pos);
+ 		}
+-		chunk.Data[index3d] = blockId;
+-		if (newBlock.DisplacesLiquids(this, pos))
++		data[index3d] = blockId;
++		if (data.GetFluid(index3d) != 0 && newBlock.DisplacesLiquids(this, pos))
+ 		{
+-			chunk.Data.SetFluid(index3d, 0);
++			data.SetFluid(index3d, 0);
+ 		}
+ 		chunk.DirtyForSaving = true;
+ 		return blockId2;
+ 	}
+ 

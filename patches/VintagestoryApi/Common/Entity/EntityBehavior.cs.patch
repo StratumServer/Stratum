@@ -1,0 +1,23 @@
+diff --git a/VintagestoryApi/Common/Entity/EntityBehavior.cs b/VintagestoryApi/Common/Entity/EntityBehavior.cs
+index ff3c5a5..0c534ed 100644
+--- a/VintagestoryApi/Common/Entity/EntityBehavior.cs
++++ b/VintagestoryApi/Common/Entity/EntityBehavior.cs
+@@ -17,14 +17,17 @@ namespace Vintagestory.API.Common.Entities
+     {
+         public Entity entity;
+ 
+         public string ProfilerName { get; private set; }
+ 
++        public string StratumTimingName { get; private set; }
++
+         public EntityBehavior(Entity entity)
+         {
+             this.entity = entity;
+-            ProfilerName = ("done-behavior-" + PropertyName()).DeDuplicate();
++            StratumTimingName = PropertyName().DeDuplicate();
++            ProfilerName = ("done-behavior-" + StratumTimingName).DeDuplicate();
+         }
+ 
+         /// <summary>
+         /// Initializes the entity.
+         /// <br/>If your code modifies the supplied attributes (not recommended!), then your changes will apply to all entities of the same type.

@@ -1,0 +1,82 @@
+diff --git a/VintagestoryApi/Client/UI/Elements/Impl/Interactive/Inventory/GuiElementItemSlotGridBase.cs b/VintagestoryApi/Client/UI/Elements/Impl/Interactive/Inventory/GuiElementItemSlotGridBase.cs
+index 754d8c2..63700d5 100644
+--- a/VintagestoryApi/Client/UI/Elements/Impl/Interactive/Inventory/GuiElementItemSlotGridBase.cs
++++ b/VintagestoryApi/Client/UI/Elements/Impl/Interactive/Inventory/GuiElementItemSlotGridBase.cs
+@@ -315,11 +315,11 @@ namespace Vintagestory.API.Client
+ 
+ 
+         bool ComposeSlotOverlays(ItemSlot slot, int slotId, int slotIndex)
+         {
+             if (!availableSlots.ContainsKey(slotId)) return false;
+-            if (slot.Itemstack == null) return true;
++            if (slot == null || slot.Itemstack == null) return true;
+ 
+             //int slotIndex = availableSlots.IndexOfKey(slotId);
+ 
+             bool drawItemDamage = slot.Itemstack.Collectible.ShouldDisplayItemDamage(slot.Itemstack);
+ 
+@@ -719,11 +719,11 @@ namespace Vintagestory.API.Client
+ 
+         public override void OnKeyDown(ICoreClientAPI api, KeyEvent args)
+         {
+             base.OnKeyDown(api, args);
+ 
+-            if (!HasFocus || cols == 0 || rows == 0) return;
++            if (!HasFocus) return;
+ 
+             if (KeyboardControlEnabled)
+             {
+                 if (args.KeyCode == (int)GlKeys.Up)
+                 {
+@@ -831,11 +831,12 @@ namespace Vintagestory.API.Client
+         {
+             if (!Bounds.ParentBounds.PointInside(args.X, args.Y))
+             {
+                 if (hoverSlotId != -1)
+                 {
+-                    api.Input.TriggerOnMouseLeaveSlot(inventory[hoverSlotId]);
++                    ItemSlot prev = inventory[hoverSlotId];
++                    if (prev != null) api.Input.TriggerOnMouseLeaveSlot(prev);
+                 }
+                 hoverSlotId = -1;
+                 return;
+             }
+ 
+@@ -845,10 +846,20 @@ namespace Vintagestory.API.Client
+ 
+                 if (SlotBounds[i].PointInside(args.X, args.Y))
+                 {
+                     int nowHoverSlotid = renderedSlots.GetKeyAtIndex(i);
+                     ItemSlot nowHoverSlot = inventory[nowHoverSlotid];
++                    if (nowHoverSlot == null)
++                    {
++                        if (hoverSlotId != -1)
++                        {
++                            ItemSlot prev = inventory[hoverSlotId];
++                            if (prev != null) api.Input.TriggerOnMouseLeaveSlot(prev);
++                        }
++                        hoverSlotId = -1;
++                        return;
++                    }
+                     ItemStack stack = nowHoverSlot.Itemstack;
+ 
+                     // Cheap hax for hover-right-mouse-down slot filling
+                     if (isRightMouseDownStartedInsideElem && !wasMouseDownOnSlotIndex.Contains(i))
+                     {
+@@ -913,11 +924,15 @@ namespace Vintagestory.API.Client
+                     hoverSlotId = nowHoverSlotid;
+                     return;
+                 }
+             }
+ 
+-            if (hoverSlotId != -1) api.Input.TriggerOnMouseLeaveSlot(inventory[hoverSlotId]);
++            if (hoverSlotId != -1)
++            {
++                ItemSlot prev = inventory[hoverSlotId];
++                if (prev != null) api.Input.TriggerOnMouseLeaveSlot(prev);
++            }
+             hoverSlotId = -1;
+         }
+ 
+ 
+         public override bool OnMouseLeaveSlot(ICoreClientAPI api, ItemSlot slot)

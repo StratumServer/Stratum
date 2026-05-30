@@ -1,0 +1,140 @@
+diff --git a/VSEssentials/Entity/AI/AiTaskManager.cs b/VSEssentials/Entity/AI/AiTaskManager.cs
+index 86955cb..38ffa6b 100644
+--- a/VSEssentials/Entity/AI/AiTaskManager.cs
++++ b/VSEssentials/Entity/AI/AiTaskManager.cs
+@@ -76,10 +76,20 @@ public static class AiTaskRegistry
+ 
+ public class AiRuntimeConfig : ModSystem
+ {
+     public static bool RunAiTasks = true;
+     public static bool RunAiActivities = true;
++    public static float TaskScanIntervalSeconds = BaseTaskScanIntervalSeconds;
++
++    private const float BaseTaskScanIntervalSeconds = 0.2f;
++    private const float HighPlayerTaskScanIntervalSeconds = 0.5f;
++    private const float OverloadedTaskScanIntervalSeconds = 1.0f;
++    // Stratum: thresholds tightened. Original 100/180 left a 110-player Stratum server in the
++    // "high" band (0.5s scan) while CPU was already overcommitted. 75/110 puts a typical
++    // medium server into the slower scan cadence before tick budget is fully spent.
++    private const int HighPlayerThreshold = 75;
++    private const int OverloadedPlayerThreshold = 110;
+ 
+     public override bool ShouldLoad(EnumAppSide forSide) => forSide == EnumAppSide.Server;
+ 
+     public override void StartServerSide(ICoreServerAPI api)
+     {
+@@ -90,10 +100,16 @@ public class AiRuntimeConfig : ModSystem
+     private ICoreServerAPI? serverApi;
+     private void onTick250ms(float obj)
+     {
+         RunAiTasks = serverApi?.World.Config.GetAsBool("runAiTasks", true) ?? true;
+         RunAiActivities = serverApi?.World.Config.GetAsBool("runAiActivities", true) ?? true;
++        int onlinePlayerCount = serverApi?.World.AllOnlinePlayers.Length ?? 0;
++        TaskScanIntervalSeconds = onlinePlayerCount >= OverloadedPlayerThreshold
++            ? OverloadedTaskScanIntervalSeconds
++            : onlinePlayerCount >= HighPlayerThreshold
++                ? HighPlayerTaskScanIntervalSeconds
++                : BaseTaskScanIntervalSeconds;
+     }
+ }
+ 
+ 
+ public sealed class AiTaskManager(Entity entity)
+@@ -129,18 +145,61 @@ public sealed class AiTaskManager(Entity entity)
+             wasRunAiTasks = false;
+             return;
+         }
+         wasRunAiTasks = true;
+ 
+-        if (Shuffle)
++        float startTaskIntervalSeconds = AiRuntimeConfig.TaskScanIntervalSeconds;
++        EnsureStartTaskStaggerInitialized(startTaskIntervalSeconds);
++
++        startTaskAccum += dt;
++        if (startTaskAccum >= startTaskIntervalSeconds)
+         {
+-            tasks.Shuffle(entity.World.Rand);
+-        }
++            startTaskAccum -= startTaskIntervalSeconds;
++            if (startTaskAccum > startTaskIntervalSeconds)
++            {
++                startTaskAccum = (float)entity.World.Rand.NextDouble() * startTaskIntervalSeconds;
++            }
+ 
+-        StartNewTasks();
++            if (Shuffle)
++            {
++                tasks.Shuffle(entity.World.Rand);
++            }
+ 
+-        ProcessRunningTasks(dt);
++            if (StratumEntityBehaviorTimings.Enabled)
++            {
++                long stratumStartScanStart = StratumEntityBehaviorTimings.GetTimestamp();
++                try
++                {
++                    StartNewTasks();
++                }
++                finally
++                {
++                    RecordStratumTiming("taskStartScan", stratumStartScanStart);
++                }
++            }
++            else
++            {
++                StartNewTasks();
++            }
++        }
++
++        if (StratumEntityBehaviorTimings.Enabled)
++        {
++            long stratumTaskContinueStart = StratumEntityBehaviorTimings.GetTimestamp();
++            try
++            {
++                ProcessRunningTasks(dt);
++            }
++            finally
++            {
++                RecordStratumTiming("taskContinue", stratumTaskContinueStart);
++            }
++        }
++        else
++        {
++            ProcessRunningTasks(dt);
++        }
+ 
+         LogRunningTasks();
+     }
+ 
+     public void AddTask(IAiTask task)
+@@ -442,10 +501,30 @@ public sealed class AiTaskManager(Entity entity)
+ 
+     private readonly Entity entity = entity;
+     private readonly List<IAiTask> tasks = [];
+     private readonly IAiTask?[] activeTasksBySlot = new IAiTask[ActiveTasksSlotsNumber];
+     private bool wasRunAiTasks;
++    private bool startTaskStaggerInitialized;
++    private float startTaskAccum;
++
++    private void EnsureStartTaskStaggerInitialized(float startTaskIntervalSeconds)
++    {
++        if (startTaskStaggerInitialized) return;
++
++        startTaskStaggerInitialized = true;
++        startTaskAccum = (float)entity.World.Rand.NextDouble() * startTaskIntervalSeconds;
++    }
++
++    private void RecordStratumTiming(string suffix, long startedTimestamp)
++    {
++        StratumEntityBehaviorTimings.RecordNamed("entity.ai." + StratumEntityCategory() + "." + suffix, startedTimestamp);
++    }
++
++    private string StratumEntityCategory()
++    {
++        return entity is EntityPlayer ? "players" : entity.IsCreature ? "creatures" : "inanimate";
++    }
+ 
+     private void StartNewTasks()
+     {
+         foreach (IAiTask task in tasks)
+         {

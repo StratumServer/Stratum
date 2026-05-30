@@ -1,0 +1,69 @@
+diff --git a/VSEssentials/Entity/AI/BehaviorTaskAI.cs b/VSEssentials/Entity/AI/BehaviorTaskAI.cs
+index 4373f19..d63066f 100644
+--- a/VSEssentials/Entity/AI/BehaviorTaskAI.cs
++++ b/VSEssentials/Entity/AI/BehaviorTaskAI.cs
+@@ -113,22 +113,62 @@ public class EntityBehaviorTaskAI(Entity entity) : EntityBehavior(entity)
+     {
+         // AI is only running for active entities
+         if (entity.State != EnumEntityState.Active || !entity.Alive) return;
+         entity.World.FrameProfiler.Mark("ai-init");
+ 
+-        PathTraverser?.OnGameTick(deltaTime);
++        if (StratumEntityBehaviorTimings.Enabled)
++        {
++            long stratumPathTraverserStart = StratumEntityBehaviorTimings.GetTimestamp();
++            try
++            {
++                PathTraverser?.OnGameTick(deltaTime);
++            }
++            finally
++            {
++                RecordStratumTiming("taskai.pathTraverser", stratumPathTraverserStart);
++            }
++        }
++        else
++        {
++            PathTraverser?.OnGameTick(deltaTime);
++        }
+ 
+         entity.World.FrameProfiler.Mark("ai-pathfinding");
+ 
+         //Trace.WriteLine(TaskManager.ActiveTasksBySlot[0]?.Id);
+ 
+         entity.World.FrameProfiler.Enter("ai-tasks");
+ 
+-        TaskManager.OnGameTick(deltaTime);
++        if (StratumEntityBehaviorTimings.Enabled)
++        {
++            long stratumTaskManagerStart = StratumEntityBehaviorTimings.GetTimestamp();
++            try
++            {
++                TaskManager.OnGameTick(deltaTime);
++            }
++            finally
++            {
++                RecordStratumTiming("taskai.taskManager", stratumTaskManagerStart);
++            }
++        }
++        else
++        {
++            TaskManager.OnGameTick(deltaTime);
++        }
+ 
+         entity.World.FrameProfiler.Leave();
+     }
+ 
++    private void RecordStratumTiming(string suffix, long startedTimestamp)
++    {
++        StratumEntityBehaviorTimings.RecordNamed("entity.ai." + StratumEntityCategory() + "." + suffix, startedTimestamp);
++    }
++
++    private string StratumEntityCategory()
++    {
++        return entity is EntityPlayer ? "players" : entity.IsCreature ? "creatures" : "inanimate";
++    }
++
+     public override void OnStateChanged(EnumEntityState beforeState, ref EnumHandling handling) => TaskManager.OnStateChanged(beforeState);
+ 
+     public override void Notify(string key, object data) => TaskManager.Notify(key, data);
+ }

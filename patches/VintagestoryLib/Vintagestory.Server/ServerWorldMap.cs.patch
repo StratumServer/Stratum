@@ -1,0 +1,25 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs b/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
+index 95784e8..cb795e2 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
+@@ -1,6 +1,6 @@
+-using System;
++Γê⌐ΓòùΓöÉusing System;
+ using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
+ using SkiaSharp;
+ using Vintagestory.API.Common;
+@@ -427,11 +427,11 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+ 		//IL_0027: Expected O, but got Unknown
+ 		//IL_0098: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_010f: Unknown result type (might be due to invalid IL or missing references)
+ 		SKBitmap val = new SKBitmap(server.WorldMap.ChunkMapSizeX, server.WorldMap.ChunkMapSizeZ, false);
+ 		SKColor val2 = default(SKColor);
+-		((SKColor)(ref val2))._002Ector((byte)0, byte.MaxValue, (byte)0, byte.MaxValue);
++		val2 = new SKColor((byte)0, byte.MaxValue, (byte)0, byte.MaxValue);
+ 		server.loadedChunksLock.AcquireReadLock();
+ 		try
+ 		{
+ 			foreach (long key in server.loadedChunks.Keys)
+ 			{

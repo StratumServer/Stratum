@@ -1,0 +1,16 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
+index f39b1bd..7b28b6b 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
+@@ -148,10 +148,11 @@ internal class ServerSystemInventory : ServerSystem
+ 			}
+ 			else
+ 			{
+ 				value.blockBreakingCounter = 0;
+ 			}
++			StratumRuntime.BlockBreakGuard.ObserveMining(server, value, dt);
+ 			if (!value.Entity.LeftHandItemSlot.Empty)
+ 			{
+ 				value.Entity.LeftHandItemSlot.Itemstack.Collectible.OnHeldIdle(value.Entity.LeftHandItemSlot, value.Entity);
+ 			}
+ 			if ((value.Entity.Controls.HandUse == EnumHandInteract.None || value.Entity.Controls.HandUse == EnumHandInteract.BlockInteract) && activeHotbarSlot != null)

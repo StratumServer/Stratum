@@ -1,0 +1,256 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
+index d6e727a..3e6e3b0 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
+@@ -105,16 +105,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			{
+ 				PeekChunkAreaLocking(result3.Key, result3.Value.UntilPass, result3.Value.OnGenerated, result3.Value.ChunkGenParams);
+ 			}
+ 			ResumeAllWorldgenThreads();
+ 		}
+-		while (!server.testChunkExistsQueue.IsEmpty)
++		while (server.testChunkExistsQueue.TryDequeue(out var val))
+ 		{
+-			if (!server.testChunkExistsQueue.TryDequeue(out var val))
+-			{
+-				break;
+-			}
+ 			bool exists = false;
+ 			switch (val.Type)
+ 			{
+ 			case EnumChunkType.Chunk:
+ 				exists = chunkthread.gameDatabase.ChunkExists(val.chunkX, val.chunkY, val.chunkZ);
+@@ -124,15 +120,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				break;
+ 			case EnumChunkType.MapRegion:
+ 				exists = chunkthread.gameDatabase.MapRegionExists(val.chunkX, val.chunkZ);
+ 				break;
+ 			}
+-			server.EnqueueMainThreadTask(delegate
+-			{
+-				val.onTested(exists);
+-				ServerMain.FrameProfiler.Mark("MTT-TestExists");
+-			});
++			val.Exists = exists;
++			server.EnqueueMainThreadTask(val.Complete);
+ 		}
+ 		for (int num = 0; num < MagicNum.ChunkColumnsToGeneratePerThreadTick; num++)
+ 		{
+ 			if (!tryLoadOrGenerateChunkColumnsInQueue())
+ 			{
+@@ -293,10 +286,37 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		{
+ 			return false;
+ 		}
+ 		CleanupRequestsQueue();
+ 		int additionalWorldGenThreadsCount = chunkthread.additionalWorldGenThreadsCount;
++
++		List<ChunkColumnLoadRequest> stratumPrioritized = TryBuildStratumPriorityList();
++		if (stratumPrioritized != null)
++		{
++			for (int idx = 0; idx < stratumPrioritized.Count; idx++)
++			{
++				ChunkColumnLoadRequest requestedChunkColumn = stratumPrioritized[idx];
++				if (requestedChunkColumn == null || requestedChunkColumn.Disposed)
++				{
++					continue;
++				}
++				int currentIncompletePass_AsInt = requestedChunkColumn.CurrentIncompletePass_AsInt;
++				if (currentIncompletePass_AsInt == 0 || currentIncompletePass_AsInt > additionalWorldGenThreadsCount)
++				{
++					if (server.Suspended)
++					{
++						return false;
++					}
++					if (loadOrGenerateChunkColumn_OnChunkThread(requestedChunkColumn, currentIncompletePass_AsInt) && chunkthread.additionalWorldGenThreadsCount == 0)
++					{
++						return true;
++					}
++				}
++			}
++			return false;
++		}
++
+ 		foreach (ChunkColumnLoadRequest requestedChunkColumn in chunkthread.requestedChunkColumns)
+ 		{
+ 			if (requestedChunkColumn == null || requestedChunkColumn.Disposed)
+ 			{
+ 				continue;
+@@ -315,10 +335,81 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			}
+ 		}
+ 		return false;
+ 	}
+ 
++	// Builds a sorted (by min distance to nearest online player, optionally motion-predicted)
++	// snapshot of the next StratumChunkPriorityConfig.MaxSortedPerTick pending chunk-column
++	// requests. Returns null when priority is disabled, there is nobody online, or the queue is
++	// too small to bother sorting.
++	private List<ChunkColumnLoadRequest> TryBuildStratumPriorityList()
++	{
++		StratumChunkPriorityConfig prioCfg = StratumRuntime.Config?.Performance?.ChunkPriority;
++		if (prioCfg == null || !prioCfg.Enabled) return null;
++		int qcount = chunkthread.requestedChunkColumns.Count;
++		if (qcount < 2) return null;
++
++		IPlayer[] players = server.AllOnlinePlayers;
++		if (players == null || players.Length == 0) return null;
++
++		// Snapshot player chunk-center positions, with optional motion forward-prediction.
++		// Server tick rate is ~30Hz; Motion is per-tick velocity in blocks.
++		float pred = prioCfg.PredictionSeconds * 30f;
++		float[] playerCx = new float[players.Length];
++		float[] playerCz = new float[players.Length];
++		int pi = 0;
++		for (int p = 0; p < players.Length; p++)
++		{
++			Entity ent = players[p]?.Entity;
++			if (ent == null) continue;
++			EntityPos pos = ent.SidedPos;
++			if (pos == null) continue;
++			double px = pos.X + (pred > 0f ? pos.Motion.X * pred : 0.0);
++			double pz = pos.Z + (pred > 0f ? pos.Motion.Z * pred : 0.0);
++			playerCx[pi] = (float)(px / 32.0);
++			playerCz[pi] = (float)(pz / 32.0);
++			pi++;
++		}
++		if (pi == 0) return null;
++		int playerCount = pi;
++
++		int cap = Math.Min(qcount, prioCfg.MaxSortedPerTick);
++		List<ChunkColumnLoadRequest> candidates = new List<ChunkColumnLoadRequest>(cap);
++		int picked = 0;
++		foreach (ChunkColumnLoadRequest r in chunkthread.requestedChunkColumns)
++		{
++			if (picked >= cap) break;
++			if (r == null || r.Disposed) continue;
++			candidates.Add(r);
++			picked++;
++		}
++		if (candidates.Count < 2) return null;
++
++		candidates.Sort((a, b) =>
++		{
++			float da = StratumMinSqDistToPlayers(a, playerCx, playerCz, playerCount);
++			float db = StratumMinSqDistToPlayers(b, playerCx, playerCz, playerCount);
++			return da.CompareTo(db);
++		});
++		return candidates;
++	}
++
++	private static float StratumMinSqDistToPlayers(ChunkColumnLoadRequest req, float[] px, float[] pz, int count)
++	{
++		float min = float.MaxValue;
++		float cx = req.chunkX + 0.5f;
++		float cz = req.chunkZ + 0.5f;
++		for (int i = 0; i < count; i++)
++		{
++			float dx = cx - px[i];
++			float dz = cz - pz[i];
++			float d = dx * dx + dz * dz;
++			if (d < min) min = d;
++		}
++		return min;
++	}
++
+ 	private int CleanupRequestsQueue()
+ 	{
+ 		int num = 0;
+ 		ConcurrentIndexedFifoQueue<ChunkColumnLoadRequest> requestedChunkColumns = chunkthread.requestedChunkColumns;
+ 		while (requestedChunkColumns.Count > 0)
+@@ -931,32 +1022,79 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 	internal ServerChunk[] TryLoadChunkColumn(ChunkColumnLoadRequest chunkRequest)
+ 	{
+ 		int chunkMapSizeY = server.WorldMap.ChunkMapSizeY;
+ 		ServerChunk[] array = new ServerChunk[chunkMapSizeY];
+ 		int num = 0;
+-		for (int i = 0; i < chunkMapSizeY; i++)
+-		{
+-			byte[] chunk = chunkthread.gameDatabase.GetChunk(chunkRequest.chunkX, i, chunkRequest.chunkZ, chunkRequest.dimension);
+-			if (chunk == null)
+-			{
+-				continue;
+-			}
+-			try
++
++		StratumChunkReadPool pool = chunkthread.stratumReadPool;
++		StratumChunkIoConfig ioCfg = StratumRuntime.Config?.Performance?.ChunkIo;
++		bool useParallel = pool != null
++			&& pool.IsOpen
++			&& ioCfg != null
++			&& ioCfg.Enabled
++			&& chunkMapSizeY >= ioCfg.MinChunkYLevelsForParallel
++			&& pool.WorkerCount >= 2;
++
++		if (useParallel)
++		{
++			byte[][] rawChunks = new byte[chunkMapSizeY][];
++			int maxDop = Math.Min(pool.WorkerCount, chunkMapSizeY);
++			int cx = chunkRequest.chunkX;
++			int cz = chunkRequest.chunkZ;
++			int dim = chunkRequest.dimension;
++			System.Threading.Tasks.Parallel.For(0, chunkMapSizeY,
++				new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = maxDop },
++				i => {
++					rawChunks[i] = pool.GetChunkBytes(Vintagestory.Common.Database.ChunkPos.ToChunkIndex(cx, i, cz, dim));
++				});
++			for (int i = 0; i < chunkMapSizeY; i++)
+ 			{
+-				num++;
+-				array[i] = ServerChunk.FromBytes(chunk, server.serverChunkDataPool, server);
++				byte[] chunk = rawChunks[i];
++				if (chunk == null) continue;
++				try
++				{
++					num++;
++					array[i] = ServerChunk.FromBytes(chunk, server.serverChunkDataPool, server);
++				}
++				catch (Exception ex)
++				{
++					if (server.Config.RegenerateCorruptChunks || server.Config.RepairMode)
++					{
++						array[i] = ServerChunk.CreateNew(server.serverChunkDataPool);
++						ServerMain.Logger.Error("Failed deserializing a chunk (parallel path), we are in repair mode, so will initilize empty one. Exception: {0}", ex);
++						continue;
++					}
++					ServerMain.Logger.Error("Failed deserializing a chunk (parallel path). Not in repair mode, will exit.");
++					throw;
++				}
+ 			}
+-			catch (Exception ex)
++		}
++		else
++		{
++			for (int i = 0; i < chunkMapSizeY; i++)
+ 			{
+-				if (server.Config.RegenerateCorruptChunks || server.Config.RepairMode)
++				byte[] chunk = chunkthread.gameDatabase.GetChunk(chunkRequest.chunkX, i, chunkRequest.chunkZ, chunkRequest.dimension);
++				if (chunk == null)
+ 				{
+-					array[i] = ServerChunk.CreateNew(server.serverChunkDataPool);
+-					ServerMain.Logger.Error("Failed deserializing a chunk, we are in repair mode, so will initilize empty one. Exception: {0}", ex);
+ 					continue;
+ 				}
+-				ServerMain.Logger.Error("Failed deserializing a chunk. Not in repair mode, will exit.");
+-				throw;
++				try
++				{
++					num++;
++					array[i] = ServerChunk.FromBytes(chunk, server.serverChunkDataPool, server);
++				}
++				catch (Exception ex)
++				{
++					if (server.Config.RegenerateCorruptChunks || server.Config.RepairMode)
++					{
++						array[i] = ServerChunk.CreateNew(server.serverChunkDataPool);
++						ServerMain.Logger.Error("Failed deserializing a chunk, we are in repair mode, so will initilize empty one. Exception: {0}", ex);
++						continue;
++					}
++					ServerMain.Logger.Error("Failed deserializing a chunk. Not in repair mode, will exit.");
++					throw;
++				}
+ 			}
+ 		}
+ 		if (requiresSetEmptyFlag)
+ 		{
+ 			foreach (ServerChunk serverChunk in array)
