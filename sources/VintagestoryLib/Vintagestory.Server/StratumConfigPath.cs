@@ -127,7 +127,7 @@ internal static class StratumConfigPath
 			.OrderBy(p => p.Name))
 		{
 			object? v;
-			try { v = prop.GetValue(value); } catch { v = "<unreadable>"; }
+			try { v = prop.GetValue(value); } catch { v = "(unreadable)"; }
 			string typeTag = TypeTag(prop.PropertyType);
 			string display = IsScalar(prop.PropertyType) || prop.PropertyType == typeof(string)
 				? FormatValue(v)

@@ -171,7 +171,7 @@ internal class StratumEntitiesArgParser : EntitiesArgParser
     public override string GetSyntaxExplanation(string indent)
     {
         return base.GetSyntaxExplanation(indent)
-            + indent + "  Stratum extensions: comma-separated names (p1,p2), @all, @staff, @admin, @mod, @<rolecode>.";
+            + indent + "  Stratum extensions: comma-separated names (p1,p2), @all, @staff, @admin, @mod, @&lt;rolecode&gt;.";
     }
 
     public override object GetValue()
@@ -226,7 +226,7 @@ internal class StratumPlayerUidsArgParser : PlayersArgParser
     public override string GetSyntaxExplanation(string indent)
     {
         return base.GetSyntaxExplanation(indent)
-            + "\n" + indent + "  Stratum extensions: comma-separated names (p1,p2), @all, @staff, @admin, @mod, @<rolecode>.";
+            + "\n" + indent + "  Stratum extensions: comma-separated names (p1,p2), @all, @staff, @admin, @mod, @&lt;rolecode&gt;.";
     }
 
     public override object GetValue()

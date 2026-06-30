@@ -190,7 +190,7 @@ internal sealed class StratumPregenManager
 	{
 		if (!TryParseInt(args[3] as string, out int radiusChunks) || radiusChunks < 1)
 		{
-			return TextCommandResult.Error("Usage: /stratum pregen start radius <radiusChunks> [centerChunkX] [centerChunkZ]");
+			return TextCommandResult.Error("Usage: /stratum pregen start radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ]");
 		}
 
 		if (radiusChunks > config.MaxRadiusChunks)
@@ -223,7 +223,7 @@ internal sealed class StratumPregenManager
 	{
 		if (!TryParseInt(args[3] as string, out int x1) || !TryParseInt(args[4] as string, out int z1) || !TryParseInt(args[5] as string, out int x2) || !TryParseInt(args[6] as string, out int z2))
 		{
-			return TextCommandResult.Error("Usage: /stratum pregen start rect <chunkX1> <chunkZ1> <chunkX2> <chunkZ2>");
+			return TextCommandResult.Error("Usage: /stratum pregen start rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;");
 		}
 
 		return Start(server, "rect", x1, z1, x2, z2, config);
@@ -498,7 +498,6 @@ internal sealed class StratumPregenManager
 		output.Append("Skipped: loaded=").Append(skippedLoadedColumns).Append(" invalid=").Append(skippedInvalidColumns).Append(" alreadyQueued=").Append(alreadyQueuedColumns).Append('\n');
 		output.Append("Pressure pauses: ").Append(pressurePauses).Append(" last=").Append(lastPauseReason).Append('\n');
 		output.Append("Config: rate=").Append(StratumRuntime.Config.Performance.Pregen.MaxColumnsPerSecond).Append("/s queues=").Append(StratumRuntime.Config.Performance.Pregen.MaxPendingColumnQueue).Append('/').Append(StratumRuntime.Config.Performance.Pregen.MaxWorkerColumnQueue).Append(" loadedColumns=").Append(StratumRuntime.Config.Performance.Pregen.MaxLoadedChunkColumns).Append('\n');
-		output.Append("Commands: /stratum pregen start radius <radiusChunks> [centerChunkX] [centerChunkZ], /stratum pregen start rect <chunkX1> <chunkZ1> <chunkX2> <chunkZ2>, /stratum pregen pause|resume|stop|status");
 		return output.ToString();
 	}
 
@@ -544,5 +543,5 @@ internal sealed class StratumPregenManager
 		return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
 	}
 
-	private const string Usage = "Usage: /stratum pregen [status|pause|resume|stop|start radius <radiusChunks> [centerChunkX] [centerChunkZ]|start rect <chunkX1> <chunkZ1> <chunkX2> <chunkZ2>]";
+	private const string Usage = "Usage: /stratum pregen [status|pause|resume|stop|start radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ]|start rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;]";
 }

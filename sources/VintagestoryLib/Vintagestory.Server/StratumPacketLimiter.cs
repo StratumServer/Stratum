@@ -278,7 +278,7 @@ internal sealed class StratumPacketLimiter
 	{
 		if (string.IsNullOrWhiteSpace(detail))
 		{
-			output.Append("Usage: /stratum packets player <name|clientId>");
+			output.Append("Usage: /stratum packets player &lt;name|clientId&gt;");
 			return;
 		}
 

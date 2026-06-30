@@ -446,7 +446,7 @@ internal class CmdStratumStaffCommands
 		string message = args[1] as string;
 		if (string.IsNullOrWhiteSpace(message))
 		{
-			return TextCommandResult.Error("Usage: /msg <player> <message>");
+			return TextCommandResult.Error("Usage: /msg &lt;player&gt; &lt;message&gt;");
 		}
 
 		ConnectedClient target = FindOnlineClientByName(targetName);
@@ -486,7 +486,7 @@ internal class CmdStratumStaffCommands
 		string message = args[0] as string;
 		if (string.IsNullOrWhiteSpace(message))
 		{
-			return TextCommandResult.Error("Usage: /reply <message>");
+			return TextCommandResult.Error("Usage: /reply &lt;message&gt;");
 		}
 
 		if (!lastMessagePartnerByUid.TryGetValue(sender.PlayerUID, out string targetUid))
@@ -519,7 +519,7 @@ internal class CmdStratumStaffCommands
 		string message = args[0] as string;
 		if (string.IsNullOrWhiteSpace(message))
 		{
-			return TextCommandResult.Error("Usage: /staffchat <message>");
+			return TextCommandResult.Error("Usage: /staffchat &lt;message&gt;");
 		}
 
 		string senderName = GetPlayer(args)?.PlayerName ?? "Console";
@@ -649,7 +649,7 @@ internal class CmdStratumStaffCommands
 		string message = args[0] as string;
 		if (string.IsNullOrWhiteSpace(message))
 		{
-			return TextCommandResult.Error("Usage: /staffbroadcast <message>");
+			return TextCommandResult.Error("Usage: /staffbroadcast &lt;message&gt;");
 		}
 
 		server.BroadcastMessageToAllGroups("<font color=\"#f5c542\"><strong>[Staff]</strong></font> " + EscapeVtml(message), EnumChatType.AllGroups);
@@ -926,7 +926,7 @@ internal class CmdStratumStaffCommands
 		string reason = args[1] as string;
 		if (string.IsNullOrWhiteSpace(reason))
 		{
-			return TextCommandResult.Error("Usage: /warn <player> <reason>");
+			return TextCommandResult.Error("Usage: /warn &lt;player&gt; &lt;reason&gt;");
 		}
 
 		Caller caller = args.Caller;
@@ -1012,7 +1012,7 @@ internal class CmdStratumStaffCommands
 		string reason = args[2] as string;
 		if (string.IsNullOrWhiteSpace(reason))
 		{
-			return TextCommandResult.Error("Usage: /mute <player> <duration> <reason>");
+			return TextCommandResult.Error("Usage: /mute &lt;player&gt; &lt;duration&gt; &lt;reason&gt;");
 		}
 
 		if (!TryParseMuteDuration(durationText, out DateTime? expiresUtc, out string durationError))
@@ -1113,7 +1113,7 @@ internal class CmdStratumStaffCommands
 		{
 			if (string.IsNullOrWhiteSpace(value))
 			{
-				return TextCommandResult.Error("Usage: /note <player> add <text>");
+				return TextCommandResult.Error("Usage: /note &lt;player&gt; add &lt;text&gt;");
 			}
 
 			StratumModerationRecord note = StratumModerationStore.AddNote(server, targetData, args.Caller, value);
@@ -1125,7 +1125,7 @@ internal class CmdStratumStaffCommands
 		{
 			if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int noteId))
 			{
-				return TextCommandResult.Error("Usage: /note <player> delete <id>");
+				return TextCommandResult.Error("Usage: /note &lt;player&gt; delete &lt;id&gt;");
 			}
 
 			if (!StratumModerationStore.DeleteNote(server, targetData, noteId, args.Caller, "deleted"))
@@ -1173,7 +1173,7 @@ internal class CmdStratumStaffCommands
 		string reason = args[1] as string;
 		if (string.IsNullOrWhiteSpace(reason))
 		{
-			return TextCommandResult.Error("Usage: /report <player> <reason>");
+			return TextCommandResult.Error("Usage: /report &lt;player&gt; &lt;reason&gt;");
 		}
 
 		TryGetKnownPlayerData(targetName, out ServerPlayerData targetData, out _);
@@ -1201,7 +1201,7 @@ internal class CmdStratumStaffCommands
 
 		if (!int.TryParse(selector, NumberStyles.Integer, CultureInfo.InvariantCulture, out int reportId))
 		{
-			return TextCommandResult.Error("Usage: /reports " + action + " <id>");
+			return TextCommandResult.Error("Usage: /reports " + action + " &lt;id&gt;");
 		}
 
 		if (string.Equals(action, "info", StringComparison.OrdinalIgnoreCase))
@@ -1231,7 +1231,7 @@ internal class CmdStratumStaffCommands
 			return TextCommandResult.Success(StratumCommandText.Confirm("Closed report", "#" + report.Id + "."));
 		}
 
-		return TextCommandResult.Error("Usage: /reports [list <open|claimed|closed|all>|info <id>|claim <id>|close <id> <resolution>]");
+		return TextCommandResult.Error("Usage: /reports [list &lt;open|claimed|closed|all&gt;|info &lt;id&gt;|claim &lt;id&gt;|close &lt;id&gt; &lt;resolution&gt;]");
 	}
 
 	private void OnFreezeTick(float dt)

@@ -209,7 +209,7 @@ internal class CmdStratumEssentials
 		string action = args[0] as string;
 		if (string.IsNullOrWhiteSpace(action))
 		{
-			return TextCommandResult.Error("Usage: /tpa <player>|accept|decline|cancel");
+			return TextCommandResult.Error("Usage: /tpa &lt;player&gt;|accept|decline|cancel");
 		}
 
 		if (string.Equals(action, "accept", StringComparison.OrdinalIgnoreCase))
@@ -240,7 +240,7 @@ internal class CmdStratumEssentials
 		string targetName = args[0] as string;
 		if (string.IsNullOrWhiteSpace(targetName))
 		{
-			return TextCommandResult.Error("Usage: /tpahere <player>");
+			return TextCommandResult.Error("Usage: /tpahere &lt;player&gt;");
 		}
 
 		return CreateTeleportRequest(args, targetName, requestTargetToTeleportHere: true);
