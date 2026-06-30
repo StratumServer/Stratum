@@ -1,1 +1,4 @@
-* @trevorftp
+* @StratumServer/core
+/docs/ @StratumServer/docs
+.github/ @StratumServer/core
+/scripts/ @StratumServer/core

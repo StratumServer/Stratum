@@ -212,6 +212,9 @@ internal class CmdStratum
 		if (loaded)
 		{
 			CmdStratumEssentials.RegisterConfiguredPrivileges(server);
+			// Stratum: clear region ticking fallback state on reload (#10)
+			var sim = server.Systems.OfType<ServerSystemEntitySimulation>().FirstOrDefault();
+			sim?.StratumClearFallbackState();
 			StratumRuntime.LogInfo($"config reloaded: {message}; preflight {report.Summary}");
 		}
 		else

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index 750557a..d2b9401 100644
+index 750557a..3d902a0 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,12 @@
@@ -16,7 +16,7 @@ index 750557a..d2b9401 100644
  using Vintagestory.API.Common.Entities;
  using Vintagestory.API.Config;
  using Vintagestory.API.Datastructures;
-@@ -22,13 +26,110 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -22,13 +26,137 @@ public class ServerSystemEntitySimulation : ServerSystem
  
  	private Dictionary<string, List<string>> deathMessagesCache;
  
@@ -43,8 +43,35 @@ index 750557a..d2b9401 100644
 +
 +	// Stratum: cached timing bucket keys per entity code path to avoid per-tick string concat (#7)
 +	private readonly ConcurrentDictionary<string, string> stratumEntityTypeTimingKeys = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
++	// Stratum start: region ticking entity filter (#10)
++	// Cached filter arrays refreshed each tick from config.
++	private string[] stratumFilterBlockedPrefixes = Array.Empty<string>();
++	private string[] stratumFilterBlockedClasses = Array.Empty<string>();
++	private string[] stratumFilterAllowedPrefixes = Array.Empty<string>();
++	private int stratumFilterMode; // 0=all, 1=denylist, 2=allowlist
++
++	// Automatic fallback: per-entity-class exception tracking.
++	// Key = Properties.Class string. Value = (count, windowStartMs).
++	private readonly ConcurrentDictionary<string, StratumFallbackEntry> stratumFallbackCounters = new ConcurrentDictionary<string, StratumFallbackEntry>(StringComparer.Ordinal);
++	// Runtime-blocked classes (set by fallback, read by bucketing).
++	private readonly ConcurrentDictionary<string, long> stratumRuntimeBlocked = new ConcurrentDictionary<string, long>(StringComparer.Ordinal);
++	private int stratumLastFilteredSerial; // count of entities forced serial by filter/fallback
++
++	private sealed class StratumFallbackEntry
++	{
++		public int Count;
++		public long WindowStartMs;
++	}
++	// Stratum end
 +
 +	private List<EntityPos> stratumPlayerPositions = new List<EntityPos>();
++
++	// Stratum: pooled region-tick allocations. Reused across ticks to avoid per-tick GC pressure.
++	private readonly List<Entity> stratumRegionPlayers = new List<Entity>(64);
++	private readonly Dictionary<long, List<Entity>> stratumRegionBuckets = new Dictionary<long, List<Entity>>(64);
++	private readonly List<List<Entity>> stratumRegionParallelList = new List<List<Entity>>(64);
++	private readonly List<Entity> stratumRegionSerialList = new List<Entity>(64);
++	private readonly List<List<Entity>> stratumRegionBucketPool = new List<List<Entity>>(64);
 +
 +	// Stratum: compact snapshot of player positions used by hot per-entity tier-tick math.
 +	// Storing as a value-type array avoids EntityPos pointer chasing and torn reads from the
@@ -127,7 +154,7 @@ index 750557a..d2b9401 100644
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
  		server.PacketHandlers[17] = HandleEntityInteraction;
-@@ -43,26 +144,33 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -43,26 +168,33 @@ public class ServerSystemEntitySimulation : ServerSystem
  		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
  	}
  
@@ -164,7 +191,7 @@ index 750557a..d2b9401 100644
  	private void EventManager_OnGameWorldBeingSaved()
  	{
  		if (server.RunPhase != EnumServerRunPhase.Shutdown)
-@@ -77,66 +185,254 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -77,66 +209,254 @@ public class ServerSystemEntitySimulation : ServerSystem
  	}
  
  	public override void OnBeginModsAndConfigReady()
@@ -439,7 +466,7 @@ index 750557a..d2b9401 100644
  		SendEntityDespawns();
  		int count = server.DelayedSpawnQueue.Count;
  		if (count <= 0)
-@@ -185,19 +481,149 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -185,19 +505,149 @@ public class ServerSystemEntitySimulation : ServerSystem
  		}
  	}
  
@@ -592,7 +619,7 @@ index 750557a..d2b9401 100644
  				{
  					if (value is EntityPlayer entityPlayer)
  					{
-@@ -209,12 +635,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -209,12 +655,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
  						ServerMain.Logger.Error(e);
  					}
@@ -610,7 +637,7 @@ index 750557a..d2b9401 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +653,627 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +673,799 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -666,9 +693,24 @@ index 750557a..d2b9401 100644
 +		int workerThreads = regionCfg.WorkerThreads > 0 ? regionCfg.WorkerThreads : Math.Max(1, Environment.ProcessorCount - 2);
 +		int minPerRegion = Math.Max(1, regionCfg.MinEntitiesPerRegion);
 +
++		// Stratum start: refresh filter cache from config (#10)
++		string filterModeStr = (regionCfg.EntityFilterMode ?? "all").Trim().ToLowerInvariant();
++		stratumFilterMode = filterModeStr == "denylist" ? 1 : filterModeStr == "allowlist" ? 2 : 0;
++		stratumFilterBlockedPrefixes = regionCfg.BlockedEntityCodePrefixes?.ToArray() ?? Array.Empty<string>();
++		stratumFilterBlockedClasses = regionCfg.BlockedEntityClasses?.ToArray() ?? Array.Empty<string>();
++		stratumFilterAllowedPrefixes = regionCfg.AllowedEntityCodePrefixes?.ToArray() ?? Array.Empty<string>();
++		// Stratum end
++
 +		// Snapshot players + non-players, bucket non-players by region.
-+		var players = new List<Entity>(64);
-+		var regions = new Dictionary<long, List<Entity>>(64);
++		// Stratum: reuse pooled collections to avoid per-tick allocation of ~100 List objects.
++		var players = stratumRegionPlayers;
++		players.Clear();
++		stratumRegionSerialList.Clear();
++		var regions = stratumRegionBuckets;
++		// Return used buckets to the pool, then clear the dictionary for this tick.
++		foreach (var kv in regions) { kv.Value.Clear(); stratumRegionBucketPool.Add(kv.Value); }
++		regions.Clear();
++		int filteredSerial = 0;
 +		foreach (Entity entity in server.LoadedEntities.Values)
 +		{
 +			if (entity is EntityPlayer)
@@ -676,12 +718,31 @@ index 750557a..d2b9401 100644
 +				players.Add(entity);
 +				continue;
 +			}
-+			int rx = ((int)entity.Pos.X / MagicNum.ServerChunkSize) / regionShift;
-+			int rz = ((int)entity.Pos.Z / MagicNum.ServerChunkSize) / regionShift;
++			// Stratum start: entity filter (#10)
++			if (StratumShouldForceSerial(entity))
++			{
++				filteredSerial++;
++				stratumRegionSerialList.Add(entity);
++				continue;
++			}
++			// Stratum end
++			// Stratum: floor division so negative coordinates bucket correctly (truncation-to-zero
++			// puts entities at e.g. X=-0.5 into region 0 instead of region -1).
++			int rx = (int)Math.Floor(entity.Pos.X / (MagicNum.ServerChunkSize * regionShift));
++			int rz = (int)Math.Floor(entity.Pos.Z / (MagicNum.ServerChunkSize * regionShift));
 +			long key = ((long)rx << 32) ^ (uint)rz;
 +			if (!regions.TryGetValue(key, out List<Entity> bucket))
 +			{
-+				bucket = new List<Entity>(32);
++				// Stratum: pull from pool instead of allocating
++				if (stratumRegionBucketPool.Count > 0)
++				{
++					bucket = stratumRegionBucketPool[stratumRegionBucketPool.Count - 1];
++					stratumRegionBucketPool.RemoveAt(stratumRegionBucketPool.Count - 1);
++				}
++				else
++				{
++					bucket = new List<Entity>(32);
++				}
 +				regions[key] = bucket;
 +			}
 +			bucket.Add(entity);
@@ -722,8 +783,11 @@ index 750557a..d2b9401 100644
 +
 +		// Parallel region pass for non-players.
 +		var po = new ParallelOptions { MaxDegreeOfParallelism = workerThreads };
-+		var regionList = new List<List<Entity>>(regions.Count);
-+		var serialList = new List<Entity>(64);
++		var regionList = stratumRegionParallelList;
++		regionList.Clear();
++		var serialList = stratumRegionSerialList;
++		// serialList already contains filter-blocked entities from bucketing; append small regions.
++		stratumLastFilteredSerial = filteredSerial;
 +		foreach (var kv in regions)
 +		{
 +			if (kv.Value.Count >= minPerRegion) regionList.Add(kv.Value);
@@ -761,7 +825,8 @@ index 750557a..d2b9401 100644
 +					catch (Exception e)
 +					{
 +						Interlocked.Increment(ref stratumParallelTickFailures);
-+						if (stratumParallelTickFailureSample == null)
++						StratumRecordFallbackException(value); // Stratum: automatic fallback (#10)
++						if (Volatile.Read(ref stratumParallelTickFailureSample) == null)
 +						{
 +							string diag = string.Format("[diag World={0} World.FrameProfiler={1} ServerMain.FrameProfiler={2} entity.Api={3} entity.Alive={4}]",
 +								value.World != null,
@@ -769,7 +834,8 @@ index 750557a..d2b9401 100644
 +								ServerMain.FrameProfiler != null,
 +								value.Api != null,
 +								value.Alive);
-+							stratumParallelTickFailureSample = string.Format("{0} ({1}): {2} {3}\n{4}", value.GetName(), value.Properties?.Class, e.GetType().Name + ": " + e.Message, diag, e.StackTrace);
++							string sample = string.Format("{0} ({1}): {2} {3}\n{4}", value.GetName(), value.Properties?.Class, e.GetType().Name + ": " + e.Message, diag, e.StackTrace);
++							Interlocked.CompareExchange(ref stratumParallelTickFailureSample, sample, null);
 +						}
 +					}
 +					if (recordCategoryTimings)
@@ -869,6 +935,103 @@ index 750557a..d2b9401 100644
 +		}
 +	}
 +
++	// Stratum start: region ticking entity filter (#10)
++	// Returns true if this entity should tick on the main thread (not in parallel workers).
++	private bool StratumShouldForceSerial(Entity entity)
++	{
++		string entityClass = entity.Properties?.Class;
++		// Check runtime-blocked set first (automatic fallback).
++		if (entityClass != null && stratumRuntimeBlocked.ContainsKey(entityClass))
++		{
++			return true;
++		}
++
++		if (stratumFilterMode == 0) return false; // "all" mode: everything goes parallel
++
++		string codePath = entity.Code?.Path;
++
++		if (stratumFilterMode == 1) // denylist
++		{
++			// Check code prefixes
++			if (codePath != null)
++			{
++				string[] prefixes = stratumFilterBlockedPrefixes;
++				for (int i = 0; i < prefixes.Length; i++)
++				{
++					if (codePath.StartsWith(prefixes[i], StringComparison.Ordinal)) return true;
++				}
++			}
++			// Check entity class
++			if (entityClass != null)
++			{
++				string[] classes = stratumFilterBlockedClasses;
++				for (int i = 0; i < classes.Length; i++)
++				{
++					if (string.Equals(entityClass, classes[i], StringComparison.OrdinalIgnoreCase)) return true;
++				}
++			}
++			return false;
++		}
++
++		// allowlist: only entities matching allowed prefixes go parallel
++		if (codePath != null)
++		{
++			string[] prefixes = stratumFilterAllowedPrefixes;
++			for (int i = 0; i < prefixes.Length; i++)
++			{
++				if (codePath.StartsWith(prefixes[i], StringComparison.Ordinal)) return false; // allowed
++			}
++		}
++		return true; // not in allowlist: force serial
++	}
++
++	// Record a parallel tick exception for automatic fallback. Called from worker threads.
++	private void StratumRecordFallbackException(Entity entity)
++	{
++		StratumRegionTickingConfig regionCfg = StratumRuntime.Config.Performance.RegionTicking;
++		int threshold = regionCfg.FallbackAfterExceptions;
++		if (threshold <= 0) return;
++
++		string entityClass = entity.Properties?.Class;
++		if (string.IsNullOrEmpty(entityClass)) return;
++
++		long nowMs = Environment.TickCount64;
++		long windowMs = (long)regionCfg.FallbackWindowSeconds * 1000;
++
++		StratumFallbackEntry entry = stratumFallbackCounters.GetOrAdd(entityClass, _ => new StratumFallbackEntry());
++		// Reset window if expired.
++		if (nowMs - Volatile.Read(ref entry.WindowStartMs) > windowMs)
++		{
++			Interlocked.Exchange(ref entry.Count, 1);
++			Volatile.Write(ref entry.WindowStartMs, nowMs);
++			return;
++		}
++		int count = Interlocked.Increment(ref entry.Count);
++		if (count >= threshold)
++		{
++			// Block this entity class from parallel ticking.
++			stratumRuntimeBlocked.TryAdd(entityClass, nowMs);
++			ServerMain.Logger.Warning("[Stratum] Entity class '{0}' runtime-blocked from region ticking after {1} exception(s) in {2}s", entityClass, count, regionCfg.FallbackWindowSeconds);
++		}
++	}
++
++	// Called by /stratum reload path. Clears the runtime-blocked set unless config says persist.
++	internal void StratumClearFallbackState()
++	{
++		StratumRegionTickingConfig regionCfg = StratumRuntime.Config.Performance.RegionTicking;
++		if (!regionCfg.PersistFallbackUntilRestart)
++		{
++			int cleared = stratumRuntimeBlocked.Count;
++			stratumRuntimeBlocked.Clear();
++			stratumFallbackCounters.Clear();
++			if (cleared > 0)
++			{
++				ServerMain.Logger.Notification("[Stratum] Cleared {0} runtime-blocked entity class(es) on reload", cleared);
++			}
++		}
++	}
++	// Stratum end
++
 +	// Stratum start: region ticking report for /stratum regions (#9)
 +	internal string StratumBuildRegionReport()
 +	{
@@ -890,7 +1053,41 @@ index 750557a..d2b9401 100644
 +		string sample = stratumParallelTickFailureSample;
 +		sb.Append("\nExceptions=").Append(exceptions);
 +		sb.Append("\nSample=").Append(string.IsNullOrEmpty(sample) ? "(none)" : sample);
-+		sb.Append("\nFallback=not implemented");
++		// Stratum start: filter + fallback report (#10)
++		sb.Append("\nFilter=").Append(cfg.EntityFilterMode ?? "all");
++		if (stratumFilterMode == 1)
++		{
++			sb.Append(" (blocked prefixes=").Append(stratumFilterBlockedPrefixes.Length);
++			sb.Append(" classes=").Append(stratumFilterBlockedClasses.Length).Append(")");
++		}
++		else if (stratumFilterMode == 2)
++		{
++			sb.Append(" (allowed prefixes=").Append(stratumFilterAllowedPrefixes.Length).Append(")");
++		}
++		sb.Append("\nFilteredSerial=").Append(stratumLastFilteredSerial);
++		sb.Append("\nFallback=threshold=").Append(cfg.FallbackAfterExceptions).Append(" window=").Append(cfg.FallbackWindowSeconds).Append("s persist=").Append(cfg.PersistFallbackUntilRestart);
++		if (stratumRuntimeBlocked.Count > 0)
++		{
++			sb.Append("\nRuntimeBlocked=[");
++			bool first = true;
++			foreach (var kv in stratumRuntimeBlocked)
++			{
++				if (!first) sb.Append(", ");
++				sb.Append(kv.Key);
++				first = false;
++			}
++			sb.Append("]");
++		}
++		else
++		{
++			sb.Append("\nRuntimeBlocked=(none)");
++		}
++		// Stratum end
++		int creatureBudget = StratumRuntime.Config.Performance.EntityTicking.MaxCreatureTicksPerTick;
++		if (creatureBudget > 0)
++		{
++			sb.Append("\nWARNING: MaxCreatureTicksPerTick=").Append(creatureBudget).Append(" is configured but has no effect in parallel mode (all creatures tick every frame)");
++		}
 +		return sb.ToString();
 +	}
 +	// Stratum end
@@ -944,8 +1141,10 @@ index 750557a..d2b9401 100644
 +		{
 +			stratumAmbientPrefixesCached = Array.Empty<string>();
 +		}
-+		else if (stratumAmbientPrefixesCached.Length != prefixSrc.Count)
++		else
 +		{
++			// Stratum: always rebuild from source so hot-reloaded content changes take effect
++			// even when the list length stays the same.
 +			stratumAmbientPrefixesCached = prefixSrc.ToArray();
 +		}
 +
@@ -959,7 +1158,7 @@ index 750557a..d2b9401 100644
 +		{
 +			stratumHardDespawnExemptPrefixesCached = Array.Empty<string>();
 +		}
-+		else if (stratumHardDespawnExemptPrefixesCached.Length != exemptSrc.Count)
++		else
 +		{
 +			stratumHardDespawnExemptPrefixesCached = exemptSrc.ToArray();
 +		}
@@ -1222,7 +1421,8 @@ index 750557a..d2b9401 100644
 +		// nearby entities just to find one by ID, then enforced range below anyway.
 +		Entity entity = server.GetEntityById(p.EntityId);
 +		if (entity == null)
-+		{
+ 		{
+-			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found in his range!");
 +			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found!");
 +			return;
 +		}
@@ -1231,8 +1431,7 @@ index 750557a..d2b9401 100644
 +		double entityDx = entity.Pos.X - playerPos.X;
 +		double entityDz = entity.Pos.Z - playerPos.Z;
 +		if (entityDx * entityDx + entityDz * entityDz > pickingRange * pickingRange)
- 		{
--			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found in his range!");
++		{
 +			ServerMain.Logger.Debug("HandleEntityInteraction from " + client.PlayerName + " rejected: entity " + p.EntityId + " not in range!");
  			return;
  		}
@@ -1242,7 +1441,7 @@ index 750557a..d2b9401 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -390,11 +1421,20 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -390,11 +1582,20 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1264,7 +1463,7 @@ index 750557a..d2b9401 100644
  			return;
  		}
  		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
-@@ -428,10 +1468,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -428,10 +1629,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

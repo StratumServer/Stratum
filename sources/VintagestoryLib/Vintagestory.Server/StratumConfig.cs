@@ -758,11 +758,46 @@ internal class StratumRegionTickingConfig
 	// Min entities required in a region to consider parallel ticking (small regions stay on main thread).
 	public int MinEntitiesPerRegion { get; set; } = 16;
 
+	// Entity filter mode. Controls which entities tick in parallel worker threads vs main thread.
+	// "all" = current behavior (all non-players go parallel). "denylist" = entities matching
+	// BlockedEntityCodePrefixes or BlockedEntityClasses tick on main thread. "allowlist" = only
+	// entities matching AllowedEntityCodePrefixes go parallel, everything else stays serial.
+	public string EntityFilterMode { get; set; } = "all";
+
+	// Denylist mode: entity Code.Path prefixes that force main-thread ticking.
+	public List<string> BlockedEntityCodePrefixes { get; set; } = new List<string>();
+
+	// Denylist mode: entity Properties.Class strings that force main-thread ticking.
+	// Matches against the JSON "class" field operators see in entity type configs.
+	public List<string> BlockedEntityClasses { get; set; } = new List<string>();
+
+	// Allowlist mode: entity Code.Path prefixes allowed to tick in parallel.
+	// Everything not matching stays on main thread.
+	public List<string> AllowedEntityCodePrefixes { get; set; } = new List<string>();
+
+	// Automatic fallback: max exceptions a single entity type (Properties.Class) can throw
+	// within FallbackWindowSeconds before it gets runtime-blocked from parallel ticking.
+	// 0 = disabled (no automatic fallback).
+	public int FallbackAfterExceptions { get; set; } = 5;
+
+	// Time window in seconds for counting exceptions per entity type.
+	public int FallbackWindowSeconds { get; set; } = 60;
+
+	// When true, the runtime-blocked set persists until server restart.
+	// When false (default), /stratum reload clears the blocked set.
+	public bool PersistFallbackUntilRestart { get; set; } = false;
+
 	public void EnsureSane()
 	{
 		RegionSizeChunks = Math.Max(1, RegionSizeChunks);
 		WorkerThreads = Math.Max(0, WorkerThreads);
 		MinEntitiesPerRegion = Math.Max(1, MinEntitiesPerRegion);
+		EntityFilterMode ??= "all";
+		BlockedEntityCodePrefixes ??= new List<string>();
+		BlockedEntityClasses ??= new List<string>();
+		AllowedEntityCodePrefixes ??= new List<string>();
+		FallbackAfterExceptions = Math.Max(0, FallbackAfterExceptions);
+		FallbackWindowSeconds = Math.Max(1, FallbackWindowSeconds);
 	}
 }
 

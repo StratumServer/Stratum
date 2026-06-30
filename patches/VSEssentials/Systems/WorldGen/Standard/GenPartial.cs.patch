@@ -1,39 +1,30 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
-index 58aa710..14f2ccf 100644
+index 25813b8..d0c3841 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
-@@ -1,17 +1,20 @@
- using Vintagestory.API.MathTools;
+@@ -1,5 +1,6 @@
+ ﻿using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
 +using Vintagestory.ServerMods.NoObf;
  
  #nullable disable
  
- namespace Vintagestory.ServerMods
- {
-     public abstract class GenPartial : ModStdWorldGen
-     {
+@@ -10,6 +11,8 @@
          protected ICoreServerAPI api;
          protected int worldheight;
          public int airBlockId = 0;
-+        public int basaltBlockId; // Stratum: variable for basalt ID
-+        public int lavaBlockId; // Stratum: variable for lav ID
++        public int basaltBlockId; // Stratum: basalt block ID for cave gen
++        public int lavaBlockId; // Stratum: lava block ID for cave gen
  
          protected abstract int chunkRange { get; }
  
-         protected LCGRandom chunkRand;
- 
-@@ -24,10 +27,13 @@ namespace Vintagestory.ServerMods
- 
-         public virtual void initWorldGen()
+@@ -26,6 +29,9 @@
          {
              LoadGlobalConfig(api);
  
-+            basaltBlockId = gcfg.basaltBlockId; // Stratum: finding the basalt block ID
-+            lavaBlockId = gcfg.lavaBlockId;  // Stratum: finding the lsvs block ID
++            basaltBlockId = gcfg.basaltBlockId; // Stratum: resolve basalt block ID
++            lavaBlockId = gcfg.lavaBlockId; // Stratum: resolve lava block ID
 +
              worldheight = api.WorldManager.MapSizeY;
              chunkRand = new LCGRandom(api.WorldManager.Seed);
          }
- 
- 

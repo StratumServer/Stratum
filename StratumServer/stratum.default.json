@@ -8,7 +8,7 @@
   "UpdateChecker": {
     "Enabled": true,
     "CheckOnStartup": true,
-    "LatestReleaseUrl": "https://api.github.com/repos/trevorftp/Stratum/releases/latest",
+    "LatestReleaseUrl": "https://api.github.com/repos/StratumServer/Stratum/releases/latest",
     "TimeoutSeconds": 5
   },
   "Hardening": {

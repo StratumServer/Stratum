@@ -9,16 +9,26 @@ Stratum is a patch set over the vanilla Vintage Story server. The repo does not 
 - `patches/` is unified diffs against the decompiled vanilla baseline.
 - `sources/` is files that exist only in Stratum. No vanilla equivalent.
 - `StratumServer/` is the launcher and the first-run vanilla downloader.
-- `scripts/` holds `bootstrap.ps1` (rebuilds the working tree from `patches` and `sources`) and `extract-patches.ps1` (writes your changes back out).
+- `scripts/` holds bootstrap, extract-patches, and smoke-test scripts (`.sh` for Linux/macOS, `.ps1` for Windows).
 - `VintageStory.slnx` is the solution. It only opens after `bootstrap.ps1` has run.
 
 The working tree itself is gitignored. Only `patches/` and `sources/` are tracked.
 
 ## Setting up
 
-You need the .NET 10 SDK and Windows PowerShell.
+You need the .NET 10 SDK. Linux and macOS contributors use `scripts/bootstrap.sh`; Windows contributors use `scripts/bootstrap.ps1` (PowerShell).
+
+```bash
+# Linux / macOS
+scripts/bootstrap.sh
+dotnet build VintageStory.slnx -c Release
+
+# Or use make (runs bootstrap if needed):
+make build
+```
 
 ```powershell
+# Windows
 .\scripts\bootstrap.ps1
 dotnet build VintageStory.slnx -c Release
 ```
@@ -99,7 +109,7 @@ Rules of thumb:
 Compilation is not enough. Before opening a PR:
 
 1. `dotnet build VintageStory.slnx -c Release` is green with zero warnings on files you touched.
-2. Start a server with `dotnet run --project StratumServer -c Release` against a throwaway world. Make sure it boots, accepts a connection, and shuts down cleanly.
+2. Run the smoke test: `make smoke` (or `bash scripts/smoke-test.sh` / `.\scripts\smoke-test.ps1`). It builds, boots the server, waits for RunGame, and checks for fatal errors.
 3. If your change touches a hot path (entity ticking, chunk IO, packet handling), get a before/after measurement. Server timings, frame profiler output, or a sampling profiler are all fine. "Feels faster" is not.
 
 ## Commits

@@ -143,13 +143,9 @@ internal class StratumMovementAnticheatConfig : StratumAnticheatRuleConfig
 	// Extra cells below the real ground contact check. Keep this low unless testing proves otherwise.
 	public int FlightGroundScanDepth { get; set; } = 0;
 
-	public double FlightMinAirborneSeconds { get; set; } = 1.0;
+	public double FlightMinAirborneSeconds { get; set; } = 1.75;
 
-	public double FlightDescentResetBlocks { get; set; } = 0.08;
-
-	public int HoverConsecutiveTicks { get; set; } = 4;
-
-	public double HoverStableYBlocks { get; set; } = 0.03;
+	public double FlightRequiredDescentBlocks { get; set; } = 0.35;
 
 	// Chest-only by design. Feet collide with too many normal partial blocks.
 	public bool DetectNoclip { get; set; } = true;
@@ -170,10 +166,8 @@ internal class StratumMovementAnticheatConfig : StratumAnticheatRuleConfig
 		SlackBlocks = Math.Clamp(SlackBlocks, 0, 32);
 		KickAfterViolations = Math.Clamp(KickAfterViolations, 3, 1000);
 		FlightGroundScanDepth = Math.Clamp(FlightGroundScanDepth, 0, 16);
-		FlightMinAirborneSeconds = Math.Clamp(FlightMinAirborneSeconds, 0.5, 10);
-		FlightDescentResetBlocks = Math.Clamp(FlightDescentResetBlocks, 0.01, 1);
-		HoverConsecutiveTicks = Math.Clamp(HoverConsecutiveTicks, 2, 40);
-		HoverStableYBlocks = Math.Clamp(HoverStableYBlocks, 0.005, 0.25);
+		FlightMinAirborneSeconds = Math.Clamp(FlightMinAirborneSeconds, 1.0, 10);
+		FlightRequiredDescentBlocks = Math.Clamp(FlightRequiredDescentBlocks, 0.05, 3);
 		WaterWalkConsecutiveTicks = Math.Clamp(WaterWalkConsecutiveTicks, 3, 40);
 		GroundContactTolerance = Math.Clamp(GroundContactTolerance, 0.005, 0.2);
 		NoclipConsecutiveTicks = Math.Clamp(NoclipConsecutiveTicks, 2, 40);

@@ -72,13 +72,16 @@ internal static class StratumMovementGuard
 			}
 		}
 
+		bool hasPreviousY = state.HasLastY;
+		double previousY = hasPreviousY ? state.LastY : entity.Pos.Y;
+
 		if (waterWalkCandidate)
 		{
-			double yDelta = state.HasLastY ? Math.Abs(entity.Pos.Y - state.LastY) : double.MaxValue;
+			double yDelta = hasPreviousY ? Math.Abs(entity.Pos.Y - previousY) : double.MaxValue;
 			state.WaterWalkTicks = yDelta <= 0.03 ? state.WaterWalkTicks + 1 : 1;
 			if (state.WaterWalkTicks >= Math.Max(3, config.WaterWalkConsecutiveTicks))
 			{
-				ResetHover(state);
+				ResetAirborne(state);
 				state.WaterWalkTicks = 0;
 				Rubberband(entity, state);
 				StratumAnticheatReporter.RecordMovementViolation(server, player, entity.Pos.AsBlockPos, "water walk: standing on liquid", out disconnectReason);
@@ -107,7 +110,7 @@ internal static class StratumMovementGuard
 			if (state.EmbeddedTicks >= Math.Max(2, config.NoclipConsecutiveTicks))
 			{
 				state.EmbeddedTicks = 0;
-				ResetHover(state);
+				ResetAirborne(state);
 				Rubberband(entity, state);
 				StratumAnticheatReporter.RecordMovementViolation(server, player, entity.Pos.AsBlockPos, "noclip: chest inside solid blocks", out disconnectReason);
 				return false;
@@ -118,42 +121,47 @@ internal static class StratumMovementGuard
 		{
 			if (supported)
 			{
-				ResetHover(state);
+				ResetAirborne(state);
+			}
+			else if (!state.Airborne)
+			{
+				state.Airborne = true;
+				state.AirborneSinceMs = now;
+				state.AirborneStartY = entity.Pos.Y;
+				state.AirborneLowestY = entity.Pos.Y;
+				state.AirborneHadDescent = false;
 			}
 			else
 			{
-				bool descending = state.HasLastY && state.LastY - entity.Pos.Y >= config.FlightDescentResetBlocks;
-				if (descending)
+				state.AirborneLowestY = Math.Min(state.AirborneLowestY, entity.Pos.Y);
+				if (state.AirborneStartY - state.AirborneLowestY >= config.FlightRequiredDescentBlocks)
 				{
-					ResetHover(state);
+					state.AirborneHadDescent = true;
 				}
-				else
-				{
-					double yDelta = state.HasLastY ? Math.Abs(entity.Pos.Y - state.LastY) : double.MaxValue;
-					state.HoverTicks = yDelta <= config.HoverStableYBlocks ? state.HoverTicks + 1 : 1;
-					if (state.HoverSinceMs == 0)
-					{
-						state.HoverSinceMs = now;
-					}
 
-					if (state.HoverTicks >= config.HoverConsecutiveTicks || (now - state.HoverSinceMs) / 1000.0 >= config.FlightMinAirborneSeconds)
-					{
-						ResetHover(state);
-						Rubberband(entity, state);
-						StratumAnticheatReporter.RecordMovementViolation(server, player, entity.Pos.AsBlockPos, "flight: airborne without descent", out disconnectReason);
-						return false;
-					}
+				double airborneSeconds = (now - state.AirborneSinceMs) / 1000.0;
+				if (airborneSeconds >= config.FlightMinAirborneSeconds && !state.AirborneHadDescent)
+				{
+					ResetAirborne(state);
+					Rubberband(entity, state);
+					StratumAnticheatReporter.RecordMovementViolation(server, player, entity.Pos.AsBlockPos, "flight: airborne without descent", out disconnectReason);
+					return false;
 				}
 			}
 		}
 
+		state.HasLastY = true;
+		state.LastY = entity.Pos.Y;
 		return true;
 	}
 
-	private static void ResetHover(MoveState state)
+	private static void ResetAirborne(MoveState state)
 	{
-		state.HoverSinceMs = 0;
-		state.HoverTicks = 0;
+		state.Airborne = false;
+		state.AirborneSinceMs = 0;
+		state.AirborneStartY = 0;
+		state.AirborneLowestY = 0;
+		state.AirborneHadDescent = false;
 	}
 
 	private static void Rubberband(EntityPlayer entity, MoveState state)
@@ -178,7 +186,7 @@ internal static class StratumMovementGuard
 				states[key] = state;
 			}
 
-			ResetHover(state);
+			ResetAirborne(state);
 			state.EmbeddedTicks = 0;
 			state.WaterWalkTicks = 0;
 			state.HasLastY = true;
@@ -394,8 +402,11 @@ internal static class StratumMovementGuard
 
 	private sealed class MoveState
 	{
-		public long HoverSinceMs;
-		public int HoverTicks;
+		public bool Airborne;
+		public long AirborneSinceMs;
+		public double AirborneStartY;
+		public double AirborneLowestY;
+		public bool AirborneHadDescent;
 		public int EmbeddedTicks;
 		public int WaterWalkTicks;
 		public bool HasLastY;

@@ -88,13 +88,23 @@ Anything else is forwarded to the server, such as `--port` or `--dataPath`.
 
 ## Build
 
-Requires the .NET 10 SDK, PowerShell 5.1+, and `git`.
+Requires the .NET 10 SDK and `git`. Linux/macOS also need `bash`, `python3`, and `curl`.
+
+```bash
+# Linux / macOS
+git clone https://github.com/StratumServer/Stratum.git
+cd Stratum
+make build        # bootstrap + build in one step
+make smoke        # build + boot-test the server
+```
 
 ```powershell
+# Windows (PowerShell)
 git clone https://github.com/StratumServer/Stratum.git
 cd Stratum
 .\scripts\bootstrap.ps1
 dotnet build VintageStory.slnx -c Release
+.\scripts\smoke-test.ps1    # boot-test the server
 ```
 
 `bootstrap.ps1` downloads the targeted vanilla server zip, decompiles
