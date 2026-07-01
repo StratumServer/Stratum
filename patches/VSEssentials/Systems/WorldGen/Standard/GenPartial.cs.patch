@@ -1,5 +1,4 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
-index 25813b8..d0c3841 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
 @@ -1,5 +1,6 @@
@@ -9,17 +8,3 @@ index 25813b8..d0c3841 100644
  
  #nullable disable
  
-@@ -10,6 +11,8 @@
-         protected ICoreServerAPI api;
-         protected int worldheight;
-         public int airBlockId = 0;
- 
-         protected abstract int chunkRange { get; }
- 
-@@ -26,6 +29,9 @@
-         {
-             LoadGlobalConfig(api);
- 
-             worldheight = api.WorldManager.MapSizeY;
-             chunkRand = new LCGRandom(api.WorldManager.Seed);
-         }
