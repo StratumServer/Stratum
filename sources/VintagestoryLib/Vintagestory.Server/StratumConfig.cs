@@ -43,6 +43,8 @@ internal class StratumConfig
 
 	public StratumNametagsConfig Nametags { get; set; } = new StratumNametagsConfig();
 
+	public StratumBackupConfig Backup { get; set; } = new StratumBackupConfig();
+
 	public void EnsurePopulated()
 	{
 		Diagnostics ??= new StratumDiagnosticsConfig();
@@ -62,6 +64,7 @@ internal class StratumConfig
 		LoginProtection ??= new StratumLoginProtectionConfig();
 		PlayerPrivacy ??= new StratumPlayerPrivacyConfig();
 		Nametags ??= new StratumNametagsConfig();
+		Backup ??= new StratumBackupConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
 		BlockBreakGuards.EnsureSane();
@@ -76,6 +79,7 @@ internal class StratumConfig
 		LoginProtection.EnsureSane();
 		PlayerPrivacy.EnsurePopulated();
 		Nametags.EnsurePopulated();
+		Backup.EnsureSane();
 		UpdateChecker.EnsureSane();
 		MigrateLegacyDefaults();
 	}
@@ -1760,5 +1764,22 @@ internal class StratumChatRolePrefixConfig
 	{
 		Tag ??= "Staff";
 		Color ??= "#ffffff";
+	}
+}
+
+internal class StratumBackupConfig
+{
+	public bool Enabled { get; set; }
+
+	public int IntervalMinutes { get; set; } = 360;
+
+	public int RetainCount { get; set; } = 5;
+
+	public bool LogBackups { get; set; } = true;
+
+	public void EnsureSane()
+	{
+		if (IntervalMinutes < 1) IntervalMinutes = 1;
+		if (RetainCount < 1) RetainCount = 1;
 	}
 }

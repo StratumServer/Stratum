@@ -403,5 +403,11 @@
         "Priority": 50
       }
     }
+  },
+  "Backup": {
+    "Enabled": false,
+    "IntervalMinutes": 360,
+    "RetainCount": 5,
+    "LogBackups": true
   }
 }

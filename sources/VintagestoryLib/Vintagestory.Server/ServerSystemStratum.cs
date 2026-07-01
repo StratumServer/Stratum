@@ -92,6 +92,11 @@ internal class ServerSystemStratum : ServerSystem
 		StratumPlayerPrivacy.Initialize(server);
 		StratumMetricsPublisher.Start();
 		StratumUpdateChecker.CheckOnStartup();
+		if (StratumRuntime.Config.Backup.Enabled)
+		{
+			new StratumBackupScheduler(server);
+			StratumRuntime.LogInfo("backup scheduler armed: interval=" + StratumRuntime.Config.Backup.IntervalMinutes + "min retain=" + StratumRuntime.Config.Backup.RetainCount);
+		}
 		StratumRuntime.LogInfo("runtime ready. Use /stratum health, /stratum status, and /stratum timings start.");
 	}
 
