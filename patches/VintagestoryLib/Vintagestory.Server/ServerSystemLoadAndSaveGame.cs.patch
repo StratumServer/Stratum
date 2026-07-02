@@ -1,287 +1,73 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs
-index 455b85f..127cc95 100644
+index af7310f..db96a66 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs
-@@ -26,10 +26,22 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
- 
- 	private BlockAccessorWorldGenUpdateHeightmap blockAccessorWGUpdateHeightMap;
- 
- 	private Dictionary<long, ServerChunk> chunksCopy = new Dictionary<long, ServerChunk>();
- 
-+	private readonly List<long> stratumLoadedChunkSaveScanKeys = new List<long>();
-+
-+	private readonly List<long> stratumMapChunkSaveScanKeys = new List<long>();
-+
-+	private int stratumLoadedChunkSaveScanIndex;
-+
-+	private int stratumMapChunkSaveScanIndex;
-+
-+	private long stratumNextIncrementalDirtyFlushMs;
-+
-+	private long stratumNextSaveScanRefreshMs;
-+
- 	private bool ignoreSave;
+@@ -33,10 +33,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
  
  	internal static PlayerSpawnPos SetDefaultSpawnOnce;
  
  	private FastMemoryStream reusableStream => reusableMemoryStream ?? (reusableMemoryStream = new FastMemoryStream());
-@@ -43,10 +55,11 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
  
- 	public override void OnSeparateThreadTick()
++	private readonly List<DbChunk> stratumSaveBatch = new List<DbChunk>(); // Stratum: reuse across save methods
++
+ 	public ServerSystemLoadAndSaveGame(ServerMain server, ChunkServerThread chunkthread)
+ 		: base(server)
  	{
- 		if (!chunkthread.runOffThreadSaveNow)
+ 		this.chunkthread = chunkthread;
+ 		chunkthread.loadsavegame = this;
+@@ -438,11 +440,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 	private int SaveAllDirtyMapRegions(FastMemoryStream ms)
+ 	{
+ 		//IL_001c: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0021: Unknown result type (might be due to invalid IL or missing references)
+ 		int num = 0;
+-		List<DbChunk> val = new List<DbChunk>();
++		List<DbChunk> val = stratumSaveBatch; // Stratum: reuse list
++		val.Clear();
+ 		System.Collections.Generic.IEnumerator<KeyValuePair<long, ServerMapRegion>> enumerator = server.loadedMapRegions.GetEnumerator();
+ 		try
  		{
-+			TryStratumIncrementalDirtyFlush(reusableStream);
- 			return;
- 		}
- 		lock (savingLock)
+ 			while (((System.Collections.IEnumerator)enumerator).MoveNext())
+ 			{
+@@ -470,11 +473,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 	private int SaveAllDirtyMapChunks(FastMemoryStream ms)
+ 	{
+ 		//IL_001f: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0024: Unknown result type (might be due to invalid IL or missing references)
+ 		int num = 0;
+-		List<DbChunk> val = new List<DbChunk>();
++		List<DbChunk> val = stratumSaveBatch; // Stratum: reuse list
++		val.Clear();
+ 		System.Collections.Generic.IEnumerator<KeyValuePair<long, ServerMapChunk>> enumerator = server.loadedMapChunks.GetEnumerator();
+ 		try
  		{
- 			if (chunkthread.runOffThreadSaveNow)
-@@ -63,10 +76,196 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
- 				chunkthread.runOffThreadSaveNow = false;
- 			}
- 		}
- 	}
- 
-+	private void TryStratumIncrementalDirtyFlush(FastMemoryStream ms)
-+	{
-+		StratumAutoSaveConfig autoSave = StratumRuntime.Config.Performance.AutoSave;
-+		if (!autoSave.Enabled || !autoSave.IncrementalDirtyFlush || server.RunPhase != EnumServerRunPhase.RunGame || server.Saving || server.Suspended || chunkthread.BackupInProgress)
-+		{
-+			return;
-+		}
-+
-+		long nowMs = server.ElapsedMilliseconds;
-+		if (nowMs < stratumNextIncrementalDirtyFlushMs)
-+		{
-+			return;
-+		}
-+
-+		stratumNextIncrementalDirtyFlushMs = nowMs + autoSave.IncrementalFlushIntervalSeconds * 1000L;
-+		RefreshStratumSaveScanKeysIfNeeded(nowMs, autoSave);
-+		int loadedScanned;
-+		int mapScanned;
-+		int loadedSaved = SaveStratumDirtyLoadedChunksBudget(ms, autoSave, out loadedScanned);
-+		int mapSaved = SaveStratumDirtyMapChunksBudget(ms, autoSave, out mapScanned);
-+		StratumRuntime.PerformanceStats.RecordIncrementalSaveFlush(loadedSaved, mapSaved, loadedScanned, mapScanned, stratumLoadedChunkSaveScanKeys.Count, stratumMapChunkSaveScanKeys.Count);
-+	}
-+
-+	private void RefreshStratumSaveScanKeysIfNeeded(long nowMs, StratumAutoSaveConfig autoSave)
-+	{
-+		if (nowMs < stratumNextSaveScanRefreshMs && (stratumLoadedChunkSaveScanKeys.Count > 0 || stratumMapChunkSaveScanKeys.Count > 0))
-+		{
-+			return;
-+		}
-+
-+		stratumLoadedChunkSaveScanKeys.Clear();
-+		server.loadedChunksLock.AcquireReadLock();
-+		try
-+		{
-+			stratumLoadedChunkSaveScanKeys.AddRange(server.loadedChunks.Keys);
-+		}
-+		finally
-+		{
-+			server.loadedChunksLock.ReleaseReadLock();
-+		}
-+
-+		stratumMapChunkSaveScanKeys.Clear();
-+		stratumMapChunkSaveScanKeys.AddRange(server.loadedMapChunks.Keys);
-+		stratumLoadedChunkSaveScanIndex = 0;
-+		stratumMapChunkSaveScanIndex = 0;
-+		stratumNextSaveScanRefreshMs = nowMs + autoSave.SaveScanRefreshSeconds * 1000L;
-+	}
-+
-+	private int SaveStratumDirtyLoadedChunksBudget(FastMemoryStream ms, StratumAutoSaveConfig autoSave, out int scanned)
-+	{
-+		scanned = 0;
-+		if (autoSave.MaxLoadedChunksPerFlush <= 0 || stratumLoadedChunkSaveScanKeys.Count == 0)
-+		{
-+			return 0;
-+		}
-+
-+		int saved = 0;
-+		List<DbChunk> batch = new List<DbChunk>();
-+		List<ServerChunk> dirtiedChunks = new List<ServerChunk>();
-+		try
-+		{
-+			while (scanned < autoSave.MaxLoadedChunkScansPerFlush && saved < autoSave.MaxLoadedChunksPerFlush && stratumLoadedChunkSaveScanKeys.Count > 0)
-+			{
-+				if (stratumLoadedChunkSaveScanIndex >= stratumLoadedChunkSaveScanKeys.Count)
-+				{
-+					stratumLoadedChunkSaveScanIndex = 0;
-+				}
-+
-+				long chunkIndex = stratumLoadedChunkSaveScanKeys[stratumLoadedChunkSaveScanIndex++];
-+				scanned++;
-+				ServerChunk chunk = null;
-+				server.loadedChunksLock.AcquireReadLock();
-+				try
-+				{
-+					server.loadedChunks.TryGetValue(chunkIndex, out chunk);
-+				}
-+				finally
-+				{
-+					server.loadedChunksLock.ReleaseReadLock();
-+				}
-+
-+				if (chunk == null || !chunk.DirtyForSaving)
-+				{
-+					continue;
-+				}
-+
-+				chunk.DirtyForSaving = false;
-+				dirtiedChunks.Add(chunk);
-+				batch.Add(new DbChunk
-+				{
-+					Position = server.WorldMap.ChunkPosFromChunkIndex3D(chunkIndex),
-+					Data = chunk.ToBytes(ms)
-+				});
-+				saved++;
-+				if (batch.Count >= 100)
-+				{
-+					chunkthread.gameDatabase.SetChunks(batch);
-+					batch.Clear();
-+				}
-+			}
-+
-+			if (batch.Count > 0)
-+			{
-+				chunkthread.gameDatabase.SetChunks(batch);
-+			}
-+
-+			if (saved > 0)
-+			{
-+				server.SaveGameData.UpdateChunkdataVersion();
-+			}
-+
-+			return saved;
-+		}
-+		catch (Exception exception)
-+		{
-+			foreach (ServerChunk chunk in dirtiedChunks)
-+			{
-+				chunk.DirtyForSaving = true;
-+			}
-+
-+			StratumRuntime.LogWarning("incremental loaded chunk flush failed: " + exception.Message);
-+			return 0;
-+		}
-+	}
-+
-+	private int SaveStratumDirtyMapChunksBudget(FastMemoryStream ms, StratumAutoSaveConfig autoSave, out int scanned)
-+	{
-+		scanned = 0;
-+		if (autoSave.MaxMapChunksPerFlush <= 0 || stratumMapChunkSaveScanKeys.Count == 0)
-+		{
-+			return 0;
-+		}
-+
-+		int saved = 0;
-+		List<DbChunk> batch = new List<DbChunk>();
-+		List<ServerMapChunk> dirtiedMapChunks = new List<ServerMapChunk>();
-+		try
-+		{
-+			while (scanned < autoSave.MaxMapChunkScansPerFlush && saved < autoSave.MaxMapChunksPerFlush && stratumMapChunkSaveScanKeys.Count > 0)
-+			{
-+				if (stratumMapChunkSaveScanIndex >= stratumMapChunkSaveScanKeys.Count)
-+				{
-+					stratumMapChunkSaveScanIndex = 0;
-+				}
-+
-+				long mapChunkIndex = stratumMapChunkSaveScanKeys[stratumMapChunkSaveScanIndex++];
-+				scanned++;
-+				if (!server.loadedMapChunks.TryGetValue(mapChunkIndex, out ServerMapChunk mapChunk) || !mapChunk.DirtyForSaving)
-+				{
-+					continue;
-+				}
-+
-+				mapChunk.DirtyForSaving = false;
-+				dirtiedMapChunks.Add(mapChunk);
-+				batch.Add(new DbChunk
-+				{
-+					Position = server.WorldMap.ChunkPosFromChunkIndex2D(mapChunkIndex),
-+					Data = mapChunk.ToBytes(ms)
-+				});
-+				saved++;
-+				if (batch.Count >= 100)
-+				{
-+					chunkthread.gameDatabase.SetMapChunks(batch);
-+					batch.Clear();
-+				}
-+			}
-+
-+			if (batch.Count > 0)
-+			{
-+				chunkthread.gameDatabase.SetMapChunks(batch);
-+			}
-+
-+			return saved;
-+		}
-+		catch (Exception exception)
-+		{
-+			foreach (ServerMapChunk mapChunk in dirtiedMapChunks)
-+			{
-+				mapChunk.DirtyForSaving = true;
-+			}
-+
-+			StratumRuntime.LogWarning("incremental map chunk flush failed: " + exception.Message);
-+			return 0;
-+		}
-+	}
-+
- 	public override void OnFinalizeAssets()
- 	{
- 		server.SaveGameData.WillSave(reusableStream);
- 		server.SaveGameData.UpdateLandClaims(server.WorldMap.All);
- 		chunkthread.gameDatabase.StoreSaveGame(server.SaveGameData, reusableStream);
-@@ -151,14 +350,37 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
- 				ServerMain.Logger.Event("Failed upgrading old savegame, giving up, sorry.");
- 				throw new InvalidDataException("Failed upgrading savegame {0}", innerException);
- 			}
- 		}
- 		chunkthread.gameDatabase.UpgradeToWriteAccess();
-+		TryStartStratumChunkReadPool();
- 		server.ModEventManager.OnWorldgenStartup += OnWorldgenStartup;
- 		LoadSaveGame();
- 	}
- 
-+	private void TryStartStratumChunkReadPool()
-+	{
-+		StratumChunkIoConfig ioCfg = StratumRuntime.Config?.Performance?.ChunkIo;
-+		if (ioCfg == null || !ioCfg.Enabled) return;
-+		string dbFile = chunkthread.gameDatabase?.DatabaseFilename;
-+		if (string.IsNullOrEmpty(dbFile))
-+		{
-+			ServerMain.Logger.Warning("[Stratum] chunk read pool requested but savegame filename is not available; pool disabled.");
-+			return;
-+		}
-+		try
-+		{
-+			chunkthread.stratumReadPool = new StratumChunkReadPool(dbFile, ioCfg.WorkerThreads, server.Config.CorruptionProtection);
-+			ServerMain.Logger.Notification("[Stratum] chunk read pool: {0} read-only connections @ {1}", chunkthread.stratumReadPool.WorkerCount, dbFile);
-+		}
-+		catch (Exception ex)
-+		{
-+			ServerMain.Logger.Error("[Stratum] failed to open chunk read pool, falling back to single-connection reads: {0}", ex.Message);
-+			chunkthread.stratumReadPool = null;
-+		}
-+	}
-+
- 	public override void OnBeginModsAndConfigReady()
- 	{
- 		if (server.SaveGameData.IsNewWorld)
+ 			while (((System.Collections.IEnumerator)enumerator).MoveNext())
+ 			{
+@@ -510,11 +514,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 		//IL_0017: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_001c: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0024: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0029: Unknown result type (might be due to invalid IL or missing references)
+ 		int num = 0;
+-		List<DbChunk> val = new List<DbChunk>();
++		List<DbChunk> val = stratumSaveBatch; // Stratum: reuse list
++		val.Clear();
+ 		if (!isSaveLater)
  		{
- 			server.ModEventManager.TriggerSaveGameCreated();
-@@ -201,10 +423,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 			PopulateChunksCopy();
  		}
+ 		Enumerator<long, ServerChunk> enumerator = chunksCopy.GetEnumerator();
+@@ -588,11 +593,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
  	}
  
- 	public override void OnSeperateThreadShutDown()
+ 	internal int SaveAllDirtyGeneratingChunks(FastMemoryStream ms)
  	{
-+		try { chunkthread.stratumReadPool?.Dispose(); } catch { }
-+		chunkthread.stratumReadPool = null;
- 		chunkthread.gameDatabase.Dispose();
- 	}
- 
- 	public void OnWorldBeingSaved()
- 	{
+ 		int num = 0;
+-		List<DbChunk> val = new List<DbChunk>();
++		List<DbChunk> val = stratumSaveBatch; // Stratum: reuse list
++		val.Clear();
+ 		if (chunkthread.requestedChunkColumns.Count > 0)
+ 		{
+ 			System.Collections.Generic.IEnumerator<ChunkColumnLoadRequest> enumerator = ((System.Collections.Generic.IEnumerable<ChunkColumnLoadRequest>)chunkthread.requestedChunkColumns.Snapshot()).GetEnumerator();
+ 			try
+ 			{
