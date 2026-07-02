@@ -1,8 +1,16 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index d6e727a..c4adf0a 100644
+index dd94301..e6f1717 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-@@ -37,10 +37,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1,7 +1,6 @@
+ using System;
+-using System.Collections;
+ using System.Collections.Generic;
+ using System.Linq;
+ using System.Threading;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+@@ -38,10 +37,30 @@ internal class ServerSystemSupplyChunks : ServerSystem
  
  	private string[] storyChunkSpawnEvents;
  
@@ -22,38 +30,95 @@ index d6e727a..c4adf0a 100644
 +	private readonly List<long> stratumMoveBuffer = new List<long>();
 +	private List<ChunkColumnLoadRequest> stratumCandidatesBuffer = new List<ChunkColumnLoadRequest>();
 +
++	// Stratum start: reusable collections for deleteChunkColumns to avoid per-tick allocation.
++	private readonly List<ChunkPos> stratumDeleteChunksList = new List<ChunkPos>(64);
++	private readonly List<ChunkPos> stratumDeleteMapChunksList = new List<ChunkPos>(16);
++	private readonly HashSet<ChunkPos> stratumDeleteRegionsSet = new HashSet<ChunkPos>();
++	// Stratum end
++
  	public ServerSystemSupplyChunks(ServerMain server, ChunkServerThread chunkthread)
  		: base(server)
  	{
  		this.chunkthread = chunkthread;
  		chunkthread.loadsavechunks = this;
-@@ -105,16 +119,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -75,70 +94,64 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		}
+ 	}
+ 
+ 	public override void OnSeparateThreadTick()
+ 	{
+-		//IL_024d: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0257: Expected O, but got Unknown
+ 		if (server.RunPhase != EnumServerRunPhase.RunGame)
+ 		{
+ 			return;
+ 		}
+ 		deleteChunkColumns();
+ 		moveRequestsToGeneratingQueue();
+-		KeyValuePair<HorRectanglei, ChunkLoadOptions> val = default(KeyValuePair<HorRectanglei, ChunkLoadOptions>);
+-		while (!server.fastChunkQueue.IsEmpty && server.fastChunkQueue.TryDequeue(ref val))
++		KeyValuePair<HorRectanglei, ChunkLoadOptions> result;
++		while (!server.fastChunkQueue.IsEmpty && server.fastChunkQueue.TryDequeue(out result))
+ 		{
+-			loadChunkAreaBlocking(val.Key.X1, val.Key.Z1, val.Key.X2, val.Key.Z2, isStartupLoad: false, val.Value.ChunkGenParams);
+-			if (val.Value.OnLoaded != null)
++			loadChunkAreaBlocking(result.Key.X1, result.Key.Z1, result.Key.X2, result.Key.Z2, isStartupLoad: false, result.Value.ChunkGenParams);
++			if (result.Value.OnLoaded != null)
  			{
- 				PeekChunkAreaLocking(result3.Key, result3.Value.UntilPass, result3.Value.OnGenerated, result3.Value.ChunkGenParams);
+-				server.EnqueueMainThreadTask(val.Value.OnLoaded);
++				server.EnqueueMainThreadTask(result.Value.OnLoaded);
+ 			}
+ 		}
+ 		if (!server.simpleLoadRequests.IsEmpty && server.mapMiddleSpawnPos != null)
+ 		{
+-			ChunkColumnLoadRequest request = default(ChunkColumnLoadRequest);
+-			while (server.simpleLoadRequests.TryDequeue(ref request))
++			ChunkColumnLoadRequest result2;
++			while (server.simpleLoadRequests.TryDequeue(out result2))
+ 			{
+-				simplyLoadChunkColumn(request);
++				simplyLoadChunkColumn(result2);
+ 			}
+ 		}
+-		KeyValuePair<Vec2i, ChunkPeekOptions> val2 = default(KeyValuePair<Vec2i, ChunkPeekOptions>);
+-		if (!server.peekChunkColumnQueue.IsEmpty && server.peekChunkColumnQueue.TryDequeue(ref val2))
++		if (!server.peekChunkColumnQueue.IsEmpty && server.peekChunkColumnQueue.TryDequeue(out var result3))
+ 		{
+ 			if (PauseAllWorldgenThreads(3600))
+ 			{
+-				PeekChunkAreaLocking(val2.Key, val2.Value.UntilPass, val2.Value.OnGenerated, val2.Value.ChunkGenParams);
++				PeekChunkAreaLocking(result3.Key, result3.Value.UntilPass, result3.Value.OnGenerated, result3.Value.ChunkGenParams);
  			}
  			ResumeAllWorldgenThreads();
  		}
+-		ChunkLookupRequest val3 = default(ChunkLookupRequest);
 -		while (!server.testChunkExistsQueue.IsEmpty)
 +		while (server.testChunkExistsQueue.TryDequeue(out var val))
  		{
--			if (!server.testChunkExistsQueue.TryDequeue(out var val))
+-			if (!server.testChunkExistsQueue.TryDequeue(ref val3))
 -			{
 -				break;
 -			}
  			bool exists = false;
- 			switch (val.Type)
+-			switch (val3.Type)
++			switch (val.Type)
  			{
  			case EnumChunkType.Chunk:
- 				exists = chunkthread.gameDatabase.ChunkExists(val.chunkX, val.chunkY, val.chunkZ);
-@@ -124,16 +134,18 @@ internal class ServerSystemSupplyChunks : ServerSystem
+-				exists = chunkthread.gameDatabase.ChunkExists(val3.chunkX, val3.chunkY, val3.chunkZ);
++				exists = chunkthread.gameDatabase.ChunkExists(val.chunkX, val.chunkY, val.chunkZ);
+ 				break;
+ 			case EnumChunkType.MapChunk:
+-				exists = chunkthread.gameDatabase.MapChunkExists(val3.chunkX, val3.chunkZ);
++				exists = chunkthread.gameDatabase.MapChunkExists(val.chunkX, val.chunkZ);
  				break;
  			case EnumChunkType.MapRegion:
- 				exists = chunkthread.gameDatabase.MapRegionExists(val.chunkX, val.chunkZ);
+-				exists = chunkthread.gameDatabase.MapRegionExists(val3.chunkX, val3.chunkZ);
++				exists = chunkthread.gameDatabase.MapRegionExists(val.chunkX, val.chunkZ);
  				break;
  			}
--			server.EnqueueMainThreadTask(delegate
+-			server.EnqueueMainThreadTask((Action)delegate
 -			{
--				val.onTested(exists);
+-				val3.onTested.Invoke(exists);
 -				ServerMain.FrameProfiler.Mark("MTT-TestExists");
 -			});
 +			val.Exists = exists;
@@ -69,39 +134,162 @@ index d6e727a..c4adf0a 100644
  			if (!tryLoadOrGenerateChunkColumnsInQueue())
  			{
  				break;
-@@ -239,21 +251,21 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -150,31 +163,29 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		}
+ 	}
+ 
+ 	private void deleteChunkColumns()
+ 	{
+-		List<ChunkPos> val = null;
+-		List<ChunkPos> val2 = null;
++		// Stratum start: reuse collections instead of allocating per call.
++		List<ChunkPos> list = stratumDeleteChunksList;
++		List<ChunkPos> list2 = stratumDeleteMapChunksList;
++		HashSet<ChunkPos> hashSet = stratumDeleteRegionsSet;
++		list.Clear();
++		list2.Clear();
++		hashSet.Clear();
++		// Stratum end
+ 		int chunkMapSizeY = server.WorldMap.ChunkMapSizeY;
+-		long num = default(long);
+-		while (!server.deleteChunkColumns.IsEmpty && server.deleteChunkColumns.TryDequeue(ref num))
++		long result;
++		while (!server.deleteChunkColumns.IsEmpty && server.deleteChunkColumns.TryDequeue(out result))
+ 		{
+-			if (val == null)
+-			{
+-				val = new List<ChunkPos>();
+-			}
+-			if (val2 == null)
++			if (chunkthread.requestedChunkColumns.Remove(result))
+ 			{
+-				val2 = new List<ChunkPos>();
++				server.ChunkColumnRequested.Remove(result);
+ 			}
+-			if (chunkthread.requestedChunkColumns.Remove(num))
+-			{
+-				server.ChunkColumnRequested.Remove<long, int>(num);
+-			}
+-			ChunkPos chunkPos = server.WorldMap.ChunkPosFromChunkIndex2D(num);
+-			int x = chunkPos.X;
+-			int z = chunkPos.Z;
++			ChunkPos item = server.WorldMap.ChunkPosFromChunkIndex2D(result);
++			int x = item.X;
++			int z = item.Z;
+ 			if (x < 0 || z < 0)
+ 			{
+ 				ServerMain.Logger.Error("Delete chunks: mapchunkindex outside the map: " + x + "," + z);
+ 				continue;
+ 			}
+@@ -206,68 +217,61 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 								Reason = EnumDespawnReason.Death
+ 							});
+ 						}
+ 					}
+ 				}
+-				val.Add(new ChunkPos
++				list.Add(new ChunkPos
+ 				{
+ 					X = x,
+ 					Y = i,
+ 					Z = z
+ 				});
+ 			}
+-			val2.Add(chunkPos);
+-			server.loadedMapChunks.Remove<long, ServerMapChunk>(num);
++			list2.Add(item);
++			server.loadedMapChunks.Remove(result);
+ 		}
+-		if (val != null && val.Count > 0)
++		if (list.Count > 0)
+ 		{
+-			chunkthread.gameDatabase.DeleteChunks((System.Collections.Generic.IEnumerable<ChunkPos>)val);
++			chunkthread.gameDatabase.DeleteChunks(list);
+ 		}
+-		if (val2 != null && val2.Count > 0)
++		if (list2.Count > 0)
+ 		{
+-			chunkthread.gameDatabase.DeleteMapChunks((System.Collections.Generic.IEnumerable<ChunkPos>)val2);
++			chunkthread.gameDatabase.DeleteMapChunks(list2);
+ 		}
+-		HashSet<ChunkPos> val3 = null;
+-		long num2 = default(long);
+-		while (!server.deleteMapRegions.IsEmpty && server.deleteMapRegions.TryDequeue(ref num2))
++		long result2;
++		while (!server.deleteMapRegions.IsEmpty && server.deleteMapRegions.TryDequeue(out result2))
+ 		{
+-			ChunkPos chunkPos2 = server.WorldMap.MapRegionPosFromIndex2D(num2);
+-			if (val3 == null)
+-			{
+-				val3 = new HashSet<ChunkPos>();
+-			}
+-			val3.Add(chunkPos2);
+-			server.loadedMapRegions.Remove<long, ServerMapRegion>(num2);
++			ChunkPos item2 = server.WorldMap.MapRegionPosFromIndex2D(result2);
++			hashSet.Add(item2);
++			server.loadedMapRegions.Remove(result2);
+ 		}
+-		if (val3 != null && val3.Count > 0)
++		if (hashSet.Count > 0)
+ 		{
+-			chunkthread.gameDatabase.DeleteMapRegions((System.Collections.Generic.IEnumerable<ChunkPos>)val3);
++			chunkthread.gameDatabase.DeleteMapRegions(hashSet);
  		}
  	}
  
  	private void moveRequestsToGeneratingQueue()
  	{
--		List<long> list = new List<long>();
+-		List<long> val = new List<long>();
 +		stratumMoveBuffer.Clear();
  		lock (server.requestedChunkColumnsLock)
  		{
--			while (server.requestedChunkColumns.Count > 0 && chunkthread.requestedChunkColumns.Capacity - chunkthread.requestedChunkColumns.Count >= list.Count + 200)
+-			while (server.requestedChunkColumns.Count > 0 && chunkthread.requestedChunkColumns.Capacity - chunkthread.requestedChunkColumns.Count >= val.Count + 200)
 +			while (server.requestedChunkColumns.Count > 0 && chunkthread.requestedChunkColumns.Capacity - chunkthread.requestedChunkColumns.Count >= stratumMoveBuffer.Count + 200)
  			{
--				list.Add(server.requestedChunkColumns.Dequeue());
+-				val.Add(server.requestedChunkColumns.Dequeue());
 +				stratumMoveBuffer.Add(server.requestedChunkColumns.Dequeue());
  			}
  		}
--		for (int i = 0; i < list.Count; i++)
+-		for (int i = 0; i < val.Count; i++)
 +		for (int i = 0; i < stratumMoveBuffer.Count; i++)
  		{
--			long num = list[i];
+-			long num = val[i];
 +			long num = stratumMoveBuffer[i];
  			Vec2i vec2i = server.WorldMap.MapChunkPosFromChunkIndex2D(num);
  			chunkthread.addChunkColumnRequest(num, vec2i.X, vec2i.Y, -1);
  		}
  	}
  
-@@ -293,10 +305,43 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 	private bool simplyLoadChunkColumn(ChunkColumnLoadRequest request)
+ 	{
+-		//IL_008f: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0099: Expected O, but got Unknown
+ 		ServerMapChunk orCreateMapChunk = chunkthread.loadsavechunks.GetOrCreateMapChunk(request);
+ 		if (orCreateMapChunk == null)
+ 		{
+ 			return false;
+ 		}
+@@ -281,11 +285,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			obj.serverMapChunk = orCreateMapChunk;
+ 			obj.MarkFresh();
+ 		}
+ 		request.MapChunk = orCreateMapChunk;
+ 		request.Chunks = array;
+-		server.EnqueueMainThreadTask((Action)delegate
++		server.EnqueueMainThreadTask(delegate
+ 		{
+ 			chunkthread.loadsavechunks.mainThreadLoadChunkColumn(request);
+ 		});
+ 		return true;
+ 	}
+@@ -300,41 +304,147 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		{
  			return false;
  		}
  		CleanupRequestsQueue();
  		int additionalWorldGenThreadsCount = chunkthread.additionalWorldGenThreadsCount;
+-		System.Collections.Generic.IEnumerator<ChunkColumnLoadRequest> enumerator = chunkthread.requestedChunkColumns.GetEnumerator();
+-		try
 +
 +		// Stratum: use the per-tick priority list built in OnSeparateThreadTick. Falls through
 +		// to vanilla FIFO when the list is null (priority disabled) or exhausted for this tick.
@@ -110,38 +298,56 @@ index d6e727a..c4adf0a 100644
 +			: null;
 +
 +		if (stratumPrioritized != null)
-+		{
+ 		{
+-			while (((System.Collections.IEnumerator)enumerator).MoveNext())
 +			for (; stratumPriorityListCacheIdx < stratumPrioritized.Count; stratumPriorityListCacheIdx++)
-+			{
+ 			{
+-				ChunkColumnLoadRequest current = enumerator.Current;
+-				if (current == null || current.Disposed)
 +				ChunkColumnLoadRequest requestedChunkColumn = stratumPrioritized[stratumPriorityListCacheIdx];
 +				if (requestedChunkColumn == null || requestedChunkColumn.Disposed)
-+				{
-+					continue;
-+				}
+ 				{
+ 					continue;
+ 				}
+-				int currentIncompletePass_AsInt = current.CurrentIncompletePass_AsInt;
 +				int currentIncompletePass_AsInt = requestedChunkColumn.CurrentIncompletePass_AsInt;
-+				if (currentIncompletePass_AsInt == 0 || currentIncompletePass_AsInt > additionalWorldGenThreadsCount)
-+				{
-+					if (server.Suspended)
-+					{
-+						return false;
-+					}
+ 				if (currentIncompletePass_AsInt == 0 || currentIncompletePass_AsInt > additionalWorldGenThreadsCount)
+ 				{
+ 					if (server.Suspended)
+ 					{
+ 						return false;
+ 					}
+-					if (loadOrGenerateChunkColumn_OnChunkThread(current, currentIncompletePass_AsInt) && chunkthread.additionalWorldGenThreadsCount == 0)
 +					if (loadOrGenerateChunkColumn_OnChunkThread(requestedChunkColumn, currentIncompletePass_AsInt) && chunkthread.additionalWorldGenThreadsCount == 0)
-+					{
+ 					{
 +						stratumPriorityListCacheIdx++;
-+						return true;
-+					}
+ 						return true;
+ 					}
+ 				}
+ 			}
++			// Priority list exhausted for this tick. Fall through to vanilla FIFO.
+ 		}
+-		finally
++
++		foreach (ChunkColumnLoadRequest requestedChunkColumn in chunkthread.requestedChunkColumns)
+ 		{
+-			((System.IDisposable)enumerator)?.Dispose();
++			if (requestedChunkColumn == null || requestedChunkColumn.Disposed)
++			{
++				continue;
++			}
++			int currentIncompletePass_AsInt = requestedChunkColumn.CurrentIncompletePass_AsInt;
++			if (currentIncompletePass_AsInt == 0 || currentIncompletePass_AsInt > additionalWorldGenThreadsCount)
++			{
++				if (server.Suspended)
++				{
++					return false;
++				}
++				if (loadOrGenerateChunkColumn_OnChunkThread(requestedChunkColumn, currentIncompletePass_AsInt) && chunkthread.additionalWorldGenThreadsCount == 0)
++				{
++					return true;
 +				}
 +			}
-+			// Priority list exhausted for this tick. Fall through to vanilla FIFO.
-+		}
-+
- 		foreach (ChunkColumnLoadRequest requestedChunkColumn in chunkthread.requestedChunkColumns)
- 		{
- 			if (requestedChunkColumn == null || requestedChunkColumn.Disposed)
- 			{
- 				continue;
-@@ -315,10 +360,92 @@ internal class ServerSystemSupplyChunks : ServerSystem
- 			}
  		}
  		return false;
  	}
@@ -233,24 +439,493 @@ index d6e727a..c4adf0a 100644
  		int num = 0;
  		ConcurrentIndexedFifoQueue<ChunkColumnLoadRequest> requestedChunkColumns = chunkthread.requestedChunkColumns;
  		while (requestedChunkColumns.Count > 0)
-@@ -836,11 +963,15 @@ internal class ServerSystemSupplyChunks : ServerSystem
- 		long key = server.api.WorldManager.MapRegionIndex2D(regionX, regionZ);
- 		if (!dictionary.TryGetValue(key, out var value) || value == null)
+@@ -358,12 +468,10 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		return num;
+ 	}
+ 
+ 	public bool loadOrGenerateChunkColumn_OnChunkThread(ChunkColumnLoadRequest chunkRequest, int stage)
+ 	{
+-		//IL_02c7: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_02d1: Expected O, but got Unknown
+ 		ServerMapChunk orCreateMapChunk = GetOrCreateMapChunk(chunkRequest);
+ 		bool flag = orCreateMapChunk.CurrentIncompletePass >= EnumWorldGenPass.Done || orCreateMapChunk.WorldGenVersion >= 3;
+ 		if (!flag && orCreateMapChunk.WorldGenVersion != 0)
+ 		{
+ 			orCreateMapChunk = GetOrCreateMapChunk(chunkRequest, forceCreate: true);
+@@ -412,24 +520,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				int chunkX = chunkRequest.chunkX;
+ 				int chunkZ = chunkRequest.chunkZ;
+ 				IWorldChunk[] chunks = chunkRequest.Chunks;
+ 				eventapi.TriggerBeginChunkColumnLoadChunkThread(mapChunk, chunkX, chunkZ, chunks);
+ 			}
+-			catch (System.Exception ex)
++			catch (Exception ex)
+ 			{
+ 				ServerMain.Logger.Error("Exception throwing during chunk Unpack() at chunkpos xz {0}/{1}. Likely corrupted. Exception: {2}", chunkRequest.chunkX, chunkRequest.chunkZ, ex);
+ 				if (server.Config.RepairMode)
+ 				{
+ 					ServerMain.Logger.Error("Repair mode is enabled so will delete the entire chunk column.");
+ 					GenerateNewChunkColumn(orCreateMapChunk, chunkRequest);
+ 					return false;
+ 				}
+ 			}
+-			server.EnqueueMainThreadTask((Action)delegate
++			server.EnqueueMainThreadTask(delegate
+ 			{
+ 				mainThreadLoadChunkColumn(chunkRequest);
+-				chunkthread.requestedChunkColumns.elementsByIndex.Remove<long, ChunkColumnLoadRequest>(chunkRequest.Index);
++				chunkthread.requestedChunkColumns.elementsByIndex.Remove(chunkRequest.Index);
+ 			});
+ 			chunkRequest.FlagToDispose();
+ 			return true;
+ 		}
+ 		if (orCreateMapChunk.currentpass != stage && orCreateMapChunk.currentpass <= chunkthread.additionalWorldGenThreadsCount)
+@@ -449,48 +557,39 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 	}
+ 
+ 	public int GenerateChunkColumns_OnSeparateThread(int stageStart, int stageEnd)
+ 	{
+ 		ChunkColumnLoadRequest chunkColumnLoadRequest = null;
+-		long num = -9223372036854775808L;
+-		System.Collections.Generic.IEnumerator<ChunkColumnLoadRequest> enumerator = chunkthread.requestedChunkColumns.GetEnumerator();
+-		try
++		long num = long.MinValue;
++		foreach (ChunkColumnLoadRequest requestedChunkColumn in chunkthread.requestedChunkColumns)
+ 		{
+-			while (((System.Collections.IEnumerator)enumerator).MoveNext())
++			if (requestedChunkColumn == null || requestedChunkColumn.Disposed)
+ 			{
+-				ChunkColumnLoadRequest current = enumerator.Current;
+-				if (current == null || current.Disposed)
+-				{
+-					continue;
+-				}
+-				int currentIncompletePass_AsInt = current.CurrentIncompletePass_AsInt;
+-				if (currentIncompletePass_AsInt < stageStart || currentIncompletePass_AsInt >= stageEnd)
+-				{
+-					continue;
+-				}
+-				if (currentIncompletePass_AsInt >= current.untilPass)
++				continue;
++			}
++			int currentIncompletePass_AsInt = requestedChunkColumn.CurrentIncompletePass_AsInt;
++			if (currentIncompletePass_AsInt < stageStart || currentIncompletePass_AsInt >= stageEnd)
++			{
++				continue;
++			}
++			if (currentIncompletePass_AsInt >= requestedChunkColumn.untilPass)
++			{
++				requestedChunkColumn.FlagToRequeue();
++			}
++			else if (requestedChunkColumn.creationTime > num)
++			{
++				if (ensurePrettyNeighbourhood(requestedChunkColumn))
+ 				{
+-					current.FlagToRequeue();
++					num = requestedChunkColumn.creationTime;
++					chunkColumnLoadRequest = requestedChunkColumn;
+ 				}
+-				else if (current.creationTime > num)
++				else
+ 				{
+-					if (ensurePrettyNeighbourhood(current))
+-					{
+-						num = current.creationTime;
+-						chunkColumnLoadRequest = current;
+-					}
+-					else
+-					{
+-						current.FlagToRequeue();
+-					}
++					requestedChunkColumn.FlagToRequeue();
+ 				}
+ 			}
+ 		}
+-		finally
+-		{
+-			((System.IDisposable)enumerator)?.Dispose();
+-		}
+ 		if (chunkColumnLoadRequest != null)
+ 		{
+ 			PopulateChunk(chunkColumnLoadRequest);
+ 			return 1;
+ 		}
+@@ -506,16 +605,10 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		return true;
+ 	}
+ 
+ 	internal void mainThreadLoadChunkColumn(ChunkColumnLoadRequest chunkRequest)
+ 	{
+-		//IL_035b: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0360: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0303: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0308: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_034d: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0352: Unknown result type (might be due to invalid IL or missing references)
+ 		if (server.RunPhase == EnumServerRunPhase.Shutdown)
  		{
  			return;
  		}
--		List<GeneratedStructure> generatedStructure = value.Where((GeneratedStructure structure) => !mapRegion.GeneratedStructures.Any((GeneratedStructure s) => s.Location.Start.Equals(structure.Location.Start))).ToList();
+ 		ServerMain.FrameProfiler.Enter("MTT-ChunkLoaded-Begin");
+@@ -550,11 +643,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			{
+ 				try
+ 				{
+ 					serverChunk.Unpack();
+ 				}
+-				catch (System.Exception ex)
++				catch (Exception ex)
+ 				{
+ 					ServerMain.Logger.Error("Exception throwing during chunk Unpack() at chunkpos {0}/{1}/{2}, dimension {4}. Likely corrupted. Exception: {3}", chunkRequest.chunkX, i, chunkRequest.chunkZ, ex, chunkRequest.dimension);
+ 					if (server.Config.RepairMode && chunkRequest.dimension == 0)
+ 					{
+ 						ServerMain.Logger.Error("Repair mode is enabled so will delete the entire chunk column.");
+@@ -589,63 +682,46 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 							string text = "-";
+ 							try
+ 							{
+ 								text = entity.WatchedAttributes.GetTreeAttribute("nametag")?.GetString("name") ?? "-";
+ 							}
+-							catch (System.Exception)
++							catch (Exception)
+ 							{
+ 							}
+-							ServerMain.Logger.Log(EnumLogType.Worldgen, "In " + server.WorldName + ", villager " + text + " removed at " + ((object)entity.Pos.AsBlockPos)?.ToString() + " due to an exception on loading");
++							ServerMain.Logger.Log(EnumLogType.Worldgen, "In " + server.WorldName + ", villager " + text + " removed at " + entity.Pos.AsBlockPos?.ToString() + " due to an exception on loading");
+ 						}
+ 					}
+ 				}
+ 			}
+-			Enumerator<long> enumerator = entitiesToRemove.GetEnumerator();
+-			try
+-			{
+-				while (enumerator.MoveNext())
+-				{
+-					long current = enumerator.Current;
+-					serverChunk.RemoveEntity(current);
+-				}
+-			}
+-			finally
++			foreach (long item in entitiesToRemove)
+ 			{
+-				((System.IDisposable)enumerator/*cast due to constrained. prefix*/).Dispose();
++				serverChunk.RemoveEntity(item);
+ 			}
+ 			ServerMain.FrameProfiler.Enter("MTT-ChunkLoaded-LoadBlockEntities");
+-			Enumerator<BlockPos, BlockEntity> enumerator2 = serverChunk.BlockEntities.GetEnumerator();
+-			try
++			foreach (KeyValuePair<BlockPos, BlockEntity> blockEntity in serverChunk.BlockEntities)
+ 			{
+-				while (enumerator2.MoveNext())
++				BlockEntity value = blockEntity.Value;
++				if (value == null)
+ 				{
+-					BlockEntity value = enumerator2.Current.Value;
+-					if (value == null)
+-					{
+-						continue;
+-					}
+-					try
+-					{
+-						ServerMain.FrameProfiler.Enter(value.Block.Code.Path);
+-						value.Initialize(server.api);
+-						if (serverChunk.serverMapChunk.NewBlockEntities.Contains(value.Pos))
+-						{
+-							serverChunk.serverMapChunk.NewBlockEntities.Remove(value.Pos);
+-							value.OnBlockPlaced();
+-						}
+-						ServerMain.FrameProfiler.Leave();
+-					}
+-					catch (System.Exception ex3)
++					continue;
++				}
++				try
++				{
++					ServerMain.FrameProfiler.Enter(value.Block.Code.Path);
++					value.Initialize(server.api);
++					if (serverChunk.serverMapChunk.NewBlockEntities.Contains(value.Pos))
+ 					{
+-						ServerMain.Logger.Notification("Exception thrown when trying to initialize a block entity @{0}: {1}", value.Pos, ex3);
+-						value.UnregisterAllTickListeners();
++						serverChunk.serverMapChunk.NewBlockEntities.Remove(value.Pos);
++						value.OnBlockPlaced();
+ 					}
++					ServerMain.FrameProfiler.Leave();
++				}
++				catch (Exception ex3)
++				{
++					ServerMain.Logger.Notification("Exception thrown when trying to initialize a block entity @{0}: {1}", value.Pos, ex3);
++					value.UnregisterAllTickListeners();
+ 				}
+-			}
+-			finally
+-			{
+-				((System.IDisposable)enumerator2/*cast due to constrained. prefix*/).Dispose();
+ 			}
+ 			ServerMain.FrameProfiler.Leave();
+ 			server.api.eventapi.TriggerChunkDirty(new Vec3i(chunkRequest.chunkX, num, chunkRequest.chunkZ), serverChunk, EnumChunkDirtyReason.NewlyLoaded);
+ 		}
+ 		ServerMain.FrameProfiler.Mark("MTT-ChunkLoaded-MarkDirtyEvent");
+@@ -719,53 +795,40 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		}
+ 	}
+ 
+ 	private void runScheduledBlockUpdatesWithNeighbours(ChunkColumnLoadRequest chunkRequest)
+ 	{
+-		//IL_007f: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0084: Unknown result type (might be due to invalid IL or missing references)
+-		ServerMapChunk serverMapChunk = default(ServerMapChunk);
+ 		for (int i = -1; i <= 1; i++)
+ 		{
+ 			for (int j = -1; j <= 1; j++)
+ 			{
+ 				bool flag = false;
+-				if (server.loadedMapChunks.TryGetValue(server.WorldMap.MapChunkIndex2D(chunkRequest.chunkX + j, chunkRequest.chunkZ + i), ref serverMapChunk) && serverMapChunk.CurrentIncompletePass == EnumWorldGenPass.Done && serverMapChunk.ScheduledBlockUpdates.Count > 0 && areAllChunkNeighboursLoaded(serverMapChunk, chunkRequest.chunkX + j, chunkRequest.chunkZ + i))
++				if (server.loadedMapChunks.TryGetValue(server.WorldMap.MapChunkIndex2D(chunkRequest.chunkX + j, chunkRequest.chunkZ + i), out var value) && value.CurrentIncompletePass == EnumWorldGenPass.Done && value.ScheduledBlockUpdates.Count > 0 && areAllChunkNeighboursLoaded(value, chunkRequest.chunkX + j, chunkRequest.chunkZ + i))
+ 				{
+ 					flag = true;
+ 				}
+ 				if (!flag)
+ 				{
+ 					continue;
+ 				}
+-				Enumerator<BlockPos> enumerator = serverMapChunk.ScheduledBlockUpdates.GetEnumerator();
+-				try
+-				{
+-					while (enumerator.MoveNext())
+-					{
+-						BlockPos current = enumerator.Current;
+-						server.WorldMap.MarkBlockModified(current);
+-					}
+-				}
+-				finally
++				foreach (BlockPos scheduledBlockUpdate in value.ScheduledBlockUpdates)
+ 				{
+-					((System.IDisposable)enumerator/*cast due to constrained. prefix*/).Dispose();
++					server.WorldMap.MarkBlockModified(scheduledBlockUpdate);
+ 				}
+-				serverMapChunk.ScheduledBlockUpdates.Clear();
++				value.ScheduledBlockUpdates.Clear();
+ 			}
+ 		}
+ 	}
+ 
+ 	private bool areAllChunkNeighboursLoaded(ServerMapChunk mpc, int chunkX, int chunkZ)
+ 	{
+ 		int num = 0;
+-		ServerMapChunk serverMapChunk = default(ServerMapChunk);
+ 		for (int i = -1; i <= 1; i++)
+ 		{
+ 			for (int j = -1; j <= 1; j++)
+ 			{
+-				if ((j != 0 || i != 0) && server.loadedMapChunks.TryGetValue(server.WorldMap.MapChunkIndex2D(chunkX + j, chunkZ + i), ref serverMapChunk) && serverMapChunk.CurrentIncompletePass == EnumWorldGenPass.Done)
++				if ((j != 0 || i != 0) && server.loadedMapChunks.TryGetValue(server.WorldMap.MapChunkIndex2D(chunkX + j, chunkZ + i), out var value) && value.CurrentIncompletePass == EnumWorldGenPass.Done)
+ 				{
+ 					num++;
+ 				}
+ 			}
+ 		}
+@@ -798,84 +861,81 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		return orCreateMapRegion;
+ 	}
+ 
+ 	public ServerMapRegion GetOrCreateMapRegionNoStore(int regionX, int regionZ, long mapRegionIndex2d, ITreeAttribute chunkGenParams, bool updateEarlierVersion)
+ 	{
+-		ServerMapRegion serverMapRegion = default(ServerMapRegion);
+-		server.loadedMapRegions.TryGetValue(mapRegionIndex2d, ref serverMapRegion);
+-		if (serverMapRegion != null)
++		server.loadedMapRegions.TryGetValue(mapRegionIndex2d, out var value);
++		if (value != null)
+ 		{
+-			if (!updateEarlierVersion || serverMapRegion.worldgenVersion == 3)
++			if (!updateEarlierVersion || value.worldgenVersion == 3)
+ 			{
+-				return serverMapRegion;
++				return value;
+ 			}
+ 		}
+ 		else
+ 		{
+-			serverMapRegion = TryLoadMapRegion(regionX, regionZ);
++			value = TryLoadMapRegion(regionX, regionZ);
+ 		}
+-		List<GeneratedStructure> val = null;
+-		Dictionary<string, byte[]> val2 = null;
+-		Dictionary<string, IntDataMap2D> val3 = null;
++		List<GeneratedStructure> list = null;
++		Dictionary<string, byte[]> dictionary = null;
++		Dictionary<string, IntDataMap2D> dictionary2 = null;
+ 		IntDataMap2D intDataMap2D = null;
+ 		IntDataMap2D[] array = null;
+ 		bool flag = true;
+-		if (serverMapRegion != null)
++		if (value != null)
+ 		{
+-			if (serverMapRegion.worldgenVersion != 3 && updateEarlierVersion)
++			if (value.worldgenVersion != 3 && updateEarlierVersion)
+ 			{
+-				ServerMain.Logger.Worldgen("Updating existing mapregion with worldgenVersion " + serverMapRegion.worldgenVersion.ToString() + " at " + (regionX * MagicNum.ChunkRegionSizeInChunks).ToString() + "," + (regionZ * MagicNum.ChunkRegionSizeInChunks).ToString() + " in world: " + server.WorldName);
+-				val = serverMapRegion.GeneratedStructures;
+-				val2 = serverMapRegion.ModData;
+-				val3 = serverMapRegion.OreMaps;
+-				intDataMap2D = serverMapRegion.GeologicProvinceMap;
+-				array = serverMapRegion.RockStrata;
++				ServerMain.Logger.Worldgen("Updating existing mapregion with worldgenVersion " + value.worldgenVersion + " at " + regionX * MagicNum.ChunkRegionSizeInChunks + "," + regionZ * MagicNum.ChunkRegionSizeInChunks + " in world: " + server.WorldName);
++				list = value.GeneratedStructures;
++				dictionary = value.ModData;
++				dictionary2 = value.OreMaps;
++				intDataMap2D = value.GeologicProvinceMap;
++				array = value.RockStrata;
+ 			}
+ 			else
+ 			{
+ 				flag = false;
+-				serverMapRegion.loadedTotalMs = server.ElapsedMilliseconds;
++				value.loadedTotalMs = server.ElapsedMilliseconds;
+ 			}
+ 		}
+ 		if (flag)
+ 		{
+-			serverMapRegion = CreateMapRegion(regionX, regionZ, chunkGenParams);
+-			serverMapRegion.loadedTotalMs = server.ElapsedMilliseconds;
+-			if (val != null)
++			value = CreateMapRegion(regionX, regionZ, chunkGenParams);
++			value.loadedTotalMs = server.ElapsedMilliseconds;
++			if (list != null)
+ 			{
+-				serverMapRegion.GeneratedStructures = val;
++				value.GeneratedStructures = list;
+ 			}
+-			if (val2 != null)
++			if (dictionary != null)
+ 			{
+-				serverMapRegion.ModData = val2;
++				value.ModData = dictionary;
+ 			}
+-			if (val3 != null)
++			if (dictionary2 != null)
+ 			{
+-				serverMapRegion.OreMaps = val3;
++				value.OreMaps = dictionary2;
+ 			}
+ 			if (intDataMap2D != null)
+ 			{
+-				serverMapRegion.GeologicProvinceMap = intDataMap2D;
++				value.GeologicProvinceMap = intDataMap2D;
+ 			}
+ 			if (array != null)
+ 			{
+-				serverMapRegion.RockStrata = array;
++				value.RockStrata = array;
+ 			}
+ 		}
+-		return serverMapRegion;
++		return value;
+ 	}
+ 
+ 	private ServerMapRegion GetOrCreateMapRegion(int chunkX, int chunkZ, ITreeAttribute chunkGenParams, bool updateEarlierVersion)
+ 	{
+-		//IL_0084: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_008e: Expected O, but got Unknown
+ 		int regionX = chunkX / MagicNum.ChunkRegionSizeInChunks;
+ 		int regionZ = chunkZ / MagicNum.ChunkRegionSizeInChunks;
+ 		long num = server.WorldMap.MapRegionIndex2D(regionX, regionZ);
+ 		ServerMapRegion mapRegion = GetOrCreateMapRegionNoStore(regionX, regionZ, num, chunkGenParams, updateEarlierVersion);
+ 		server.loadedMapRegions[num] = mapRegion;
+-		server.EnqueueMainThreadTask((Action)delegate
++		server.EnqueueMainThreadTask(delegate
+ 		{
+ 			server.api.eventapi.TriggerMapRegionLoaded(new Vec2i(regionX, regionZ), mapRegion);
+ 			ServerMain.FrameProfiler.Mark("trigger-mapregionloaded");
+ 		});
+ 		return mapRegion;
+@@ -896,59 +956,61 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		byte[] array = chunkGenParams?.GetBytes("GeneratedStructures");
+ 		if (array == null)
+ 		{
+ 			return;
+ 		}
+-		Dictionary<long, List<GeneratedStructure>> obj = SerializerUtil.Deserialize<Dictionary<long, List<GeneratedStructure>>>(array);
+-		long num = server.api.WorldManager.MapRegionIndex2D(regionX, regionZ);
+-		List<GeneratedStructure> val = default(List<GeneratedStructure>);
+-		if (!obj.TryGetValue(num, ref val) || val == null)
++		Dictionary<long, List<GeneratedStructure>> dictionary = SerializerUtil.Deserialize<Dictionary<long, List<GeneratedStructure>>>(array);
++		long key = server.api.WorldManager.MapRegionIndex2D(regionX, regionZ);
++		if (!dictionary.TryGetValue(key, out var value) || value == null)
+ 		{
+ 			return;
+ 		}
+-		List<GeneratedStructure> generatedStructure = Enumerable.ToList<GeneratedStructure>(Enumerable.Where<GeneratedStructure>((System.Collections.Generic.IEnumerable<GeneratedStructure>)val, (Func<GeneratedStructure, bool>)((GeneratedStructure structure) => !Enumerable.Any<GeneratedStructure>((System.Collections.Generic.IEnumerable<GeneratedStructure>)mapRegion.GeneratedStructures, (Func<GeneratedStructure, bool>)((GeneratedStructure s) => s.Location.Start.Equals(structure.Location.Start))))));
+-		mapRegion.AddGeneratedStructures((System.Collections.Generic.IEnumerable<GeneratedStructure>)generatedStructure);
 +		// Stratum: original code used Where+Any = O(N*M) nested scan. As a region accumulates
 +		// structures from many loaded chunks, mapRegion.GeneratedStructures grows and the inner
 +		// Any() iterates the whole list for every candidate. HashSet reduces this to O(N+M).
 +		HashSet<Vec3i> existingStarts = mapRegion.GeneratedStructures.Select(s => s.Location.Start).ToHashSet();
 +		List<GeneratedStructure> generatedStructure = [..value.Where(structure => !existingStarts.Contains(structure.Location.Start))];
- 		mapRegion.AddGeneratedStructures(generatedStructure);
++		mapRegion.AddGeneratedStructures(generatedStructure);
  	}
  
  	internal ServerMapChunk GetOrCreateMapChunk(ChunkColumnLoadRequest chunkRequest, bool forceCreate = false)
  	{
-@@ -931,32 +1062,79 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		int chunkX = chunkRequest.chunkX;
+ 		int chunkZ = chunkRequest.chunkZ;
+-		long num = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
++		long key = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
+ 		ServerMapRegion orCreateMapRegionEnsureNeighbours;
+-		ServerMapChunk serverMapChunk = default(ServerMapChunk);
++		ServerMapChunk value;
+ 		if (!forceCreate)
+ 		{
+-			server.loadedMapChunks.TryGetValue(num, ref serverMapChunk);
+-			if (serverMapChunk != null)
++			server.loadedMapChunks.TryGetValue(key, out value);
++			if (value != null)
+ 			{
+-				return serverMapChunk;
++				return value;
+ 			}
+-			serverMapChunk = TryLoadMapChunk(chunkX, chunkZ);
+-			if (serverMapChunk != null)
++			value = TryLoadMapChunk(chunkX, chunkZ);
++			if (value != null)
+ 			{
+ 				orCreateMapRegionEnsureNeighbours = GetOrCreateMapRegionEnsureNeighbours(chunkX, chunkZ, chunkRequest.chunkGenParams, updateEarlierVersion: false);
+-				serverMapChunk.MapRegion = orCreateMapRegionEnsureNeighbours;
+-				server.loadedMapChunks[num] = serverMapChunk;
+-				return serverMapChunk;
++				value.MapRegion = orCreateMapRegionEnsureNeighbours;
++				server.loadedMapChunks[key] = value;
++				return value;
+ 			}
+ 		}
+ 		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.3");
+ 		orCreateMapRegionEnsureNeighbours = GetOrCreateMapRegionEnsureNeighbours(chunkX, chunkZ, chunkRequest.chunkGenParams, updateEarlierVersion);
+-		serverMapChunk = CreateMapChunk(chunkX, chunkZ, orCreateMapRegionEnsureNeighbours);
+-		server.loadedMapChunks[num] = serverMapChunk;
+-		return serverMapChunk;
++		value = CreateMapChunk(chunkX, chunkZ, orCreateMapRegionEnsureNeighbours);
++		server.loadedMapChunks[key] = value;
++		return value;
+ 	}
+ 
+ 	private ServerMapChunk PeekMapChunk(int chunkX, int chunkZ)
+ 	{
+-		long num = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
+-		ServerMapChunk serverMapChunk = default(ServerMapChunk);
+-		server.loadedMapChunks.TryGetValue(num, ref serverMapChunk);
+-		if (serverMapChunk != null)
++		long key = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
++		server.loadedMapChunks.TryGetValue(key, out var value);
++		if (value != null)
+ 		{
+-			return serverMapChunk;
++			return value;
+ 		}
+ 		return TryLoadMapChunk(chunkX, chunkZ);
+ 	}
+ 
+ 	private ServerMapChunk CreateMapChunk(int chunkX, int chunkZ, ServerMapRegion mapRegion)
+@@ -999,32 +1061,79 @@ internal class ServerSystemSupplyChunks : ServerSystem
  	internal ServerChunk[] TryLoadChunkColumn(ChunkColumnLoadRequest chunkRequest)
  	{
  		int chunkMapSizeY = server.WorldMap.ChunkMapSizeY;
@@ -309,7 +984,7 @@ index d6e727a..c4adf0a 100644
 +					throw;
 +				}
  			}
--			catch (Exception ex)
+-			catch (System.Exception ex)
 +		}
 +		else
 +		{
@@ -346,3 +1021,419 @@ index d6e727a..c4adf0a 100644
  		if (requiresSetEmptyFlag)
  		{
  			foreach (ServerChunk serverChunk in array)
+@@ -1061,11 +1170,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				{
+ 					serverMapChunk.YMax = (ushort)(server.SaveGameData.MapSizeY - 1);
+ 				}
+ 				return serverMapChunk;
+ 			}
+-			catch (System.Exception ex)
++			catch (Exception ex)
+ 			{
+ 				if (chunkX == 0 && chunkZ == 0)
+ 				{
+ 					return null;
+ 				}
+@@ -1089,11 +1198,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			if (mapRegion != null)
+ 			{
+ 				return ServerMapRegion.FromBytes(mapRegion);
+ 			}
+ 		}
+-		catch (System.Exception e)
++		catch (Exception e)
+ 		{
+ 			if (server.Config.RepairMode)
+ 			{
+ 				ServerMain.Logger.Error("Failed deserializing a map region, we are in repair mode, so will initialize empty one.");
+ 				ServerMain.Logger.Error(e);
+@@ -1105,12 +1214,10 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		return null;
+ 	}
+ 
+ 	public void InitWorldgenAndSpawnChunks()
+ 	{
+-		//IL_01ef: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_01f6: Expected O, but got Unknown
+ 		worldgenHandler = (WorldGenHandler)server.api.Event.TriggerInitWorldGen();
+ 		ServerMain.Logger.Event("Loading {0}x{1}x{2} spawn chunks...", MagicNum.SpawnChunksWidth, MagicNum.SpawnChunksWidth, server.WorldMap.ChunkMapSizeY);
+ 		if (storyChunkSpawnEvents == null)
+ 		{
+ 			storyChunkSpawnEvents = new string[15]
+@@ -1136,29 +1243,29 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		if (GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.20.0-pre.14"))
+ 		{
+ 			int num = 0;
+ 			int num2 = 0;
+ 			bool flag = false;
+-			Random val = new Random(server.Seed);
++			Random random = new Random(server.Seed);
+ 			int num3 = 5;
+ 			int num4 = 20;
+ 			for (int i = 0; i < num3; i++)
+ 			{
+ 				if (i > 0)
+ 				{
+ 					double num5 = (double)GameMath.Sqrt((double)i * (1.0 / (double)num3)) * (double)num4;
+-					double num6 = (1.0 - Math.Abs(val.NextDouble() - val.NextDouble())) * num5;
+-					double value = val.NextDouble() * 6.2831854820251465;
++					double num6 = (1.0 - Math.Abs(random.NextDouble() - random.NextDouble())) * num5;
++					double value = random.NextDouble() * 6.2831854820251465;
+ 					double num7 = num6 * GameMath.Sin(value);
+ 					double num8 = num6 * GameMath.Cos(value);
+ 					num = (int)num7;
+ 					num2 = (int)num8;
+ 					blockPos = new BlockPos(num * 32 + server.WorldMap.MapSizeX / 2, 0, num2 * 32 + server.WorldMap.MapSizeZ / 2, 0);
+ 				}
+ 				loadChunkAreaBlocking(num + server.WorldMap.ChunkMapSizeX / 2 - MagicNum.SpawnChunksWidth / 2, num2 + server.WorldMap.ChunkMapSizeZ / 2 - MagicNum.SpawnChunksWidth / 2, num + server.WorldMap.ChunkMapSizeX / 2 + MagicNum.SpawnChunksWidth / 2, num2 + server.WorldMap.ChunkMapSizeZ / 2 + MagicNum.SpawnChunksWidth / 2, isStartupLoad: true);
+ 				server.ProcessMainThreadTasks();
+-				if (AdjustForSaveSpawnSpot(server, blockPos, null, val))
++				if (AdjustForSaveSpawnSpot(server, blockPos, null, random))
+ 				{
+ 					flag = true;
+ 					break;
+ 				}
+ 				if (i + 1 < num3)
+@@ -1213,11 +1320,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			num3 = rand.Next(64) - 32;
+ 			if (num5 != 0 && !((double)num5 > 0.75 * (double)server.WorldMap.MapSizeY))
+ 			{
+ 				if (server.WorldMap.GetBlockingLandClaimant(forPlayer, pos, EnumBlockAccessFlags.Use) != null)
+ 				{
+-					server.api.Logger.Notification("Spawn pos blocked at " + (object)pos);
++					server.api.Logger.Notification("Spawn pos blocked at " + pos);
+ 				}
+ 				else if (!server.BlockAccessor.GetBlockRaw(num4, num5 + 1, num6, 2).IsLiquid() && !server.BlockAccessor.GetBlockRaw(num4, num5, num6, 2).IsLiquid() && !server.BlockAccessor.IsSideSolid(num4, num5 + 1, num6, BlockFacing.UP))
+ 				{
+ 					return true;
+ 				}
+@@ -1226,42 +1333,35 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		return false;
+ 	}
+ 
+ 	private void PeekChunkAreaLocking(Vec2i coords, EnumWorldGenPass untilPass, OnChunkPeekedDelegate onGenerated, ITreeAttribute chunkGenParams)
+ 	{
+-		//IL_033a: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_033f: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_0345: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_034a: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_03a0: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_03aa: Expected O, but got Unknown
+ 		chunkthread.peekMode = true;
+ 		int x = coords.X;
+ 		int y = coords.Y;
+-		Dictionary<long, ServerMapRegion> val = new Dictionary<long, ServerMapRegion>();
++		Dictionary<long, ServerMapRegion> dictionary = new Dictionary<long, ServerMapRegion>();
+ 		int i = 1;
+ 		int num = Math.Min((int)untilPass, 5);
+ 		int num2 = num - i;
+ 		ChunkColumnLoadRequest[,] array = new ChunkColumnLoadRequest[num2 * 2 + 1, num2 * 2 + 1];
+-		ServerMapRegion serverMapRegion = default(ServerMapRegion);
+ 		for (int j = -num2; j <= num2; j++)
+ 		{
+ 			for (int k = -num2; k <= num2; k++)
+ 			{
+ 				if (server.WorldMap.IsValidChunkPos(x + j, 0, y + k))
+ 				{
+ 					long index2d = server.WorldMap.MapChunkIndex2D(x + j, y + k);
+ 					int regionX = (x + j) / MagicNum.ChunkRegionSizeInChunks;
+ 					int regionZ = (y + k) / MagicNum.ChunkRegionSizeInChunks;
+ 					long num3 = server.WorldMap.MapRegionIndex2D(regionX, regionZ);
+-					if (!val.TryGetValue(num3, ref serverMapRegion))
++					if (!dictionary.TryGetValue(num3, out var value))
+ 					{
+ 						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.3");
+-						serverMapRegion = (val[num3] = GetOrCreateMapRegionNoStore(regionX, regionZ, num3, chunkGenParams, updateEarlierVersion));
+-						chunkthread.peekingMapRegions.TryAdd(num3, serverMapRegion);
++						value = (dictionary[num3] = GetOrCreateMapRegionNoStore(regionX, regionZ, num3, chunkGenParams, updateEarlierVersion));
++						chunkthread.peekingMapRegions.TryAdd(num3, value);
+ 					}
+-					ServerMapChunk mapChunk = CreateMapChunk(x, y, serverMapRegion);
++					ServerMapChunk mapChunk = CreateMapChunk(x, y, value);
+ 					ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(index2d, x + j, y + k, 0, (int)untilPass, server)
+ 					{
+ 						chunkGenParams = ((j == 0 && k == 0) ? chunkGenParams : null)
+ 					};
+ 					chunkColumnLoadRequest.MapChunk = mapChunk;
+@@ -1301,36 +1401,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					long index = server.WorldMap.MapChunkIndex2D(x + n, y + num5);
+ 					chunkthread.peekingChunkColumns.Remove(index);
+ 					if (server.WorldMap.IsValidChunkPos(n + x, 0, num5 + y))
+ 					{
+ 						ChunkColumnLoadRequest chunkColumnLoadRequest2 = array[n + num2, num5 + num2];
+-						Dictionary<Vec2i, IServerChunk[]> obj = columnsByChunkCoordinate;
+-						Vec2i vec2i = new Vec2i(x + n, y + num5);
++						Dictionary<Vec2i, IServerChunk[]> dictionary2 = columnsByChunkCoordinate;
++						Vec2i key = new Vec2i(x + n, y + num5);
+ 						IServerChunk[] chunks = chunkColumnLoadRequest2.Chunks;
+-						obj[vec2i] = chunks;
++						dictionary2[key] = chunks;
+ 					}
+ 				}
+ 			}
+ 		}
+-		Enumerator<long, ServerMapRegion> enumerator = val.GetEnumerator();
+-		try
+-		{
+-			long num6 = default(long);
+-			ServerMapRegion serverMapRegion2 = default(ServerMapRegion);
+-			while (enumerator.MoveNext())
+-			{
+-				enumerator.Current.Deconstruct(ref num6, ref serverMapRegion2);
+-				long num7 = num6;
+-				chunkthread.peekingMapRegions.Remove(num7);
+-			}
+-		}
+-		finally
++		foreach (var (key2, _) in dictionary)
+ 		{
+-			((System.IDisposable)enumerator/*cast due to constrained. prefix*/).Dispose();
++			chunkthread.peekingMapRegions.Remove(key2);
+ 		}
+ 		chunkthread.peekMode = false;
+-		server.EnqueueMainThreadTask((Action)delegate
++		server.EnqueueMainThreadTask(delegate
+ 		{
+ 			onGenerated(columnsByChunkCoordinate);
+ 			ServerMain.FrameProfiler.Mark("MTT-PeekChunk");
+ 		});
+ 	}
+@@ -1341,21 +1429,13 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		int num = server.loadedChunks.Count / server.WorldMap.ChunkMapSizeY;
+ 		int num2 = (chunkX2 - chunkX1 + 1) * (chunkZ2 - chunkZ1 + 1);
+ 		CleanupRequestsQueue();
+ 		moveRequestsToGeneratingQueue();
+ 		blockingRequestsRemaining = 0;
+-		System.Collections.Generic.IEnumerator<ChunkColumnLoadRequest> enumerator = chunkthread.requestedChunkColumns.GetEnumerator();
+-		try
++		foreach (ChunkColumnLoadRequest requestedChunkColumn in chunkthread.requestedChunkColumns)
+ 		{
+-			while (((System.Collections.IEnumerator)enumerator).MoveNext())
+-			{
+-				enumerator.Current.blockingRequest = false;
+-			}
+-		}
+-		finally
+-		{
+-			((System.IDisposable)enumerator)?.Dispose();
++			requestedChunkColumn.blockingRequest = false;
+ 		}
+ 		for (int i = chunkX1; i <= chunkX2; i++)
+ 		{
+ 			for (int j = chunkZ1; j <= chunkZ2; j++)
+ 			{
+@@ -1396,65 +1476,47 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					ServerMain.Logger.StoryEvent("...");
+ 				}
+ 				storyEventPrints++;
+ 			}
+ 			bool flag = false;
+-			enumerator = chunkthread.requestedChunkColumns.GetEnumerator();
+-			try
++			foreach (ChunkColumnLoadRequest requestedChunkColumn2 in chunkthread.requestedChunkColumns)
+ 			{
+-				while (((System.Collections.IEnumerator)enumerator).MoveNext())
++				if (requestedChunkColumn2 == null || requestedChunkColumn2.Disposed)
+ 				{
+-					ChunkColumnLoadRequest current = enumerator.Current;
+-					if (current == null || current.Disposed)
+-					{
+-						continue;
+-					}
+-					int currentIncompletePass_AsInt = current.CurrentIncompletePass_AsInt;
+-					if (currentIncompletePass_AsInt == 0 || currentIncompletePass_AsInt > chunkthread.additionalWorldGenThreadsCount)
++					continue;
++				}
++				int currentIncompletePass_AsInt = requestedChunkColumn2.CurrentIncompletePass_AsInt;
++				if (currentIncompletePass_AsInt == 0 || currentIncompletePass_AsInt > chunkthread.additionalWorldGenThreadsCount)
++				{
++					if (server.exitState.Mode == EnumExitMode.HardExit || server.stopped)
+ 					{
+-						if (server.exitState.Mode == EnumExitMode.HardExit || server.stopped)
+-						{
+-							return;
+-						}
+-						flag |= loadOrGenerateChunkColumn_OnChunkThread(current, currentIncompletePass_AsInt);
++						return;
+ 					}
++					flag |= loadOrGenerateChunkColumn_OnChunkThread(requestedChunkColumn2, currentIncompletePass_AsInt);
+ 				}
+ 			}
+-			finally
+-			{
+-				((System.IDisposable)enumerator)?.Dispose();
+-			}
+ 			if (flag)
+ 			{
+ 				num3 = Environment.TickCount + 12000;
+ 			}
+ 			else
+ 			{
+ 				if (Environment.TickCount <= num3)
+ 				{
+ 					continue;
+ 				}
+-				ServerMain.Logger.Error("Attempting to force generate chunk columns from " + chunkX1.ToString() + "," + chunkZ1.ToString() + " to " + chunkX2.ToString() + "," + chunkZ2.ToString());
++				ServerMain.Logger.Error("Attempting to force generate chunk columns from " + chunkX1 + "," + chunkZ1 + " to " + chunkX2 + "," + chunkZ2);
+ 				ServerMain.Logger.Error(chunkthread.additionalWorldGenThreadsCount + " additional worldgen threads active, number of 'undone' chunks is " + blockingRequestsRemaining);
+-				enumerator = chunkthread.requestedChunkColumns.GetEnumerator();
+-				try
++				foreach (ChunkColumnLoadRequest requestedChunkColumn3 in chunkthread.requestedChunkColumns)
+ 				{
+-					while (((System.Collections.IEnumerator)enumerator).MoveNext())
++					if (requestedChunkColumn3 != null)
+ 					{
+-						ChunkColumnLoadRequest current2 = enumerator.Current;
+-						if (current2 != null)
+-						{
+-							string text = ((current2.chunkX >= chunkX1 && current2.chunkX <= chunkX2 && current2.chunkZ >= chunkZ1 && current2.chunkZ <= chunkZ2) ? " (in original req)" : "");
+-							ServerMain.Logger.Error("Column " + current2.ChunkX.ToString() + "," + current2.ChunkZ.ToString() + " has reached pass " + current2.CurrentIncompletePass_AsInt.ToString() + text);
+-						}
++						string text = ((requestedChunkColumn3.chunkX >= chunkX1 && requestedChunkColumn3.chunkX <= chunkX2 && requestedChunkColumn3.chunkZ >= chunkZ1 && requestedChunkColumn3.chunkZ <= chunkZ2) ? " (in original req)" : "");
++						ServerMain.Logger.Error("Column " + requestedChunkColumn3.ChunkX + "," + requestedChunkColumn3.ChunkZ + " has reached pass " + requestedChunkColumn3.CurrentIncompletePass_AsInt + text);
+ 					}
+ 				}
+-				finally
+-				{
+-					((System.IDisposable)enumerator)?.Dispose();
+-				}
+-				throw new System.Exception("Somehow worldgen has become stuck in an endless loop, please report this as a bug!  Additional data in the server-main log");
++				throw new Exception("Somehow worldgen has become stuck in an endless loop, please report this as a bug!  Additional data in the server-main log");
+ 			}
+ 		}
+ 	}
+ 
+ 	private void PopulateChunk(ChunkColumnLoadRequest chunkRequest)
+@@ -1495,24 +1557,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		}
+ 	}
+ 
+ 	private void runGenerators(ChunkColumnLoadRequest chunkRequest, int forPass)
+ 	{
+-		List<ChunkColumnGenerationDelegate> val = worldgenHandler.OnChunkColumnGen[forPass];
+-		if (val == null)
++		List<ChunkColumnGenerationDelegate> list = worldgenHandler.OnChunkColumnGen[forPass];
++		if (list == null)
+ 		{
+ 			return;
+ 		}
+-		for (int i = 0; i < val.Count; i++)
++		for (int i = 0; i < list.Count; i++)
+ 		{
+ 			try
+ 			{
+-				val[i](chunkRequest);
++				list[i](chunkRequest);
+ 			}
+-			catch (System.Exception ex)
++			catch (Exception ex)
+ 			{
+-				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, ((object)chunkRequest.CurrentIncompletePass/*cast due to constrained. prefix*/).ToString());
++				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
+ 				if (chunkRequest.CurrentIncompletePass <= EnumWorldGenPass.Terrain)
+ 				{
+ 					break;
+ 				}
+ 			}
+@@ -1558,13 +1620,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		return result;
+ 	}
+ 
+ 	private EnumWorldGenPass getLoadedOrQueuedChunkPass(long index2d)
+ 	{
+-		ServerMapChunk serverMapChunk = default(ServerMapChunk);
+-		server.loadedMapChunks.TryGetValue(index2d, ref serverMapChunk);
+-		if (serverMapChunk == null || serverMapChunk.CurrentIncompletePass != EnumWorldGenPass.Done)
++		server.loadedMapChunks.TryGetValue(index2d, out var value);
++		if (value == null || value.CurrentIncompletePass != EnumWorldGenPass.Done)
+ 		{
+ 			return chunkthread.requestedChunkColumns.GetByIndex(index2d)?.CurrentIncompletePass ?? EnumWorldGenPass.None;
+ 		}
+ 		return EnumWorldGenPass.Done;
+ 	}
+@@ -1582,21 +1643,13 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		}
+ 		try
+ 		{
+ 			ServerMain.Logger.Warning("Requested chunks buffer is too small! Taking measures to attempt to free enough space. Try increasing servermagicnumbers RequestChunkColumnsQueueSize?");
+ 			((ServerSystemUnloadChunks)chunkthread.serversystems[2]).UnloadGeneratingChunkColumns(MagicNum.UncompressedChunkTTL / 10);
+-			System.Collections.Generic.IEnumerator<ChunkColumnLoadRequest> enumerator = ((System.Collections.Generic.IEnumerable<ChunkColumnLoadRequest>)chunkthread.requestedChunkColumns.Snapshot()).GetEnumerator();
+-			try
++			foreach (ChunkColumnLoadRequest item in chunkthread.requestedChunkColumns.Snapshot())
+ 			{
+-				while (((System.Collections.IEnumerator)enumerator).MoveNext())
+-				{
+-					enumerator.Current.FlagToRequeue();
+-				}
+-			}
+-			finally
+-			{
+-				((System.IDisposable)enumerator)?.Dispose();
++				item.FlagToRequeue();
+ 			}
+ 			num -= CleanupRequestsQueue();
+ 			if (num <= 0)
+ 			{
+ 				return true;
+@@ -1617,41 +1670,30 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 	}
+ 
+ 	internal void FullyClearGeneratingQueue()
+ 	{
+ 		chunkthread.loadsavegame.SaveAllDirtyGeneratingChunks(saveChunksStream ?? (saveChunksStream = new FastMemoryStream()));
+-		System.Collections.Generic.IEnumerator<ChunkColumnLoadRequest> enumerator = chunkthread.requestedChunkColumns.GetEnumerator();
+-		try
++		foreach (ChunkColumnLoadRequest requestedChunkColumn in chunkthread.requestedChunkColumns)
+ 		{
+-			while (((System.Collections.IEnumerator)enumerator).MoveNext())
++			if (requestedChunkColumn != null && !requestedChunkColumn.Disposed)
+ 			{
+-				ChunkColumnLoadRequest current = enumerator.Current;
+-				if (current != null && !current.Disposed)
+-				{
+-					server.loadedMapChunks.Remove<long, ServerMapChunk>(current.mapIndex2d);
+-					server.ChunkColumnRequested.Remove<long, int>(current.mapIndex2d);
+-				}
++				server.loadedMapChunks.Remove(requestedChunkColumn.mapIndex2d);
++				server.ChunkColumnRequested.Remove(requestedChunkColumn.mapIndex2d);
+ 			}
+ 		}
+-		finally
+-		{
+-			((System.IDisposable)enumerator)?.Dispose();
+-		}
+ 		chunkthread.requestedChunkColumns.Clear();
+ 		ServerMain.Logger.VerboseDebug("Incomplete chunks stored and wiped.");
+ 	}
+ 
+ 	private Thread CreateAdditionalWorldGenThread(int stageStart, int stageEnd, int threadnum)
+ 	{
+-		//IL_0020: Unknown result type (might be due to invalid IL or missing references)
+-		//IL_003b: Expected O, but got Unknown
+-		Thread obj = TyronThreadPool.CreateDedicatedThread((ThreadStart)delegate
++		Thread thread = TyronThreadPool.CreateDedicatedThread(delegate
+ 		{
+ 			GeneratorThreadLoop(stageStart, stageEnd);
+ 		}, "worldgen" + threadnum);
+-		obj.Start();
+-		return obj;
++		thread.Start();
++		return thread;
+ 	}
+ 
+ 	public void GeneratorThreadLoop(int stageStart, int stageEnd)
+ 	{
+ 		Thread.Sleep(5);
+@@ -1671,11 +1713,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 						{
+ 							break;
+ 						}
+ 					}
+ 				}
+-				catch (System.Exception e)
++				catch (Exception e)
+ 				{
+ 					ServerMain.Logger.Error(e);
+ 				}
+ 			}
+ 			PauseWorldgenThreadIfRequired(onChunkthread: false);
