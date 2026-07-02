@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index 140b2f0..cc8c887 100644
+index 140b2f0..cb95b3c 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -365,10 +365,19 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
@@ -87,6 +87,19 @@ index 140b2f0..cc8c887 100644
  
  	IClassRegistryAPI IWorldAccessor.ClassRegistry => api.ClassRegistry;
  
+@@ -1135,11 +1193,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 			string entitlements = (client.IsSinglePlayerClient ? GlobalConstants.SinglePlayerEntitlements : null);
+ 			PreFinalizePlayerIdentification(identification, client, entitlements);
+ 			return;
+ 		}
+ 		ServerPlayerData serverPlayerData = PlayerDataManager.GetServerPlayerData(identification.PlayerUID);
+-		if ((serverPlayerData == null || (!serverPlayerData.HasPrivilege(Privilege.controlserver, Config.RolesByCode) && !serverPlayerData.HasPrivilege("ignoremaxclients", Config.RolesByCode))) && Enumerable.Count<KeyValuePair<int, ConnectedClient>>((System.Collections.Generic.IEnumerable<KeyValuePair<int, ConnectedClient>>)Clients, (Func<KeyValuePair<int, ConnectedClient>, bool>)((KeyValuePair<int, ConnectedClient> c) => c.Value.State.IsAdmitted())) >= Config.MaxClients && ConnectionQueue.Count >= Config.MaxClientsInQueue)
++		if ((serverPlayerData == null || (!serverPlayerData.HasPrivilege(Privilege.controlserver, Config.RolesByCode) && !serverPlayerData.HasPrivilege("ignoremaxclients", Config.RolesByCode))) && StratumCountAdmittedClients() >= Config.MaxClients && ConnectionQueue.Count >= Config.MaxClientsInQueue) // Stratum: eliminate LINQ closure
+ 		{
+ 			DisconnectPlayer(client, null, Lang.Get("Server and Connection queue is full ({0} max clients, {1} queue size). Please try again later.", Config.MaxClients, Config.MaxClientsInQueue));
+ 		}
+ 		VerifyPlayerWithAuthServer(identification, client);
+ 	}
 @@ -1860,13 +1918,15 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			{
  				Thread.Sleep(num3);
@@ -103,6 +116,32 @@ index 140b2f0..cc8c887 100644
  		FrameProfiler.End();
  	}
  
+@@ -2461,11 +2521,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 					val = new List<QueuedClient>();
+ 					for (int i = 0; i < num2; i++)
+ 					{
+ 						if (ConnectionQueue.Count > 0)
+ 						{
+-							QueuedClient nextPlayer = Enumerable.First<QueuedClient>((System.Collections.Generic.IEnumerable<QueuedClient>)ConnectionQueue);
++							QueuedClient nextPlayer = ConnectionQueue[0]; // Stratum: was Enumerable.First (enumerator alloc)
+ 							ConnectionQueue.RemoveAll((Predicate<QueuedClient>)((QueuedClient e) => e.Client.Id == nextPlayer.Client.Id));
+ 							val.Add(nextPlayer);
+ 						}
+ 					}
+ 					if (debugProcessConnectionQueue)
+@@ -4070,11 +4130,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 	}
+ 
+ 	private void PreFinalizePlayerIdentification(Packet_ClientIdentification packet, ConnectedClient client, string entitlements)
+ 	{
+ 		int maxClients = Config.MaxClients;
+-		if (Enumerable.Count<KeyValuePair<int, ConnectedClient>>((System.Collections.Generic.IEnumerable<KeyValuePair<int, ConnectedClient>>)Clients, (Func<KeyValuePair<int, ConnectedClient>, bool>)((KeyValuePair<int, ConnectedClient> c) => c.Value.State.IsAdmitted())) >= maxClients || ((System.Collections.Generic.IEnumerable<KeyValuePair<int, ConnectedClient>>)Clients).Contains((KeyValuePair<int, ConnectedClient> c) => c.Value.State == EnumClientState.Queued))
++		if (StratumCountAdmittedClients() >= maxClients || StratumHasQueuedClient()) // Stratum: eliminate LINQ closures
+ 		{
+ 			ServerPlayerData orCreateServerPlayerData = PlayerDataManager.GetOrCreateServerPlayerData(packet.PlayerUID);
+ 			if (!orCreateServerPlayerData.HasPrivilege(Privilege.controlserver, Config.RolesByCode) && !orCreateServerPlayerData.HasPrivilege("ignoremaxclients", Config.RolesByCode))
+ 			{
+ 				tryEnqueuePlayer(packet, client, entitlements, maxClients);
 @@ -4817,11 +4877,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		try
  		{
@@ -142,7 +181,7 @@ index 140b2f0..cc8c887 100644
  				}
  			}
  		}
-@@ -4880,10 +4940,22 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4880,10 +4940,41 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			((System.IDisposable)enumerator)?.Dispose();
  		}
@@ -155,6 +194,25 @@ index 140b2f0..cc8c887 100644
 +		for (int i = 0; i < skipPlayers.Length; i++)
 +		{
 +			if (skipPlayers[i]?.ClientId == clientId) return true;
++		}
++		return false;
++	}
++
++	private int StratumCountAdmittedClients()
++	{
++		int count = 0;
++		foreach (KeyValuePair<int, ConnectedClient> c in Clients)
++		{
++			if (c.Value.State.IsAdmitted()) count++;
++		}
++		return count;
++	}
++
++	private bool StratumHasQueuedClient()
++	{
++		foreach (KeyValuePair<int, ConnectedClient> c in Clients)
++		{
++			if (c.Value.State == EnumClientState.Queued) return true;
 +		}
 +		return false;
 +	}
