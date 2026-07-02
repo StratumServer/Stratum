@@ -1,0 +1,31 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs
+index 447855a..a96c811 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs
+@@ -9,10 +9,12 @@ namespace Vintagestory.Server;
+ 
+ public class ServerSystemRelight : ServerSystem
+ {
+ 	public ChunkIlluminator chunkIlluminator;
+ 
++	private readonly HashSet<long> stratumAffectedChunks = new HashSet<long>(); // Stratum: reuse per lighting task
++
+ 	public ServerSystemRelight(ServerMain server)
+ 		: base(server)
+ 	{
+ 	}
+ 
+@@ -64,11 +66,12 @@ public class ServerSystemRelight : ServerSystem
+ 		int num2 = 0;
+ 		bool flag = false;
+ 		int x = task.pos.X;
+ 		int internalY = task.pos.InternalY;
+ 		int z = task.pos.Z;
+-		HashSet<long> val = new HashSet<long>();
++		HashSet<long> val = stratumAffectedChunks; // Stratum: reuse set
++		val.Clear();
+ 		if (task.absorbUpdate)
+ 		{
+ 			num = task.oldAbsorb;
+ 			num2 = task.newAbsorb;
+ 		}

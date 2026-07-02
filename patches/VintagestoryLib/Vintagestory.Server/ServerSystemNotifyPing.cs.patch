@@ -1,0 +1,31 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemNotifyPing.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemNotifyPing.cs
+index f8b42be..474d3de 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemNotifyPing.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemNotifyPing.cs
+@@ -11,10 +11,12 @@ public class ServerSystemNotifyPing : ServerSystem
+ 	{
+ 		Interval = 1.0,
+ 		MaxDeltaTime = 5.0
+ 	};
+ 
++	private readonly List<int> stratumDisconnectCandidates = new List<int>(); // Stratum: reuse per ping tick
++
+ 	public ServerSystemNotifyPing(ServerMain server)
+ 		: base(server)
+ 	{
+ 		server.RegisterGameTickListener(OnEveryFewSeconds, 5000);
+ 		server.PacketHandlers[2] = HandlePingReply;
+@@ -46,11 +48,12 @@ public class ServerSystemNotifyPing : ServerSystem
+ 		if (server.exitState.Exit)
+ 		{
+ 			return;
+ 		}
+ 		long elapsedMilliseconds = server.totalUnpausedTime.ElapsedMilliseconds;
+-		List<int> val = new List<int>();
++		List<int> val = stratumDisconnectCandidates; // Stratum: reuse list
++		val.Clear();
+ 		System.Collections.Generic.IEnumerator<KeyValuePair<int, ConnectedClient>> enumerator = ((ConcurrentDictionary<int, ConnectedClient>)server.Clients).GetEnumerator();
+ 		try
+ 		{
+ 			int num = default(int);
+ 			ConnectedClient connectedClient = default(ConnectedClient);

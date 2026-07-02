@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-index c0ecd20..26d406a 100644
+index c0ecd20..03aa9de 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-@@ -35,10 +35,24 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -35,10 +35,25 @@ internal class ServerSystemUnloadChunks : ServerSystem
  	private List<MapRegionAndPos> dirtyMapRegions = new List<MapRegionAndPos>();
  
  	[ThreadStatic]
@@ -20,6 +20,7 @@ index c0ecd20..26d406a 100644
 +	private readonly List<Vec3i> stratumSendUnloadVec3Buf = new List<Vec3i>();
 +	private readonly List<long> stratumOutOfRangeBuf = new List<long>();
 +	private readonly HashSet<long> stratumOutOfRangeSet = new HashSet<long>();
++	private readonly List<ChunkColumnLoadRequest> stratumUnloadGenBuf = new List<ChunkColumnLoadRequest>();
 +	// Stratum end
 +
  	private float accum120s;
@@ -27,7 +28,7 @@ index c0ecd20..26d406a 100644
  	private float accum3s;
  
  	public ServerSystemUnloadChunks(ServerMain server, ChunkServerThread chunkthread)
-@@ -268,17 +282,19 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -268,17 +283,19 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		//IL_0057: Unknown result type (might be due to invalid IL or missing references)
  		if (dirtyMapRegions.Count <= 0)
  		{
@@ -49,7 +50,7 @@ index c0ecd20..26d406a 100644
  		{
  			while (enumerator.MoveNext())
  			{
-@@ -298,21 +314,25 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -298,21 +315,25 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		//IL_0075: Unknown result type (might be due to invalid IL or missing references)
  		//IL_007a: Unknown result type (might be due to invalid IL or missing references)
  		//IL_00d8: Unknown result type (might be due to invalid IL or missing references)
@@ -79,7 +80,7 @@ index c0ecd20..26d406a 100644
  		{
  			while (enumerator.MoveNext())
  			{
-@@ -364,12 +384,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -364,12 +385,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
  
  	private void UnloadChunkColumns()
  	{
@@ -96,7 +97,40 @@ index c0ecd20..26d406a 100644
  		try
  		{
  			ServerMapChunk serverMapChunk = default(ServerMapChunk);
-@@ -659,14 +681,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -461,11 +484,12 @@ internal class ServerSystemUnloadChunks : ServerSystem
+ 
+ 	internal void UnloadGeneratingChunkColumns(long timeToLive)
+ 	{
+ 		//IL_00f0: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_00f5: Unknown result type (might be due to invalid IL or missing references)
+-		List<ChunkColumnLoadRequest> val = new List<ChunkColumnLoadRequest>();
++		List<ChunkColumnLoadRequest> val = stratumUnloadGenBuf; // Stratum: reuse list
++		val.Clear();
+ 		int num = 0;
+ 		System.Collections.Generic.IEnumerator<ChunkColumnLoadRequest> enumerator = ((System.Collections.Generic.IEnumerable<ChunkColumnLoadRequest>)chunkthread.requestedChunkColumns.Snapshot()).GetEnumerator();
+ 		try
+ 		{
+ 			while (((System.Collections.IEnumerator)enumerator).MoveNext())
+@@ -505,13 +529,15 @@ internal class ServerSystemUnloadChunks : ServerSystem
+ 		}
+ 		if (val.Count == 0)
+ 		{
+ 			return;
+ 		}
+-		List<DbChunk> val2 = new List<DbChunk>();
+-		List<DbChunk> val3 = new List<DbChunk>();
+-		FastMemoryStream fastMemoryStream = new FastMemoryStream();
++		List<DbChunk> val2 = stratumDbChunkBuf1; // Stratum: reuse list
++		val2.Clear();
++		List<DbChunk> val3 = stratumDbChunkBuf2; // Stratum: reuse list
++		val3.Clear();
++		FastMemoryStream fastMemoryStream = reusableStream ?? (reusableStream = new FastMemoryStream()); // Stratum: reuse stream
+ 		try
+ 		{
+ 			Enumerator<ChunkColumnLoadRequest> enumerator2 = val.GetEnumerator();
+ 			try
+ 			{
+@@ -659,14 +685,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		//IL_006e: Unknown result type (might be due to invalid IL or missing references)
  		if (server.unloadedChunks.IsEmpty)
  		{
@@ -115,7 +149,7 @@ index c0ecd20..26d406a 100644
  		{
  			while (((System.Collections.IEnumerator)enumerator).MoveNext())
  			{
-@@ -727,12 +751,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -727,12 +755,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
  
  	private void SendOutOfRangeChunkUnloads(ConnectedClient client)
  	{

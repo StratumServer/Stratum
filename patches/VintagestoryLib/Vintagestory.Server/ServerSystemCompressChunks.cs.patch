@@ -1,0 +1,31 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemCompressChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemCompressChunks.cs
+index db087f6..f74cf7f 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemCompressChunks.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemCompressChunks.cs
+@@ -21,10 +21,12 @@ internal class ServerSystemCompressChunks(ServerMain server) : ServerSystem(serv
+ 
+ 	private object clientIdsLock = new object();
+ 
+ 	private List<int> clientIds = new List<int>();
+ 
++	private readonly List<BlockPos> stratumPlayerChunkPositions = new List<BlockPos>(); // Stratum: reuse per scan
++
+ 	public override void OnPlayerJoin(ServerPlayer player)
+ 	{
+ 		lock (clientIdsLock)
+ 		{
+ 			clientIds.Add(player.ClientId);
+@@ -66,11 +68,12 @@ internal class ServerSystemCompressChunks(ServerMain server) : ServerSystem(serv
+ 		//IL_00b2: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_00bb: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_00c0: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_012b: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0130: Unknown result type (might be due to invalid IL or missing references)
+-		List<BlockPos> val = new List<BlockPos>();
++		List<BlockPos> val = stratumPlayerChunkPositions; // Stratum: reuse list
++		val.Clear();
+ 		lock (clientIdsLock)
+ 		{
+ 			Enumerator<int> enumerator = clientIds.GetEnumerator();
+ 			try
+ 			{
