@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index 140b2f0..d7de8f4 100644
+index 140b2f0..cc8c887 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -365,10 +365,19 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
@@ -103,3 +103,65 @@ index 140b2f0..d7de8f4 100644
  		FrameProfiler.End();
  	}
  
+@@ -4817,11 +4877,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		try
+ 		{
+ 			while (((System.Collections.IEnumerator)enumerator).MoveNext())
+ 			{
+ 				ConnectedClient client = enumerator.Current;
+-				if (client.State != EnumClientState.Offline && client.State != EnumClientState.Queued && (skipPlayers == null || !Enumerable.Any<IServerPlayer>((System.Collections.Generic.IEnumerable<IServerPlayer>)skipPlayers, (Func<IServerPlayer, bool>)((IServerPlayer plr) => plr?.ClientId == client.Id))))
++				if (client.State != EnumClientState.Offline && client.State != EnumClientState.Queued && !StratumShouldSkipClient(skipPlayers, client.Id)) // Stratum: eliminate LINQ closure
+ 				{
+ 					SendPacket(client.Player, data);
+ 				}
+ 			}
+ 		}
+@@ -4840,11 +4900,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		try
+ 		{
+ 			while (((System.Collections.IEnumerator)enumerator).MoveNext())
+ 			{
+ 				ConnectedClient client = enumerator.Current;
+-				if (client.State != EnumClientState.Offline && client.State != EnumClientState.Queued && (skipPlayers == null || !Enumerable.Any<IServerPlayer>((System.Collections.Generic.IEnumerable<IServerPlayer>)skipPlayers, (Func<IServerPlayer, bool>)((IServerPlayer plr) => plr?.ClientId == client.Id))))
++				if (client.State != EnumClientState.Offline && client.State != EnumClientState.Queued && !StratumShouldSkipClient(skipPlayers, client.Id)) // Stratum: eliminate LINQ closure
+ 				{
+ 					if (array == null)
+ 					{
+ 						array = client.Socket.PreparePacketForSending(reusableBuffer, Config.CompressPackets, out compressed);
+ 					}
+@@ -4868,11 +4928,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		try
+ 		{
+ 			while (((System.Collections.IEnumerator)enumerator).MoveNext())
+ 			{
+ 				ConnectedClient client = enumerator.Current;
+-				if (client.State != EnumClientState.Offline && client.State != EnumClientState.Queued && (skipPlayers == null || Enumerable.All<IServerPlayer>((System.Collections.Generic.IEnumerable<IServerPlayer>)skipPlayers, (Func<IServerPlayer, bool>)((IServerPlayer plr) => plr?.ClientId != client.Id))))
++				if (client.State != EnumClientState.Offline && client.State != EnumClientState.Queued && !StratumShouldSkipClient(skipPlayers, client.Id)) // Stratum: eliminate LINQ closure
+ 				{
+ 					SendPacket(client, data);
+ 				}
+ 			}
+ 		}
+@@ -4880,10 +4940,22 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		{
+ 			((System.IDisposable)enumerator)?.Dispose();
+ 		}
+ 	}
+ 
++	// Stratum start: replace per-client LINQ closure with a simple array scan
++	private static bool StratumShouldSkipClient(IServerPlayer[] skipPlayers, int clientId)
++	{
++		if (skipPlayers == null) return false;
++		for (int i = 0; i < skipPlayers.Length; i++)
++		{
++			if (skipPlayers[i]?.ClientId == clientId) return true;
++		}
++		return false;
++	}
++	// Stratum end
++
+ 	private void recordInBenchmark(int packetId, int dataLength)
+ 	{
+ 		if (packetBenchmark.ContainsKey(packetId))
+ 		{
+ 			SortedDictionary<int, int> obj = packetBenchmark;
