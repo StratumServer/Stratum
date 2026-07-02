@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index 140b2f0..da42259 100644
+index 140b2f0..d7de8f4 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -365,10 +365,19 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
@@ -86,4 +86,20 @@ index 140b2f0..da42259 100644
  	public bool EntityDebugMode => Config.EntityDebugMode;
  
  	IClassRegistryAPI IWorldAccessor.ClassRegistry => api.ClassRegistry;
+ 
+@@ -1860,13 +1918,15 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 			{
+ 				Thread.Sleep(num3);
+ 				FrameProfiler.Mark("sleep");
+ 			}
+ 			TickPosition++;
++			StratumNetworkFlush.FlushAll(); // Stratum: flush batched TCP packets at tick end
+ 		}
+ 		catch (System.Exception e)
+ 		{
++			StratumNetworkFlush.FlushAll(); // Stratum: flush on crash so buffered data reaches clients
+ 			Logger.Fatal(e);
+ 		}
+ 		FrameProfiler.End();
+ 	}
  

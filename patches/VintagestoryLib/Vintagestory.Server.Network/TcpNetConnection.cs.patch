@@ -1,95 +1,34 @@
 diff --git a/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs b/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
-index ae86835..2163d8d 100644
+index 7978960..c558086 100644
 --- a/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
 +++ b/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
-@@ -37,16 +37,24 @@ public class TcpNetConnection : NetConnection
+@@ -217,11 +217,11 @@ public class TcpNetConnection : NetConnection
+ 	private OnReceivedMessageDelegate m_ReceivedMessage;
  
- 	private Memory<byte> dataRcvBuf = new byte[4096];
+ 	[CompilerGenerated]
+ 	private TcpConnectionDelegate m_Disconnected;
  
- 	private CancellationTokenSource cts;
+-	private CancellationTokenSource cts;
++	internal CancellationTokenSource cts; // Stratum: internal for StratumNetworkFlush access
  
-+	private int pendingSendCount;
-+
-+	private long pendingSendBytes;
-+
  	public int MaxPacketSize = 5000;
  
- 	public event OnReceivedMessageDelegate ReceivedMessage;
- 
- 	public event TcpConnectionDelegate Disconnected;
- 
-+	public int PendingSendCount => Volatile.Read(ref pendingSendCount);
-+
-+	public long PendingSendBytes => Interlocked.Read(ref pendingSendBytes);
-+
- 	public void SetLengthLimit(bool isCreative)
+ 	public event OnReceivedMessageDelegate ReceivedMessage
  	{
- 		MaxPacketSize = (isCreative ? int.MaxValue : 1000000);
- 	}
- 
-@@ -161,11 +169,11 @@ public class TcpNetConnection : NetConnection
- 			NetIncomingMessage.WriteInt(array, num | (int)((compressedFlag ? 1u : 0u) << 31));
- 			for (int i = 0; i < num; i++)
- 			{
- 				array[4 + i] = data[i];
- 			}
--			TcpSocket.SendAsync(array, SocketFlags.None, cts.Token);
-+			TrackPendingSend(TcpSocket.SendAsync(array, SocketFlags.None, cts.Token), array.Length);
- 			return EnumSendResult.Ok;
- 		}
- 		catch
- 		{
- 			InvokeDisconnected();
-@@ -180,20 +188,51 @@ public class TcpNetConnection : NetConnection
+@@ -352,10 +352,16 @@ public class TcpNetConnection : NetConnection
  			return EnumSendResult.Disconnected;
  		}
  		try
  		{
  			NetIncomingMessage.WriteInt(dataWithLength, length | (int)((compressedFlag ? 1u : 0u) << 31));
--			TcpSocket.SendAsync(dataWithLength, SocketFlags.None, cts.Token);
-+			TrackPendingSend(TcpSocket.SendAsync(dataWithLength, SocketFlags.None, cts.Token), length + 4);
++			// Stratum start: buffer small packets for consolidated flush at tick end.
++			if (StratumNetworkFlush.TryBuffer(this, dataWithLength, length, compressedFlag))
++			{
++				return EnumSendResult.Ok;
++			}
++			// Stratum end: large/compressed packet, send directly (buffer was flushed first).
+ 			TcpSocket.SendAsync(ReadOnlyMemory<byte>.op_Implicit(dataWithLength), (SocketFlags)0, cts.Token);
  			return EnumSendResult.Ok;
  		}
  		catch
  		{
- 			InvokeDisconnected();
- 			return EnumSendResult.Disconnected;
- 		}
- 	}
- 
-+	private void TrackPendingSend(ValueTask<int> sendTask, int bytes)
-+	{
-+		Interlocked.Increment(ref pendingSendCount);
-+		Interlocked.Add(ref pendingSendBytes, bytes);
-+		if (sendTask.IsCompletedSuccessfully)
-+		{
-+			Interlocked.Decrement(ref pendingSendCount);
-+			Interlocked.Add(ref pendingSendBytes, -bytes);
-+			return;
-+		}
-+
-+		ObservePendingSend(sendTask, bytes);
-+	}
-+
-+	private async void ObservePendingSend(ValueTask<int> sendTask, int bytes)
-+	{
-+		try
-+		{
-+			await sendTask.ConfigureAwait(false);
-+		}
-+		catch
-+		{
-+			InvokeDisconnected();
-+		}
-+		finally
-+		{
-+			Interlocked.Decrement(ref pendingSendCount);
-+			Interlocked.Add(ref pendingSendBytes, -bytes);
-+		}
-+	}
-+
- 	public override string ToString()
- 	{
- 		if (Address != null)
- 		{
- 			return Address;
