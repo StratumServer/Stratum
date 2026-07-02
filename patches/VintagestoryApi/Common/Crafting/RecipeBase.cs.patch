@@ -1,0 +1,137 @@
+diff --git a/VintagestoryApi/Common/Crafting/RecipeBase.cs b/VintagestoryApi/Common/Crafting/RecipeBase.cs
+index 21b4330..2795854 100644
+--- a/VintagestoryApi/Common/Crafting/RecipeBase.cs
++++ b/VintagestoryApi/Common/Crafting/RecipeBase.cs
+@@ -16,10 +16,21 @@ namespace Vintagestory.API.Common;
+ /// </summary>
+ /// <typeparam name="TRecipe">The resulting recipe type.</typeparam>
+ [DocumentAsJson]
+ public abstract class RecipeBase : IRecipeBase, IConcreteCloneable<RecipeBase>
+ {
++    // Stratum start: reuse intermediate lists in MatchesShapeLess (called 500-2000x/sec during crafting)
++    [ThreadStatic]
++    private static List<ItemStack>? stratumReusableStacks;
++
++    [ThreadStatic]
++    private static List<(ItemStack, IRecipeIngredient)>? stratumReusableIngredientStacks;
++
++    [ThreadStatic]
++    private static int stratumMatchDepth;
++    // Stratum end
++
+     #region From JSON
+     /// <summary>
+     /// If set to false, the recipe will never be loaded.
+     /// If loaded, you can use this field to disable recipes during runtime.
+     /// </summary>
+@@ -776,41 +787,70 @@ public abstract class RecipeBase : IRecipeBase, IConcreteCloneable<RecipeBase>
+         return true;
+     }
+ 
+     protected virtual bool MatchesShapeLess(ItemSlot[] suppliedSlots, IWorldAccessor world, IRecipeIngredient?[] ingredients)
+     {
+-        List<ItemStack> suppliedStacks = [];
++        // Stratum start: reuse lists to avoid 2 allocations per call.
++        // Depth guard handles re-entrant calls (e.g. SlotModified events triggering recipe re-checks).
++        int depth = ++stratumMatchDepth;
++        List<ItemStack> suppliedStacks;
++        List<(ItemStack stack, IRecipeIngredient ingredient)> ingredientStacks;
+ 
+-        MergeStacks(suppliedSlots, suppliedStacks);
+-
+-        if (!MatchWildcardIngredients(suppliedStacks, ingredients))
++        if (depth == 1)
+         {
+-            return false;
++            suppliedStacks = stratumReusableStacks ??= new List<ItemStack>();
++            ingredientStacks = stratumReusableIngredientStacks ??= new List<(ItemStack, IRecipeIngredient)>();
++            suppliedStacks.Clear();
++            ingredientStacks.Clear();
++        }
++        else
++        {
++            suppliedStacks = new List<ItemStack>();
++            ingredientStacks = new List<(ItemStack, IRecipeIngredient)>();
+         }
+ 
+-        List<(ItemStack stack, IRecipeIngredient ingredient)> ingredientStacks = [];
+-        MergeIngredientStacks(suppliedSlots, ingredientStacks, ingredients, world);
++        try
++        {
++            MergeStacks(suppliedSlots, suppliedStacks);
+ 
+-        if (ingredientStacks.Count != suppliedStacks.Count) return false;
++            if (!MatchWildcardIngredients(suppliedStacks, ingredients))
++            {
++                return false;
++            }
++
++            MergeIngredientStacks(suppliedSlots, ingredientStacks, ingredients, world);
+ 
+-        return MatchIngredientStacks(ingredientStacks, suppliedStacks);
++            if (ingredientStacks.Count != suppliedStacks.Count) return false;
++
++            return MatchIngredientStacks(ingredientStacks, suppliedStacks);
++        }
++        finally
++        {
++            stratumMatchDepth--;
++        }
++        // Stratum end
+     }
+ 
+     protected virtual void MergeStacks(ItemSlot[] slots, List<ItemStack> stacks)
+     {
+-        foreach (ItemStack suppliedStack in slots.Select(slot => slot.Itemstack).OfType<ItemStack>())
++        // Stratum start: replace Select().OfType() with direct loop (2 iterator allocs saved)
++        for (int i = 0; i < slots.Length; i++)
+         {
++            ItemStack? suppliedStack = slots[i]?.Itemstack;
++            if (suppliedStack == null) continue;
++
+             ItemStack? similarStack = stacks.Find(stack => stack.Satisfies(suppliedStack));
+             if (similarStack != null)
+             {
+                 similarStack.StackSize += suppliedStack.StackSize;
+             }
+             else
+             {
+                 stacks.Add(suppliedStack.Clone());
+             }
+         }
++        // Stratum end
+     }
+ 
+     protected virtual void MergeIngredientStacks(ItemSlot[] slots, List<(ItemStack stack, IRecipeIngredient ingredient)> stacks, IRecipeIngredient?[] ingredients, IWorldAccessor world)
+     {
+         foreach (IRecipeIngredient? ingredient in ingredients)
+@@ -843,12 +883,16 @@ public abstract class RecipeBase : IRecipeBase, IConcreteCloneable<RecipeBase>
+         }
+     }
+ 
+     protected virtual bool MatchWildcardIngredients(List<ItemStack> suppliedStacks, IRecipeIngredient?[] ingredients)
+     {
+-        foreach (IRecipeIngredient ingredient in ingredients.OfType<IRecipeIngredient>().Where(ingredient => ingredient.MatchingType != EnumRecipeMatchType.Exact))
++        // Stratum start: replace OfType().Where() with direct loop (3 iterator/delegate allocs saved)
++        for (int idx = 0; idx < ingredients.Length; idx++)
+         {
++            IRecipeIngredient? ingredient = ingredients[idx];
++            if (ingredient == null || ingredient.MatchingType == EnumRecipeMatchType.Exact) continue;
++
+             bool found = false;
+             int j = 0;
+             for (; !found && j < suppliedStacks.Count; j++)
+             {
+                 ItemStack inputStack = suppliedStacks[j];
+@@ -869,10 +913,11 @@ public abstract class RecipeBase : IRecipeBase, IConcreteCloneable<RecipeBase>
+ 
+             suppliedStacks.RemoveAt(j - 1);
+         }
+ 
+         return true;
++        // Stratum end
+     }
+ 
+     protected virtual bool MatchIngredientStacks(List<(ItemStack stack, IRecipeIngredient ingredient)> ingredientStacks, List<ItemStack> suppliedStacks)
+     {
+         bool equals = true;
