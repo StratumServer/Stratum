@@ -1,10 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
-index d4a0736..17d72b0 100644
+index 01c5ee7..d41179a 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
-@@ -1,11 +1,13 @@
-+using System;
- using System.Collections.Generic;
+@@ -3,17 +3,32 @@ using System.Collections.Generic;
  using System.IO;
  using System.Linq;
  using Vintagestory.API.Common;
@@ -16,15 +14,81 @@ index d4a0736..17d72b0 100644
  
  namespace Vintagestory.Server;
  
-@@ -238,13 +240,24 @@ public class ServerPackets
+ public class ServerPackets
+ {
++	// Stratum start: reuse packet wrappers in GetBulkEntityAttributesPacket
++	[ThreadStatic]
++	private static Packet_BulkEntityAttributes stratumReusableBulkAttributes;
++
++	[ThreadStatic]
++	private static Packet_Server stratumReusableBulkAttributesPacket;
++
++	[ThreadStatic]
++	private static Packet_BulkEntityDebugAttributes stratumReusableBulkDebugAttributes;
++
++	[ThreadStatic]
++	private static Packet_Server stratumReusableBulkDebugPacket;
++	// Stratum end
++
+ 	public static Packet_Server IngameError(string code, string text, params object[] langargs)
+ 	{
+ 		Packet_Server packet_Server = new Packet_Server();
+ 		packet_Server.Id = 68;
+ 		packet_Server.IngameError = new Packet_IngameError
+@@ -176,29 +191,31 @@ public class ServerPackets
+ 		return packet_EntityAttributeUpdate;
+ 	}
+ 
+ 	public static Packet_Server GetBulkEntityAttributesPacket(List<Packet_EntityAttributes> fullPackets, List<Packet_EntityAttributeUpdate> partialPackets)
+ 	{
+-		Packet_BulkEntityAttributes packet_BulkEntityAttributes = new Packet_BulkEntityAttributes();
++		// Stratum start: reuse wrapper objects (consumed synchronously by SendPacket)
++		Packet_BulkEntityAttributes packet_BulkEntityAttributes = stratumReusableBulkAttributes ??= new Packet_BulkEntityAttributes();
+ 		packet_BulkEntityAttributes.SetFullUpdates(fullPackets.ToArray());
+ 		packet_BulkEntityAttributes.SetPartialUpdates(partialPackets.ToArray());
+-		return new Packet_Server
+-		{
+-			Id = 60,
+-			BulkEntityAttributes = packet_BulkEntityAttributes
+-		};
++		Packet_Server packet_Server = stratumReusableBulkAttributesPacket ??= new Packet_Server();
++		packet_Server.Id = 60;
++		packet_Server.BulkEntityAttributes = packet_BulkEntityAttributes;
++		return packet_Server;
++		// Stratum end
+ 	}
+ 
+ 	public static Packet_Server GetBulkEntityDebugAttributesPacket(List<Packet_EntityAttributes> fullPackets)
+ 	{
+-		Packet_BulkEntityDebugAttributes packet_BulkEntityDebugAttributes = new Packet_BulkEntityDebugAttributes();
++		// Stratum start: reuse wrapper objects
++		Packet_BulkEntityDebugAttributes packet_BulkEntityDebugAttributes = stratumReusableBulkDebugAttributes ??= new Packet_BulkEntityDebugAttributes();
+ 		packet_BulkEntityDebugAttributes.SetFullUpdates(fullPackets.ToArray());
+-		return new Packet_Server
+-		{
+-			Id = 62,
+-			BulkEntityDebugAttributes = packet_BulkEntityDebugAttributes
+-		};
++		Packet_Server packet_Server = stratumReusableBulkDebugPacket ??= new Packet_Server();
++		packet_Server.Id = 62;
++		packet_Server.BulkEntityDebugAttributes = packet_BulkEntityDebugAttributes;
++		return packet_Server;
++		// Stratum end
+ 	}
+ 
+ 	public static Packet_Server GetEntityAttributesPacket(Entity entity)
+ 	{
+ 		//IL_0006: Unknown result type (might be due to invalid IL or missing references)
+@@ -247,13 +264,26 @@ public class ServerPackets
  		};
  	}
  
  	public static Packet_Server GetEntityDespawnPacket(List<EntityDespawn> despawns)
  	{
--		long[] entityId = despawns.Select((EntityDespawn item) => item.EntityId).ToArray();
--		int[] despawnReason = despawns.Select((EntityDespawn item) => (int)((item.DespawnData != null) ? item.DespawnData.Reason : EnumDespawnReason.Death)).ToArray();
--		int[] deathDamageSource = despawns.Select((EntityDespawn item) => (int)((item.DespawnData != null) ? ((item.DespawnData.DamageSourceForDeath != null) ? item.DespawnData.DamageSourceForDeath.Source : EnumDamageSource.Unknown) : EnumDamageSource.Block)).ToArray();
+-		long[] entityId = Enumerable.ToArray<long>(Enumerable.Select<EntityDespawn, long>((System.Collections.Generic.IEnumerable<EntityDespawn>)despawns, (Func<EntityDespawn, long>)((EntityDespawn item) => item.EntityId)));
+-		int[] despawnReason = Enumerable.ToArray<int>(Enumerable.Select<EntityDespawn, int>((System.Collections.Generic.IEnumerable<EntityDespawn>)despawns, (Func<EntityDespawn, int>)((EntityDespawn item) => (int)((item.DespawnData != null) ? item.DespawnData.Reason : EnumDespawnReason.Death))));
+-		int[] deathDamageSource = Enumerable.ToArray<int>(Enumerable.Select<EntityDespawn, int>((System.Collections.Generic.IEnumerable<EntityDespawn>)despawns, (Func<EntityDespawn, int>)((EntityDespawn item) => (int)((item.DespawnData != null) ? ((item.DespawnData.DamageSourceForDeath != null) ? item.DespawnData.DamageSourceForDeath.Source : EnumDamageSource.Unknown) : EnumDamageSource.Block))));
++		// Stratum start: eliminate LINQ allocations (3 Select + 3 ToArray)
 +		int count = despawns.Count;
 +		long[] entityId = count == 0 ? Array.Empty<long>() : new long[count];
 +		int[] despawnReason = count == 0 ? Array.Empty<int>() : new int[count];
@@ -38,25 +102,28 @@ index d4a0736..17d72b0 100644
 +			despawnReason[index] = (int)((despawnData != null) ? despawnData.Reason : EnumDespawnReason.Death);
 +			deathDamageSource[index] = (int)((despawnData != null) ? ((despawnData.DamageSourceForDeath != null) ? despawnData.DamageSourceForDeath.Source : EnumDamageSource.Unknown) : EnumDamageSource.Block);
 +		}
++		// Stratum end
 +
  		Packet_EntityDespawn packet_EntityDespawn = new Packet_EntityDespawn();
  		packet_EntityDespawn.SetEntityId(entityId);
  		packet_EntityDespawn.SetDeathDamageSource(deathDamageSource);
  		packet_EntityDespawn.SetDespawnReason(despawnReason);
  		return new Packet_Server
-@@ -345,20 +358,36 @@ public class ServerPackets
+@@ -372,20 +402,40 @@ public class ServerPackets
  			}
  		};
  		if (entity is EntityAgent entityAgent)
  		{
  			packet_EntityPosition.BodyYaw = CollectibleNet.SerializeFloatPrecise(entityAgent.BodyYaw);
 -			packet_EntityPosition.Controls = entityAgent.Controls.ToInt();
++			// Stratum start: force walk flag for non-player entities with motion
 +			int controls = entityAgent.Controls.ToInt();
 +			if (entity is not EntityPlayer && (controls & 0x0F) == 0 && StratumHasMovementForAnimation(entityAgent, pos))
 +			{
 +				controls |= 1;
 +			}
 +			packet_EntityPosition.Controls = controls;
++			// Stratum end
  		}
  		EntityControls entityControls = ((entity.SidedProperties == null) ? null : entity.GetInterface<IMountable>()?.ControllingControls);
  		if (entityControls != null)
@@ -66,6 +133,7 @@ index d4a0736..17d72b0 100644
  		return packet_EntityPosition;
  	}
  
++	// Stratum start: detect movement for animation sync
 +	private static bool StratumHasMovementForAnimation(EntityAgent entity, EntityPos pos)
 +	{
 +		Vec3d walkVector = entity.Controls?.WalkVector;
@@ -76,6 +144,7 @@ index d4a0736..17d72b0 100644
 +
 +		return pos.Motion.X * pos.Motion.X + pos.Motion.Z * pos.Motion.Z > 0.00000025;
 +	}
++	// Stratum end
 +
  	public static byte[] getEntityDataForClient(Entity entity, FastMemoryStream ms, BinaryWriter writer)
  	{
