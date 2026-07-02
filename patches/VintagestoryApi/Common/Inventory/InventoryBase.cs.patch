@@ -1,0 +1,44 @@
+diff --git a/VintagestoryApi/Common/Inventory/InventoryBase.cs b/VintagestoryApi/Common/Inventory/InventoryBase.cs
+index 0820ca0..539640f 100644
+--- a/VintagestoryApi/Common/Inventory/InventoryBase.cs
++++ b/VintagestoryApi/Common/Inventory/InventoryBase.cs
+@@ -79,10 +79,15 @@ namespace Vintagestory.API.Common
+         /// <summary>
+         /// Slots that have been recently modified. This list is used on the server to update the clients (then cleared) and on the client to redraw itemstacks in guis (then cleared)
+         /// </summary>
+         public HashSet<int> dirtySlots = new HashSet<int>();
+ 
++        // Stratum: volatile flag for SendDirtySlots fast path. Set to 1 by MarkSlotDirty
++        // and DiscardAll; checked and cleared by ServerSystemInventory.SendDirtySlots to
++        // skip full client iteration when no inventory changed since last scan.
++        internal static volatile int StratumAnySlotDirty;
++
+         /// <summary>
+         /// The internal name of the inventory instance.
+         /// </summary>
+         public string InventoryID { get { return className + "-" + instanceID; } }
+ 
+@@ -685,10 +690,11 @@ namespace Vintagestory.API.Common
+         /// <param name="slotId"></param>
+         public virtual void MarkSlotDirty(int slotId)
+         {
+             if (slotId < 0) throw new Exception("Negative slotid?!");
+             dirtySlots.Add(slotId);
++            StratumAnySlotDirty = 1; // Stratum: signal SendDirtySlots to scan
+         }
+ 
+         /// <summary>
+         /// Discards everything in the item slots.
+         /// </summary>
+@@ -701,10 +707,11 @@ namespace Vintagestory.API.Common
+                     dirtySlots.Add(i);
+                 }
+ 
+                 this[i].Itemstack = null;
+             }
++            StratumAnySlotDirty = 1; // Stratum: signal SendDirtySlots to scan
+         }
+ 
+ 
+         public virtual void DropSlotIfHot(ItemSlot slot, IPlayer player = null)
+         {

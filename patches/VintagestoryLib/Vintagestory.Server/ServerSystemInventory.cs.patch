@@ -1,16 +1,46 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index f39b1bd..7b28b6b 100644
+index e5527b6..9714d76 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-@@ -148,10 +148,11 @@ internal class ServerSystemInventory : ServerSystem
- 			}
- 			else
- 			{
- 				value.blockBreakingCounter = 0;
- 			}
+@@ -1,9 +1,10 @@
+ using System;
+ using System.Collections;
+ using System.Collections.Concurrent;
+ using System.Collections.Generic;
++using System.Threading;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Datastructures;
+ using Vintagestory.API.MathTools;
+ using Vintagestory.API.Server;
+@@ -138,10 +139,11 @@ internal class ServerSystemInventory : ServerSystem
+ 	private void OnUsingTick(float dt)
+ 	{
+ 		//IL_0010: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0015: Unknown result type (might be due to invalid IL or missing references)
+ 		Enumerator<string, ServerPlayer> enumerator = server.PlayersByUid.Values.GetEnumerator();
 +			StratumRuntime.BlockBreakGuard.ObserveMining(server, value, dt);
- 			if (!value.Entity.LeftHandItemSlot.Empty)
+ 		try
+ 		{
+ 			while (enumerator.MoveNext())
  			{
- 				value.Entity.LeftHandItemSlot.Itemstack.Collectible.OnHeldIdle(value.Entity.LeftHandItemSlot, value.Entity);
- 			}
- 			if ((value.Entity.Controls.HandUse == EnumHandInteract.None || value.Entity.Controls.HandUse == EnumHandInteract.BlockInteract) && activeHotbarSlot != null)
+ 				ServerPlayer current = enumerator.Current;
+@@ -246,10 +248,18 @@ internal class ServerSystemInventory : ServerSystem
+ 		}
+ 	}
+ 
+ 	private void SendDirtySlots(float dt)
+ 	{
++		// Stratum start: skip full client/inventory iteration when nothing is dirty.
++		// InventoryBase.StratumAnySlotDirty is set by MarkSlotDirty and DiscardAll.
++		if (Volatile.Read(ref InventoryBase.StratumAnySlotDirty) == 0)
++		{
++			return;
++		}
++		Volatile.Write(ref InventoryBase.StratumAnySlotDirty, 0);
++		// Stratum end
+ 		//IL_0147: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_014c: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_0079: Unknown result type (might be due to invalid IL or missing references)
+ 		//IL_007e: Unknown result type (might be due to invalid IL or missing references)
+ 		System.Collections.Generic.IEnumerator<ConnectedClient> enumerator = ((System.Collections.Generic.IEnumerable<ConnectedClient>)server.Clients.Values).GetEnumerator();
