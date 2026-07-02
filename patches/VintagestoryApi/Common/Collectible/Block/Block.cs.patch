@@ -1,0 +1,78 @@
+diff --git a/VintagestoryApi/Common/Collectible/Block/Block.cs b/VintagestoryApi/Common/Collectible/Block/Block.cs
+index 05bb9ff..481c5d6 100644
+--- a/VintagestoryApi/Common/Collectible/Block/Block.cs
++++ b/VintagestoryApi/Common/Collectible/Block/Block.cs
+@@ -27,10 +27,16 @@ namespace Vintagestory.API.Common
+     /// </summary>
+     public class Block : CollectibleObject
+     {
+         public readonly static CompositeShape DefaultCubeShape = new CompositeShape() { Base = new AssetLocation("block/basic/cube") };
+         public readonly static string[] DefaultAllowAllSpawns = new string[] { "*" };
++
++        // Stratum start: reusable lists for GetDrops to avoid per-break allocation.
++        [ThreadStatic] private static List<ItemStack> stratumBehaviorDrops;
++        [ThreadStatic] private static List<ItemStack> stratumBlockDrops;
++        [ThreadStatic] private static int stratumGetDropsDepth;
++        // Stratum end
+         /// <summary>
+         /// Default Full Block Collision Box
+         /// </summary>
+         public static Cuboidf DefaultCollisionBox = new Cuboidf(0, 0, 0, 1, 1, 1);
+         /// <summary>
+@@ -1274,26 +1280,37 @@ namespace Vintagestory.API.Common
+         /// <param name="dropQuantityMultiplier"></param>
+         /// <returns></returns>
+         public virtual ItemStack[] GetDrops(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, float dropQuantityMultiplier = 1f)
+         {
+             bool preventDefault = false;
+-            List<ItemStack> dropStacks = new List<ItemStack>();
++
++            // Stratum start: reuse intermediate lists to avoid per-break allocation.
++            // Most ticks have zero breaks, but explosions and hammer mining spike to 50-200/sec.
++            bool reuseLists = stratumGetDropsDepth == 0;
++            stratumGetDropsDepth++;
++            List<ItemStack> dropStacks = reuseLists ? (stratumBehaviorDrops ??= new List<ItemStack>(8)) : new List<ItemStack>();
++            if (reuseLists) dropStacks.Clear();
++            // Stratum end
+ 
+             foreach (BlockBehavior behavior in BlockBehaviors)
+             {
+                 EnumHandling handled = EnumHandling.PassThrough;
+ 
+                 ItemStack[] stacks = behavior.GetDrops(world, pos, byPlayer, ref dropQuantityMultiplier, ref handled);
+                 if (stacks != null) dropStacks.AddRange(stacks);
+-                if (handled == EnumHandling.PreventSubsequent) return stacks;
++                if (handled == EnumHandling.PreventSubsequent) { stratumGetDropsDepth--; return stacks; }
+                 if (handled == EnumHandling.PreventDefault) preventDefault = true;
+             }
+ 
+-            if (preventDefault) return dropStacks.ToArray();
++            if (preventDefault) { stratumGetDropsDepth--; return dropStacks.ToArray(); }
++
++            if (Drops == null) { stratumGetDropsDepth--; return null; }
+ 
+-            if (Drops == null) return null;
+-            List<ItemStack> todrop = new List<ItemStack>();
++            // Stratum start: reuse second list
++            List<ItemStack> todrop = reuseLists ? (stratumBlockDrops ??= new List<ItemStack>(8)) : new List<ItemStack>();
++            if (reuseLists) todrop.Clear();
++            // Stratum end
+ 
+             for (int i = 0; i < Drops.Length; i++)
+             {
+                 BlockDropItemStack dstack = Drops[i];
+                 ItemStack stack = dstack.ToRandomItemstackForPlayer(byPlayer, world, dropQuantityMultiplier);
+@@ -1302,11 +1319,12 @@ namespace Vintagestory.API.Common
+                 if (dstack.LastDrop) break;
+             }
+ 
+             todrop.AddRange(dropStacks);
+ 
+-            return todrop.ToArray();
++            stratumGetDropsDepth--;
++            return todrop.Count == 0 ? Array.Empty<ItemStack>() : todrop.ToArray();
+         }
+ 
+ 
+ 
+ 
