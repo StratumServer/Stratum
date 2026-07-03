@@ -17,12 +17,17 @@ namespace Vintagestory.Server;
 // Benchmarked against TCP_CORK (Linux kernel batching). Buffer is 4x faster because
 // Cork still incurs one syscall per Send call (kernel holds data but the transition
 // still happens). Buffer reduces actual syscall count from N*packets to N*connections.
+//
+// Sends can come from the tick thread and physics workers, so the shared buffer is locked.
+// Flush copies the bytes before SendAsync because the socket may still be reading after
+// this method returns.
 internal static class StratumNetworkFlush
 {
 	private const int MtuThreshold = 1400;
 
 	private sealed class ConnectionBuffer
 	{
+		public readonly object Sync = new object();
 		public byte[] Buffer = new byte[4096];
 		public int WritePos;
 
@@ -36,8 +41,6 @@ internal static class StratumNetworkFlush
 			System.Buffer.BlockCopy(Buffer, 0, newBuf, 0, WritePos);
 			Buffer = newBuf;
 		}
-
-		public void Reset() => WritePos = 0;
 	}
 
 	private static readonly ConcurrentDictionary<TcpNetConnection, ConnectionBuffer> buffers = new();
@@ -56,13 +59,24 @@ internal static class StratumNetworkFlush
 		}
 
 		ConnectionBuffer state = buffers.GetOrAdd(connection, static _ => new ConnectionBuffer());
-		state.EnsureCapacity(totalSize);
-		System.Buffer.BlockCopy(dataWithLength, 0, state.Buffer, state.WritePos, totalSize);
-		state.WritePos += totalSize;
 
-		if (state.WritePos >= MtuThreshold)
+		byte[] toSend = null;
+		lock (state.Sync)
 		{
-			FlushConnectionDirect(connection, state);
+			state.EnsureCapacity(totalSize);
+			System.Buffer.BlockCopy(dataWithLength, 0, state.Buffer, state.WritePos, totalSize);
+			state.WritePos += totalSize;
+
+			if (state.WritePos >= MtuThreshold)
+			{
+				toSend = TakePending(state);
+			}
+		}
+
+		// Do the socket call outside the lock.
+		if (toSend != null)
+		{
+			RawSend(connection, toSend);
 		}
 
 		return true;
@@ -78,6 +92,7 @@ internal static class StratumNetworkFlush
 			return;
 		}
 
+		// Advisory read for back-pressure accounting; an approximate size does not need the lock.
 		int bytes = Volatile.Read(ref state.WritePos);
 		if (bytes <= 0)
 		{
@@ -111,11 +126,30 @@ internal static class StratumNetworkFlush
 
 	private static void FlushConnectionDirect(TcpNetConnection connection, ConnectionBuffer state)
 	{
-		if (state.WritePos == 0) return;
+		byte[] toSend;
+		lock (state.Sync)
+		{
+			if (state.WritePos == 0) return;
+			toSend = TakePending(state);
+		}
 
+		RawSend(connection, toSend);
+	}
+
+	// SendAsync must not get the reusable buffer. It may still be reading it after we return.
+	// Must be called while holding state.Sync.
+	private static byte[] TakePending(ConnectionBuffer state)
+	{
+		byte[] copy = new byte[state.WritePos];
+		System.Buffer.BlockCopy(state.Buffer, 0, copy, 0, state.WritePos);
+		state.WritePos = 0;
+		return copy;
+	}
+
+	private static void RawSend(TcpNetConnection connection, byte[] data)
+	{
 		if (!connection.Connected)
 		{
-			state.Reset();
 			return;
 		}
 
@@ -123,17 +157,14 @@ internal static class StratumNetworkFlush
 		CancellationTokenSource cts = connection.cts;
 		if (socket == null || cts == null)
 		{
-			state.Reset();
 			return;
 		}
 
 		try
 		{
-			socket.SendAsync((ReadOnlyMemory<byte>)state.Buffer.AsMemory(0, state.WritePos), SocketFlags.None, cts.Token);
+			socket.SendAsync((ReadOnlyMemory<byte>)data, SocketFlags.None, cts.Token);
 		}
 		catch { }
-
-		state.Reset();
 	}
 
 	private static void PurgeDisconnected()
