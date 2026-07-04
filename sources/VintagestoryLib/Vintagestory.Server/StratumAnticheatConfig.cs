@@ -20,6 +20,8 @@ internal class StratumAnticheatConfig
 
 	public StratumMovementAnticheatConfig Movement { get; set; } = new StratumMovementAnticheatConfig();
 
+	public StratumCombatAnticheatConfig Combat { get; set; } = new StratumCombatAnticheatConfig();
+
 	public void EnsureSane()
 	{
 		MaxStoredViolationsPerPlayer = Math.Clamp(MaxStoredViolationsPerPlayer, 16, 2048);
@@ -28,10 +30,12 @@ internal class StratumAnticheatConfig
 		BlockInteractionOutOfRange ??= new StratumBlockInteractionOutOfRangeAnticheatConfig();
 		BlockBreakProgress ??= new StratumBlockBreakProgressAnticheatConfig();
 		Movement ??= new StratumMovementAnticheatConfig();
+		Combat ??= new StratumCombatAnticheatConfig();
 		BlockEntityOutOfRange.EnsureSane();
 		BlockInteractionOutOfRange.EnsureSane();
 		BlockBreakProgress.EnsureSane();
 		Movement.EnsureSane();
+		Combat.EnsureSane();
 	}
 }
 
@@ -187,5 +191,63 @@ internal class StratumMovementAnticheatConfig : StratumAnticheatRuleConfig
 		GroundContactTolerance = Math.Clamp(GroundContactTolerance, 0.005, 0.2);
 		NoclipConsecutiveTicks = Math.Clamp(NoclipConsecutiveTicks, 2, 40);
 		KickMessage ??= "Disconnected by Stratum movement protection";
+	}
+}
+
+// Server-side combat checks for kill-aura and aimbot behaviour. These sit on top of the
+// attack range checks the vanilla server already runs, so they only add signal, never remove
+// any legitimate hit. Everything here defaults to monitor-only (staff alerts, no kick) because
+// the heuristics can theoretically be nudged by heavy lag; enforcement is an opt-in per server.
+internal class StratumCombatAnticheatConfig : StratumAnticheatRuleConfig
+{
+	public StratumCombatAnticheatConfig()
+	{
+		// Aura hits arrive in fast bursts. Alert quickly but keep a little room for a burst of
+		// legitimate melee against a mob pile.
+		AlertAfterViolations = 6;
+		AlertWindowSeconds = 6;
+		RepeatAlertSeconds = 15;
+	}
+
+	// Attacking several distinct entities in a tiny window is physically impossible with a real
+	// client (one target per swing, one crosshair). This is the highest-confidence signal here.
+	public bool DetectMultiTarget { get; set; } = true;
+
+	public int MultiTargetWindowMs { get; set; } = 400;
+
+	public int MultiTargetThreshold { get; set; } = 3;
+
+	// Flags an attack whose target sits outside the player's aim cone. Kept generous so ordinary
+	// aiming plus lag never trips it; the point is to catch hits landed on entities beside or
+	// behind the player, which only an aura does.
+	public bool DetectAimCone { get; set; } = true;
+
+	public double MaxAttackAngleDegrees { get; set; } = 75.0;
+
+	// Skip the cone test when the target is basically touching the player, where the geometry of a
+	// large hitbox makes the angle meaningless.
+	public double MinAngleCheckDistance { get; set; } = 1.5;
+
+	// Combat heuristics start as monitor-only. Turn this on once a server has watched the
+	// /stratum ac combat data and is comfortable the false-positive rate is zero.
+	public bool KickConfirmedCheats { get; set; } = false;
+
+	public int KickAfterViolations { get; set; } = 12;
+
+	public string KickMessage { get; set; } = "Disconnected by Stratum combat protection";
+
+	// When on, a flagged hit is dropped instead of applied. Off by default so v1 never changes the
+	// outcome of any hit; a real client can't trigger these checks anyway.
+	public bool CancelFlaggedHits { get; set; } = false;
+
+	public override void EnsureSane()
+	{
+		base.EnsureSane();
+		MultiTargetWindowMs = Math.Clamp(MultiTargetWindowMs, 50, 5000);
+		MultiTargetThreshold = Math.Clamp(MultiTargetThreshold, 2, 20);
+		MaxAttackAngleDegrees = Math.Clamp(MaxAttackAngleDegrees, 30.0, 180.0);
+		MinAngleCheckDistance = Math.Clamp(MinAngleCheckDistance, 0.0, 8.0);
+		KickAfterViolations = Math.Clamp(KickAfterViolations, 3, 1000);
+		KickMessage ??= "Disconnected by Stratum combat protection";
 	}
 }

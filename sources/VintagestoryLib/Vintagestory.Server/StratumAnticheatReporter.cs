@@ -16,6 +16,7 @@ internal static class StratumAnticheatReporter
 	private const string BlockInteractionOutOfRangeType = "block-interaction-range";
 	private const string BlockBreakProgressType = "block-break-progress";
 	private const string MovementType = "movement";
+	private const string CombatType = "combat";
 
 	private static readonly object Lock = new object();
 	private static readonly Dictionary<string, PlayerViolationState> PlayerViolations = new Dictionary<string, PlayerViolationState>(StringComparer.OrdinalIgnoreCase);
@@ -145,6 +146,40 @@ internal static class StratumAnticheatReporter
 		return false;
 	}
 
+	public static bool RecordCombatViolation(ServerMain server, ServerPlayer player, BlockPos pos, string reason, out string disconnectReason)
+	{
+		disconnectReason = null;
+		if (server == null || player == null)
+		{
+			return false;
+		}
+
+		StratumRuntime.Config.EnsurePopulated();
+		StratumAnticheatConfig config = StratumRuntime.Config.Anticheat;
+		if (!config.Enabled || !config.Combat.Enabled)
+		{
+			return false;
+		}
+
+		string detail = string.IsNullOrWhiteSpace(reason) ? "combat" : reason;
+		DateTime now = DateTime.UtcNow;
+		ViolationRecordResult result = RecordViolation(player, now, CombatType, detail, config, config.Combat);
+		if (result.ShouldAlert)
+		{
+			SendStaffAlert(server, player, "combat", pos, result.RollingCount, result.TotalCount, config.Combat.AlertWindowSeconds);
+		}
+
+		if (config.Combat.KickConfirmedCheats && result.RollingCount >= config.Combat.KickAfterViolations)
+		{
+			disconnectReason = string.IsNullOrWhiteSpace(config.Combat.KickMessage)
+				? "Disconnected by Stratum combat protection"
+				: config.Combat.KickMessage;
+			return true;
+		}
+
+		return false;
+	}
+
 	public static string BuildReport(string playerFilter, int maxEvents = 12)
 	{
 		StratumRuntime.Config.EnsurePopulated();
@@ -250,6 +285,8 @@ internal static class StratumAnticheatReporter
 				return "Block break timing";
 			case MovementType:
 				return "Movement";
+			case CombatType:
+				return "Combat";
 			default:
 				return string.IsNullOrWhiteSpace(type) ? "Unknown" : type;
 		}
@@ -289,6 +326,19 @@ internal static class StratumAnticheatReporter
 		if (entry.Type == BlockEntityOutOfRangeType)
 		{
 			return "sent a block entity packet too far away at " + detail;
+		}
+
+		if (entry.Type == CombatType)
+		{
+			if (detail.StartsWith("aura:", StringComparison.OrdinalIgnoreCase))
+			{
+				return "attacked several entities at once (" + detail + ")";
+			}
+
+			if (detail.StartsWith("aim:", StringComparison.OrdinalIgnoreCase))
+			{
+				return "attacked an entity outside their aim (" + detail + ")";
+			}
 		}
 
 		return detail;
