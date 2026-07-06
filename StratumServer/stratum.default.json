@@ -238,6 +238,15 @@
       "OverloadDropThresholdMs": 500.0,
       "FloorChunks": 4,
       "AdjustmentIntervalSeconds": 2.0
+    },
+    "ItemCleanup": {
+      "Enabled": false,
+      "IntervalSeconds": 60,
+      "MinimumEntityAgeSeconds": 10,
+      "CleanupWarningMessage": "Cleaning up dropped items in {0} seconds.",
+      "CleanupWarningTimeOffsets": [30, 10],
+      "CleanupStartingMessage": "Cleaning up dropped items...",
+      "CleanupDoneMessage": "Cleaned up {0} items."
     }
   },
   "Commands": {

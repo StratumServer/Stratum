@@ -99,7 +99,12 @@ internal class ServerSystemStratum : ServerSystem
 			new StratumBackupScheduler(server);
 			StratumRuntime.LogInfo("backup scheduler armed: first backup in about 1min, interval=" + StratumRuntime.Config.Backup.IntervalMinutes + "min retain=" + StratumRuntime.Config.Backup.RetainCount);
 		}
-		StratumTrimClassRegistry();
+		if (StratumRuntime.Config.Performance.ItemCleanup.Enabled)
+		{
+			new StratumItemCleanup(server);
+			StratumRuntime.LogInfo($"item cleanup scheduler armed: first cleanup in {StratumRuntime.Config.Performance.ItemCleanup.IntervalSeconds}s, interval={StratumRuntime.Config.Performance.ItemCleanup.IntervalSeconds}s");
+        }
+        StratumTrimClassRegistry();
 		StratumRuntime.LogInfo("runtime ready. Use /stratum health, /stratum status, and /stratum timings start.");
 	}
 

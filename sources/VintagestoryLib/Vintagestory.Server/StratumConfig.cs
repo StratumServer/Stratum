@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Vintagestory.API.Common.Entities;
 
 namespace Vintagestory.Server;
@@ -622,6 +623,8 @@ internal class StratumPerformanceConfig
 
 	public StratumAdaptiveRadiusConfig AdaptiveRadius { get; set; } = new StratumAdaptiveRadiusConfig();
 
+	public StratumItemCleanupConfig ItemCleanup { get; set; } = new StratumItemCleanupConfig();
+
 	public void EnsurePopulated()
 	{
 		ChunkSending ??= new StratumChunkSendingConfig();
@@ -646,6 +649,7 @@ internal class StratumPerformanceConfig
 		TimerResolution ??= new StratumTimerResolutionConfig();
 		Join ??= new StratumJoinConfig();
 		AdaptiveRadius ??= new StratumAdaptiveRadiusConfig();
+		ItemCleanup ??= new StratumItemCleanupConfig();
 		ChunkSending.EnsureSane();
 		ChunkGeneration.EnsureSane();
 		ChunkRequestManagement.EnsureSane();
@@ -668,6 +672,7 @@ internal class StratumPerformanceConfig
 		TimerResolution.EnsureSane();
 		Join.EnsureSane();
 		AdaptiveRadius.EnsureSane();
+		ItemCleanup.EnsureSane();
 	}
 }
 
@@ -715,6 +720,29 @@ internal class StratumAdaptiveRadiusConfig
 		OverloadDropThresholdMs = Math.Max(50.0, OverloadDropThresholdMs);
 		FloorChunks = Math.Max(1, FloorChunks);
 		AdjustmentIntervalSeconds = Math.Max(1.0f, AdjustmentIntervalSeconds);
+	}
+}
+
+internal class StratumItemCleanupConfig
+{
+	public bool Enabled { get; set; } = false;
+	public int IntervalSeconds { get; set; } = 60;
+	public int MinimumEntityAgeSeconds { get; set; } = 10;
+	public string CleanupWarningMessage { get; set; } = "Cleaning up dropped items in {0} seconds.";
+	public int[] CleanupWarningTimeOffsets { get; set; } = [30, 10];
+	public string CleanupStartingMessage { get; set; } = "Cleaning up dropped items...";
+	public string CleanupDoneMessage { get; set; } = "Cleaned up {0} items.";
+
+	public void EnsureSane()
+	{
+		IntervalSeconds = Math.Max(1, IntervalSeconds);
+		MinimumEntityAgeSeconds = Math.Max(0, MinimumEntityAgeSeconds);
+		CleanupWarningMessage ??= "";
+		CleanupStartingMessage ??= "";
+		CleanupDoneMessage ??= "";
+		CleanupWarningTimeOffsets ??= [];
+
+		CleanupWarningTimeOffsets = CleanupWarningTimeOffsets.Select(n => Math.Clamp(n, 1, IntervalSeconds)).Distinct().ToArray();
 	}
 }
 
