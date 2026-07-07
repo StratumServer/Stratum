@@ -1,0 +1,96 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
+index 52a073b..3c68d39 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
+@@ -65,10 +65,19 @@ public class ServerSystemEntitySpawner : ServerSystem
+ 
+ 	private ConcurrentQueue<EntitySpawnerResult> readyToSpawn = new ConcurrentQueue<EntitySpawnerResult>();
+ 
+ 	private readonly BlockPos tmpPos = new BlockPos(0);
+ 
++	// Stratum start: reuse intermediate collections on the spawner off-thread.
++	// All accessed exclusively from the single spawner thread (or main thread in non-multithreaded mode).
++	private readonly List<SpawnOppurtunity> stratumSpawnOpportunities = new List<SpawnOppurtunity>();
++	private readonly Dictionary<AssetLocation, int> stratumEntityCounts = new Dictionary<AssetLocation, int>();
++	private readonly List<SpawnState> stratumSpawnStatesBuild = new List<SpawnState>();
++	private readonly List<EntityProperties> stratumCompanionBuild = new List<EntityProperties>();
++	private readonly List<SpawnArea> stratumSpawnAreasBuild = new List<SpawnArea>();
++	// Stratum end
++
+ 	public ServerSystemEntitySpawner(ServerMain server)
+ 		: base(server)
+ 	{
+ 		multithreaded = !server.ReducedServerThreads;
+ 	}
+@@ -262,11 +271,11 @@ public class ServerSystemEntitySpawner : ServerSystem
+ 
+ 	private void TrySpawnSomethingAt_offthrad(int baseX, int baseY, int baseZ, Dictionary<AssetLocation, int> spawnCounts, IWorldChunk[] chunkCol, List<SpawnState> spawnStates)
+ 	{
+ 		BlockPos blockPos = spawnPosition;
+ 		int mapSizeY = server.WorldMap.MapSizeY;
+-		List<SpawnOppurtunity> list = new List<SpawnOppurtunity>();
++		List<SpawnOppurtunity> list = stratumSpawnOpportunities; // Stratum: reuse field instead of allocating per chunk column
+ 		int num = surfaceMapTryID++;
+ 		int seaLevel = SeaLevel;
+ 		int skyHeight = SkyHeight;
+ 		ushort[] array = heightMap;
+ 		Random random = rand;
+@@ -567,11 +576,13 @@ public class ServerSystemEntitySpawner : ServerSystem
+ 		return worldGenClimateAt;
+ 	}
+ 
+ 	private void LoadViableSpawnAreas()
+ 	{
+-		List<SpawnArea> list = new List<SpawnArea>();
++		// Stratum: reuse the build list. SpawnArea objects are short-lived per cycle.
++		List<SpawnArea> list = stratumSpawnAreasBuild;
++		list.Clear();
+ 		HashSet<long> hashSet = chunkColumnCoordsTmp;
+ 		ServerWorldMap worldMap = server.WorldMap;
+ 		foreach (ConnectedClient value2 in server.Clients.Values)
+ 		{
+ 			if (!value2.IsPlayingClient || value2.Entityplayer == null)
+@@ -641,11 +652,12 @@ public class ServerSystemEntitySpawner : ServerSystem
+ 	}
+ 
+ 	internal void ReloadSpawnStates_offthread()
+ 	{
+ 		double num = GraceTimeUntilTotalDays - server.Calendar.TotalDays;
+-		Dictionary<AssetLocation, int> dictionary = new Dictionary<AssetLocation, int>();
++		Dictionary<AssetLocation, int> dictionary = stratumEntityCounts; // Stratum: reuse
++		dictionary.Clear();
+ 		foreach (Entity value5 in server.LoadedEntities.Values)
+ 		{
+ 			if (!(value5.Code == null))
+ 			{
+ 				string text = value5.Attributes.GetString("originaltype");
+@@ -658,11 +670,12 @@ public class ServerSystemEntitySpawner : ServerSystem
+ 					dictionary.TryGetValue(quantityByGroup.Code, out value);
+ 					dictionary[quantityByGroup.Code] = value + 1;
+ 				}
+ 			}
+ 		}
+-		List<SpawnState> list = new List<SpawnState>();
++		List<SpawnState> list = stratumSpawnStatesBuild; // Stratum: reuse
++		list.Clear();
+ 		Random random = rand;
+ 		int num2 = server.AllOnlinePlayers.Length;
+ 		foreach (EntityProperties entityType in server.EntityTypes)
+ 		{
+ 			RuntimeSpawnConditions runtimeSpawnConditions = entityType.Server.SpawnConditions?.Runtime;
+@@ -681,11 +694,14 @@ public class ServerSystemEntitySpawner : ServerSystem
+ 			if (num4 <= 0)
+ 			{
+ 				continue;
+ 			}
+ 			bool num5 = runtimeSpawnConditions.Companions != null && runtimeSpawnConditions.Companions.Length != 0;
+-			List<EntityProperties> list2 = new List<EntityProperties> { entityType };
++			// Stratum: reuse scratch list for companion props. ToArray() still copies for the SpawnState.
++			List<EntityProperties> list2 = stratumCompanionBuild;
++			list2.Clear();
++			list2.Add(entityType);
+ 			if (num5)
+ 			{
+ 				AssetLocation[] companions = runtimeSpawnConditions.Companions;
+ 				for (int i = 0; i < companions.Length; i++)
+ 				{

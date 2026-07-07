@@ -1,0 +1,119 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/ClassRegistry.cs b/VintagestoryLib/Vintagestory.Common/ClassRegistry.cs
+index 1dc63e6..156a868 100644
+--- a/VintagestoryLib/Vintagestory.Common/ClassRegistry.cs
++++ b/VintagestoryLib/Vintagestory.Common/ClassRegistry.cs
+@@ -1,6 +1,7 @@
+ using System;
++using System.Collections.Frozen;
+ using System.Collections.Generic;
+ using System.Linq;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Datastructures;
+@@ -62,10 +63,31 @@ public class ClassRegistry
+ 
+ 	public Dictionary<string, Type> ParticleProviderClassnameToTypeMapping = new Dictionary<string, Type>();
+ 
+ 	public Dictionary<Type, string> ParticleProviderTypeToClassnameMapping = new Dictionary<Type, string>();
+ 
++	// Stratum start: frozen copies of the hottest lookup dictionaries.
++	// Built once after all mods finish registration. Provides O(1)-guaranteed
++	// lookups via perfect hashing instead of collision-chain traversal.
++	internal FrozenDictionary<string, Type> stratumFrozenEntityClassNames;
++	internal FrozenDictionary<string, Type> stratumFrozenBlockClassNames;
++	internal FrozenDictionary<string, Type> stratumFrozenBlockEntityClassNames;
++	internal FrozenDictionary<string, Type> stratumFrozenEntityBehaviorClassNames;
++	internal FrozenDictionary<string, Type> stratumFrozenBlockBehaviorClassNames;
++	internal FrozenDictionary<string, Type> stratumFrozenItemClassNames;
++
++	internal void StratumFreeze()
++	{
++		stratumFrozenEntityClassNames = entityClassNameToTypeMapping.ToFrozenDictionary();
++		stratumFrozenBlockClassNames = BlockClassToTypeMapping.ToFrozenDictionary();
++		stratumFrozenBlockEntityClassNames = blockEntityClassnameToTypeMapping.ToFrozenDictionary();
++		stratumFrozenEntityBehaviorClassNames = entityBehaviorClassNameToTypeMapping.ToFrozenDictionary();
++		stratumFrozenBlockBehaviorClassNames = blockbehaviorToTypeMapping.ToFrozenDictionary();
++		stratumFrozenItemClassNames = ItemClassToTypeMapping.ToFrozenDictionary();
++	}
++	// Stratum end
++
+ 	public ClassRegistry()
+ 	{
+ 		RegisterDefaultInventories();
+ 		RegisterDefaultParticlePropertyProviders();
+ 		RegisterItemClass("Item", typeof(Item));
+@@ -162,11 +184,13 @@ public class ClassRegistry
+ 		BlockClassToTypeMapping[blockClass] = block;
+ 	}
+ 
+ 	public Block CreateBlock(string blockClass)
+ 	{
+-		if (!BlockClassToTypeMapping.TryGetValue(blockClass, out var value))
++		// Stratum: frozen lookup
++		var frozen = stratumFrozenBlockClassNames;
++		if (!(frozen != null ? frozen.TryGetValue(blockClass, out var value) : BlockClassToTypeMapping.TryGetValue(blockClass, out value)))
+ 		{
+ 			throw new Exception("Don't know how to instantiate block of class '" + blockClass + "' did you forget to register a mapping?");
+ 		}
+ 		try
+ 		{
+@@ -299,11 +323,13 @@ public class ClassRegistry
+ 		ItemClassToTypeMapping[itemClass] = item;
+ 	}
+ 
+ 	public Item CreateItem(string itemClass)
+ 	{
+-		if (!ItemClassToTypeMapping.TryGetValue(itemClass, out var value))
++		// Stratum: frozen lookup
++		var frozen = stratumFrozenItemClassNames;
++		if (!(frozen != null ? frozen.TryGetValue(itemClass, out var value) : ItemClassToTypeMapping.TryGetValue(itemClass, out value)))
+ 		{
+ 			throw new Exception("Don't know how to instantiate item of class '" + itemClass + "' did you forget to register a mapping?");
+ 		}
+ 		try
+ 		{
+@@ -380,11 +406,13 @@ public class ClassRegistry
+ 		}
+ 		if (className == "projectile")
+ 		{
+ 			className = "EntityProjectile";
+ 		}
+-		if (!entityClassNameToTypeMapping.TryGetValue(className, out var value))
++		// Stratum: use frozen lookup if available (O(1) perfect hash), fall back to mutable dict.
++		var frozenEntities = stratumFrozenEntityClassNames;
++		if (!(frozenEntities != null ? frozenEntities.TryGetValue(className, out var value) : entityClassNameToTypeMapping.TryGetValue(className, out value)))
+ 		{
+ 			throw new Exception("Don't know how to instantiate entity of type '" + className + "' did you forget to register a mapping?");
+ 		}
+ 		try
+ 		{
+@@ -473,11 +501,13 @@ public class ClassRegistry
+ 		}
+ 	}
+ 
+ 	public EntityBehavior CreateEntityBehavior(Entity forEntity, string className)
+ 	{
+-		if (!entityBehaviorClassNameToTypeMapping.TryGetValue(className, out var value))
++		// Stratum: frozen lookup
++		var frozen = stratumFrozenEntityBehaviorClassNames;
++		if (!(frozen != null ? frozen.TryGetValue(className, out var value) : entityBehaviorClassNameToTypeMapping.TryGetValue(className, out value)))
+ 		{
+ 			throw new Exception("Don't know how to instantiate entityBehavior of type '" + className + "' did you forget to register a mapping?");
+ 		}
+ 		try
+ 		{
+@@ -519,11 +549,13 @@ public class ClassRegistry
+ 	{
+ 		if (legacyBlockEntityClassNames.ContainsKey(className))
+ 		{
+ 			className = legacyBlockEntityClassNames[className];
+ 		}
+-		if (!blockEntityClassnameToTypeMapping.TryGetValue(className, out var value))
++		// Stratum: frozen lookup
++		var frozen = stratumFrozenBlockEntityClassNames;
++		if (!(frozen != null ? frozen.TryGetValue(className, out var value) : blockEntityClassnameToTypeMapping.TryGetValue(className, out value)))
+ 		{
+ 			throw new Exception("Don't know how to instantiate entity of type '" + className + "' did you forget to register a mapping?");
+ 		}
+ 		try
+ 		{

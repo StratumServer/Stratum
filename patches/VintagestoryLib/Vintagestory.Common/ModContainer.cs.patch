@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ModContainer.cs b/VintagestoryLib/Vintagestory.Common/ModContainer.cs
-index a751fb0..9993228 100644
+index 96337d8..2d3bfc6 100644
 --- a/VintagestoryLib/Vintagestory.Common/ModContainer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ModContainer.cs
 @@ -10,10 +10,11 @@ using Mono.Cecil;

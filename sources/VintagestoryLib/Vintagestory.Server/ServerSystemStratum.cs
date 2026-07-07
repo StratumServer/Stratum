@@ -98,7 +98,50 @@ internal class ServerSystemStratum : ServerSystem
 			new StratumBackupScheduler(server);
 			StratumRuntime.LogInfo("backup scheduler armed: interval=" + StratumRuntime.Config.Backup.IntervalMinutes + "min retain=" + StratumRuntime.Config.Backup.RetainCount);
 		}
+		StratumTrimClassRegistry();
 		StratumRuntime.LogInfo("runtime ready. Use /stratum health, /stratum status, and /stratum timings start.");
+	}
+
+	// Stratum: reclaim dictionary slack from startup registration. All 21 ClassRegistry
+	// dictionaries are populated during mod loading and never mutated at runtime. Default
+	// Dictionary sizing allocates 2x capacity on growth, so TrimExcess recovers ~40% of
+	// the hash table memory across hundreds of registered types.
+	private void StratumTrimClassRegistry()
+	{
+		Vintagestory.Common.ClassRegistry reg = server.ClassRegistryInt;
+		if (reg == null) return;
+
+		int trimmed = 0;
+		trimmed += StratumTrimDict(reg.mountableEntries);
+		trimmed += StratumTrimDict(reg.inventoryClassToTypeMapping);
+		trimmed += StratumTrimDict(reg.RecipeRegistryToTypeMapping);
+		trimmed += StratumTrimDict(reg.TypeToRecipeRegistryMapping);
+		trimmed += StratumTrimDict(reg.BlockClassToTypeMapping);
+		trimmed += StratumTrimDict(reg.blockbehaviorToTypeMapping);
+		trimmed += StratumTrimDict(reg.blockentitybehaviorToTypeMapping);
+		trimmed += StratumTrimDict(reg.collectibleBehaviorToTypeMapping);
+		trimmed += StratumTrimDict(reg.cropbehaviorToTypeMapping);
+		trimmed += StratumTrimDict(reg.ItemClassToTypeMapping);
+		trimmed += StratumTrimDict(reg.entityClassNameToTypeMapping);
+		trimmed += StratumTrimDict(reg.entityTypeToClassNameMapping);
+		trimmed += StratumTrimDict(reg.EntityRendererClassNameToTypeMapping);
+		trimmed += StratumTrimDict(reg.EntityRendererTypeToClassNameMapping);
+		trimmed += StratumTrimDict(reg.entityBehaviorClassNameToTypeMapping);
+		trimmed += StratumTrimDict(reg.entityBehaviorTypeToClassNameMapping);
+		trimmed += StratumTrimDict(reg.blockEntityClassnameToTypeMapping);
+		trimmed += StratumTrimDict(reg.blockEntityTypeToClassnameMapping);
+		trimmed += StratumTrimDict(reg.ParticleProviderClassnameToTypeMapping);
+		trimmed += StratumTrimDict(reg.ParticleProviderTypeToClassnameMapping);
+
+		StratumRuntime.LogInfo("class registry trimmed: " + trimmed + " entries across 20 dictionaries");
+	}
+
+	private static int StratumTrimDict<TKey, TValue>(System.Collections.Generic.Dictionary<TKey, TValue> dict) where TKey : notnull
+	{
+		if (dict == null || dict.Count == 0) return 0;
+		int count = dict.Count;
+		dict.TrimExcess();
+		return count;
 	}
 
 	public override void OnServerTick(float dt)
