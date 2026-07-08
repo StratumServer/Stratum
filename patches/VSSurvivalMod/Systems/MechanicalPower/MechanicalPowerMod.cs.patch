@@ -1,0 +1,35 @@
+diff --git a/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs b/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs
+index f2e4020..7fbc98c 100644
+--- a/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs
++++ b/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs
+@@ -59,10 +59,11 @@ namespace Vintagestory.GameContent.Mechanics
+ 
+         public ICoreAPI Api;
+ 
+         MechPowerData data = new MechPowerData();
+         SimpleParticleProperties smokeParticles;
++        private readonly List<MechanicalNetwork> stratumTickNetworks = new List<MechanicalNetwork>(); // Stratum: reuse per tick
+ 
+         public override bool ShouldLoad(EnumAppSide side)
+         {
+             return true;
+         }
+@@ -151,12 +152,16 @@ namespace Vintagestory.GameContent.Mechanics
+ 
+         protected void OnServerGameTick(float dt)
+         {
+             data.tickNumber++;
+ 
+-            List<MechanicalNetwork> clone = data.networksById.Values.ToList();
+-            foreach (MechanicalNetwork network in clone)
++            stratumTickNetworks.Clear(); // Stratum: reuse list instead of .ToList() allocation
++            foreach (MechanicalNetwork network in data.networksById.Values)
++            {
++                stratumTickNetworks.Add(network);
++            }
++            foreach (MechanicalNetwork network in stratumTickNetworks)
+             {
+                 if (network.fullyLoaded && network.nodes.Count > 0)
+                 {
+                     network.ServerTick(dt, data.tickNumber);
+ 
