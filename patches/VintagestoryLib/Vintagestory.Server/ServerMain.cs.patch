@@ -23,7 +23,7 @@ index 1017be9..a708ec6 100644
  	internal List<int> DisconnectedClientsThisTick = new List<int>();
  
 +	// Stratum: cache these arrays for the current tick so hot paths do not rebuild them over and over.
-+	private IPlayer[] stratumCachedOnlinePlayers = [];
++	private ServerPlayer[] stratumCachedOnlinePlayers = [];
 +	private int stratumOnlinePlayersCacheTick = -1;
 +	private readonly List<ServerPlayer> stratumOnlinePlayersList = new List<ServerPlayer>(); // Stratum: backing list avoids per-tick array alloc
 +	private IPlayer[] stratumCachedAllPlayers = [];

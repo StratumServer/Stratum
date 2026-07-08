@@ -96,7 +96,7 @@ internal class ServerSystemStratum : ServerSystem
 		if (StratumRuntime.Config.Backup.Enabled)
 		{
 			new StratumBackupScheduler(server);
-			StratumRuntime.LogInfo("backup scheduler armed: interval=" + StratumRuntime.Config.Backup.IntervalMinutes + "min retain=" + StratumRuntime.Config.Backup.RetainCount);
+			StratumRuntime.LogInfo("backup scheduler armed: first backup in about 1min, interval=" + StratumRuntime.Config.Backup.IntervalMinutes + "min retain=" + StratumRuntime.Config.Backup.RetainCount);
 		}
 		StratumTrimClassRegistry();
 		StratumRuntime.LogInfo("runtime ready. Use /stratum health, /stratum status, and /stratum timings start.");

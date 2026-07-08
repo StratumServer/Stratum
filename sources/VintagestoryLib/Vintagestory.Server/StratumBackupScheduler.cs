@@ -16,11 +16,12 @@ internal sealed class StratumBackupScheduler
 	private readonly ServerMain server;
 	private long lastBackupMs;
 	private const string ScheduledPrefix = "stratum-backup-";
+	private const long FirstBackupDelayMs = 60_000;
 
 	public StratumBackupScheduler(ServerMain server)
 	{
 		this.server = server;
-		lastBackupMs = server.ElapsedMilliseconds;
+		lastBackupMs = server.ElapsedMilliseconds - Math.Max(0, GetIntervalMs(StratumRuntime.Config?.Backup) - FirstBackupDelayMs);
 		server.RegisterGameTickListener(OnTick, 30_000); // check every 30s
 	}
 
@@ -32,12 +33,17 @@ internal sealed class StratumBackupScheduler
 		if (cfg == null || !cfg.Enabled) return;
 
 		long elapsedMs = server.ElapsedMilliseconds;
-		long intervalMs = (long)cfg.IntervalMinutes * 60_000L;
+		long intervalMs = GetIntervalMs(cfg);
 
 		if (elapsedMs - lastBackupMs < intervalMs) return;
 
 		lastBackupMs = elapsedMs;
 		RunBackup(cfg);
+	}
+
+	private static long GetIntervalMs(StratumBackupConfig cfg)
+	{
+		return (long)Math.Max(1, cfg?.IntervalMinutes ?? 360) * 60_000L;
 	}
 
 	private void RunBackup(StratumBackupConfig cfg)
