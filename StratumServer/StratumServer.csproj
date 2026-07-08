@@ -8,6 +8,7 @@
     <RootNamespace>StratumServer</RootNamespace>
     <Configurations>Debug;Release;PerfTest</Configurations>
     <EmbedPatchedDlls Condition="'$(EmbedPatchedDlls)' == ''">false</EmbedPatchedDlls>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 
   <PropertyGroup>
