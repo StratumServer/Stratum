@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs b/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs
-index 0eaff16..7e4a1e9 100644
+index 0eaff16..6f5b843 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerEventManager.cs
-@@ -13,10 +13,16 @@ namespace Vintagestory.Server;
+@@ -13,10 +13,24 @@ namespace Vintagestory.Server;
  
  public class ServerEventManager : EventManager
  {
@@ -14,12 +14,20 @@ index 0eaff16..7e4a1e9 100644
 +
 +	private int stratumActiveBlockTickColumnsDistanceBlocks = -1;
 +
++	// Stratum: cache GetInvocationList for high-frequency spawn events.
++	private TrySpawnGroupDelegate stratumCachedSpawnGroupDelegate;
++	private Delegate[] stratumCachedSpawnGroupInvocations = Array.Empty<Delegate>();
++	private TrySpawnEntityDelegate stratumCachedSpawnEntityDelegate;
++	private Delegate[] stratumCachedSpawnEntityInvocations = Array.Empty<Delegate>();
++	private Action stratumCachedWorldSavedDelegate;
++	private Delegate[] stratumCachedWorldSavedInvocations = Array.Empty<Delegate>();
++
  	public Dictionary<EnumServerRunPhase, List<Action>> serverRunPhaseDelegates;
  
  	public List<WorldGenThreadDelegate> WorldgenBlockAccessor = new List<WorldGenThreadDelegate>();
  
  	public Dictionary<string, WorldGenHandler> WorldgenHandlers = new Dictionary<string, WorldGenHandler>();
-@@ -27,10 +33,69 @@ public class ServerEventManager : EventManager
+@@ -27,10 +41,69 @@ public class ServerEventManager : EventManager
  
  	public override string CommandPrefix => "/";
  
@@ -89,3 +97,77 @@ index 0eaff16..7e4a1e9 100644
  	public event Action OnSaveGameLoaded;
  
  	public event Action AssetsFirstLoaded;
+@@ -148,16 +221,22 @@ public class ServerEventManager : EventManager
+ 		});
+ 	}
+ 
+ 	public virtual bool TriggerTrySpawnGroupNearOffthread(IBlockAccessor blockaccessor, EntityProperties props, BlockPos pos)
+ 	{
+-		if (this.OnTrySpawnGroupNearOffthread == null)
++		TrySpawnGroupDelegate current = this.OnTrySpawnGroupNearOffthread;
++		if (current == null)
+ 		{
+ 			return true;
+ 		}
++		if (!ReferenceEquals(current, stratumCachedSpawnGroupDelegate))
++		{
++			stratumCachedSpawnGroupInvocations = current.GetInvocationList();
++			stratumCachedSpawnGroupDelegate = current;
++		}
+ 		bool flag = true;
+-		Delegate[] invocationList = this.OnTrySpawnGroupNearOffthread.GetInvocationList();
++		Delegate[] invocationList = stratumCachedSpawnGroupInvocations;
+ 		for (int i = 0; i < invocationList.Length; i++)
+ 		{
+ 			TrySpawnGroupDelegate trySpawnGroupDelegate = (TrySpawnGroupDelegate)invocationList[i];
+ 			try
+ 			{
+@@ -176,16 +255,22 @@ public class ServerEventManager : EventManager
+ 		return flag;
+ 	}
+ 
+ 	public virtual bool TriggerTrySpawnEntity(IBlockAccessor blockaccessor, ref EntityProperties properties, Vec3d position, long herdId)
+ 	{
+-		if (this.OnTrySpawnEntity == null)
++		TrySpawnEntityDelegate current = this.OnTrySpawnEntity;
++		if (current == null)
+ 		{
+ 			return true;
+ 		}
++		if (!ReferenceEquals(current, stratumCachedSpawnEntityDelegate))
++		{
++			stratumCachedSpawnEntityInvocations = current.GetInvocationList();
++			stratumCachedSpawnEntityDelegate = current;
++		}
+ 		bool flag = true;
+-		Delegate[] invocationList = this.OnTrySpawnEntity.GetInvocationList();
++		Delegate[] invocationList = stratumCachedSpawnEntityInvocations;
+ 		for (int i = 0; i < invocationList.Length; i++)
+ 		{
+ 			TrySpawnEntityDelegate trySpawnEntityDelegate = (TrySpawnEntityDelegate)invocationList[i];
+ 			try
+ 			{
+@@ -257,15 +342,21 @@ public class ServerEventManager : EventManager
+ 		});
+ 	}
+ 
+ 	public virtual void TriggerGameWorldBeingSaved()
+ 	{
+-		if (this.OnGameWorldBeingSaved == null)
++		Action current = this.OnGameWorldBeingSaved;
++		if (current == null)
+ 		{
+ 			return;
+ 		}
+-		Delegate[] invocationList = this.OnGameWorldBeingSaved.GetInvocationList();
++		if (!ReferenceEquals(current, stratumCachedWorldSavedDelegate))
++		{
++			stratumCachedWorldSavedInvocations = current.GetInvocationList();
++			stratumCachedWorldSavedDelegate = current;
++		}
++		Delegate[] invocationList = stratumCachedWorldSavedInvocations;
+ 		for (int i = 0; i < invocationList.Length; i++)
+ 		{
+ 			Action action = (Action)invocationList[i];
+ 			try
+ 			{

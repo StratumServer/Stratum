@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/EventManager.cs b/VintagestoryLib/Vintagestory.Common/EventManager.cs
-index 842d31f..fbae43d 100644
+index 842d31f..2db0d99 100644
 --- a/VintagestoryLib/Vintagestory.Common/EventManager.cs
 +++ b/VintagestoryLib/Vintagestory.Common/EventManager.cs
 @@ -1,11 +1,13 @@
@@ -16,7 +16,7 @@ index 842d31f..fbae43d 100644
  
  public abstract class EventManager
  {
-@@ -27,10 +29,12 @@ public abstract class EventManager
+@@ -27,10 +29,19 @@ public abstract class EventManager
  
  	internal Dictionary<BlockPos, DelayedCallbackBlock> SingleDelayedCallbacksBlock = new Dictionary<BlockPos, DelayedCallbackBlock>();
  
@@ -24,12 +24,69 @@ index 842d31f..fbae43d 100644
  
 +	private List<BlockPos> singleDelayedCallbackBlockKeys = new List<BlockPos>();
 +
++	// Stratum: cache GetInvocationList results. Multicast delegates are immutable,
++	// so comparing the delegate reference detects add/remove of handlers.
++	private OnGetClimateDelegate stratumCachedClimateDelegate;
++	private Delegate[] stratumCachedClimateInvocations = Array.Empty<Delegate>();
++	private OnGetWindSpeedDelegate stratumCachedWindDelegate;
++	private Delegate[] stratumCachedWindInvocations = Array.Empty<Delegate>();
++
  	public abstract ILogger Logger { get; }
  
  	public abstract string CommandPrefix { get; }
  
  	public abstract long InWorldEllapsedMs { get; }
-@@ -133,30 +137,116 @@ public abstract class EventManager
+@@ -88,15 +99,22 @@ public abstract class EventManager
+ 		}
+ 	}
+ 
+ 	public virtual void TriggerOnGetClimate(ref ClimateCondition climate, BlockPos pos, EnumGetClimateMode mode = EnumGetClimateMode.WorldGenValues, double totalDays = 0.0)
+ 	{
+-		if (this.OnGetClimate == null)
++		OnGetClimateDelegate current = this.OnGetClimate;
++		if (current == null)
+ 		{
+ 			return;
+ 		}
+-		Delegate[] invocationList = this.OnGetClimate.GetInvocationList();
++		// Stratum: cache the invocation list to avoid per-call Delegate[] allocation.
++		if (!ReferenceEquals(current, stratumCachedClimateDelegate))
++		{
++			stratumCachedClimateInvocations = current.GetInvocationList();
++			stratumCachedClimateDelegate = current;
++		}
++		Delegate[] invocationList = stratumCachedClimateInvocations;
+ 		for (int i = 0; i < invocationList.Length; i++)
+ 		{
+ 			OnGetClimateDelegate onGetClimateDelegate = (OnGetClimateDelegate)invocationList[i];
+ 			try
+ 			{
+@@ -110,15 +128,22 @@ public abstract class EventManager
+ 		}
+ 	}
+ 
+ 	public virtual void TriggerOnGetWindSpeed(Vec3d pos, ref Vec3d windSpeed)
+ 	{
+-		if (this.OnGetWindSpeed == null)
++		OnGetWindSpeedDelegate current = this.OnGetWindSpeed;
++		if (current == null)
+ 		{
+ 			return;
+ 		}
+-		Delegate[] invocationList = this.OnGetWindSpeed.GetInvocationList();
++		// Stratum: cache the invocation list to avoid per-call Delegate[] allocation.
++		if (!ReferenceEquals(current, stratumCachedWindDelegate))
++		{
++			stratumCachedWindInvocations = current.GetInvocationList();
++			stratumCachedWindDelegate = current;
++		}
++		Delegate[] invocationList = stratumCachedWindInvocations;
+ 		for (int i = 0; i < invocationList.Length; i++)
+ 		{
+ 			OnGetWindSpeedDelegate onGetWindSpeedDelegate = (OnGetWindSpeedDelegate)invocationList[i];
+ 			try
+ 			{
+@@ -133,30 +158,116 @@ public abstract class EventManager
  	}
  
  	public virtual void TriggerGameTick(long ellapsedMilliseconds, IWorldAccessor world)
@@ -64,12 +121,12 @@ index 842d31f..fbae43d 100644
  			{
 -				gameTickListener.OnTriggered(ellapsedMilliseconds);
 +				continue;
-+			}
+ 			}
 +			int stratumEffectiveInterval = gameTickListener.Millisecondinterval;
 +			if (stratumAdaptiveThrottle && stratumEffectiveInterval > stratumAdaptiveCritMs)
 +			{
 +				stratumEffectiveInterval *= stratumAdaptiveMul;
- 			}
++			}
 +			if (ellapsedMilliseconds - gameTickListener.LastUpdateMilliseconds > stratumEffectiveInterval)
 +			{
 +				if (stratumSlowEntityThresholdMs > 0)
@@ -149,7 +206,7 @@ index 842d31f..fbae43d 100644
  		{
  			if (ellapsedMilliseconds - item.Value.CallAtEllapsedMilliseconds >= 0)
  			{
-@@ -168,10 +258,16 @@ public abstract class EventManager
+@@ -168,10 +279,16 @@ public abstract class EventManager
  		frameProfiler.Mark("tick-dcentity");
  		foreach (DelayedCallback item2 in deletable)
  		{
@@ -166,7 +223,7 @@ index 842d31f..fbae43d 100644
  		{
  			DelayedCallbackBlock delayedCallbackBlock = delayedCallbacksBlock[k];
  			if (ellapsedMilliseconds - delayedCallbackBlock.CallAtEllapsedMilliseconds >= 0)
-@@ -182,21 +278,28 @@ public abstract class EventManager
+@@ -182,21 +299,28 @@ public abstract class EventManager
  			}
  		}
  		Dictionary<BlockPos, DelayedCallbackBlock> singleDelayedCallbacksBlock = SingleDelayedCallbacksBlock;
@@ -196,7 +253,7 @@ index 842d31f..fbae43d 100644
  	public virtual void TriggerGameTickDebug(long ellapsedMilliseconds, IWorldAccessor world)
  	{
  		List<GameTickListener> gameTickListenersEntity = GameTickListenersEntity;
-@@ -208,19 +311,33 @@ public abstract class EventManager
+@@ -208,19 +332,33 @@ public abstract class EventManager
  				gameTickListener.OnTriggered(ellapsedMilliseconds);
  				world.FrameProfiler.Mark("gmle", gameTickListener.ProfilerName);
  			}
@@ -232,7 +289,7 @@ index 842d31f..fbae43d 100644
  		{
  			if (ellapsedMilliseconds - item.Value.CallAtEllapsedMilliseconds >= 0)
  			{
-@@ -249,20 +366,32 @@ public abstract class EventManager
+@@ -249,20 +387,32 @@ public abstract class EventManager
  		Dictionary<BlockPos, DelayedCallbackBlock> singleDelayedCallbacksBlock = SingleDelayedCallbacksBlock;
  		if (singleDelayedCallbacksBlock.Count <= 0)
  		{
