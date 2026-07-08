@@ -1,0 +1,47 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/WorldAPI.cs b/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
+index 2b525d3..7e21295 100644
+--- a/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
++++ b/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
+@@ -9,10 +9,16 @@ using Vintagestory.Common;
+ 
+ namespace Vintagestory.Server;
+ 
+ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
+ {
++	// Stratum: cache AllLoadedMapRegions per tick. The property copies the entire
++	// dictionary on every access. Weather ticks call it multiple times per frame.
++	private Dictionary<long, IMapRegion> stratumCachedMapRegions;
++	private int stratumMapRegionsCacheTick = -1;
++	private int stratumMapRegionsCacheCount = -1;
++
+ 	public PlayStyle CurrentPlayStyle
+ 	{
+ 		get
+ 		{
+ 			foreach (Mod mod in server.api.ModLoader.Mods)
+@@ -129,15 +135,24 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
+ 
+ 	public Dictionary<long, IMapRegion> AllLoadedMapRegions
+ 	{
+ 		get
+ 		{
+-			Dictionary<long, IMapRegion> dictionary = new Dictionary<long, IMapRegion>();
++			// Stratum: cache per tick. Rebuild once per tick regardless of count changes.
++			int tick = server.TickPosition;
++			if (stratumMapRegionsCacheTick == tick && stratumCachedMapRegions != null)
++			{
++				return stratumCachedMapRegions;
++			}
++			int count = server.loadedMapRegions.Count;
++			Dictionary<long, IMapRegion> dictionary = new Dictionary<long, IMapRegion>(count);
+ 			foreach (KeyValuePair<long, ServerMapRegion> loadedMapRegion in server.loadedMapRegions)
+ 			{
+ 				dictionary[loadedMapRegion.Key] = loadedMapRegion.Value;
+ 			}
++			stratumCachedMapRegions = dictionary;
++			stratumMapRegionsCacheTick = tick;
+ 			return dictionary;
+ 		}
+ 	}
+ 
+ 	public List<LandClaim> LandClaims => server.WorldMap.All;
