@@ -422,9 +422,9 @@ index 2c2605d..3dc5e46 100644
 +		// Stratum start: tracking hysteresis. Before despawning a tracked entity, check if it's
 +		// still within the outer radius. This prevents oscillation at the tracking boundary.
 +		double outerRangeSq = es.trackingRangeSq * StratumTrackingOuterRangeMultiplier;
-+		double clientX = client.Position.x;
-+		double clientY = client.Position.y;
-+		double clientZ = client.Position.z;
++		double clientX = client.Position.X;
++		double clientY = client.Position.Y;
++		double clientZ = client.Position.Z;
  		foreach (long item3 in trackedEntities)
  		{
 +			if (server.LoadedEntities.TryGetValue(item3, out Entity trackedEntity) && !trackedEntity.ShouldDespawn)
