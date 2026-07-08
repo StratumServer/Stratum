@@ -783,7 +783,9 @@ internal class StratumRegionTickingConfig
 {
 	// Folia-style regionized entity ticking. Splits LoadedEntities into spatial regions
 	// (region size in chunks) and ticks each region on a worker thread in parallel.
-	// WARNING: not all entity behaviors are thread-safe. Use with caution and validate.
+	// Behaviors that throw repeatedly get runtime-blocked via FallbackAfterExceptions.
+	// Disabled by default: entity behaviors from mods may not be thread-safe. Enable after
+	// validating your mod set under load. Unsafe behaviors self-quarantine to serial.
 	public bool Enabled { get; set; }
 
 	// Region size in chunks (e.g. 8 = 8x8 chunk regions = 256x256 blocks).
