@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs b/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
-index 95784e8..bc7898d 100644
+index 95784e8..f09dff7 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
-@@ -52,10 +52,25 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+@@ -52,10 +52,29 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
  
  	private int regionMapSizeZ;
  
@@ -22,13 +22,17 @@ index 95784e8..bc7898d 100644
 +	// beyond the immediate call — it's used, checked, and discarded each invocation.
 +	[ThreadStatic]
 +	private static ClimateCondition? stratumClimateScratch;
++	// Stratum: scratch for !temperatureRainfallOnly calls (weather ticks). Same safety
++	// guarantee: callers read fields and discard within the same call frame.
++	[ThreadStatic]
++	private static ClimateCondition? stratumFullClimateScratch;
 +
  	public override ILogger Logger => ServerMain.Logger;
  
  	ILogger IChunkProvider.Logger => ServerMain.Logger;
  
  	public override IList<Block> Blocks => server.Blocks;
-@@ -427,11 +442,11 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+@@ -427,11 +446,11 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
  		//IL_0027: Expected O, but got Unknown
  		//IL_0098: Unknown result type (might be due to invalid IL or missing references)
  		//IL_010f: Unknown result type (might be due to invalid IL or missing references)
@@ -41,7 +45,28 @@ index 95784e8..bc7898d 100644
  		{
  			foreach (long key in server.loadedChunks.Keys)
  			{
-@@ -616,10 +631,36 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+@@ -588,16 +607,14 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+ 	public override ClimateCondition GetClimateAt(BlockPos pos, int climate)
+ 	{
+ 		float scaledAdjustedTemperatureFloat = Climate.GetScaledAdjustedTemperatureFloat((climate >> 16) & 0xFF, pos.Y - server.seaLevel);
+ 		float num = (float)Climate.GetRainFall((climate >> 8) & 0xFF, pos.Y) / 255f;
+ 		float posYRel = ((float)pos.Y - (float)server.seaLevel) / ((float)MapSizeY - (float)server.seaLevel);
+-		ClimateCondition climate2 = new ClimateCondition
+-		{
+-			Temperature = scaledAdjustedTemperatureFloat,
+-			Rainfall = num,
+-			Fertility = (float)Climate.GetFertility((int)num, scaledAdjustedTemperatureFloat, posYRel) / 255f
+-		};
++		ClimateCondition climate2 = stratumFullClimateScratch ??= new ClimateCondition(); // Stratum: reuse scratch
++		climate2.Temperature = scaledAdjustedTemperatureFloat;
++		climate2.Rainfall = num;
++		climate2.Fertility = (float)Climate.GetFertility((int)num, scaledAdjustedTemperatureFloat, posYRel) / 255f;
+ 		server.EventManager.TriggerOnGetClimate(ref climate2, pos, EnumGetClimateMode.NowValues, server.Calendar.TotalDays);
+ 		return climate2;
+ 	}
+ 
+ 	public override Vec3d GetWindSpeedAt(BlockPos pos)
+@@ -616,10 +633,36 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
  	{
  		if (!IsValidPos(pos))
  		{
@@ -78,7 +103,29 @@ index 95784e8..bc7898d 100644
  		{
  			return null;
  		}
-@@ -642,10 +683,14 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+@@ -628,24 +671,37 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+ 		int unpaddedColorLerpedForNormalizedPos = mapRegion.ClimateMap.GetUnpaddedColorLerpedForNormalizedPos(x, z);
+ 		float scaledAdjustedTemperatureFloat = Climate.GetScaledAdjustedTemperatureFloat((unpaddedColorLerpedForNormalizedPos >> 16) & 0xFF, pos.Y - server.seaLevel);
+ 		float num = Climate.GetRainFall((unpaddedColorLerpedForNormalizedPos >> 8) & 0xFF, pos.Y);
+ 		int rain = (int)num;
+ 		num /= 255f;
+-		ClimateCondition climateCondition = new ClimateCondition
+-		{
+-			Temperature = scaledAdjustedTemperatureFloat,
+-			Rainfall = num,
+-			WorldgenRainfall = num,
+-			WorldGenTemperature = scaledAdjustedTemperatureFloat
+-		};
++		ClimateCondition climateCondition;
+ 		if (!temperatureRainfallOnly)
+ 		{
++			// Stratum: reuse ThreadStatic scratch for full-climate callers (weather ticks).
++			// Callers read fields within the same frame and never store the reference.
++			climateCondition = stratumFullClimateScratch ??= new ClimateCondition();
++			climateCondition.Temperature = scaledAdjustedTemperatureFloat;
++			climateCondition.Rainfall = num;
++			climateCondition.WorldgenRainfall = num;
++			climateCondition.WorldGenTemperature = scaledAdjustedTemperatureFloat;
  			float posYRel = ((float)pos.Y - (float)server.seaLevel) / ((float)MapSizeY - (float)server.seaLevel);
  			climateCondition.Fertility = (float)Climate.GetFertilityFromUnscaledTemp(rain, (unpaddedColorLerpedForNormalizedPos >> 16) & 0xFF, posYRel) / 255f;
  			climateCondition.GeologicActivity = (float)(unpaddedColorLerpedForNormalizedPos & 0xFF) / 255f;
@@ -86,6 +133,14 @@ index 95784e8..bc7898d 100644
  		}
 +		else
 +		{
++			// Cache miss: allocate a new entry for the permanent cache.
++			climateCondition = new ClimateCondition
++			{
++				Temperature = scaledAdjustedTemperatureFloat,
++				Rainfall = num,
++				WorldgenRainfall = num,
++				WorldGenTemperature = scaledAdjustedTemperatureFloat
++			};
 +			stratumClimateCache![stratumCacheKey] = climateCondition;
 +		}
  		return climateCondition;
