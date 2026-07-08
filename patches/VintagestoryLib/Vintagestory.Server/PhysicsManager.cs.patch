@@ -429,7 +429,7 @@ index 2c2605d..3dc5e46 100644
  		{
 +			if (server.LoadedEntities.TryGetValue(item3, out Entity trackedEntity) && !trackedEntity.ShouldDespawn)
 +			{
-+				EntityPos epos = trackedEntity.ServerPos;
++				EntityPos epos = trackedEntity.Pos;
 +				double dx = epos.X - clientX;
 +				double dy = epos.Y - clientY;
 +				double dz = epos.Z - clientZ;
