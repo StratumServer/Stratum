@@ -213,7 +213,7 @@ internal class StratumMovementAnticheatConfig : StratumAnticheatRuleConfig
 
 	public double MountSlackBlocks { get; set; } = 8;
 
-	public bool KickConfirmedCheats { get; set; } = true;
+	public bool KickConfirmedCheats { get; set; } = false;
 
 	public int KickAfterViolations { get; set; } = 10;
 

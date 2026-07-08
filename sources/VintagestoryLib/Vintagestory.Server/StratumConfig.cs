@@ -443,7 +443,7 @@ internal class StratumHardeningConfig
 
 internal class StratumPacketLimitsConfig
 {
-	public bool Enabled { get; set; } = true;
+	public bool Enabled { get; set; } = false;
 
 	public bool DropViolations { get; set; } = true;
 
@@ -500,7 +500,7 @@ internal class StratumPacketLimitsConfig
 
 internal class StratumPacketBackPressureConfig
 {
-	public bool Enabled { get; set; } = true;
+	public bool Enabled { get; set; } = false;
 
 	public int MaxMillisecondsPerTick { get; set; } = 25;
 
