@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index 750557a..5cb19d7 100644
+index 750557a..1295d90 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,12 @@
@@ -16,7 +16,7 @@ index 750557a..5cb19d7 100644
  using Vintagestory.API.Common.Entities;
  using Vintagestory.API.Config;
  using Vintagestory.API.Datastructures;
-@@ -22,13 +26,137 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -22,13 +26,139 @@ public class ServerSystemEntitySimulation : ServerSystem
  
  	private Dictionary<string, List<string>> deathMessagesCache;
  
@@ -96,6 +96,7 @@ index 750557a..5cb19d7 100644
 +	// Stratum ambient fauna tier cache. Refreshed in BuildStratumPlayerPositions alongside the
 +	// other tier caches so the hot tick path only reads two fields.
 +	private string[] stratumAmbientPrefixesCached = Array.Empty<string>();
++	private List<string> stratumLastAmbientPrefixSrc; // Stratum: track reference to avoid ToArray per tick
 +	private int stratumAmbientMultiplierCached = 1;
 +	private bool stratumAmbientTierEnabledCached;
 +
@@ -105,6 +106,7 @@ index 750557a..5cb19d7 100644
 +	private float stratumHardDespawnGraceSecondsCached;
 +	private bool stratumHardDespawnExemptIfNamedCached;
 +	private string[] stratumHardDespawnExemptPrefixesCached = Array.Empty<string>();
++	private List<string> stratumLastExemptPrefixSrc; // Stratum: track reference to avoid ToArray per tick
 +
 +	// Stratum: server animators are restored on demand for non-player entity animation callbacks/state.
 +	private readonly object stratumServerAnimatorDemandLock = new object();
@@ -154,7 +156,7 @@ index 750557a..5cb19d7 100644
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
  		server.PacketHandlers[17] = HandleEntityInteraction;
-@@ -43,26 +171,33 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -43,26 +173,33 @@ public class ServerSystemEntitySimulation : ServerSystem
  		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
  	}
  
@@ -191,7 +193,7 @@ index 750557a..5cb19d7 100644
  	private void EventManager_OnGameWorldBeingSaved()
  	{
  		if (server.RunPhase != EnumServerRunPhase.Shutdown)
-@@ -77,66 +212,254 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -77,66 +214,254 @@ public class ServerSystemEntitySimulation : ServerSystem
  	}
  
  	public override void OnBeginModsAndConfigReady()
@@ -466,7 +468,7 @@ index 750557a..5cb19d7 100644
  		SendEntityDespawns();
  		int count = server.DelayedSpawnQueue.Count;
  		if (count <= 0)
-@@ -185,19 +508,149 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -185,19 +510,149 @@ public class ServerSystemEntitySimulation : ServerSystem
  		}
  	}
  
@@ -619,7 +621,7 @@ index 750557a..5cb19d7 100644
  				{
  					if (value is EntityPlayer entityPlayer)
  					{
-@@ -209,12 +662,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -209,12 +664,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
  						ServerMain.Logger.Error(e);
  					}
@@ -637,7 +639,7 @@ index 750557a..5cb19d7 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +680,808 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +682,814 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -1096,11 +1098,13 @@ index 750557a..5cb19d7 100644
 +	{
 +		stratumPlayerPositions.Clear();
 +		int snapCount = 0;
-+		foreach (ConnectedClient client in server.Clients.Values)
++		IPlayer[] players = server.AllOnlinePlayers; // Stratum: cached array, no enumerator alloc
++		for (int pi = 0; pi < players.Length; pi++)
 +		{
-+			if (client.IsPlayingClient && client.Entityplayer != null)
++			EntityPlayer ep = players[pi]?.Entity;
++			if (ep != null)
 +			{
-+				stratumPlayerPositions.Add(client.Entityplayer.Pos);
++				stratumPlayerPositions.Add(ep.Pos);
 +				snapCount++;
 +			}
 +		}
@@ -1140,12 +1144,13 @@ index 750557a..5cb19d7 100644
 +		if (prefixSrc == null || prefixSrc.Count == 0)
 +		{
 +			stratumAmbientPrefixesCached = Array.Empty<string>();
++			stratumLastAmbientPrefixSrc = null;
 +		}
-+		else
++		else if (!ReferenceEquals(prefixSrc, stratumLastAmbientPrefixSrc))
 +		{
-+			// Stratum: always rebuild from source so hot-reloaded content changes take effect
-+			// even when the list length stays the same.
++			// Stratum: only rebuild when the config list instance changes (hot-reload)
 +			stratumAmbientPrefixesCached = prefixSrc.ToArray();
++			stratumLastAmbientPrefixSrc = prefixSrc;
 +		}
 +
 +		stratumHardDespawnEnabledCached = cfg.HardDespawnEnabled;
@@ -1157,10 +1162,13 @@ index 750557a..5cb19d7 100644
 +		if (exemptSrc == null || exemptSrc.Count == 0)
 +		{
 +			stratumHardDespawnExemptPrefixesCached = Array.Empty<string>();
++			stratumLastExemptPrefixSrc = null;
 +		}
-+		else
++		else if (!ReferenceEquals(exemptSrc, stratumLastExemptPrefixSrc))
 +		{
++			// Stratum: only rebuild when the config list instance changes (hot-reload)
 +			stratumHardDespawnExemptPrefixesCached = exemptSrc.ToArray();
++			stratumLastExemptPrefixSrc = exemptSrc;
 +		}
 +	}
 +
@@ -1450,7 +1458,7 @@ index 750557a..5cb19d7 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -390,11 +1629,20 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -390,11 +1637,20 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1472,7 +1480,7 @@ index 750557a..5cb19d7 100644
  			return;
  		}
  		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
-@@ -428,10 +1676,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -428,10 +1684,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));
