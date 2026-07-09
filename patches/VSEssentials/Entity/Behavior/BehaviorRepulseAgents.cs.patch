@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs b/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs
-index a571d72..39fa665 100644
+index a571d72..de0228b 100644
 --- a/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs
 +++ b/VSEssentials/Entity/Behavior/BehaviorRepulseAgents.cs
 @@ -1,12 +1,15 @@
@@ -88,7 +88,7 @@ index a571d72..39fa665 100644
              if (pushVector.X == 0 && pushVector.Z == 0 && pushVector.Y == 0) return;
  
              pushVector.X = GameMath.Clamp(pushVector.X, -3, 3) / 30;
-@@ -282,21 +319,73 @@ namespace Vintagestory.GameContent
+@@ -282,21 +319,79 @@ namespace Vintagestory.GameContent
  
              if (ourEntity.OnGround) pushDiff *= 3;
  
@@ -154,6 +154,12 @@ index a571d72..39fa665 100644
 +                        EntityBehaviorRepulseAgents.StratumNearBandBlocks,
 +                        EntityBehaviorRepulseAgents.StratumFarBandSkipTicks,
 +                        enabled);
++
++                    // Stratum: CollectEntities scan stride from the same config block
++                    int collectStride = (int)(ec.GetType().GetProperty("CollectStrideInterval")?.GetValue(ec) ?? 3);
++                    EntityBehaviorCollectEntities.StratumCollectStrideInterval = enabled ? Math.Max(1, collectStride) : 1;
++                    api.Logger.Notification("Stratum: collect-stride={0} (enabled={1}).",
++                        EntityBehaviorCollectEntities.StratumCollectStrideInterval, enabled);
 +                }
 +            }
 +            catch (Exception e)

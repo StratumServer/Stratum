@@ -715,9 +715,24 @@ internal class StratumEntityCollisionsConfig
 	// 0 disables the cap. Paper default is 8; we use 12 to be more permissive of pushing.
 	public int MaxCollisionsPerEntity { get; set; } = 12;
 
+	// Distance gate for RepulseAgents (non-player creatures skip entirely beyond this range).
+	public float DistanceGateBlocks { get; set; } = 24f;
+
+	public float NearBandBlocks { get; set; } = 12f;
+
+	public int FarBandSkipTicks { get; set; } = 4;
+
+	// CollectEntities scan stride. Only run the spatial query every N ticks per entity,
+	// phase-offset by EntityId. Reduces allocations from GetEntitiesAround. 1 = every tick.
+	public int CollectStrideInterval { get; set; } = 3;
+
 	public void EnsureSane()
 	{
 		MaxCollisionsPerEntity = Math.Max(0, Math.Min(256, MaxCollisionsPerEntity));
+		DistanceGateBlocks = Math.Max(0f, DistanceGateBlocks);
+		NearBandBlocks = Math.Max(0f, Math.Min(DistanceGateBlocks, NearBandBlocks));
+		FarBandSkipTicks = Math.Max(1, FarBandSkipTicks);
+		CollectStrideInterval = Math.Max(1, Math.Min(16, CollectStrideInterval));
 	}
 }
 

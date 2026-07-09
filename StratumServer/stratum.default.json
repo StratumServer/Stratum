@@ -213,7 +213,8 @@
     },
     "EntityCollisions": {
       "Enabled": true,
-      "MaxCollisionsPerEntity": 12
+      "MaxCollisionsPerEntity": 12,
+      "CollectStrideInterval": 3
     },
     "BlockEntityInit": {
       "Enabled": true,
