@@ -674,9 +674,15 @@ internal class StratumJoinConfig
 	// Limits how many queued players are admitted in one queue pass. 0 = vanilla behavior.
 	public int MaxQueueAdmissionsPerPass { get; set; } = 2;
 
+	// Limits how many RequestJoin packets (Id 11) are processed per tick. Deferred joins
+	// drain on subsequent ticks. Keeps the main thread responsive during join storms.
+	// 0 = no limit (vanilla behavior).
+	public int MaxJoinsPerTick { get; set; } = 3;
+
 	public void EnsureSane()
 	{
 		MaxQueueAdmissionsPerPass = Math.Max(0, Math.Min(64, MaxQueueAdmissionsPerPass));
+		MaxJoinsPerTick = Math.Max(0, Math.Min(64, MaxJoinsPerTick));
 	}
 }
 

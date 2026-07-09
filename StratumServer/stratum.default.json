@@ -224,7 +224,8 @@
     },
     "Join": {
       "CacheStartupPackets": true,
-      "MaxQueueAdmissionsPerPass": 2
+      "MaxQueueAdmissionsPerPass": 2,
+      "MaxJoinsPerTick": 3
     }
   },
   "Commands": {
