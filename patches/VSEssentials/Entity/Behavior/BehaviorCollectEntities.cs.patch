@@ -1,8 +1,46 @@
 diff --git a/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs b/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs
-index 711b1bb..f307888 100644
+index 711b1bb..b9eb082 100644
 --- a/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs
 +++ b/VSEssentials/Entity/Behavior/BehaviorCollectEntities.cs
-@@ -49,10 +49,11 @@ namespace Vintagestory.GameContent
+@@ -21,10 +21,17 @@ namespace Vintagestory.GameContent
+         Vec3d tmp = new Vec3d();
+ 
+         float itemsPerSecond = 23f;
+         float unconsumedDeltaTime;
+ 
++        // Stratum: configurable scan stride. Only run the spatial query every N ticks,
++        // phase-offset by EntityId so 600 players don't all scan on the same tick.
++        // Reduces GetEntitiesAround calls from 18k/s to 6k/s at 600 players (stride=3).
++        // Pickup latency increase: 66-100ms (imperceptible).
++        public static int StratumCollectStrideInterval = 3;
++        private float stratumAccumulatedDelta;
++
+         public EntityBehaviorCollectEntities(Entity entity) : base(entity)
+         {
+         }
+ 
+ 
+@@ -44,15 +51,31 @@ namespace Vintagestory.GameContent
+             }
+             if (waitTicks-- > 0) return;
+ 
+             if (player?.WorldData.CurrentGameMode == EnumGameMode.Spectator) return;
+ 
++            // Stratum start: stride the spatial query across ticks
++            int stride = StratumCollectStrideInterval;
++            if (stride > 1)
++            {
++                long tickIndex = entity.World.ElapsedMilliseconds / 33L;
++                if ((tickIndex + entity.EntityId) % stride != 0)
++                {
++                    stratumAccumulatedDelta += deltaTime;
++                    return;
++                }
++                deltaTime += stratumAccumulatedDelta;
++                stratumAccumulatedDelta = 0f;
++            }
++            // Stratum end
++
              tmp.Set(entity.Pos.X, entity.Pos.InternalY + entity.SelectionBox.Y1 + entity.SelectionBox.Y2 / 2, entity.Pos.Z);
              Entity[] entities = entity.World.GetEntitiesAround(tmp, 1.5f, 1.5f, entityMatcher);
              if (entities.Length == 0)
