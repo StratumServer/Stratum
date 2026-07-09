@@ -120,7 +120,7 @@ internal class StratumBlockInteractionOutOfRangeAnticheatConfig : StratumAntiche
 {
 	public double RangeSlack { get; set; } = 0.75;
 
-	public bool KickConfirmedCheats { get; set; } = true;
+	public bool KickConfirmedCheats { get; set; } = false;
 
 	public int KickAfterViolations { get; set; } = 3;
 
@@ -141,7 +141,7 @@ internal class StratumEntityInteractionOutOfRangeAnticheatConfig : StratumAntich
 {
 	public double RangeSlack { get; set; } = 1.0;
 
-	public bool KickConfirmedCheats { get; set; } = true;
+	public bool KickConfirmedCheats { get; set; } = false;
 
 	public int KickAfterViolations { get; set; } = 3;
 
@@ -158,7 +158,7 @@ internal class StratumEntityInteractionOutOfRangeAnticheatConfig : StratumAntich
 
 internal class StratumBlockBreakProgressAnticheatConfig : StratumAnticheatRuleConfig
 {
-	public bool KickConfirmedCheats { get; set; } = true;
+	public bool KickConfirmedCheats { get; set; } = false;
 
 	public int KickAfterViolations { get; set; } = 3;
 
