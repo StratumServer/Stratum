@@ -109,6 +109,8 @@ internal sealed class StratumPerformanceStats
 	private int peakBlockTickChunksDeferred;
 	private int peakQueuedBlockTicksAfter;
 	private int peakBlockGameTickListenersSkipped;
+	private int lastTcpFallbackClients;
+	private int peakTcpFallbackClients;
 
 	public void RecordChunkSendTick(int chunkBudget, int chunksSent, int deferredClients, int columnRequestBudget, int columnRequests, int generationDeferredClients, int pendingColumnRequests, int workerColumnRequests, int cancelledColumnRequests, int prioritizedChunkRings, int skippedClientChunkCap, int skippedServerChunkCap, int skippedOutboundPressure, int nearRingChunkSends, int farRingChunkSends, int trackedColumnRequests, int wantedByColumnLinks, int sharedColumnRequests, int workerTrackedColumnRequests)
 	{
@@ -191,6 +193,15 @@ internal sealed class StratumPerformanceStats
 			lastEntitySelectionTraces = selectionTraces;
 			lastEntityLookedAtBlocks = lookedAtBlocks;
 			peakEntitySelectionTraces = Math.Max(peakEntitySelectionTraces, selectionTraces);
+		}
+	}
+
+	public void RecordNetworkStats(int tcpFallbackClients)
+	{
+		lock (gate)
+		{
+			lastTcpFallbackClients = tcpFallbackClients;
+			peakTcpFallbackClients = Math.Max(peakTcpFallbackClients, tcpFallbackClients);
 		}
 	}
 
@@ -328,6 +339,7 @@ internal sealed class StratumPerformanceStats
 				$"  Selection: last={lastEntitySelectionTraces} lookedAt={lastEntityLookedAtBlocks} avg={averageEntitySelectionTraces} avgLookedAt={averageEntityLookedAtBlocks} peak={peakEntitySelectionTraces}\n" +
 				$"  Last: seen={lastEntitiesSeen} ticked={lastEntitiesTicked} players={lastPlayerEntitiesTicked} creatures={lastCreatureEntitiesTicked} inanimate={lastInanimateEntitiesTicked} dimSkipped={lastDimensionSkippedEntities} throttled={lastEntitiesThrottled}\n" +
 				$"  Totals: ticks={totalEntityTicks} avgSeen={averageEntitiesSeen} avgPlayers={averagePlayerEntitiesTicked} avgCreatures={averageCreatureEntitiesTicked} avgInanimate={averageInanimateEntitiesTicked} avgDimSkipped={averageDimensionSkippedEntities} avgThrottled={averageEntitiesThrottled} peakThrottled={peakEntitiesThrottled}\n" +
+				$"  Network: tcpFallback={lastTcpFallbackClients} peakTcpFallback={peakTcpFallbackClients}\n" +
 				"\nAutosave\n" +
 				$"  Smoothing: {(autoSave.Enabled ? "on" : "off")} maxDelay={autoSave.MaxDelaySeconds}s limits={autoSave.MaxPendingChunkColumns}/{autoSave.MaxWorkerChunkColumns}\n" +
 				$"  Incremental: {(autoSave.IncrementalDirtyFlush ? "on" : "off")} interval={autoSave.IncrementalFlushIntervalSeconds}s loaded={autoSave.MaxLoadedChunksPerFlush}/{autoSave.MaxLoadedChunkScansPerFlush} map={autoSave.MaxMapChunksPerFlush}/{autoSave.MaxMapChunkScansPerFlush}\n" +
