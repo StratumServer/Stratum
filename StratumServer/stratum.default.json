@@ -190,6 +190,7 @@
       "Enabled": true,
       "MaxChunksPerPass": 512,
       "MaxRandomTicksPerChunk": 8,
+      "RandomTickSliceCount": 8,
       "MaxMainThreadBlockTicksPerPass": 5000,
       "AdaptiveUnderOverload": true,
       "OverloadTickMs": 45,

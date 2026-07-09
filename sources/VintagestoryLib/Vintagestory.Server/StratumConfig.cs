@@ -1351,6 +1351,11 @@ internal class StratumBlockTickConfig
 
 	public int MaxMainThreadBlockTicksPerPass { get; set; } = 5000;
 
+	// Spread the random tick pass across N smaller slices instead of one burst. Each slice
+	// runs at BlockTickInterval/SliceCount ms and processes 1/SliceCount of the chunk set.
+	// Same aggregate rate per chunk, removes the periodic sawtooth spike. 1 = vanilla batch.
+	public int RandomTickSliceCount { get; set; } = 8;
+
 	// Self-tuning under load: when the recent average server tick exceeds OverloadTickMs the per-chunk
 	// random-tick budget is scaled down (multiplied by OverloadScale, then floored at OverloadFloor).
 	// Lets crops/fluids/fire tick at full rate when the server has headroom and dial back automatically
@@ -1368,6 +1373,7 @@ internal class StratumBlockTickConfig
 		MaxChunksPerPass = Math.Max(1, MaxChunksPerPass);
 		MaxRandomTicksPerChunk = Math.Max(0, MaxRandomTicksPerChunk);
 		MaxMainThreadBlockTicksPerPass = Math.Max(1, MaxMainThreadBlockTicksPerPass);
+		RandomTickSliceCount = Math.Max(1, Math.Min(16, RandomTickSliceCount));
 		OverloadTickMs = Math.Max(10, Math.Min(1000, OverloadTickMs));
 		OverloadScale = Math.Max(0.05f, Math.Min(1f, OverloadScale));
 		OverloadFloor = Math.Max(0, OverloadFloor);
