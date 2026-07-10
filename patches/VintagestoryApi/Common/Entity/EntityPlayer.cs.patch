@@ -1,0 +1,21 @@
+diff --git a/VintagestoryApi/Common/Entity/EntityPlayer.cs b/VintagestoryApi/Common/Entity/EntityPlayer.cs
+index 7279e48..7e5d1f7 100644
+--- a/VintagestoryApi/Common/Entity/EntityPlayer.cs
++++ b/VintagestoryApi/Common/Entity/EntityPlayer.cs
+@@ -1545,11 +1545,15 @@ namespace Vintagestory.API.Common
+         }
+ 
+         public void SetName(string name)
+         {
+             var tree = WatchedAttributes.GetTreeAttribute("nametag");
+-            if (tree == null) WatchedAttributes["nametag"] = new TreeAttribute();
++            if (tree == null)
++            {
++                tree = new TreeAttribute(); // Stratum: was not reassigned, caused NRE on first join
++                WatchedAttributes["nametag"] = tree;
++            }
+             tree.SetString("name", name);
+         }
+ 
+         public override string GetInfoText()
+         {
