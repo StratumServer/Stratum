@@ -89,6 +89,7 @@ internal class ServerSystemStratum : ServerSystem
 
 	public override void OnBeginRunGame()
 	{
+		StratumRuntime.InitAdaptiveRadius(server);
 		StratumPlayerPrivacy.Initialize(server);
 		StratumMetricsPublisher.Start();
 		StratumUpdateChecker.CheckOnStartup();

@@ -26,6 +26,7 @@ internal static class StratumRuntime
 
 	public static StratumPregenManager Pregen { get; } = new StratumPregenManager();
 
+	public static StratumAdaptiveRadiusController AdaptiveRadius { get; private set; }
 	public static string ConfigPath { get; private set; } = "stratum.json";
 
 	public static string CommandsConfigPath { get; private set; } = "stratum-commands.json";
@@ -42,6 +43,11 @@ internal static class StratumRuntime
 	// Performance.Physics.OverloadedTickThresholdMs. EventManager reads this to apply
 	// adaptive throttling to non-critical entity tick listeners.
 	public static volatile bool PreviousTickOverloaded;
+
+	public static void InitAdaptiveRadius(ServerMain server)
+	{
+		AdaptiveRadius = new StratumAdaptiveRadiusController(server);
+	}
 
 	public static void LogInfo(string message)
 	{

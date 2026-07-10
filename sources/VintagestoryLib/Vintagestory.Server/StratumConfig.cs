@@ -620,6 +620,8 @@ internal class StratumPerformanceConfig
 
 	public StratumJoinConfig Join { get; set; } = new StratumJoinConfig();
 
+	public StratumAdaptiveRadiusConfig AdaptiveRadius { get; set; } = new StratumAdaptiveRadiusConfig();
+
 	public void EnsurePopulated()
 	{
 		ChunkSending ??= new StratumChunkSendingConfig();
@@ -643,6 +645,7 @@ internal class StratumPerformanceConfig
 		BlockEntityInit ??= new StratumBlockEntityInitConfig();
 		TimerResolution ??= new StratumTimerResolutionConfig();
 		Join ??= new StratumJoinConfig();
+		AdaptiveRadius ??= new StratumAdaptiveRadiusConfig();
 		ChunkSending.EnsureSane();
 		ChunkGeneration.EnsureSane();
 		ChunkRequestManagement.EnsureSane();
@@ -664,6 +667,7 @@ internal class StratumPerformanceConfig
 		BlockEntityInit.EnsureSane();
 		TimerResolution.EnsureSane();
 		Join.EnsureSane();
+		AdaptiveRadius.EnsureSane();
 	}
 }
 
@@ -683,6 +687,34 @@ internal class StratumJoinConfig
 	{
 		MaxQueueAdmissionsPerPass = Math.Max(0, Math.Min(64, MaxQueueAdmissionsPerPass));
 		MaxJoinsPerTick = Math.Max(0, Math.Min(64, MaxJoinsPerTick));
+	}
+}
+
+internal class StratumAdaptiveRadiusConfig
+{
+	public bool Enabled { get; set; } = false;
+
+	public double SmoothingAlpha { get; set; } = 0.15;
+
+	public double DecreaseMsptThreshold { get; set; } = 45.0;
+
+	public double IncreaseMsptThreshold { get; set; } = 35.0;
+
+	// Instant radius drop when a single tick exceeds this value (ms).
+	public double OverloadDropThresholdMs { get; set; } = 500.0;
+
+	public int FloorChunks { get; set; } = 4;
+
+	public float AdjustmentIntervalSeconds { get; set; } = 2.0f;
+
+	public void EnsureSane()
+	{
+		SmoothingAlpha = Math.Max(0.01, Math.Min(0.5, SmoothingAlpha));
+		DecreaseMsptThreshold = Math.Max(1.0, DecreaseMsptThreshold);
+		IncreaseMsptThreshold = Math.Max(1.0, IncreaseMsptThreshold);
+		OverloadDropThresholdMs = Math.Max(50.0, OverloadDropThresholdMs);
+		FloorChunks = Math.Max(1, FloorChunks);
+		AdjustmentIntervalSeconds = Math.Max(1.0f, AdjustmentIntervalSeconds);
 	}
 }
 

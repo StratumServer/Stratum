@@ -229,6 +229,15 @@
       "CacheStartupPackets": true,
       "MaxQueueAdmissionsPerPass": 2,
       "MaxJoinsPerTick": 3
+    },
+    "AdaptiveRadius": {
+      "Enabled": false,
+      "SmoothingAlpha": 0.15,
+      "DecreaseMsptThreshold": 45.0,
+      "IncreaseMsptThreshold": 35.0,
+      "OverloadDropThresholdMs": 500.0,
+      "FloorChunks": 4,
+      "AdjustmentIntervalSeconds": 2.0
     }
   },
   "Commands": {
