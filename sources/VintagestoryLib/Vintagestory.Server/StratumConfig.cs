@@ -1079,6 +1079,11 @@ internal class StratumPhysicsConfig
 	// Stride for entities beyond MidActivationRadiusBlocks but still tracked (IsTracked > 0).
 	public int FarBandTickStride { get; set; } = 3;
 
+	// Max entities to dequeue from the toAdd queue per tick. Prevents spikes when multiple
+	// chunks load simultaneously and dump 50-100 new physics tickables in one frame.
+	// Deferred entities stay in the queue and drain on subsequent ticks. 0 = no limit.
+	public int MaxActivationsPerTick { get; set; } = 50;
+
 	public void EnsureSane()
 	{
 		MaxCatchUpTicksPerServerTick = Math.Min(12, Math.Max(1, MaxCatchUpTicksPerServerTick));
@@ -1091,6 +1096,7 @@ internal class StratumPhysicsConfig
 		FarTrackedTickStride = Math.Min(8, Math.Max(1, FarTrackedTickStride));
 		UntrackedBehaviorTickStride = Math.Min(16, Math.Max(1, UntrackedBehaviorTickStride));
 		FarBandTickStride = Math.Min(16, Math.Max(1, FarBandTickStride));
+		MaxActivationsPerTick = Math.Max(0, MaxActivationsPerTick);
 		NearActivationRadiusBlocks = Math.Max(0f, NearActivationRadiusBlocks);
 		MidActivationRadiusBlocks = Math.Max(NearActivationRadiusBlocks, MidActivationRadiusBlocks);
 	}

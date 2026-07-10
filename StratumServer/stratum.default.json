@@ -155,7 +155,8 @@
       "UntrackedBehaviorTickStride": 4,
       "NearActivationRadiusBlocks": 24.0,
       "MidActivationRadiusBlocks": 60.0,
-      "FarBandTickStride": 3
+      "FarBandTickStride": 3,
+      "MaxActivationsPerTick": 50
     },
     "EntityTicking": {
       "Enabled": true,
