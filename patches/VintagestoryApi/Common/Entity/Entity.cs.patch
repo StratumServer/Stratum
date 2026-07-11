@@ -1,8 +1,27 @@
 diff --git a/VintagestoryApi/Common/Entity/Entity.cs b/VintagestoryApi/Common/Entity/Entity.cs
-index aafb4f0..f084632 100644
+index aafb4f0..735ca4b 100644
 --- a/VintagestoryApi/Common/Entity/Entity.cs
 +++ b/VintagestoryApi/Common/Entity/Entity.cs
-@@ -1045,27 +1045,43 @@ namespace Vintagestory.API.Common.Entities
+@@ -577,12 +577,16 @@ namespace Vintagestory.API.Common.Entities
+                     if (World != null && Properties != null)   // The following code can crash if the entity is not yet initialised e.g. during updating from packets (see SyncedTreeAttribute.FromBytes() which calls all listeners)
+                     {
+                         float factor = Properties.Client.SizeGrowthFactor;
+                         if (factor != 0)
+                         {
+-                            var origc = World.GetEntityType(this.Code).Client;
+-                            Properties.Client.Size = origc.Size + WatchedAttributes.GetTreeAttribute("grow").GetFloat("age") * factor;
++                            var entityType = World.GetEntityType(this.Code); // Stratum: null-check, entity type may not be resolved during sync updates
++                            if (entityType != null)
++                            {
++                                var origc = entityType.Client;
++                                Properties.Client.Size = origc.Size + WatchedAttributes.GetTreeAttribute("grow").GetFloat("age") * factor;
++                            }
+                         }
+                     }
+                 });
+             }
+ 
+@@ -1045,27 +1049,43 @@ namespace Vintagestory.API.Common.Entities
  
                  // We include this check in case a mod changed the Behaviors without using .AddBehavior() or .RemoveBehavior()
                  if (Properties.Server.Behaviors.Count != ServerBehaviorsMainThread.Length + ServerBehaviorsThreadsafe.Length) CacheServerBehaviors();
