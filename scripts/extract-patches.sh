@@ -78,6 +78,7 @@ write_patch() {
       -e "s#^+++ .*\$#+++ b/$rel_path#" \
       "$tmp_diff" > "$patch_file"
     ((patches_written += 1))
+    echo "  $rel_path"
   elif [[ "$status" -ne 0 ]]; then
     cat "$tmp_diff" >&2
     rm -f -- "$tmp_base" "$tmp_work" "$tmp_diff"
@@ -189,6 +190,8 @@ process_project() {
 
   [[ -d "$work_root" && -d "$base_root" ]] || return 0
 
+  echo -e "\e[36mExtracting patches for $proj\e[0m"
+
   while IFS= read -r -d '' file; do
     local rel base_file patch_file rel_patch status
     rel="${file#$work_root/}"
@@ -201,6 +204,7 @@ process_project() {
 
     if [[ ! -f "$base_file" ]]; then
       sync_new_file "$proj" "$rel" "$file"
+      echo -e "  $rel \e[1;33m(source)\e[0m"
       continue
     fi
 

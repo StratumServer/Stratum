@@ -194,6 +194,8 @@ try {
         $keptBase = @{}
         $keptSrc  = @{}
 
+        Write-Host "Extracting patches for $proj" -ForegroundColor Cyan
+
         foreach ($file in Get-ProjectWorkFiles $work) {
             $rel = $file.FullName.Substring($work.Length + 1)
             $baseFile  = Join-Path $base $rel
@@ -201,6 +203,8 @@ try {
 
             if (-not (Test-Path $baseFile)) {
                 Sync-NewFile -Proj $proj -WorkRel $rel -SrcFile $file.FullName -WrittenRef ([ref]$sourcesWritten) -Kept $keptSrc
+                Write-Host "  $rel " -NoNewLine
+                Write-Host "(source)" -ForegroundColor Yellow
                 continue
             }
             $diff = Get-DiffLines $baseFile $file.FullName
@@ -209,6 +213,7 @@ try {
                 Write-Lf -Path $patchFile -Lines $headers
                 $patchesWritten++
                 $keptBase[(Resolve-Path $baseFile).Path] = $true
+                Write-Host "  $rel"
             } elseif (Test-Path $patchFile) {
                 Remove-Item $patchFile; $cleared++
             }
@@ -225,6 +230,8 @@ try {
 
         $keptBase = @{}
         $keptSrc  = @{}
+        
+        Write-Host "Extracting patches for $proj" -ForegroundColor Cyan
 
         foreach ($file in Get-ProjectWorkFiles $work) {
             $rel = $file.FullName.Substring($work.Length + 1)
@@ -233,6 +240,8 @@ try {
 
             if (-not (Test-Path $baseFile)) {
                 Sync-NewFile -Proj $proj -WorkRel $rel -SrcFile $file.FullName -WrittenRef ([ref]$sourcesWritten) -Kept $keptSrc
+                Write-Host "  $rel " -NoNewLine
+                Write-Host "(source)" -ForegroundColor Yellow
                 continue
             }
             $diff = Get-DiffLines $baseFile $file.FullName
@@ -241,6 +250,7 @@ try {
                 Write-Lf -Path $patchFile -Lines $headers
                 $patchesWritten++
                 $keptBase[(Resolve-Path $baseFile).Path] = $true
+                Write-Host "  $rel"
             } elseif (Test-Path $patchFile) {
                 Remove-Item $patchFile; $cleared++
             }
