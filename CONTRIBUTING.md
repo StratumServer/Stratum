@@ -136,7 +136,7 @@ For development builds the constants are authoritative. Bump `StratumRevision` a
 
 ## Pull requests
 
-Open the PR against `main`. The template lists the checks. Don't strip them.
+Open the PR against `indev`. The template lists the checks. Don't strip them.
 
 In the description, say what changed and why. For perf work, include the numbers.
 
