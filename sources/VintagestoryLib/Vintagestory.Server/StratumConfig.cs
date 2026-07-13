@@ -625,6 +625,8 @@ internal class StratumPerformanceConfig
 
 	public StratumItemCleanupConfig ItemCleanup { get; set; } = new StratumItemCleanupConfig();
 
+	public StratumNetworkConfig Network { get; set; } = new StratumNetworkConfig();
+
 	public void EnsurePopulated()
 	{
 		ChunkSending ??= new StratumChunkSendingConfig();
@@ -650,6 +652,7 @@ internal class StratumPerformanceConfig
 		Join ??= new StratumJoinConfig();
 		AdaptiveRadius ??= new StratumAdaptiveRadiusConfig();
 		ItemCleanup ??= new StratumItemCleanupConfig();
+		Network ??= new StratumNetworkConfig();
 		ChunkSending.EnsureSane();
 		ChunkGeneration.EnsureSane();
 		ChunkRequestManagement.EnsureSane();
@@ -673,6 +676,30 @@ internal class StratumPerformanceConfig
 		Join.EnsureSane();
 		AdaptiveRadius.EnsureSane();
 		ItemCleanup.EnsureSane();
+		Network.EnsureSane();
+	}
+}
+
+internal class StratumNetworkConfig
+{
+	// Off by default. The queue removes the packet reordering bug from the old
+	// StratumNetworkFlush (disabled after client crashes, see PR #138), but it is new code
+	// on the hottest path in the server. Soak on a community server before flipping the
+	// shipped default.
+	public bool SendQueueEnabled { get; set; } = false;
+
+	// Packets at or above this size skip coalescing and go out alone. Matches the TCP MTU
+	// assumption the old flush buffer used.
+	public int LargeThresholdBytes { get; set; } = 1400;
+
+	// Upper bound on one coalesced send. Caps the reusable drain buffer and how much data
+	// a single SendAsync call carries.
+	public int CoalesceLimitBytes { get; set; } = 65536;
+
+	public void EnsureSane()
+	{
+		LargeThresholdBytes = Math.Max(64, LargeThresholdBytes);
+		CoalesceLimitBytes = Math.Max(LargeThresholdBytes, CoalesceLimitBytes);
 	}
 }
 

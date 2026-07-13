@@ -247,6 +247,11 @@
       "CleanupWarningTimeOffsets": [30, 10],
       "CleanupStartingMessage": "Cleaning up dropped items...",
       "CleanupDoneMessage": "Cleaned up {0} items."
+    },
+    "Network": {
+      "SendQueueEnabled": false,
+      "LargeThresholdBytes": 1400,
+      "CoalesceLimitBytes": 65536
     }
   },
   "Commands": {

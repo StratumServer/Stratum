@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
-index 277d286..f19d491 100644
+index 277d286..c6f15c9 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
 @@ -1,15 +1,17 @@
@@ -351,7 +351,7 @@ index 277d286..f19d491 100644
  						{
  							if (!client.DidSendMapChunk(num4))
  							{
-@@ -258,41 +478,404 @@ internal class ServerSystemSendChunks : ServerSystem
+@@ -258,41 +478,407 @@ internal class ServerSystemSendChunks : ServerSystem
  					}
  					num2++;
  				}
@@ -437,7 +437,10 @@ index 277d286..f19d491 100644
 +			return budget;
 +		}
 +
-+		StratumNetworkFlush.GetBufferedPressure(tcp, out int pendingSends, out long pendingBytes);
++		// Stratum: pulled from StratumSendQueue's real queue depth (packets and bytes still
++		// unsent), not the old flush's advisory 0/1 buffered flag.
++		int pendingSends = tcp.PendingSendCount;
++		long pendingBytes = tcp.PendingSendBytes;
 +		if (pendingSends < config.OutboundPressurePendingSendsSoftLimit && pendingBytes < config.OutboundPressurePendingBytesSoftLimit)
 +		{
 +			return budget;

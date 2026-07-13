@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs b/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
-index ae86835..b2b0f03 100644
+index ae86835..34c0f3d 100644
 --- a/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
 +++ b/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
-@@ -35,18 +35,26 @@ public class TcpNetConnection : NetConnection
+@@ -35,26 +35,39 @@ public class TcpNetConnection : NetConnection
  
  	private bool _disposed;
  
@@ -11,9 +11,9 @@ index ae86835..b2b0f03 100644
 -	private CancellationTokenSource cts;
 +	internal CancellationTokenSource cts;
 +
-+	private int pendingSendCount;
-+
-+	private long pendingSendBytes;
++	// Stratum: null unless Performance.Network.SendQueueEnabled. When set, it is the only
++	// caller of TcpSocket.SendAsync for this connection (see StratumSendQueue).
++	private StratumSendQueue stratumSendQueue;
  
  	public int MaxPacketSize = 5000;
  
@@ -21,81 +21,94 @@ index ae86835..b2b0f03 100644
  
  	public event TcpConnectionDelegate Disconnected;
  
-+	public int PendingSendCount => Volatile.Read(ref pendingSendCount);
++	public int PendingSendCount => stratumSendQueue?.PendingCount ?? 0;
 +
-+	public long PendingSendBytes => Interlocked.Read(ref pendingSendBytes);
++	public long PendingSendBytes => stratumSendQueue?.PendingBytes ?? 0;
 +
  	public void SetLengthLimit(bool isCreative)
  	{
  		MaxPacketSize = (isCreative ? int.MaxValue : 1000000);
  	}
  
-@@ -161,11 +169,11 @@ public class TcpNetConnection : NetConnection
+ 	public void StartReceiving()
+ 	{
+ 		cts = new CancellationTokenSource();
++		if (StratumRuntime.Config.Performance.Network.SendQueueEnabled)
++		{
++			stratumSendQueue = new StratumSendQueue(this, TcpSocket, cts.Token);
++			stratumSendQueue.Start();
++		}
+ 		TyronThreadPool.QueueTask((Func<Task>)ReceiveData, "TcpNetConReceiveData");
+ 	}
+ 
+ 	private async Task ReceiveData()
+ 	{
+@@ -161,11 +174,18 @@ public class TcpNetConnection : NetConnection
  			NetIncomingMessage.WriteInt(array, num | (int)((compressedFlag ? 1u : 0u) << 31));
  			for (int i = 0; i < num; i++)
  			{
  				array[4 + i] = data[i];
  			}
 -			TcpSocket.SendAsync(array, SocketFlags.None, cts.Token);
-+						TcpSocket.SendAsync(array, SocketFlags.None, cts.Token);
++			if (stratumSendQueue != null)
++			{
++				stratumSendQueue.Enqueue(array);
++			}
++			else
++			{
++				TcpSocket.SendAsync(array, SocketFlags.None, cts.Token);
++			}
  			return EnumSendResult.Ok;
  		}
  		catch
  		{
  			InvokeDisconnected();
-@@ -180,20 +188,55 @@ public class TcpNetConnection : NetConnection
+@@ -180,11 +200,23 @@ public class TcpNetConnection : NetConnection
  			return EnumSendResult.Disconnected;
  		}
  		try
  		{
  			NetIncomingMessage.WriteInt(dataWithLength, length | (int)((compressedFlag ? 1u : 0u) << 31));
-+			// Stratum: send all packets directly. The flush buffer (StratumNetworkFlush) causes
-+			// packet ordering issues between the main thread and physics offthread that crash the
-+			// client during join and early gameplay. Vanilla sends every packet via SendAsync
-+			// immediately and relies on TCP ordering. Do the same.
- 			TcpSocket.SendAsync(dataWithLength, SocketFlags.None, cts.Token);
+-			TcpSocket.SendAsync(dataWithLength, SocketFlags.None, cts.Token);
++			if (stratumSendQueue != null)
++			{
++				// Stratum: enqueue instead of sending directly. StratumSendQueue is the only
++				// caller of TcpSocket.SendAsync for this connection when enabled, so packets
++				// from this method and from Send() above stay in FIFO order relative to each
++				// other even when producers run on different threads (tick thread, physics
++				// offthreads). See StratumSendQueue for the full rationale.
++				stratumSendQueue.Enqueue(dataWithLength);
++			}
++			else
++			{
++				TcpSocket.SendAsync(dataWithLength, SocketFlags.None, cts.Token);
++			}
  			return EnumSendResult.Ok;
  		}
  		catch
  		{
  			InvokeDisconnected();
- 			return EnumSendResult.Disconnected;
+@@ -281,10 +313,11 @@ public class TcpNetConnection : NetConnection
  		}
  	}
  
-+	private void TrackPendingSend(ValueTask<int> sendTask, int bytes)
-+	{
-+		Interlocked.Increment(ref pendingSendCount);
-+		Interlocked.Add(ref pendingSendBytes, bytes);
-+		if (sendTask.IsCompletedSuccessfully)
-+		{
-+			Interlocked.Decrement(ref pendingSendCount);
-+			Interlocked.Add(ref pendingSendBytes, -bytes);
-+			return;
-+		}
-+
-+		ObservePendingSend(sendTask, bytes);
-+	}
-+
-+	private async void ObservePendingSend(ValueTask<int> sendTask, int bytes)
-+	{
-+		try
-+		{
-+			await sendTask.ConfigureAwait(false);
-+		}
-+		catch
-+		{
-+			InvokeDisconnected();
-+		}
-+		finally
-+		{
-+			Interlocked.Decrement(ref pendingSendCount);
-+			Interlocked.Add(ref pendingSendBytes, -bytes);
-+		}
-+	}
-+
- 	public override string ToString()
+ 	public override void Close()
  	{
- 		if (Address != null)
++		stratumSendQueue?.Complete();
+ 		try
  		{
- 			return Address;
+ 			cts?.Cancel();
+ 		}
+ 		catch
+@@ -302,10 +335,11 @@ public class TcpNetConnection : NetConnection
+ 
+ 	internal void InvokeDisconnected()
+ 	{
+ 		if (!_disposed)
+ 		{
++			stratumSendQueue?.Complete();
+ 			try
+ 			{
+ 				cts.Cancel();
+ 			}
+ 			catch
