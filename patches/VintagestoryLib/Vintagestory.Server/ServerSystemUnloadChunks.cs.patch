@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-index 642722c..9b2f6b7 100644
+index 642722c..15164d1 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 @@ -34,10 +34,22 @@ internal class ServerSystemUnloadChunks : ServerSystem
@@ -126,7 +126,7 @@ index 642722c..9b2f6b7 100644
  			item2.generatingLock.AcquireReadLock();
  			try
  			{
-@@ -447,29 +470,50 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -447,29 +470,80 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		{
  			chunkthread.gameDatabase.SetMapChunks(list3);
  		}
@@ -134,46 +134,74 @@ index 642722c..9b2f6b7 100644
  
 +	// Stratum: reusable HashSet for the unload candidate scan (replaces per-call List allocation)
 +	private readonly HashSet<long> stratumFreshChunkIndices = new HashSet<long>();
-+	// Stratum: deduplicate player chunk positions so clustered players generate rings once
-+	private readonly HashSet<long> stratumSeenPlayerChunkPositions = new HashSet<long>();
++	// Stratum: remembers the largest generated radius for each player chunk during one scan.
++	private readonly Dictionary<StratumUnloadChunkPosition, int> stratumSeenPlayerChunkPositions = new Dictionary<StratumUnloadChunkPosition, int>();
++
++	private readonly struct StratumUnloadChunkPosition : IEquatable<StratumUnloadChunkPosition>
++	{
++		private readonly int x;
++		private readonly int z;
++
++		public StratumUnloadChunkPosition(int x, int z)
++		{
++			this.x = x;
++			this.z = z;
++		}
++
++		public bool Equals(StratumUnloadChunkPosition other)
++		{
++			return x == other.x && z == other.z;
++		}
++
++		public override bool Equals(object obj)
++		{
++			return obj is StratumUnloadChunkPosition other && Equals(other);
++		}
++
++		public override int GetHashCode()
++		{
++			return HashCode.Combine(x, z);
++		}
++	}
 +
  	private void FindUnloadableChunkColumnCandidates()
  	{
 -		List<long> list = new List<long>();
-+		// Stratum: use HashSet (auto-deduplicates) and reuse across calls (zero allocation).
++		// Stratum: reuse collections and deduplicate MarkFresh calls for clustered players.
 +		// Vanilla allocates new List<long>() every 3s and appends duplicate indices for
-+		// clustered players (600 players at spawn = 600× identical octagon ring sets).
++		// clustered players (600 players at spawn = 600x identical octagon ring sets).
 +		HashSet<long> freshIndices = stratumFreshChunkIndices;
 +		freshIndices.Clear();
-+		HashSet<long> seenPositions = stratumSeenPlayerChunkPositions;
++		Dictionary<StratumUnloadChunkPosition, int> seenPositions = stratumSeenPlayerChunkPositions;
 +		seenPositions.Clear();
 +		int chunkMapSizeX = server.WorldMap.ChunkMapSizeX;
  		foreach (ConnectedClient value2 in server.Clients.Values)
  		{
 -			if (value2.State != EnumClientState.Queued)
 +			if (value2.State == EnumClientState.Queued)
- 			{
--				int allowedChunkRadius = server.GetAllowedChunkRadius(value2);
--				int x = ((value2.Position == null) ? (server.WorldMap.MapSizeX / 2) : ((int)value2.Position.X)) / MagicNum.ServerChunkSize;
--				int y = ((value2.Position == null) ? (server.WorldMap.MapSizeZ / 2) : ((int)value2.Position.Z)) / MagicNum.ServerChunkSize;
--				for (int i = 0; i <= allowedChunkRadius; i++)
--				{
--					ShapeUtil.LoadOctagonIndices(list, x, y, i, server.WorldMap.ChunkMapSizeX);
--				}
++			{
 +				continue;
 +			}
 +			int allowedChunkRadius = server.GetAllowedChunkRadius(value2);
 +			int x = ((value2.Position == null) ? (server.WorldMap.MapSizeX / 2) : ((int)value2.Position.X)) / MagicNum.ServerChunkSize;
 +			int y = ((value2.Position == null) ? (server.WorldMap.MapSizeZ / 2) : ((int)value2.Position.Z)) / MagicNum.ServerChunkSize;
-+			// Stratum: skip ring generation if another player at the same chunk pos with
-+			// the same or larger radius already generated rings. Encode pos+radius as a key.
-+			// x: bits 0-19, y: bits 20-39, radius: bits 40-55 (safe for worlds up to 1M chunks)
-+			long posKey = ((long)(x & 0xFFFFF)) | ((long)(y & 0xFFFFF) << 20) | ((long)(allowedChunkRadius & 0xFFFF) << 40);
-+			if (!seenPositions.Add(posKey))
-+			{
-+				continue;
++			StratumUnloadChunkPosition positionKey = new StratumUnloadChunkPosition(x, y);
++			int startRadius = 0;
++			if (seenPositions.TryGetValue(positionKey, out int seenRadius))
+ 			{
+-				int allowedChunkRadius = server.GetAllowedChunkRadius(value2);
+-				int x = ((value2.Position == null) ? (server.WorldMap.MapSizeX / 2) : ((int)value2.Position.X)) / MagicNum.ServerChunkSize;
+-				int y = ((value2.Position == null) ? (server.WorldMap.MapSizeZ / 2) : ((int)value2.Position.Z)) / MagicNum.ServerChunkSize;
+-				for (int i = 0; i <= allowedChunkRadius; i++)
++				if (seenRadius >= allowedChunkRadius)
+ 				{
+-					ShapeUtil.LoadOctagonIndices(list, x, y, i, server.WorldMap.ChunkMapSizeX);
++					continue;
+ 				}
++				startRadius = seenRadius + 1;
 +			}
-+			for (int i = 0; i <= allowedChunkRadius; i++)
++			seenPositions[positionKey] = allowedChunkRadius;
++			for (int i = startRadius; i <= allowedChunkRadius; i++)
 +			{
 +				ShapeUtil.LoadOctagonIndices(freshIndices, x, y, i, chunkMapSizeX);
  			}
@@ -187,7 +215,7 @@ index 642722c..9b2f6b7 100644
  			long key = server.WorldMap.MapChunkIndex2D(vec2i.X, vec2i.Y);
  			server.loadedMapChunks.TryGetValue(key, out value);
  			value?.MarkFresh();
-@@ -497,14 +541,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -497,14 +571,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
  	{
  		if (server.unloadedChunks.IsEmpty)
  		{
@@ -206,7 +234,7 @@ index 642722c..9b2f6b7 100644
  			list2.Clear();
  			foreach (long item in list)
  			{
-@@ -545,12 +591,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -545,12 +621,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		}
  	}
  
