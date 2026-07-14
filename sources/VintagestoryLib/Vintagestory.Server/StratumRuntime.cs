@@ -59,6 +59,19 @@ internal static class StratumRuntime
 
 	public static void WaitForNextTick(Stopwatch tickTimer, float tickBudgetMs)
 	{
+		// Without a 1ms-accurate Sleep, chasing the deadline via Yield/SpinWait means spinning
+		// a full core for the whole ~15.6ms scheduler tick instead of just the sleep overshoot.
+		// Fall back to a single coarse sleep here rather than the precise wait below.
+		if (!FineSleepGranularity)
+		{
+			double coarseRemainingMs = tickBudgetMs - tickTimer.Elapsed.TotalMilliseconds;
+			if (coarseRemainingMs > 0)
+			{
+				Thread.Sleep((int)Math.Ceiling(coarseRemainingMs));
+			}
+			return;
+		}
+
 		while (true)
 		{
 			double remainingMs = tickBudgetMs - tickTimer.Elapsed.TotalMilliseconds;
@@ -68,12 +81,10 @@ internal static class StratumRuntime
 			}
 
 			// Sleep once for most of the wait, then trim the last edge without another overshooting sleep.
-			double coarseMarginMs = FineSleepGranularity ? 2.0 : 17.0;
+			const double coarseMarginMs = 2.0;
 			if (remainingMs > coarseMarginMs)
 			{
-				int sleepMs = FineSleepGranularity
-					? Math.Max(1, (int)Math.Floor(remainingMs - coarseMarginMs))
-					: 1;
+				int sleepMs = Math.Max(1, (int)Math.Floor(remainingMs - coarseMarginMs));
 				Thread.Sleep(sleepMs);
 			}
 			else if (remainingMs > 0.5)
