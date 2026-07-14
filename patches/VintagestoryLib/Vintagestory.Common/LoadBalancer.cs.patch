@@ -1,0 +1,13 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs b/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs
+--- a/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs
++++ b/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs
+@@ -31,7 +31,8 @@ internal class LoadBalancer
+ 		{
+ 			caller.StartWorkerThread(threadnum);
+ 		}, name + threadnum);
+-		thread.IsBackground = false;
++		// Stratum: physics workers must not keep the process alive after an embedded game thread is abandoned.
++		thread.IsBackground = true;
+ 		thread.Priority = Thread.CurrentThread.Priority;
+ 		return thread;
+ 	}
