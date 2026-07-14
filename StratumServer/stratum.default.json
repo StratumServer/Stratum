@@ -171,7 +171,8 @@
       "AmbientFaunaCodePrefixes": [
         "fish-", "butterfly-", "dragonfly-", "bee-", "rat-",
         "chicken-", "hen-", "rooster-", "pig-", "sheep-"
-      ]
+      ],
+      "ExcludedModDomains": ["vsvillage"]
     },
     "AutoSave": {
       "Enabled": true,
