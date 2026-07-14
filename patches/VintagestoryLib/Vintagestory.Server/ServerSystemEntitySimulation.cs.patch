@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index 750557a..6f83acd 100644
+index 750557a..724e66a 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,12 @@
@@ -16,7 +16,7 @@ index 750557a..6f83acd 100644
  using Vintagestory.API.Common.Entities;
  using Vintagestory.API.Config;
  using Vintagestory.API.Datastructures;
-@@ -22,13 +26,139 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -22,13 +26,152 @@ public class ServerSystemEntitySimulation : ServerSystem
  
  	private Dictionary<string, List<string>> deathMessagesCache;
  
@@ -100,6 +100,13 @@ index 750557a..6f83acd 100644
 +	private int stratumAmbientMultiplierCached = 1;
 +	private bool stratumAmbientTierEnabledCached;
 +
++	// Stratum mod-domain throttle exclusion cache. Entities whose asset domain is in this set
++	// never get throttled, regardless of distance/tier -- see ExcludedModDomains on
++	// StratumEntityTickingConfig for why. Refreshed once per tick alongside the other caches.
++	private static readonly HashSet<string> EmptyStratumDomainSet = new HashSet<string>();
++	private HashSet<string> stratumExcludedDomainsCached = EmptyStratumDomainSet;
++	private List<string> stratumLastExcludedDomainsSrc; // Stratum: track reference to avoid rebuild per tick
++
 +	// Stratum hard-despawn cache. Refreshed once per tick from config.
 +	private bool stratumHardDespawnEnabledCached;
 +	private double stratumHardDespawnSqCached;
@@ -140,6 +147,12 @@ index 750557a..6f83acd 100644
 +
 +		public bool IsAmbient;
 +
++		// Stratum mod-domain throttle exclusion: resolved once per entity (Code.Domain lookup
++		// against ExcludedModDomains) and cached, same shape as the ambient-fauna resolution.
++		public bool ExclusionResolved;
++
++		public bool IsExcludedFromThrottle;
++
 +		// Stratum hard-despawn tracking: seconds the entity has been continuously beyond
 +		// HardDespawnDistanceBlocks from every player. Reset when a player re-enters range.
 +		public float FarSecondsAccumulated;
@@ -156,7 +169,7 @@ index 750557a..6f83acd 100644
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
  		server.PacketHandlers[17] = HandleEntityInteraction;
-@@ -43,26 +173,33 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -43,26 +186,33 @@ public class ServerSystemEntitySimulation : ServerSystem
  		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
  	}
  
@@ -193,7 +206,7 @@ index 750557a..6f83acd 100644
  	private void EventManager_OnGameWorldBeingSaved()
  	{
  		if (server.RunPhase != EnumServerRunPhase.Shutdown)
-@@ -77,66 +214,257 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -77,66 +227,257 @@ public class ServerSystemEntitySimulation : ServerSystem
  	}
  
  	public override void OnBeginModsAndConfigReady()
@@ -471,7 +484,7 @@ index 750557a..6f83acd 100644
  		SendEntityDespawns();
  		int count = server.DelayedSpawnQueue.Count;
  		if (count <= 0)
-@@ -185,19 +513,149 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -185,19 +526,150 @@ public class ServerSystemEntitySimulation : ServerSystem
  		}
  	}
  
@@ -525,7 +538,7 @@ index 750557a..6f83acd 100644
 +			// for the configured grace period. Runs before throttling/ticking so we don't waste
 +			// budget on an entity that's about to unload.
 +			if (EvaluateStratumHardDespawn(value, dt, out EntityDespawnData hardReason))
- 			{
++			{
 +				stratumEntityTickStates.TryRemove(value.EntityId, out _);
 +				list.Add(new KeyValuePair<Entity, EntityDespawnData>(value, hardReason));
 +				stratumEntitiesThrottled++;
@@ -534,8 +547,8 @@ index 750557a..6f83acd 100644
 +
 +			bool shouldTickDimension = !Dimensions.ShouldNotTick(value.Pos, value.Api);
 +			if (shouldTickDimension)
-+			{
-+				if (ShouldThrottleStratumEntityTick(value, stratumEntityTicking, dt, out float tickDeltaTime))
+ 			{
++				if (ShouldThrottleStratumEntityTick(value, stratumEntityTicking, dt, out float tickDeltaTime, out bool stratumExcludedFromBudget))
 +				{
 +					stratumEntitiesThrottled++;
 +					continue;
@@ -543,8 +556,9 @@ index 750557a..6f83acd 100644
 +				// Per-tick creature budget: if we've hit the cap (or are still rotating past
 +				// the cursor offset), force-throttle by deferring this creature's tick. The
 +				// accumulated delta time will be paid out on the next tick that this creature
-+				// is allowed through.
-+				if (stratumCreatureBudget > 0 && value is not EntityPlayer && value.IsCreature)
++				// is allowed through. Stratum: excluded-domain entities skip this too -- see
++				// the exclusion check inside ShouldThrottleStratumEntityTick for why.
++				if (stratumCreatureBudget > 0 && !stratumExcludedFromBudget && value is not EntityPlayer && value.IsCreature)
 +				{
 +					bool defer;
 +					if (stratumCreatureEligibleSeen < stratumCreatureSkipBefore)
@@ -624,7 +638,7 @@ index 750557a..6f83acd 100644
  				{
  					if (value is EntityPlayer entityPlayer)
  					{
-@@ -209,12 +667,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -209,12 +681,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
  						ServerMain.Logger.Error(e);
  					}
@@ -642,7 +656,7 @@ index 750557a..6f83acd 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +685,814 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +699,857 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -818,7 +832,7 @@ index 750557a..6f83acd 100644
 +			}
 +			else
 +			{
-+				if (ShouldThrottleStratumEntityTick(value, entityCfg, dt, out float tickDeltaTime))
++				if (ShouldThrottleStratumEntityTick(value, entityCfg, dt, out float tickDeltaTime, out bool _))
 +				{
 +					Interlocked.Increment(ref throttledP);
 +				}
@@ -1156,6 +1170,19 @@ index 750557a..6f83acd 100644
 +			stratumLastAmbientPrefixSrc = prefixSrc;
 +		}
 +
++		List<string> excludedDomainsSrc = cfg.ExcludedModDomains;
++		if (excludedDomainsSrc == null || excludedDomainsSrc.Count == 0)
++		{
++			stratumExcludedDomainsCached = EmptyStratumDomainSet;
++			stratumLastExcludedDomainsSrc = null;
++		}
++		else if (!ReferenceEquals(excludedDomainsSrc, stratumLastExcludedDomainsSrc))
++		{
++			// Stratum: only rebuild when the config list instance changes (hot-reload)
++			stratumExcludedDomainsCached = new HashSet<string>(excludedDomainsSrc);
++			stratumLastExcludedDomainsSrc = excludedDomainsSrc;
++		}
++
 +		stratumHardDespawnEnabledCached = cfg.HardDespawnEnabled;
 +		int hardDist = Math.Max(32, cfg.HardDespawnDistanceBlocks);
 +		stratumHardDespawnSqCached = (double)hardDist * hardDist;
@@ -1266,9 +1293,10 @@ index 750557a..6f83acd 100644
 +	}
 +	// Stratum end
 +
-+	private bool ShouldThrottleStratumEntityTick(Entity entity, StratumEntityTickingConfig config, float dt, out float tickDeltaTime)
++	private bool ShouldThrottleStratumEntityTick(Entity entity, StratumEntityTickingConfig config, float dt, out float tickDeltaTime, out bool isExcludedFromThrottle)
 +	{
 +		tickDeltaTime = dt;
++		isExcludedFromThrottle = false;
 +		if (!config.Enabled || entity is EntityPlayer || stratumPlayerPositions.Count == 0)
 +		{
 +			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
@@ -1286,6 +1314,35 @@ index 750557a..6f83acd 100644
 +			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
 +			return false;
 +		}
++
++		// Stratum start: mod-domain throttle exclusion. Resolved once per entity and cached,
++		// same shape as the ambient-fauna resolution below. Checked before the tier/ambient
++		// work so an excluded entity never pays for either. Reported back via the out param
++		// too: the caller's separate creature-budget defer (MaxCreatureTicksPerTick, opt-in,
++		// off by default) runs after this method regardless of its return value, and an
++		// excluded entity needs to be exempt from that as well -- the whole point of the
++		// exclusion is "this entity's AI cannot tolerate a skipped tick for any reason."
++		if (stratumExcludedDomainsCached.Count > 0)
++		{
++			stratumEntityTickStates.TryGetValue(entity.EntityId, out StratumEntityTickState exclusionState);
++			if (exclusionState == null)
++			{
++				exclusionState = new StratumEntityTickState();
++				stratumEntityTickStates[entity.EntityId] = exclusionState;
++			}
++			if (!exclusionState.ExclusionResolved)
++			{
++				string domain = entity.Code?.Domain;
++				exclusionState.IsExcludedFromThrottle = domain != null && stratumExcludedDomainsCached.Contains(domain);
++				exclusionState.ExclusionResolved = true;
++			}
++			if (exclusionState.IsExcludedFromThrottle)
++			{
++				isExcludedFromThrottle = true;
++				return false;
++			}
++		}
++		// Stratum end
 +
 +		// Tiered ticking: pick interval based on distance to nearest player.
 +		int tickInterval = GetStratumTierTickInterval(entity, config);
@@ -1432,8 +1489,7 @@ index 750557a..6f83acd 100644
 +		// nearby entities just to find one by ID, then enforced range below anyway.
 +		Entity entity = server.GetEntityById(p.EntityId);
 +		if (entity == null)
- 		{
--			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found in his range!");
++		{
 +			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found!");
 +			return;
 +		}
@@ -1451,7 +1507,8 @@ index 750557a..6f83acd 100644
 +		double entityDx = entity.Pos.X - playerPos.X;
 +		double entityDz = entity.Pos.Z - playerPos.Z;
 +		if (entityDx * entityDx + entityDz * entityDz > pickingRange * pickingRange)
-+		{
+ 		{
+-			ServerMain.Logger.Debug("HandleEntityInteraction received from client " + client.PlayerName + " but no such entity found in his range!");
 +			ServerMain.Logger.Debug("HandleEntityInteraction from " + client.PlayerName + " rejected: entity " + p.EntityId + " not in range!");
  			return;
  		}
@@ -1461,7 +1518,7 @@ index 750557a..6f83acd 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -390,11 +1640,20 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -390,11 +1697,20 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1483,7 +1540,7 @@ index 750557a..6f83acd 100644
  			return;
  		}
  		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
-@@ -428,10 +1687,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -428,10 +1744,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

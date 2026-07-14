@@ -114,6 +114,11 @@ internal class ServerSystemStratum : ServerSystem
 			new StratumItemCleanup(server);
 			StratumRuntime.LogInfo($"item cleanup scheduler armed: first cleanup in {StratumRuntime.Config.Performance.ItemCleanup.IntervalSeconds}s, interval={StratumRuntime.Config.Performance.ItemCleanup.IntervalSeconds}s");
         }
+		if (StratumRuntime.Config.Announcements.Enabled && StratumRuntime.Config.Announcements.Messages.Length > 0)
+		{
+			new StratumAnnouncementScheduler(server);
+			StratumRuntime.LogInfo("announcements armed: " + StratumRuntime.Config.Announcements.Messages.Length + " messages, interval=" + StratumRuntime.Config.Announcements.IntervalSeconds + "s");
+		}
         StratumTrimClassRegistry();
 		StratumRuntime.LogInfo("runtime ready. Use /stratum health, /stratum status, and /stratum timings start.");
 	}

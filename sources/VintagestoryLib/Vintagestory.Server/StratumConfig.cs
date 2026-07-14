@@ -46,6 +46,8 @@ internal class StratumConfig
 
 	public StratumBackupConfig Backup { get; set; } = new StratumBackupConfig();
 
+	public StratumAnnouncementsConfig Announcements { get; set; } = new StratumAnnouncementsConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
 	public void EnsurePopulated()
@@ -68,6 +70,7 @@ internal class StratumConfig
 		PlayerPrivacy ??= new StratumPlayerPrivacyConfig();
 		Nametags ??= new StratumNametagsConfig();
 		Backup ??= new StratumBackupConfig();
+		Announcements ??= new StratumAnnouncementsConfig();
 		ServerStats ??= new StratumServerStatsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
@@ -84,6 +87,7 @@ internal class StratumConfig
 		PlayerPrivacy.EnsurePopulated();
 		Nametags.EnsurePopulated();
 		Backup.EnsureSane();
+		Announcements.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
 		MigrateLegacyDefaults();
@@ -1305,6 +1309,13 @@ internal class StratumEntityTickingConfig
 		"chicken-", "hen-", "rooster-", "pig-", "sheep-"
 	};
 
+	// Asset domains whose entities never get throttled, regardless of distance/tier. Custom
+	// AI/pathfinder mods can assume near-constant tick frequency; throttling them can break
+	// their internal state machine (observed with VSVillage's custom pathfinder: villagers
+	// froze at town edges under a distance-based throttle in a prior version of this system).
+	// Resolved once per entity and cached alongside the ambient-fauna tier.
+	public List<string> ExcludedModDomains { get; set; } = new List<string> { "vsvillage" };
+
 	// Paper-style hard despawn: creatures that have been beyond HardDespawnDistanceBlocks
 	// from every player for HardDespawnGracePeriodSeconds get unloaded. Off by default —
 	// enable only on long-running worlds where stray mobs accumulate in old chunks.
@@ -1350,6 +1361,7 @@ internal class StratumEntityTickingConfig
 		MaxCreatureTicksPerTick = Math.Max(0, MaxCreatureTicksPerTick);
 		AmbientFaunaTickMultiplier = Math.Max(1, Math.Min(16, AmbientFaunaTickMultiplier));
 		AmbientFaunaCodePrefixes ??= new List<string>();
+		ExcludedModDomains ??= new List<string>();
 		HardDespawnDistanceBlocks = Math.Max(32, HardDespawnDistanceBlocks);
 		HardDespawnGracePeriodSeconds = Math.Max(1, HardDespawnGracePeriodSeconds);
 		HardDespawnExemptCodePrefixes ??= new List<string>();
@@ -1936,5 +1948,33 @@ internal class StratumBackupConfig
 	{
 		if (IntervalMinutes < 1) IntervalMinutes = 1;
 		if (RetainCount < 1) RetainCount = 1;
+	}
+}
+
+internal class StratumAnnouncementsConfig
+{
+	public bool Enabled { get; set; }
+
+	// Seconds between broadcasts.
+	public int IntervalSeconds { get; set; } = 300;
+
+	// Messages to rotate through. Supports the same HTML formatting as /announce.
+	public string[] Messages { get; set; } = Array.Empty<string>();
+
+	// Prepended to every message. Default matches /announce orange bold styling.
+	public string Prefix { get; set; } = "<strong><font color=\"orange\">";
+
+	// Appended to every message. Closes the Prefix tags.
+	public string Suffix { get; set; } = "</font></strong>";
+
+	// If true, pick a random message each time instead of sequential rotation.
+	public bool RandomOrder { get; set; }
+
+	public void EnsureSane()
+	{
+		if (IntervalSeconds < 10) IntervalSeconds = 10;
+		Messages ??= Array.Empty<string>();
+		Prefix ??= "";
+		Suffix ??= "";
 	}
 }
