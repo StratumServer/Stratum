@@ -1,0 +1,29 @@
+diff --git a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
+index 2f84679..b329097 100644
+--- a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
++++ b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
+@@ -66,10 +66,24 @@ public class ServerUdpQueue
+ 					}
+ 					catch (Exception e)
+ 					{
+ 						ServerMain.Logger.Error(e);
+ 					}
++					finally
++					{
++						// Stratum: SendPacketBlocking always finishes reading the packet
++						// before returning (serializes synchronously, no further async
++						// handoff), so it's safe to hand it back to the pool here even if
++						// the send itself threw.
++						network.physicsManager.StratumReturnBulkPositionPacket(result.packet);
++					}
++				}
++				else
++				{
++					// Stratum: TTL-dropped packet never reaches SendPacketBlocking, but it's
++					// still safe to recycle since nothing else holds a reference to it.
++					network.physicsManager.StratumReturnBulkPositionPacket(result.packet);
+ 				}
+ 			}
+ 		}
+ 	}
+ }
