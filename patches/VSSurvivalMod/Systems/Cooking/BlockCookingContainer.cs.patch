@@ -1,0 +1,51 @@
+diff --git a/VSSurvivalMod/Systems/Cooking/BlockCookingContainer.cs b/VSSurvivalMod/Systems/Cooking/BlockCookingContainer.cs
+index be7e48a..6c8dfa5 100644
+--- a/VSSurvivalMod/Systems/Cooking/BlockCookingContainer.cs
++++ b/VSSurvivalMod/Systems/Cooking/BlockCookingContainer.cs
+@@ -328,23 +328,39 @@ namespace Vintagestory.GameContent
+ 
+ 
+ 
+ 
+ 
++        // Stratum start: reusable list for GetCookingStacks. Same ThreadStatic + depth-guard
++        // pattern as BEContainer.GetNonEmptyContentStacks; this method has 5 call sites in this
++        // file alone plus virtual override potential, so a depth guard covers reentrancy.
++        [ThreadStatic] private static List<ItemStack> stratumCookingStacks;
++        [ThreadStatic] private static int stratumCookingStacksDepth;
++
+         public ItemStack[] GetCookingStacks(ISlotProvider cookingSlotsProvider, bool clone = true)
+         {
+-            List<ItemStack> stacks = new List<ItemStack>(4);
++            bool reuse = stratumCookingStacksDepth == 0;
++            stratumCookingStacksDepth++;
++            List<ItemStack> stacks = reuse ? (stratumCookingStacks ??= new List<ItemStack>(4)) : new List<ItemStack>(4);
++            if (reuse) stacks.Clear();
++            try
++            {
++                for (int i = 0; i < cookingSlotsProvider.Slots.Length; i++)
++                {
++                    ItemStack? stack = cookingSlotsProvider.Slots[i].Itemstack;
++                    if (stack == null) continue;
++                    stacks.Add(clone ? stack.Clone() : stack);
++                }
+ 
+-            for (int i = 0; i < cookingSlotsProvider.Slots.Length; i++)
++                return stacks.ToArray();
++            }
++            finally
+             {
+-                ItemStack? stack = cookingSlotsProvider.Slots[i].Itemstack;
+-                if (stack == null) continue;
+-                stacks.Add(clone ? stack.Clone() : stack);
++                stratumCookingStacksDepth--;
+             }
+-
+-            return stacks.ToArray();
+         }
++        // Stratum end
+ 
+         public IInFirepitRenderer GetRendererWhenInFirepit(ItemStack stack, BlockEntityFirepit firepit, bool forOutputSlot)
+         {
+             return new PotInFirepitRenderer(api as ICoreClientAPI, stack, firepit.Pos, forOutputSlot);
+         }
