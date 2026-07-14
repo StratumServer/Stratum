@@ -32,14 +32,17 @@ internal class ServerSystemStratum : ServerSystem
 
 		// BlockEntity stratum stagger hook requires API-side extensions not present in this build graph.
 
-		// Raise Windows multimedia timer resolution so Thread.Sleep(N) is accurate to ~1ms instead
-		// of the default ~15.6ms scheduler tick. Without this, the server's tick-sleep math
-		// (Config.TickTime - elapsed) rounds up to the next 15.6ms boundary, capping the
-		// achievable tickrate at ~25 tps on Windows regardless of how little work each tick does.
-		// Process-wide; cleaned up automatically at process exit.
+		// Windows otherwise rounds the main tick sleep up to roughly 15.6ms and keeps 30 TPS out of reach.
 		StratumTimerResolutionConfig timerCfg = StratumRuntime.Config.Performance.TimerResolution;
-		if (timerCfg != null && timerCfg.Enabled && stratumActiveTimerPeriodMs == 0
-			&& RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
+			StratumRuntime.SetTimerResolutionStatus(true, "native");
+		}
+		else if (timerCfg == null || !timerCfg.Enabled)
+		{
+			StratumRuntime.SetTimerResolutionStatus(false, "disabled");
+		}
+		else if (stratumActiveTimerPeriodMs == 0)
 		{
 			uint period = (uint)Math.Max(1, timerCfg.PeriodMs);
 			try
@@ -48,17 +51,24 @@ internal class ServerSystemStratum : ServerSystem
 				if (result == 0)
 				{
 					stratumActiveTimerPeriodMs = (int)period;
+					StratumRuntime.SetTimerResolutionStatus(true, period + "ms");
 					StratumRuntime.LogInfo("timer resolution raised to " + period + "ms (was ~15.6ms default)");
 				}
 				else
 				{
-					StratumRuntime.LogWarning("timeBeginPeriod(" + period + ") returned " + result + " — timer resolution unchanged");
+					StratumRuntime.SetTimerResolutionStatus(false, "timeBeginPeriod returned " + result);
+					StratumRuntime.LogWarning("timeBeginPeriod(" + period + ") returned " + result + ": timer resolution unchanged");
 				}
 			}
 			catch (Exception ex)
 			{
+				StratumRuntime.SetTimerResolutionStatus(false, "failed: " + ex.Message);
 				StratumRuntime.LogWarning("could not raise timer resolution: " + ex.Message);
 			}
+		}
+		else
+		{
+			StratumRuntime.SetTimerResolutionStatus(true, stratumActiveTimerPeriodMs + "ms");
 		}
 
 		if (StratumRuntime.Config.Performance.Timings.EnabledOnStartup)

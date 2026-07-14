@@ -501,7 +501,7 @@ index 1017be9..0ab2741 100644
  			{
  				processConnectionQueue();
  				statsupdate = DateTime.UtcNow;
-@@ -1533,18 +1726,25 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1533,22 +1726,29 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				{
  					StatsCollector[StatsCollectorIndex].tickTimes[k] = 0L;
  				}
@@ -525,9 +525,16 @@ index 1017be9..0ab2741 100644
 +				Logger.Warning("Server may be overloaded. A tick took {0}ms to complete.", elapsedMilliseconds2);
  			}
  			FrameProfiler.Mark("timers-updated");
- 			int num3 = (int)Math.Max(0f, Config.TickTime - (float)elapsedMilliseconds2);
- 			if (num3 > 0)
+-			int num3 = (int)Math.Max(0f, Config.TickTime - (float)elapsedMilliseconds2);
+-			if (num3 > 0)
++			// Stratum: wait against the frame deadline so Windows sleep rounding cannot lower TPS.
++			if (elapsedMilliseconds2 < Config.TickTime)
  			{
+-				Thread.Sleep(num3);
++				StratumRuntime.WaitForNextTick(lastFramePassedTime, Config.TickTime);
+ 				FrameProfiler.Mark("sleep");
+ 			}
+ 			TickPosition++;
 @@ -1558,24 +1758,113 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			Logger.Fatal(e);
  		}

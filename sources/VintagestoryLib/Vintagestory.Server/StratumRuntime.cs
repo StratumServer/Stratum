@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
 using Newtonsoft.Json;
 using Vintagestory.API.Config;
 
@@ -39,10 +42,50 @@ internal static class StratumRuntime
 
 	public static StratumPreflightReport LastPreflight { get; private set; } = StratumPreflightReport.NotRun();
 
+	public static bool FineSleepGranularity { get; private set; } = !RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+	public static string TimerResolutionStatus { get; private set; } = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "not requested" : "native";
+
 	// Updated by PhysicsManager.ServerTick each tick: true if the previous tick exceeded
 	// Performance.Physics.OverloadedTickThresholdMs. EventManager reads this to apply
 	// adaptive throttling to non-critical entity tick listeners.
 	public static volatile bool PreviousTickOverloaded;
+
+	public static void SetTimerResolutionStatus(bool fineSleepGranularity, string status)
+	{
+		FineSleepGranularity = fineSleepGranularity;
+		TimerResolutionStatus = status ?? "unknown";
+	}
+
+	public static void WaitForNextTick(Stopwatch tickTimer, float tickBudgetMs)
+	{
+		while (true)
+		{
+			double remainingMs = tickBudgetMs - tickTimer.Elapsed.TotalMilliseconds;
+			if (remainingMs <= 0)
+			{
+				return;
+			}
+
+			// Sleep once for most of the wait, then trim the last edge without another overshooting sleep.
+			double coarseMarginMs = FineSleepGranularity ? 2.0 : 17.0;
+			if (remainingMs > coarseMarginMs)
+			{
+				int sleepMs = FineSleepGranularity
+					? Math.Max(1, (int)Math.Floor(remainingMs - coarseMarginMs))
+					: 1;
+				Thread.Sleep(sleepMs);
+			}
+			else if (remainingMs > 0.5)
+			{
+				Thread.Yield();
+			}
+			else
+			{
+				Thread.SpinWait(64);
+			}
+		}
+	}
 
 	public static void InitAdaptiveRadius(ServerMain server)
 	{
