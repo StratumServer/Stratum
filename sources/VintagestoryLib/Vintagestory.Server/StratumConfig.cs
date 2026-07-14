@@ -46,6 +46,8 @@ internal class StratumConfig
 
 	public StratumBackupConfig Backup { get; set; } = new StratumBackupConfig();
 
+	public StratumAnnouncementsConfig Announcements { get; set; } = new StratumAnnouncementsConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
 	public void EnsurePopulated()
@@ -68,6 +70,7 @@ internal class StratumConfig
 		PlayerPrivacy ??= new StratumPlayerPrivacyConfig();
 		Nametags ??= new StratumNametagsConfig();
 		Backup ??= new StratumBackupConfig();
+		Announcements ??= new StratumAnnouncementsConfig();
 		ServerStats ??= new StratumServerStatsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
@@ -84,6 +87,7 @@ internal class StratumConfig
 		PlayerPrivacy.EnsurePopulated();
 		Nametags.EnsurePopulated();
 		Backup.EnsureSane();
+		Announcements.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
 		MigrateLegacyDefaults();
@@ -1944,5 +1948,33 @@ internal class StratumBackupConfig
 	{
 		if (IntervalMinutes < 1) IntervalMinutes = 1;
 		if (RetainCount < 1) RetainCount = 1;
+	}
+}
+
+internal class StratumAnnouncementsConfig
+{
+	public bool Enabled { get; set; }
+
+	// Seconds between broadcasts.
+	public int IntervalSeconds { get; set; } = 300;
+
+	// Messages to rotate through. Supports the same HTML formatting as /announce.
+	public string[] Messages { get; set; } = Array.Empty<string>();
+
+	// Prepended to every message. Default matches /announce orange bold styling.
+	public string Prefix { get; set; } = "<strong><font color=\"orange\">";
+
+	// Appended to every message. Closes the Prefix tags.
+	public string Suffix { get; set; } = "</font></strong>";
+
+	// If true, pick a random message each time instead of sequential rotation.
+	public bool RandomOrder { get; set; }
+
+	public void EnsureSane()
+	{
+		if (IntervalSeconds < 10) IntervalSeconds = 10;
+		Messages ??= Array.Empty<string>();
+		Prefix ??= "";
+		Suffix ??= "";
 	}
 }

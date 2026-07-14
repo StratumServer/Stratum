@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index 1017be9..0ab2741 100644
+index 1017be9..8d24994 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -27,10 +27,13 @@ using VintagestoryLib.Server.Systems;
@@ -501,7 +501,7 @@ index 1017be9..0ab2741 100644
  			{
  				processConnectionQueue();
  				statsupdate = DateTime.UtcNow;
-@@ -1533,22 +1726,29 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1533,24 +1726,31 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				{
  					StatsCollector[StatsCollectorIndex].tickTimes[k] = 0L;
  				}
@@ -535,6 +535,8 @@ index 1017be9..0ab2741 100644
  				FrameProfiler.Mark("sleep");
  			}
  			TickPosition++;
+ 		}
+ 		catch (Exception e)
 @@ -1558,24 +1758,113 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			Logger.Fatal(e);
  		}

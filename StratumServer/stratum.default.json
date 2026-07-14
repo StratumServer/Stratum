@@ -437,5 +437,13 @@
     "IntervalMinutes": 360,
     "RetainCount": 5,
     "LogBackups": true
+  },
+  "Announcements": {
+    "Enabled": false,
+    "IntervalSeconds": 300,
+    "Messages": [],
+    "Prefix": "<strong><font color=\"orange\">",
+    "Suffix": "</font></strong>",
+    "RandomOrder": false
   }
 }
