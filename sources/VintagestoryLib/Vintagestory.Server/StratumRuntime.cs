@@ -211,28 +211,25 @@ internal static class StratumRuntime
 		{
 			GamePaths.EnsurePathExists(GamePaths.Config);
 
-			if (!File.Exists(ConfigPath))
+			bool mainConfigExisted = File.Exists(ConfigPath);
+			Config = mainConfigExisted
+				? JsonConvert.DeserializeObject<StratumConfig>(File.ReadAllText(ConfigPath)) ?? StratumConfig.CreateDefault()
+				: StratumConfig.CreateDefault();
+
+			// Stratum: load the sidecars whenever they exist, not only when stratum.json also
+			// exists. A first boot on a data dir provisioned with just stratum-performance.json
+			// (or stratum-commands.json) used to skip this check and overwrite it with defaults.
+			if (File.Exists(CommandsConfigPath))
 			{
-				Config = StratumConfig.CreateDefault();
-				SaveConfig();
-				message = "created default config";
+				Config.Commands = JsonConvert.DeserializeObject<StratumCommandsConfig>(File.ReadAllText(CommandsConfigPath)) ?? new StratumCommandsConfig();
 			}
-			else
+			if (File.Exists(PerformanceConfigPath))
 			{
-				string json = File.ReadAllText(ConfigPath);
-				Config = JsonConvert.DeserializeObject<StratumConfig>(json) ?? StratumConfig.CreateDefault();
-				if (File.Exists(CommandsConfigPath))
-				{
-					Config.Commands = JsonConvert.DeserializeObject<StratumCommandsConfig>(File.ReadAllText(CommandsConfigPath)) ?? new StratumCommandsConfig();
-				}
-				if (File.Exists(PerformanceConfigPath))
-				{
-					Config.Performance = JsonConvert.DeserializeObject<StratumPerformanceConfig>(File.ReadAllText(PerformanceConfigPath)) ?? new StratumPerformanceConfig();
-				}
-				Config.EnsurePopulated();
-				SaveConfig();
-				message = "loaded config";
+				Config.Performance = JsonConvert.DeserializeObject<StratumPerformanceConfig>(File.ReadAllText(PerformanceConfigPath)) ?? new StratumPerformanceConfig();
 			}
+			Config.EnsurePopulated();
+			SaveConfig();
+			message = mainConfigExisted ? "loaded config" : "created default config";
 
 			LastLoadedUtc = DateTime.UtcNow;
 			LastLoadStatus = message;
