@@ -31,7 +31,8 @@ internal static class Program
 
 		bool refresh = HasOption(args, "--stratum-refresh");
 		bool skipBootstrap = HasOption(args, "--stratum-skip-bootstrap");
-		string[] serverArgs = RemoveOption(args, "--stratum-no-banner", "--stratum-refresh", "--stratum-skip-bootstrap");
+		bool prepareOnly = HasOption(args, "--stratum-prepare-only");
+		string[] serverArgs = RemoveOption(args, "--stratum-no-banner", "--stratum-refresh", "--stratum-skip-bootstrap", "--stratum-prepare-only");
 		bool printBanner = !HasOption(args, "--stratum-no-banner");
 		serverArgs = AddDefaultDataPath(serverArgs, out string defaultDataPathAdded);
 		if (printBanner)
@@ -52,23 +53,36 @@ internal static class Program
 				return 1;
 			}
 
-			if (EmbeddedOverlay.HasEmbeddedOverlay())
+			try
 			{
-				try
+				string stamp = StratumInfo.Version;
+				int written = PatchedFileOverlay.Apply(AppContext.BaseDirectory, refresh ? stamp + ":refresh:" + Guid.NewGuid().ToString("N") : stamp);
+				if (written > 0)
 				{
-					string stamp = StratumInfo.Version;
-					int written = EmbeddedOverlay.Apply(AppContext.BaseDirectory, refresh ? stamp + ":refresh:" + Guid.NewGuid().ToString("N") : stamp);
-					if (written > 0)
-					{
-						Console.WriteLine($"Stratum: applied overlay ({written} file(s))");
-					}
-				}
-				catch (Exception exception)
-				{
-					Console.Error.WriteLine($"Stratum: overlay apply failed: {exception.Message}");
-					return 1;
+					Console.WriteLine($"Stratum: applied patched files ({written} file(s))");
 				}
 			}
+			catch (Exception exception)
+			{
+				Console.Error.WriteLine($"Stratum: patched file apply failed: {exception.Message}");
+				return 1;
+			}
+
+			try
+			{
+				DefaultConfigSeeder.Seed(AppContext.BaseDirectory);
+			}
+			catch (Exception exception)
+			{
+				Console.Error.WriteLine($"Stratum: default config seed failed: {exception.Message}");
+				return 1;
+			}
+		}
+
+		if (prepareOnly)
+		{
+			Console.WriteLine("Stratum: prepare complete");
+			return 0;
 		}
 
 		return LaunchServer(serverArgs);
@@ -284,6 +298,7 @@ internal static class Program
 		Console.WriteLine("  --stratum-no-banner        Start without printing the Stratum banner");
 		Console.WriteLine("  --stratum-refresh          Re-download and re-extract vanilla assets");
 		Console.WriteLine("  --stratum-skip-bootstrap   Skip the first-run vanilla asset bootstrap");
+		Console.WriteLine("  --stratum-prepare-only     Download/extract/patch the install, then exit");
 		Console.WriteLine();
 		Console.WriteLine("If --dataPath is omitted, Stratum uses the local Data folder next to StratumServer.exe.");
 		Console.WriteLine("All other arguments are passed through to the Stratum server core.");

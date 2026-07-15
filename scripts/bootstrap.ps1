@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
 Builds a clean working tree by laying down:
-  1. Decompiled closed-source vanilla VS libraries (VintagestoryLib, VintagestoryServer, Cairo),
-     reconstructed from the official server zip.
+  1. Decompiled closed-source vanilla VS libraries (VintagestoryLib, VintagestoryServer),
+     reconstructed from the official server archive.
   2. Open-source Anego forks (VintagestoryApi, VSEssentials, VSSurvivalMod), cloned from
      their upstream repos at the commits pinned in forks.json.
 
@@ -12,8 +12,8 @@ Then applies every patch in patches/ on top.
 Vintage Story server version to download when -ServerZip is not provided. Defaults to 1.22.3.
 
 .PARAMETER ServerZip
-Path to an already-downloaded vs_server_*.zip. If omitted, the script downloads the
-zip for -Version from cdn.vintagestory.at into .vanilla-zips/.
+Path to an already-downloaded official server archive. If omitted, the script resolves
+the archive from https://api.vintagestory.at/stable-unstable.json into .vanilla-zips/.
 
 .PARAMETER Refresh
 Force re-extract, re-decompile, and re-clone even if cached output already exists.
@@ -33,9 +33,74 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+function Get-ServerArchiveInfo {
+    param([string]$Version)
+
+    $manifestUrl = 'https://api.vintagestory.at/stable-unstable.json'
+    $platformKey = if ($IsWindows -or [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+        'windowsserver'
+    } else {
+        'linuxserver'
+    }
+
+    $manifest = Invoke-RestMethod -Uri $manifestUrl
+    $versionEntry = $manifest.PSObject.Properties[$Version].Value
+    if (-not $versionEntry) {
+        throw "Vintage Story version not found in Anego manifest: $Version"
+    }
+
+    $archiveEntry = $versionEntry.PSObject.Properties[$platformKey].Value
+    if (-not $archiveEntry) {
+        throw "Vintage Story server archive not found in Anego manifest for $platformKey $Version"
+    }
+
+    [pscustomobject]@{
+        FileName = $archiveEntry.filename
+        Url = $archiveEntry.urls.cdn
+        Md5 = $archiveEntry.md5
+    }
+}
+
+function Test-Md5 {
+    param(
+        [string]$Path,
+        [string]$Expected
+    )
+
+    if (-not (Test-Path $Path)) {
+        return $false
+    }
+
+    $actual = (Get-FileHash -Algorithm MD5 -Path $Path).Hash
+    return $actual.Equals($Expected, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Expand-ServerArchive {
+    param(
+        [string]$Archive,
+        [string]$Destination
+    )
+
+    if ($Archive.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) {
+        Expand-Archive -Path $Archive -DestinationPath $Destination -Force
+        return
+    }
+
+    if ($Archive.EndsWith('.tar.gz', [StringComparison]::OrdinalIgnoreCase) -or $Archive.EndsWith('.tgz', [StringComparison]::OrdinalIgnoreCase)) {
+        tar -xzf $Archive -C $Destination
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar failed to extract $Archive"
+        }
+        return
+    }
+
+    throw "Unsupported server archive type: $Archive"
+}
+
 Push-Location $repoRoot
 try {
-    # Closed-source DLLs decompiled from the official server zip. Cairo used to
+    # Closed-source DLLs decompiled from the official server archive. Cairo used to
     # live here too, but its source is now mirrored on GitHub (anegostudios/Cairo)
     # and cloned via forks.json instead.
     $libMap = [ordered]@{
@@ -51,29 +116,37 @@ try {
     if ($Refresh -and (Test-Path $baselineDir)) { Remove-Item -Recurse -Force $baselineDir }
 
     #
-    # 1. Vanilla server zip -> decompile -> baseline -> working folders
+    # 1. Vanilla server archive -> decompile -> baseline -> working folders
     #
     if (-not $ServerZip) {
         New-Item -ItemType Directory -Force -Path $zipCacheDir | Out-Null
-        $zipName = "vs_server_win-x64_$Version.zip"
-        $ServerZip = Join-Path $zipCacheDir $zipName
+        $archiveInfo = Get-ServerArchiveInfo -Version $Version
+        $ServerZip = Join-Path $zipCacheDir $archiveInfo.FileName
         if (-not (Test-Path $ServerZip)) {
-            $url = "https://cdn.vintagestory.at/gamefiles/stable/$zipName"
-            Write-Host "Downloading $url"
+            Write-Host "Downloading $($archiveInfo.Url)"
             $ProgressPreference = 'Continue'
-            Invoke-WebRequest -Uri $url -OutFile $ServerZip
+            Invoke-WebRequest -Uri $archiveInfo.Url -OutFile $ServerZip
+        } elseif (-not (Test-Md5 -Path $ServerZip -Expected $archiveInfo.Md5)) {
+            Write-Host "Cached archive failed checksum, downloading $($archiveInfo.Url)"
+            Remove-Item $ServerZip -Force
+            Invoke-WebRequest -Uri $archiveInfo.Url -OutFile $ServerZip
         } else {
             Write-Host "Using cached $ServerZip"
+        }
+
+        if (-not (Test-Md5 -Path $ServerZip -Expected $archiveInfo.Md5)) {
+            throw "Downloaded server archive failed MD5 verification: $ServerZip"
         }
     }
 
     if (-not (Test-Path $vanillaDir)) {
-        if (-not (Test-Path $ServerZip)) { throw "Server zip not found: $ServerZip" }
+        if (-not (Test-Path $ServerZip)) { throw "Server archive not found: $ServerZip" }
         Write-Host "Extracting $ServerZip"
-        Expand-Archive -Path $ServerZip -DestinationPath $vanillaDir -Force
+        New-Item -ItemType Directory -Force -Path $vanillaDir | Out-Null
+        Expand-ServerArchive -Archive $ServerZip -Destination $vanillaDir
     }
 
-    # Build-time compatibility: some server zips omit a small set of managed
+    # Build-time compatibility: some server archives omit a small set of managed
     # client-facing references that VintagestoryLib still compiles against.
     # Pull only those DLLs from the public Linux client archive when missing.
     $vanillaLibDir = Join-Path $vanillaDir 'Lib'
@@ -81,12 +154,14 @@ try {
     $requiredClientRefs = @('OpenTK.Graphics.dll', 'csogg.dll', 'csvorbis.dll')
     $missingClientRefs = @($requiredClientRefs | Where-Object { -not (Test-Path (Join-Path $vanillaLibDir $_)) })
     if ($missingClientRefs.Count -gt 0) {
-        Write-Host "Missing managed refs in server zip: $($missingClientRefs -join ', ')"
+        Write-Host "Missing managed refs in server archive: $($missingClientRefs -join ', ')"
         New-Item -ItemType Directory -Force -Path $zipCacheDir | Out-Null
         $clientTarName = "vs_client_linux-x64_$Version.tar.gz"
         $clientTarPath = Join-Path $zipCacheDir $clientTarName
         if (-not (Test-Path $clientTarPath)) {
-            $clientUrl = "https://cdn.vintagestory.at/gamefiles/stable/$clientTarName"
+            $clientManifest = Invoke-RestMethod -Uri 'https://api.vintagestory.at/stable-unstable.json'
+            $clientEntry = $clientManifest.PSObject.Properties[$Version].Value.linux
+            $clientUrl = $clientEntry.urls.cdn
             Write-Host "Downloading $clientUrl"
             Invoke-WebRequest -Uri $clientUrl -OutFile $clientTarPath
         } else {

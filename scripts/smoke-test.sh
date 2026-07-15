@@ -13,8 +13,8 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-# Server binary: prefer VintagestoryServer (runtime entry point after first bootstrap),
-# fall back to StratumServer (first-run launcher that downloads vanilla).
+# Server binary: prefer the built server when testing the working tree, then fall
+# back to the launcher if only StratumServer was built.
 server_dir="$repo_root/StratumServer/bin/Release/net10.0"
 if [[ -f "$server_dir/VintagestoryServer" ]]; then
   server_bin="$server_dir/VintagestoryServer"

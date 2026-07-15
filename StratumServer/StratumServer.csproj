@@ -7,7 +7,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <RootNamespace>StratumServer</RootNamespace>
     <Configurations>Debug;Release;PerfTest</Configurations>
-    <EmbedPatchedDlls Condition="'$(EmbedPatchedDlls)' == ''">false</EmbedPatchedDlls>
+    <EmbedPatchedFiles Condition="'$(EmbedPatchedFiles)' == ''">false</EmbedPatchedFiles>
     <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 
@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <Compile Include="$(StratumInfoPath)" Link="StratumInfo.cs" Condition="'$(StratumInfoPath)' != ''" />
+    <EmbeddedResource Include="stratum.default.json" LogicalName="Stratum.Config.stratum.default.json" />
   </ItemGroup>
 
   <Target Name="ValidateStratumInfoPath" BeforeTargets="CoreCompile">
@@ -28,26 +29,22 @@
   </Target>
 
   <!--
-    Embedded patched DLLs. Enable by passing -p:EmbedPatchedDlls=true at publish time.
+    Embedded patched files. Enable by passing -p:EmbedPatchedFiles=true at publish time.
     The full solution must already be built (these paths point at sibling bin outputs).
-    Logical names are read back at runtime by EmbeddedOverlay.
+    Logical names are read back at runtime by PatchedFileOverlay.
   -->
-  <ItemGroup Condition="'$(EmbedPatchedDlls)' == 'true'">
-    <EmbeddedResource Include="..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\VintagestoryLib.dll"  LogicalName="Stratum.Overlay.VintagestoryLib.dll" />
-    <EmbeddedResource Include="..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\Nimbus.Shared.dll"   LogicalName="Stratum.Overlay.Nimbus.Shared.dll" Condition="Exists('..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\Nimbus.Shared.dll')" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VintagestoryAPI.dll"                          LogicalName="Stratum.Overlay.VintagestoryAPI.dll" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\cairo-sharp.dll"                              LogicalName="Stratum.Overlay.cairo-sharp.dll" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSEssentials.dll"                             LogicalName="Stratum.OverlayMods.VSEssentials.dll" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSSurvivalMod.dll"                            LogicalName="Stratum.OverlayMods.VSSurvivalMod.dll" />
+  <ItemGroup Condition="'$(EmbedPatchedFiles)' == 'true'">
+    <EmbeddedResource Include="..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\VintagestoryLib.dll"  LogicalName="Stratum.PatchedRoot.VintagestoryLib.dll" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VintagestoryAPI.dll"                          LogicalName="Stratum.PatchedRoot.VintagestoryAPI.dll" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\cairo-sharp.dll"                              LogicalName="Stratum.PatchedRoot.cairo-sharp.dll" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSEssentials.dll"                             LogicalName="Stratum.PatchedMods.VSEssentials.dll" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSSurvivalMod.dll"                            LogicalName="Stratum.PatchedMods.VSSurvivalMod.dll" />
 
-    <EmbeddedResource Include="..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\VintagestoryLib.pdb" LogicalName="Stratum.Overlay.VintagestoryLib.pdb" Condition="Exists('..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\VintagestoryLib.pdb')" />
-    <EmbeddedResource Include="..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\Nimbus.Shared.pdb"  LogicalName="Stratum.Overlay.Nimbus.Shared.pdb" Condition="Exists('..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\Nimbus.Shared.pdb')" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VintagestoryAPI.pdb"                          LogicalName="Stratum.Overlay.VintagestoryAPI.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\VintagestoryAPI.pdb')" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\cairo-sharp.pdb"                              LogicalName="Stratum.Overlay.cairo-sharp.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\cairo-sharp.pdb')" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSEssentials.pdb"                             LogicalName="Stratum.OverlayMods.VSEssentials.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\VSEssentials.pdb')" />
-    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSSurvivalMod.pdb"                            LogicalName="Stratum.OverlayMods.VSSurvivalMod.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\VSSurvivalMod.pdb')" />
-
-    <EmbeddedResource Include="stratum.default.json" LogicalName="Stratum.Overlay.stratum.default.json" />
+    <EmbeddedResource Include="..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\VintagestoryLib.pdb" LogicalName="Stratum.PatchedRoot.VintagestoryLib.pdb" Condition="Exists('..\baseline\VintagestoryLib\bin\$(Configuration)\$(TargetFramework)\VintagestoryLib.pdb')" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VintagestoryAPI.pdb"                          LogicalName="Stratum.PatchedRoot.VintagestoryAPI.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\VintagestoryAPI.pdb')" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\cairo-sharp.pdb"                              LogicalName="Stratum.PatchedRoot.cairo-sharp.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\cairo-sharp.pdb')" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSEssentials.pdb"                             LogicalName="Stratum.PatchedMods.VSEssentials.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\VSEssentials.pdb')" />
+    <EmbeddedResource Include="..\bin\$(Configuration)\$(TargetFramework)\VSSurvivalMod.pdb"                            LogicalName="Stratum.PatchedMods.VSSurvivalMod.pdb" Condition="Exists('..\bin\$(Configuration)\$(TargetFramework)\VSSurvivalMod.pdb')" />
   </ItemGroup>
 
   <Target Name="BuildStratumOutputs" Condition="'$(StratumDeploy)' == 'true'">

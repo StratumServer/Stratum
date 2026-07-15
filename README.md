@@ -79,9 +79,12 @@ Older Ko-fi supporters are still listed below because they helped Stratum early 
 
 1. Grab the latest `stratum-<version>-<rid>.zip` from [Releases](https://github.com/StratumServer/Stratum/releases).
 2. Extract it.
-3. Run `StratumServer.exe` on Windows or `dotnet StratumServer.dll` on Linux.
+3. Run `StratumServer.exe` on Windows or `./StratumServer` on Linux.
 
-First launch downloads and unpacks the matching vanilla server build.
+First launch gets the official Vintage Story server archive through Anego's
+release manifest, verifies it, unpacks it, and writes Stratum's patched files on
+top. Later launches use the prepared install unless the Stratum or base version
+changes.
 
 ## Flags
 
@@ -89,8 +92,9 @@ First launch downloads and unpacks the matching vanilla server build.
 | -------------------------- | ----------------------------------------- |
 | `--stratum-version`        | Print version info and exit               |
 | `--stratum-help`           | Print launcher options and exit           |
-| `--stratum-refresh`        | Re-download and re-extract vanilla assets |
-| `--stratum-skip-bootstrap` | Skip the first-run download               |
+| `--stratum-refresh`        | Download and prepare the base server again |
+| `--stratum-skip-bootstrap` | Skip first-run prepare work                |
+| `--stratum-prepare-only`   | Prepare the install, then exit             |
 | `--stratum-no-banner`      | Suppress the startup banner               |
 
 Anything else is forwarded to the server, such as `--port` or `--dataPath`.
@@ -116,10 +120,11 @@ dotnet build VintageStory.slnx -c Release
 .\scripts\smoke-test.ps1    # boot-test the server
 ```
 
-`bootstrap.ps1` downloads the targeted vanilla server zip, decompiles
-`VintagestoryLib`, `VintagestoryServer` into `baseline/`,
-clones the forks pinned in [forks.json](forks.json), applies every patch in
-`patches/`, and drops Stratum-only files from `sources/` into place.
+`bootstrap.ps1` resolves the targeted official server archive through Anego's
+release manifest, verifies it, decompiles `VintagestoryLib` and
+`VintagestoryServer` into `baseline/`, clones the forks pinned in
+[forks.json](forks.json), applies every patch in `patches/`, and drops
+Stratum-only files from `sources/` into place.
 
 After bootstrap, every patched file carries a `// Stratum:` marker so edits
 are easy to find. Edit, build, then run `.\scripts\extract-patches.ps1` to

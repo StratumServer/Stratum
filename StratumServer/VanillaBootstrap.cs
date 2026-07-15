@@ -1,18 +1,18 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace StratumServer;
 
-// Downloads the matching vanilla server zip on first run (or version bump) and copies
-// across any files the install doesn't already have. We never redistribute vanilla bytes.
+// Downloads the matching official server archive on first run or version bump,
+// verifies it against Anego's manifest, and lays down the base server files.
 internal static class VanillaBootstrap
 {
-	private const string CdnBase = "https://cdn.vintagestory.at/gamefiles/stable";
+	private const string VersionManifestUrl = "https://api.vintagestory.at/stable-unstable.json";
 
 	internal static void EnsureVanillaAssets(string baseGameVersion, bool refresh)
 	{
@@ -36,16 +36,26 @@ internal static class VanillaBootstrap
 			CleanStaleAssets(installDir);
 		}
 
-		(string archiveName, bool isZip) = GetArchiveForPlatform(baseGameVersion);
+		ArchiveInfo archive = GetArchiveForPlatform(baseGameVersion);
 		string cacheDir = Path.Combine(installDir, ".vanilla-cache");
 		Directory.CreateDirectory(cacheDir);
-		string archivePath = Path.Combine(cacheDir, archiveName);
+		string archivePath = Path.Combine(cacheDir, archive.FileName);
+
+		if (File.Exists(archivePath) && !VerifyMd5(archivePath, archive.Md5))
+		{
+			Console.WriteLine($"Stratum: cached {archive.FileName} failed checksum; downloading a fresh copy");
+			File.Delete(archivePath);
+		}
 
 		if (!File.Exists(archivePath))
 		{
-			string url = $"{CdnBase}/{archiveName}";
-			Console.WriteLine($"Stratum: downloading vanilla base game from {url}");
-			DownloadFile(url, archivePath);
+			Console.WriteLine($"Stratum: downloading vanilla base game from {archive.Url}");
+			DownloadFile(archive.Url, archivePath);
+			if (!VerifyMd5(archivePath, archive.Md5))
+			{
+				File.Delete(archivePath);
+				throw new InvalidOperationException("Downloaded vanilla archive failed MD5 verification: " + archive.FileName);
+			}
 		}
 		else
 		{
@@ -59,8 +69,8 @@ internal static class VanillaBootstrap
 		}
 		Directory.CreateDirectory(extractDir);
 
-		Console.WriteLine($"Stratum: unpacking {archiveName}");
-		if (isZip)
+		Console.WriteLine($"Stratum: unpacking {archive.FileName}");
+		if (archive.IsZip)
 		{
 			ZipFile.ExtractToDirectory(archivePath, extractDir);
 		}
@@ -83,31 +93,71 @@ internal static class VanillaBootstrap
 		File.WriteAllText(markerPath, expectedMarker);
 	}
 
-	private static (string ArchiveName, bool IsZip) GetArchiveForPlatform(string version)
+	private static ArchiveInfo GetArchiveForPlatform(string version)
 	{
-		string arch = RuntimeInformation.ProcessArchitecture switch
-		{
-			Architecture.X64 => "x64",
-			Architecture.Arm64 => "arm64",
-			_ => "x64"
-		};
-
+		string platformKey;
 		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 		{
-			return ($"vs_server_win-{arch}_{version}.zip", true);
+			platformKey = "windowsserver";
+		}
+		else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+		{
+			platformKey = "linuxserver";
+		}
+		else
+		{
+			throw new PlatformNotSupportedException("Stratum automatic server bootstrap currently supports Windows and Linux.");
 		}
 
-		return ($"vs_server_linux-{arch}_{version}.tar.gz", false);
+		using HttpClient client = new();
+		client.Timeout = TimeSpan.FromSeconds(30);
+		string json = client.GetStringAsync(VersionManifestUrl).GetAwaiter().GetResult();
+		using JsonDocument document = JsonDocument.Parse(json);
+		if (!document.RootElement.TryGetProperty(version, out JsonElement versionElement))
+		{
+			throw new InvalidOperationException("Vintage Story version not found in Anego manifest: " + version);
+		}
+		if (!versionElement.TryGetProperty(platformKey, out JsonElement platformElement))
+		{
+			throw new InvalidOperationException("Vintage Story server archive not found in Anego manifest for " + platformKey + " " + version);
+		}
+
+		string fileName = RequiredString(platformElement, "filename");
+		string md5 = RequiredString(platformElement, "md5");
+		JsonElement urls = platformElement.GetProperty("urls");
+		string url = RequiredString(urls, "cdn");
+		bool isZip = fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+		bool isTarGz = fileName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".tgz", StringComparison.OrdinalIgnoreCase);
+		if (!isZip && !isTarGz)
+		{
+			throw new InvalidOperationException("Unsupported Vintage Story server archive type: " + fileName);
+		}
+
+		return new ArchiveInfo(fileName, url, md5, isZip);
 	}
 
 	private static void DownloadFile(string url, string destination)
 	{
+		string tempDestination = destination + ".download";
+		if (File.Exists(tempDestination))
+		{
+			File.Delete(tempDestination);
+		}
+
 		using HttpClient client = new();
 		client.Timeout = TimeSpan.FromMinutes(10);
 		using HttpResponseMessage response = client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
 		response.EnsureSuccessStatusCode();
-		using FileStream output = File.Create(destination);
-		response.Content.CopyToAsync(output).GetAwaiter().GetResult();
+		using (FileStream output = File.Create(tempDestination))
+		{
+			response.Content.CopyToAsync(output).GetAwaiter().GetResult();
+		}
+
+		if (File.Exists(destination))
+		{
+			File.Delete(destination);
+		}
+		File.Move(tempDestination, destination);
 	}
 
 	private static void ExtractTarGz(string archivePath, string destination)
@@ -175,5 +225,45 @@ internal static class VanillaBootstrap
 
 		Console.WriteLine("Stratum: clearing stale vanilla assets before refresh");
 		Directory.Delete(assetsDir, recursive: true);
+	}
+
+	private static string RequiredString(JsonElement element, string propertyName)
+	{
+		if (!element.TryGetProperty(propertyName, out JsonElement property))
+		{
+			throw new InvalidOperationException("Anego manifest entry is missing property: " + propertyName);
+		}
+
+		string value = property.GetString();
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			throw new InvalidOperationException("Anego manifest entry has empty property: " + propertyName);
+		}
+
+		return value;
+	}
+
+	private static bool VerifyMd5(string path, string expectedMd5)
+	{
+		using FileStream stream = File.OpenRead(path);
+		using MD5 md5 = MD5.Create();
+		string actual = Convert.ToHexString(md5.ComputeHash(stream));
+		return string.Equals(actual, expectedMd5, StringComparison.OrdinalIgnoreCase);
+	}
+
+	private readonly struct ArchiveInfo
+	{
+		public ArchiveInfo(string fileName, string url, string md5, bool isZip)
+		{
+			FileName = fileName;
+			Url = url;
+			Md5 = md5;
+			IsZip = isZip;
+		}
+
+		public string FileName { get; }
+		public string Url { get; }
+		public string Md5 { get; }
+		public bool IsZip { get; }
 	}
 }

@@ -2,82 +2,86 @@
 
 ## Prerequisites
 
-* Windows 10 or later (Linux support is planned, not tested).
-* .NET 10 SDK.
-* PowerShell 7 or later.
-* git.
-* About 2 GB of free disk space for the vanilla source tree and build output.
+- .NET 10 SDK
+- git
+- PowerShell 7 or later on Windows
+- bash, python3, curl, tar, and perl on Linux or macOS
+- About 2 GB of free disk space
 
-## First build
+## First Build
+
+Windows:
 
 ```powershell
-git clone https://github.com/trevorftp/Stratum.git
+git clone https://github.com/StratumServer/Stratum.git
 cd Stratum
 .\scripts\bootstrap.ps1
 dotnet build VintageStory.slnx -c Release
 ```
 
-`bootstrap.ps1` does the following:
+Linux and macOS:
 
-1. Downloads `vs_server_win-x64_<version>.zip` from `cdn.vintagestory.at` into
-   `.vanilla-zips/`. Cached, so re-runs are quick.
-2. Extracts the zip into `.vanilla/`.
-3. Installs `ilspycmd` as a dotnet global tool if it is not already on PATH.
-4. Decompiles `VintagestoryLib.dll`, `VintagestoryServer.dll`, and `cairo-sharp.dll`
-   into `.baseline/<project>/`.
-5. Clones the open-source Anego forks (`vsapi`, `vsessentialsmod`, `vssurvivalmod`)
-   at the commits pinned in `forks.json` into `.baseline/<project>/`.
-6. Copies every baseline into the matching working folder at the repo root.
-7. Applies every `.patch` file under `patches/` with `git apply --3way`.
+```bash
+git clone https://github.com/StratumServer/Stratum.git
+cd Stratum
+make build
+```
 
-After that the solution has every project it needs and `dotnet build` works.
+Bootstrap does this:
 
-### Targeting a different version
+1. Resolves the official server archive from Anego's release manifest.
+2. Verifies the archive MD5 from the manifest.
+3. Extracts the archive into `.vanilla/`.
+4. Installs `ilspycmd` if needed.
+5. Decompiles `VintagestoryLib.dll` and `VintagestoryServer.dll`.
+6. Clones the open-source Anego forks pinned in `forks.json`.
+7. Applies Stratum patches and copies `sources/` into the working tree.
+
+## Different Base Version
 
 ```powershell
 .\scripts\bootstrap.ps1 -Version 1.22.3
+.\scripts\bootstrap.ps1 -Version 1.22.3 -Refresh
 ```
 
-### Using a zip you already have
+Linux and macOS:
+
+```bash
+scripts/bootstrap.sh --version 1.22.3
+scripts/bootstrap.sh --version 1.22.3 --refresh
+```
+
+## Local Archive
 
 ```powershell
 .\scripts\bootstrap.ps1 -ServerZip C:\downloads\vs_server_win-x64_1.22.3.zip
 ```
 
-### Re-bootstrapping after an upstream version bump
-
-```powershell
-.\scripts\bootstrap.ps1 -Version 1.22.4 -Refresh
+```bash
+scripts/bootstrap.sh --server-archive ~/downloads/vs_server_linux-x64_1.22.3.tar.gz
 ```
 
-`-Refresh` wipes `.vanilla/` and `.baseline/` so the new release gets decompiled clean.
-For the open-source forks, bump the `ref` values in `forks.json` to the matching
-upstream commits before running with `-Refresh`. Expect some patches to fail. Fix them
-in the working tree and run `scripts\extract-patches.ps1` to regenerate the patch files.
+## Producing Patches
 
-## Producing patches
-
-After editing anything inside `VintagestoryLib/`, `VintagestoryServer/`, or `Cairo/`:
+After editing the working tree:
 
 ```powershell
 .\scripts\extract-patches.ps1
 ```
 
-That diffs each file against the corresponding baseline and writes or updates files
-under `patches/<project>/<relative-path>.patch`. Commit those.
+```bash
+scripts/extract-patches.sh
+```
 
-## Running the server
+Commit the updated `patches/` and `sources/` files.
 
-The solution outputs to `<project>\bin\Release\net10.0\`. For a real install you still
-need the vanilla assets, native libs, and base mods. The `BuildStratumOutputs` and
-`DeployStratumServer` MSBuild targets in `StratumServer.csproj` handle that locally if
-you set `VSInstall` and `StratumInstall` in a `*.local.props` file at the repo root.
+## Release Zips
 
-## Troubleshooting
+```powershell
+.\scripts\pack-release.ps1 -Rids win-x64,linux-x64 -OutDir release-out
+```
 
-* `ilspycmd` install fails: install it manually with `dotnet tool install -g ilspycmd`
-  and make sure `%USERPROFILE%\.dotnet\tools` is on PATH.
-* A patch fails to apply: usually means upstream changed the surrounding code. Open
-  the working file, fix the conflict, then re-run `extract-patches.ps1`.
-* `dotnet build` reports missing types from `VintagestoryLib`: the bootstrap step did
-  not complete. Re-run `scripts\bootstrap.ps1` and watch for errors.
+Release zips contain `StratumServer` plus Stratum patched managed files. They do
+not contain the full official Vintage Story server archive or files. On first run, the
+launcher downloads and verifies the official archive, extracts it, writes the
+patched files, and then starts the server.

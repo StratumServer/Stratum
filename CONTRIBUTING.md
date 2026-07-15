@@ -8,7 +8,7 @@ Stratum is a patch set over the vanilla Vintage Story server. The repo does not 
 
 - `patches/` is unified diffs against the decompiled vanilla baseline.
 - `sources/` is files that exist only in Stratum. No vanilla equivalent.
-- `StratumServer/` is the launcher and the first-run vanilla downloader.
+- `StratumServer/` is the launcher. It downloads the official server archive on first run and writes Stratum's patched files on top.
 - `scripts/` holds bootstrap, extract-patches, and smoke-test scripts (`.sh` for Linux/macOS, `.ps1` for Windows).
 - `VintageStory.slnx` is the solution. It only opens after `bootstrap.ps1` has run.
 
@@ -33,7 +33,7 @@ make build
 dotnet build VintageStory.slnx -c Release
 ```
 
-`bootstrap.ps1` downloads the matching vanilla server zip, decompiles the assemblies into the working tree, applies every patch, then copies `sources/` on top. After that you have a normal C# solution to edit.
+The bootstrap scripts resolve the matching official server archive through Anego's release manifest, verify it, decompile the assemblies into the working tree, apply every patch, then copy `sources/` on top. After that you have a normal C# solution to edit.
 
 If a patch fails to apply you usually want to delete the working tree and rerun bootstrap, not hand-edit the rejected hunk.
 
@@ -130,7 +130,7 @@ Stratum versions are `<vs-version>-stratum.<rev>[-<pre>]`:
 
 Examples: `1.22.3-stratum.1`, `1.22.3-stratum.2-rc.1`, `1.23.0-stratum.1`.
 
-Release tags are the version prefixed with `v`: `v1.22.3-stratum.1`. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which derives the version from the tag and passes it to `dotnet publish` as `Version` / `InformationalVersion`. At runtime `StratumInfo.Version` reads the assembly's informational version when present and falls back to the constants in [StratumInfo.cs](sources/VintagestoryLib/Vintagestory/Server/StratumInfo.cs).
+Release tags are the version prefixed with `v`: `v1.22.3-stratum.1`. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs bootstrap, builds Windows and Linux launcher zips, and passes the tag version to `dotnet publish` as `Version` / `InformationalVersion`. Release zips contain the Stratum launcher and Stratum patched managed files. They do not contain a full Vintage Story server archive or any Vintage story files. At runtime `StratumInfo.Version` reads the assembly's informational version when present and falls back to the constants in [StratumInfo.cs](sources/VintagestoryLib/Vintagestory/Server/StratumInfo.cs).
 
 For development builds the constants are authoritative. Bump `StratumRevision` and clear `PreRelease` in the same PR that ships a release.
 

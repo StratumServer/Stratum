@@ -158,17 +158,65 @@ download_server_archive() {
   local cache_dir="$1"
   mkdir -p "$cache_dir"
 
-  local archive_name="vs_server_linux-x64_${version}.tar.gz"
+  local manifest
+  manifest="$(curl -L --fail --silent https://api.vintagestory.at/stable-unstable.json)"
+  local archive_info
+  archive_info="$(python3 - "$version" "$manifest" <<'PY'
+import json
+import sys
+
+version = sys.argv[1]
+data = json.loads(sys.argv[2])
+try:
+    entry = data[version]["linuxserver"]
+except KeyError as exc:
+    raise SystemExit(f"server archive not found in Anego manifest for linuxserver {version}") from exc
+
+print(entry["filename"])
+print(entry["urls"]["cdn"])
+print(entry["md5"])
+PY
+)"
+  local archive_name url md5
+  archive_name="$(printf '%s\n' "$archive_info" | sed -n '1p')"
+  url="$(printf '%s\n' "$archive_info" | sed -n '2p')"
+  md5="$(printf '%s\n' "$archive_info" | sed -n '3p')"
   local archive_path="$cache_dir/$archive_name"
   if [[ -f "$archive_path" ]]; then
+    local actual_md5
+    actual_md5="$(python3 - "$archive_path" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    print(hashlib.md5(file.read()).hexdigest())
+PY
+)"
+    if [[ "${actual_md5,,}" == "${md5,,}" ]]; then
       echo "Using cached $archive_path" >&2
       printf '%s\n' "$archive_path"
       return
+    fi
+    echo "Cached archive failed checksum, downloading a fresh copy" >&2
+    rm -f "$archive_path"
   fi
 
-  local url="https://cdn.vintagestory.at/gamefiles/stable/$archive_name"
   echo "Downloading $url" >&2
   curl -L --fail --output "$archive_path" "$url"
+  local actual_md5
+  actual_md5="$(python3 - "$archive_path" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    print(hashlib.md5(file.read()).hexdigest())
+PY
+)"
+  if [[ "${actual_md5,,}" != "${md5,,}" ]]; then
+    rm -f "$archive_path"
+    echo "Downloaded server archive failed MD5 verification: $archive_name" >&2
+    exit 1
+  fi
   printf '%s\n' "$archive_path"
 }
 

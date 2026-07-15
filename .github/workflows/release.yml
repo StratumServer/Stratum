@@ -12,7 +12,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Install PowerShell
         run: |
@@ -48,7 +48,7 @@ jobs:
         shell: pwsh
         env:
           STRATUM_VER: ${{ steps.ver.outputs.version }}
-        run: ./scripts/pack-release.ps1 -Rids linux-x64,win-x64 -OutDir release-out
+        run: ./scripts/pack-release.ps1 -Rids linux-x64,win-x64 -OutDir release-out -Version "${{ steps.ver.outputs.version }}"
 
       - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
