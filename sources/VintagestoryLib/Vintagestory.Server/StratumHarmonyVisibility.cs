@@ -9,8 +9,8 @@ namespace Vintagestory.Server;
 // time, not applied as runtime Harmony patches, so there's nothing here for Stratum to skip or
 // gate the way Synergy's ConflictDetector does for its own patches. This is visibility only: a
 // third-party mod's Harmony *transpiler* against a method Stratum has source-patched is pattern
-// matching IL it expects to look like vanilla, and can silently fail (or, rarer, match the wrong
-// spot) if Stratum's change reshaped that method. Prefix/postfix/finalizer patches just wrap the
+// matching IL it expects to look like vanilla, and can fail with no error (or, rarer, match the
+// wrong spot) if Stratum's change reshaped that method. Prefix/postfix/finalizer patches just wrap the
 // call and aren't affected the same way. This logs what every loaded mod has patched so that's a
 // fast lookup during triage instead of a guess; it does not attempt to cross-reference against
 // Stratum's own changes (that would need a build-time method manifest -- see
@@ -59,7 +59,7 @@ internal static class StratumHarmonyVisibility
 			string detail = $"prefix={counts.Prefixes} postfix={counts.Postfixes} transpiler={counts.Transpilers} finalizer={counts.Finalizers}";
 			if (counts.Transpilers > 0)
 			{
-				StratumRuntime.LogWarning($"harmony visibility: mod '{entry.Key}' uses a transpiler ({detail}) -- if it targets a method Stratum has source-patched, verify the mod's feature actually works rather than assuming it does");
+				StratumRuntime.LogWarning($"harmony visibility: mod '{entry.Key}' uses a transpiler ({detail}) -- if it targets a method Stratum has source-patched, verify the mod's feature works instead of assuming it does");
 			}
 			else
 			{
