@@ -431,6 +431,11 @@ internal class StratumDiagnosticsConfig
 	public bool RunStartupPreflight { get; set; } = true;
 
 	public bool LogPreflightWarnings { get; set; } = true;
+
+	// Logs every mod-owned Harmony patch at startup (grouped by mod, split by prefix/postfix/
+	// transpiler/finalizer). Visibility only, does not cross-reference against Stratum's own
+	// source-patched methods -- see StratumHarmonyVisibility.
+	public bool LogModHarmonyPatches { get; set; } = true;
 }
 
 internal class StratumHardeningConfig

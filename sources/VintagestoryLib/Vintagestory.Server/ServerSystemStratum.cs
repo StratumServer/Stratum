@@ -104,6 +104,7 @@ internal class ServerSystemStratum : ServerSystem
 		StratumMetricsPublisher.Start();
 		StratumUpdateChecker.CheckOnStartup();
 		StratumServerStats.Start(server);
+		StratumHarmonyVisibility.LogPatchedMethods(server);
 		if (StratumRuntime.Config.Backup.Enabled)
 		{
 			new StratumBackupScheduler(server);
