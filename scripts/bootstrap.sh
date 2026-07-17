@@ -158,15 +158,19 @@ download_server_archive() {
   local cache_dir="$1"
   mkdir -p "$cache_dir"
 
-  local manifest
-  manifest="$(curl -L --fail --silent https://api.vintagestory.at/stable-unstable.json)"
+  # The manifest is passed as a file: it is over 128 KiB and Linux caps a single
+  # exec argument at MAX_ARG_STRLEN (32 pages), so passing it through argv fails
+  # with "Argument list too long".
+  local manifest_file="$cache_dir/.stable-unstable.json"
+  curl -L --fail --silent https://api.vintagestory.at/stable-unstable.json -o "$manifest_file"
   local archive_info
-  archive_info="$(python3 - "$version" "$manifest" <<'PY'
+  archive_info="$(python3 - "$version" "$manifest_file" <<'PY'
 import json
 import sys
 
 version = sys.argv[1]
-data = json.loads(sys.argv[2])
+with open(sys.argv[2], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
 try:
     entry = data[version]["linuxserver"]
 except KeyError as exc:
