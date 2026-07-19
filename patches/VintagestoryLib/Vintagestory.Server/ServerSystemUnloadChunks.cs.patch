@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-index 642722c..15164d1 100644
+index 642722c..8db8d06 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-@@ -34,10 +34,22 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -34,15 +34,30 @@ internal class ServerSystemUnloadChunks : ServerSystem
  	private List<MapRegionAndPos> dirtyMapRegions = new List<MapRegionAndPos>();
  
  	[ThreadStatic]
@@ -11,7 +11,9 @@ index 642722c..15164d1 100644
 +	private readonly List<MapRegionAndPos> stratumMapRegionBuf = new List<MapRegionAndPos>();
 +	private readonly List<DbChunk> stratumDbChunkBuf1 = new List<DbChunk>();
 +	private readonly List<DbChunk> stratumDbChunkBuf2 = new List<DbChunk>();
-+	private readonly List<ServerChunkWithCoord> stratumDirtyChunkBuf = new List<ServerChunkWithCoord>();
++    private readonly List<DbChunk> stratumUnloadGenDbChunkBuf1 = new List<DbChunk>();
++    private readonly List<DbChunk> stratumUnloadGenDbChunkBuf2 = new List<DbChunk>(); 
++    private readonly List<ServerChunkWithCoord> stratumDirtyChunkBuf = new List<ServerChunkWithCoord>();
 +	private readonly List<ServerMapChunkWithCoord> stratumDirtyMapChunkBuf = new List<ServerMapChunkWithCoord>();
 +	private readonly List<ServerChunkWithCoord> stratumUnloadChunkBuf = new List<ServerChunkWithCoord>();
 +	private readonly List<ServerMapChunkWithCoord> stratumUnloadMapChunkBuf = new List<ServerMapChunkWithCoord>();
@@ -23,9 +25,17 @@ index 642722c..15164d1 100644
  	private float accum120s;
  
  	private float accum3s;
- 
- 	public ServerSystemUnloadChunks(ServerMain server, ChunkServerThread chunkthread)
-@@ -208,38 +220,44 @@ internal class ServerSystemUnloadChunks : ServerSystem
+-
+-	public ServerSystemUnloadChunks(ServerMain server, ChunkServerThread chunkthread)
++    private readonly object unloadGenLock = new object();
++    
++    public ServerSystemUnloadChunks(ServerMain server, ChunkServerThread chunkthread)
+ 		: base(server)
+ 	{
+ 		this.chunkthread = chunkthread;
+ 		server.api.ChatCommands.GetOrCreate("chunk").BeginSubCommand("unload").WithDescription("Toggle on / off whether the server(and thus in turn the client) should unload chunks")
+ 			.WithAdditionalInformation("Default setting is on. This should normally be left on.")
+@@ -208,38 +223,44 @@ internal class ServerSystemUnloadChunks : ServerSystem
  	{
  		if (dirtyMapRegions.Count <= 0)
  		{
@@ -76,7 +86,7 @@ index 642722c..15164d1 100644
  			list3.Add(new DbChunk
  			{
  				Position = item.pos,
-@@ -271,12 +289,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -271,12 +292,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		server.readyToAutoSave = true;
  	}
  
@@ -93,77 +103,229 @@ index 642722c..15164d1 100644
  		{
  			if (server.forceLoadedChunkColumns.Contains(mapChunkUnloadCandidate))
  			{
-@@ -356,11 +376,12 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -354,122 +377,183 @@ internal class ServerSystemUnloadChunks : ServerSystem
+ 			chunk.Dispose();
+ 		}
  		return flag;
  	}
  
- 	internal void UnloadGeneratingChunkColumns(long timeToLive)
- 	{
--		List<ChunkColumnLoadRequest> list = new List<ChunkColumnLoadRequest>();
-+		List<ChunkColumnLoadRequest> list = stratumUnloadGenBuf;
-+		list.Clear();
- 		int num = 0;
- 		foreach (ChunkColumnLoadRequest item in chunkthread.requestedChunkColumns.Snapshot())
- 		{
- 			if (item.Chunks == null || item.Disposed)
- 			{
-@@ -391,13 +412,15 @@ internal class ServerSystemUnloadChunks : ServerSystem
- 		}
- 		if (list.Count == 0)
- 		{
- 			return;
- 		}
--		List<DbChunk> list2 = new List<DbChunk>();
--		List<DbChunk> list3 = new List<DbChunk>();
--		using FastMemoryStream ms = new FastMemoryStream();
-+		List<DbChunk> list2 = stratumDbChunkBuf1;
-+		list2.Clear();
-+		List<DbChunk> list3 = stratumDbChunkBuf2;
-+		list3.Clear();
-+		FastMemoryStream ms = reusableStream ?? (reusableStream = new FastMemoryStream());
- 		foreach (ChunkColumnLoadRequest item2 in list)
- 		{
- 			item2.generatingLock.AcquireReadLock();
- 			try
- 			{
-@@ -447,29 +470,80 @@ internal class ServerSystemUnloadChunks : ServerSystem
- 		{
- 			chunkthread.gameDatabase.SetMapChunks(list3);
- 		}
- 	}
- 
-+	// Stratum: reusable HashSet for the unload candidate scan (replaces per-call List allocation)
-+	private readonly HashSet<long> stratumFreshChunkIndices = new HashSet<long>();
+-	internal void UnloadGeneratingChunkColumns(long timeToLive)
++
++    internal void UnloadGeneratingChunkColumns(long timeToLive)
++    {
++        // Stratum start:
++        // Locking is required, since saving can now be called from different threads
++        lock (unloadGenLock) 
++        {
++            List<ChunkColumnLoadRequest> list = stratumUnloadGenBuf;
++            list.Clear();
++            int num = 0;
++            foreach (ChunkColumnLoadRequest item in chunkthread.requestedChunkColumns.Snapshot())
++            {
++                if (item.Chunks == null || item.Disposed)
++                {
++                    continue;
++                }
++                EnumWorldGenPass currentIncompletePass = item.CurrentIncompletePass;
++                if (currentIncompletePass < item.GenerateUntilPass || currentIncompletePass == EnumWorldGenPass.Done)
++                {
++                    continue;
++                }
++                bool flag = true;
++                if (server.forceLoadedChunkColumns.Contains(item.mapIndex2d))
++                {
++                    continue;
++                }
++                for (int i = 0; i < item.Chunks.Length; i++)
++                {
++                    if (Environment.TickCount - item.Chunks[i].lastReadOrWrite < timeToLive)
++                    {
++                        flag = false;
++                        break;
++                    }
++                }
++                if (flag)
++                {
++                    list.Add(item);
++                }
++            }
++            if (list.Count == 0)
++            {
++                return;
++            }
++            List<DbChunk> list2 = stratumUnloadGenDbChunkBuf1; // было stratumDbChunkBuf1
++            list2.Clear();
++            List<DbChunk> list3 = stratumUnloadGenDbChunkBuf2; // было stratumDbChunkBuf2
++            list3.Clear();
++            FastMemoryStream ms = reusableStream ?? (reusableStream = new FastMemoryStream());
++            foreach (ChunkColumnLoadRequest item2 in list)
++            {
++                item2.generatingLock.AcquireReadLock();
++                try
++                {
++                    for (int j = 0; j < item2.Chunks.Length; j++)
++                    {
++                        if (item2.Chunks[j].DirtyForSaving)
++                        {
++                            item2.Chunks[j].DirtyForSaving = false;
++                            list2.Add(new DbChunk
++                            {
++                                Position = new ChunkPos(item2.chunkX, j, item2.chunkZ, 0),
++                                Data = item2.Chunks[j].ToBytes(ms)
++                            });
++                        }
++                    }
++                    ServerMapChunk mapChunk = item2.MapChunk;
++                    if (mapChunk != null)
++                    {
++                        if (mapChunk.DirtyForSaving)
++                        {
++                            list3.Add(new DbChunk
++                            {
++                                Position = new ChunkPos(item2.chunkX, 0, item2.chunkZ, 0),
++                                Data = mapChunk.ToBytes(ms)
++                            });
++                        }
++                        mapChunk.DirtyForSaving = false;
++                        server.loadedMapChunks.Remove(item2.mapIndex2d);
++                    }
++                }
++                finally
++                {
++                    item2.generatingLock.ReleaseReadLock();
++                }
++                if (!chunkthread.requestedChunkColumns.Remove(item2.mapIndex2d))
++                {
++                    throw new Exception("Chunkrequest no longer in queue? Race condition?");
++                }
++                server.ChunkColumnRequested.Remove(item2.mapIndex2d);
++                num++;
++            }
++            if (list2.Count > 0)
++            {
++                chunkthread.gameDatabase.SetChunks(list2);
++            }
++            if (list3.Count > 0)
++            {
++                chunkthread.gameDatabase.SetMapChunks(list3);
++            }
++        }
++        // Stratum end
++    }
++
++    // Stratum: reusable HashSet for the unload candidate scan (replaces per-call List allocation)
++    private readonly HashSet<long> stratumFreshChunkIndices = new HashSet<long>();
 +	// Stratum: remembers the largest generated radius for each player chunk during one scan.
 +	private readonly Dictionary<StratumUnloadChunkPosition, int> stratumSeenPlayerChunkPositions = new Dictionary<StratumUnloadChunkPosition, int>();
 +
 +	private readonly struct StratumUnloadChunkPosition : IEquatable<StratumUnloadChunkPosition>
-+	{
+ 	{
+-		List<ChunkColumnLoadRequest> list = new List<ChunkColumnLoadRequest>();
+-		int num = 0;
+-		foreach (ChunkColumnLoadRequest item in chunkthread.requestedChunkColumns.Snapshot())
 +		private readonly int x;
 +		private readonly int z;
 +
 +		public StratumUnloadChunkPosition(int x, int z)
-+		{
+ 		{
+-			if (item.Chunks == null || item.Disposed)
+-			{
+-				continue;
+-			}
+-			EnumWorldGenPass currentIncompletePass = item.CurrentIncompletePass;
+-			if (currentIncompletePass < item.GenerateUntilPass || currentIncompletePass == EnumWorldGenPass.Done)
+-			{
+-				continue;
+-			}
+-			bool flag = true;
+-			if (server.forceLoadedChunkColumns.Contains(item.mapIndex2d))
+-			{
+-				continue;
+-			}
+-			for (int i = 0; i < item.Chunks.Length; i++)
+-			{
+-				if (Environment.TickCount - item.Chunks[i].lastReadOrWrite < timeToLive)
+-				{
+-					flag = false;
+-					break;
+-				}
+-			}
+-			if (flag)
+-			{
+-				list.Add(item);
+-			}
 +			this.x = x;
 +			this.z = z;
-+		}
+ 		}
+-		if (list.Count == 0)
 +
 +		public bool Equals(StratumUnloadChunkPosition other)
-+		{
+ 		{
+-			return;
 +			return x == other.x && z == other.z;
-+		}
+ 		}
+-		List<DbChunk> list2 = new List<DbChunk>();
+-		List<DbChunk> list3 = new List<DbChunk>();
+-		using FastMemoryStream ms = new FastMemoryStream();
+-		foreach (ChunkColumnLoadRequest item2 in list)
+-		{
+-			item2.generatingLock.AcquireReadLock();
+-			try
+-			{
+-				for (int j = 0; j < item2.Chunks.Length; j++)
+-				{
+-					if (item2.Chunks[j].DirtyForSaving)
+-					{
+-						item2.Chunks[j].DirtyForSaving = false;
+-						list2.Add(new DbChunk
+-						{
+-							Position = new ChunkPos(item2.chunkX, j, item2.chunkZ, 0),
+-							Data = item2.Chunks[j].ToBytes(ms)
+-						});
+-					}
+-				}
+-				ServerMapChunk mapChunk = item2.MapChunk;
+-				if (mapChunk != null)
+-				{
+-					if (mapChunk.DirtyForSaving)
+-					{
+-						list3.Add(new DbChunk
+-						{
+-							Position = new ChunkPos(item2.chunkX, 0, item2.chunkZ, 0),
+-							Data = mapChunk.ToBytes(ms)
+-						});
+-					}
+-					mapChunk.DirtyForSaving = false;
+-					server.loadedMapChunks.Remove(item2.mapIndex2d);
+-				}
+-			}
+-			finally
+-			{
+-				item2.generatingLock.ReleaseReadLock();
+-			}
+-			if (!chunkthread.requestedChunkColumns.Remove(item2.mapIndex2d))
+-			{
+-				throw new Exception("Chunkrequest no longer in queue? Race condition?");
+-			}
+-			server.ChunkColumnRequested.Remove(item2.mapIndex2d);
+-			num++;
+-		}
+-		if (list2.Count > 0)
 +
 +		public override bool Equals(object obj)
-+		{
+ 		{
+-			chunkthread.gameDatabase.SetChunks(list2);
 +			return obj is StratumUnloadChunkPosition other && Equals(other);
-+		}
+ 		}
+-		if (list3.Count > 0)
 +
 +		public override int GetHashCode()
-+		{
+ 		{
+-			chunkthread.gameDatabase.SetMapChunks(list3);
 +			return HashCode.Combine(x, z);
-+		}
-+	}
-+
+ 		}
+ 	}
+ 
  	private void FindUnloadableChunkColumnCandidates()
  	{
 -		List<long> list = new List<long>();
@@ -215,7 +377,7 @@ index 642722c..15164d1 100644
  			long key = server.WorldMap.MapChunkIndex2D(vec2i.X, vec2i.Y);
  			server.loadedMapChunks.TryGetValue(key, out value);
  			value?.MarkFresh();
-@@ -497,14 +571,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -497,14 +581,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
  	{
  		if (server.unloadedChunks.IsEmpty)
  		{
@@ -234,7 +396,7 @@ index 642722c..15164d1 100644
  			list2.Clear();
  			foreach (long item in list)
  			{
-@@ -545,12 +621,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -545,12 +631,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		}
  	}
  

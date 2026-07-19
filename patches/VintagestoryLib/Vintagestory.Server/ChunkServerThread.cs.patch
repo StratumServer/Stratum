@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-index ee7d12d..f8b2024 100644
+index ee7d12d..1862ecc 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 @@ -12,10 +12,12 @@ namespace Vintagestory.Server;
@@ -69,16 +69,82 @@ index ee7d12d..f8b2024 100644
  		return generatingChunk;
  	}
  
-@@ -193,11 +201,11 @@ public class ChunkServerThread : ServerThread, IChunkProvider
- 		server.loadedMapChunks.TryGetValue(index2d, out var value);
- 		if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
- 		{
- 			return true;
+@@ -186,38 +194,50 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 			requestedChunkColumns.EnqueueWithoutAddingToIndex(chunkRequest);
  		}
+ 		return !orAdd.Disposed;
+ 	}
+ 
+-	internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
+-	{
+-		server.loadedMapChunks.TryGetValue(index2d, out var value);
+-		if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
+-		{
+-			return true;
+-		}
 -		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, (long index2d2) => new ChunkColumnLoadRequest(index2d2, chunkX, chunkZ, server.serverConsoleId, -1, server));
-+		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, static (index2d2, state) => new ChunkColumnLoadRequest(index2d2, state.chunkX, state.chunkZ, state.server.serverConsoleId, -1, state.server), (chunkX, chunkZ, server));
- 		if (orAdd.CurrentIncompletePass_AsInt < minPass)
- 		{
- 			if (orAdd.untilPass < minPass)
- 			{
- 				if (orAdd.untilPass < 0)
+-		if (orAdd.CurrentIncompletePass_AsInt < minPass)
+-		{
+-			if (orAdd.untilPass < minPass)
+-			{
+-				if (orAdd.untilPass < 0)
+-				{
+-					requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
+-				}
+-				orAdd.untilPass = minPass;
+-				if (orAdd.creationTime < requirorTime)
+-				{
+-					orAdd.creationTime = requirorTime;
+-				}
+-			}
+-			return false;
+-		}
+-		return true;
+-	}
+-
+-	public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
++    internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
++    {
++        server.loadedMapChunks.TryGetValue(index2d, out var value);
++        if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
++        {
++            return true;
++        }
++
++        // Stratum start: avoiding Func<> + DisplayClass allocation for each call.
++        // In the vast majority of cases, the entry already exists in the dictionary.
++        if (!requestedChunkColumns.elementsByIndex.TryGetValue(index2d, out var orAdd))
++        {
++            orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(
++                index2d,
++                static (idx, arg) => new ChunkColumnLoadRequest(idx, arg.chunkX, arg.chunkZ, arg.consoleId, -1, arg.server),
++                (chunkX, chunkZ, consoleId: server.serverConsoleId, server));
++        }
++
++        if (orAdd.CurrentIncompletePass_AsInt < minPass)
++        {
++            if (orAdd.untilPass < minPass)
++            {
++                if (orAdd.untilPass < 0)
++                {
++                    requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
++                }
++                orAdd.untilPass = minPass;
++                if (orAdd.creationTime < requirorTime)
++                {
++                    orAdd.creationTime = requirorTime;
++                }
++            }
++            return false;
++        }
++
++        // Stratum end
++        return true;
++    }
++
++    public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
+ 	{
+ 		return ((long)chunkY * (long)server.WorldMap.index3dMulZ + chunkZ) * server.WorldMap.index3dMulX + chunkX;
+ 	}
+ 
+ 	public long ChunkIndex3D(EntityPos pos)

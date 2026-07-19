@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -29,6 +29,11 @@ internal sealed class StratumPregenManager
     private int centerX;
     private int centerZ;
     private long radiusSq;
+
+    // Storing original TTL values ​​for restoring them after pregen
+    private int originalUncompressedChunkTTL;
+    private long originalCompressedChunkTTL;
+    private bool ttlBoosted = false;
 
     private long totalColumns;
     private long inspectedColumns;
@@ -78,6 +83,9 @@ internal sealed class StratumPregenManager
 
             paused = true;
             lastPauseReason = "manual";
+
+            RestoreTtl(); // restore TTL
+
             return TextCommandResult.Success(BuildStatus(server));
         }
 
@@ -90,6 +98,9 @@ internal sealed class StratumPregenManager
 
             paused = false;
             lastPauseReason = "none";
+
+            ApplyTtlBoost();    // reduce TTL
+
             return TextCommandResult.Success(BuildStatus(server));
         }
 
@@ -102,10 +113,53 @@ internal sealed class StratumPregenManager
         return TextCommandResult.Error(Usage);
     }
 
+
+    private void ApplyTtlBoost()
+    {
+        if (ttlBoosted) return;
+
+        originalUncompressedChunkTTL = MagicNum.UncompressedChunkTTL;
+        originalCompressedChunkTTL = MagicNum.CompressedChunkTTL;
+
+        // Divide by 5, but not less than 1000 ms (1 second) to prevent the server from going crazy,
+        // trying to dump chunks to disk every tick
+        int newUncompressed = Math.Max(1000, originalUncompressedChunkTTL / 5);
+        long newCompressed = Math.Max(1000, originalCompressedChunkTTL / 5);
+
+        MagicNum.UncompressedChunkTTL = newUncompressed;
+        MagicNum.CompressedChunkTTL = newCompressed;
+
+        ttlBoosted = true;
+        StratumRuntime.LogInfo($"Chunk TTL boosted for faster unload: Uncompressed {originalUncompressedChunkTTL} -> {newUncompressed}ms, Compressed {originalCompressedChunkTTL} -> {newCompressed}ms");
+    }
+
+    private void RestoreTtl()
+    {
+        if (!ttlBoosted) return;
+
+        MagicNum.UncompressedChunkTTL = originalUncompressedChunkTTL;
+        MagicNum.CompressedChunkTTL = originalCompressedChunkTTL;
+
+        ttlBoosted = false;
+        StratumRuntime.LogInfo($"Chunk TTL restored: Uncompressed {originalUncompressedChunkTTL}ms, Compressed {originalCompressedChunkTTL}ms");
+    }
+
+
+
+
     public void Tick(ServerMain server)
     {
-        if (!running || paused)
+        if (!running)
         {
+            if (ttlBoosted)
+                RestoreTtl();   // restore TTL
+            return;
+        }
+
+        if (paused)
+        {
+            if (ttlBoosted)
+                RestoreTtl();   // restore TTL
             return;
         }
 
@@ -116,6 +170,8 @@ internal sealed class StratumPregenManager
         {
             pressurePauses++;
             lastPauseReason = "disabled in config";
+            if (ttlBoosted)
+                RestoreTtl();   // restore TTL
             return;
         }
 
@@ -126,6 +182,13 @@ internal sealed class StratumPregenManager
             MaybeLogProgress(server);
             return;
         }
+
+        // There's no pressure, pre-gen is active. If TTL was restored during the last pause, boost again.
+        if (!ttlBoosted)
+        {
+            ApplyTtlBoost();    // reduce TTL
+        }
+
 
         lastPauseReason = "none";
         int queuedThisTick = 0;
@@ -306,6 +369,7 @@ internal sealed class StratumPregenManager
         paused = false;
         running = true;
         StratumRuntime.LogInfo($"pregen started: {mode} chunks {minChunkX},{minChunkZ} to {maxChunkX},{maxChunkZ} ({totalColumns} columns)");
+        ApplyTtlBoost();    // reduce TTL
         return TextCommandResult.Success(BuildStatus(server));
     }
 
@@ -322,6 +386,8 @@ internal sealed class StratumPregenManager
         finishedAtMilliseconds = server.ElapsedMilliseconds;
         activeRequests.Clear();
         lastPauseReason = reason;
+
+        RestoreTtl();   // restore TTL
         StratumRuntime.LogInfo("pregen stopped: " + reason);
     }
 
@@ -332,6 +398,8 @@ internal sealed class StratumPregenManager
         completed = true;
         finishedAtMilliseconds = server.ElapsedMilliseconds;
         lastPauseReason = "none";
+
+        RestoreTtl();   // restore TTL
 
         // calculate the time spent
         long elapsedMilliseconds = Math.Max(0, finishedAtMilliseconds - startedAtMilliseconds);
@@ -503,8 +571,16 @@ internal sealed class StratumPregenManager
             pendingColumns = server.requestedChunkColumns.Count;
         }
 
-        int workerColumns = server.chunkThread?.requestedChunkColumns.Count ?? 0;
-        return pendingColumns >= config.MaxPendingColumnQueue || workerColumns >= config.MaxWorkerColumnQueue;
+        var workerQueue = server.chunkThread?.requestedChunkColumns;
+        int workerColumns = workerQueue?.Count ?? 0;
+        int workerCapacity = workerQueue?.Capacity ?? int.MaxValue;
+
+        // We leave a reserve for competitive requests from players (the same 200 as in moveRequestsToGeneratingQueue)
+        int safetyMargin = 300;
+
+        return pendingColumns >= config.MaxPendingColumnQueue
+               || workerColumns >= config.MaxWorkerColumnQueue
+               || workerColumns >= workerCapacity - safetyMargin;   // real physical limit
     }
 
     private static bool TryGetRecentTps(ServerMain server, out decimal tps)
