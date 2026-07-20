@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-index 642722c..8db8d06 100644
+index 642722c..ca03057 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 @@ -34,15 +34,30 @@ internal class ServerSystemUnloadChunks : ServerSystem
@@ -153,10 +153,10 @@ index 642722c..8db8d06 100644
 +            {
 +                return;
 +            }
-+            List<DbChunk> list2 = stratumUnloadGenDbChunkBuf1; // было stratumDbChunkBuf1
++            List<DbChunk> list2 = stratumUnloadGenDbChunkBuf1; // Stratum: was stratumDbChunkBuf1
 +            list2.Clear();
-+            List<DbChunk> list3 = stratumUnloadGenDbChunkBuf2; // было stratumDbChunkBuf2
-+            list3.Clear();
++            List<DbChunk> list3 = stratumUnloadGenDbChunkBuf2; // Stratum: was stratumDbChunkBuf2
++			list3.Clear();
 +            FastMemoryStream ms = reusableStream ?? (reusableStream = new FastMemoryStream());
 +            foreach (ChunkColumnLoadRequest item2 in list)
 +            {
