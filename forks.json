@@ -1,6 +1,6 @@
 {
   "_comment": "Pinned upstream commits for each Anego open-source fork. Bump these when overlaying a new Vintage Story release. Bootstrap clones each repo at the listed ref into .baseline/<name>/ and the working <name>/ folder, then applies patches/<name>/*.patch on top.",
-  "vintageStoryVersion": "1.22.3",
+  "vintageStoryVersion": "1.22.4",
   "forks": [
     {
       "name": "VintagestoryApi",

@@ -3,7 +3,7 @@
 # Windows: use Git Bash, WSL, or run the .ps1 scripts directly.
 
 CONFIGURATION ?= Release
-VERSION ?= 1.22.3
+VERSION ?= 1.22.4
 SERVER_ARCHIVE ?=
 CLIENT_LIB_DIR ?=
 
@@ -14,7 +14,7 @@ endif
 ifneq ($(CLIENT_LIB_DIR),)
   BOOTSTRAP_ARGS += --client-lib-dir $(CLIENT_LIB_DIR)
 endif
-ifneq ($(VERSION),1.22.3)
+ifneq ($(VERSION),1.22.4)
   BOOTSTRAP_ARGS += --version $(VERSION)
 endif
 

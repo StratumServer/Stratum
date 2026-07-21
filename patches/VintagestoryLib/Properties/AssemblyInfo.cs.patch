@@ -7,6 +7,6 @@ index 1b0c457..7c915d7 100644
  [assembly: AssemblyCopyright("Copyright © 2016-2026 Anego Studios")]
  [assembly: ComVisible(false)]
  [assembly: Guid("8495b9b8-6974-45de-b896-87f195304ede")]
- [assembly: AssemblyFileVersion("1.22.3")]
--[assembly: AssemblyVersion("1.22.3.0")]
+ [assembly: AssemblyFileVersion("1.22.4")]
+-[assembly: AssemblyVersion("1.22.4.0")]
 +[assembly: AssemblyVersion("1.0.0.0")]

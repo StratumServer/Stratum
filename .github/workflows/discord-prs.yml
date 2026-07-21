@@ -1,7 +1,12 @@
 name: Discord GitHub Notifications
 
 on:
-  pull_request:
+  # pull_request_target, not pull_request: fork PRs get no secrets under
+  # pull_request, so DISCORD_WEBHOOK resolved empty, the curl failed, and every
+  # external PR wore a red X while the team never got the ping. This trigger
+  # runs in the base-repo context (secrets available) and is safe here because
+  # no job ever checks out or executes PR code; they only read event metadata.
+  pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize, closed]
 
   pull_request_review:
@@ -12,7 +17,7 @@ on:
 
 jobs:
   notify-pr:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
 
     steps:
@@ -26,6 +31,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
         run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+            exit 0
+          fi
           case "$ACTION" in
             opened)
               MSG="$(printf '🟢 **New pull request** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$PR_AUTHOR" "$PR_TITLE" "$PR_URL")"
@@ -71,6 +80,10 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+            exit 0
+          fi
           case "$REVIEW_STATE" in
             approved)
               MSG="$(printf '✅ **Pull request approved** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
@@ -108,6 +121,10 @@ jobs:
           ISSUE_LABEL: ${{ github.event.label.name }}
           ISSUE_ASSIGNEE: ${{ github.event.assignee.login }}
         run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+            exit 0
+          fi
           case "$ACTION" in
             opened)
               MSG="$(printf '🟢 **New issue** #%s by `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_AUTHOR" "$ISSUE_TITLE" "$ISSUE_URL")"

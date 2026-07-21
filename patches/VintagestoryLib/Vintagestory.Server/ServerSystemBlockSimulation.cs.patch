@@ -317,7 +317,7 @@ index 5b0cc42..9f9ee45 100644
  				worldChunk.BreakDecor(server, blockSelection.Position, blockSelection.Face);
 @@ -402,10 +645,15 @@ public class ServerSystemBlockSimulation : ServerSystem
  			Face = face,
- 			HitPosition = vec3d,
+ 			HitPosition = hitPosition,
  			SelectionBoxIndex = handInteraction.SelectionBoxIndex,
  			SelectionBoxId = handInteraction.SelectionBoxId
  		};
@@ -326,11 +326,11 @@ index 5b0cc42..9f9ee45 100644
 +			RejectStratumBlockReach(client, blockSelection.Position, stratumReachDisconnectReason);
 +			return;
 +		}
- 		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic)
+ 		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !((IPlayer)player).IsInInteractionRangeOf(blockPos, 0f))
  		{
- 			FastVec3d vec = new FastVec3d((double)handInteraction.X + vec3d.X, (double)handInteraction.Y + vec3d.Y, (double)handInteraction.Z + vec3d.Z);
- 			float num = player.WorldData.PickingRange * player.WorldData.PickingRange;
- 			double num2 = player.Entity.Pos.XYZFast.Add(player.Entity.LocalEyePos).DistanceSq(vec);
+ 			ServerMain.Logger.Audit("{0} tried to interact with a block out of range.", player.PlayerName);
+ 			RevertBlockInteractions(client.Player, blockSelection.Position);
+ 			return;
 @@ -489,10 +737,21 @@ public class ServerSystemBlockSimulation : ServerSystem
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.UP), sendPlayerData: false);
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.DOWN), sendPlayerData: false);

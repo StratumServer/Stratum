@@ -12,12 +12,12 @@ furnished to do so, subject to the following conditions:
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
-This license applies only to the original work contained in this repository
-(the Stratum source code, patches, scripts, and documentation). It does not
-grant any rights to Vintage Story, which is a separate work owned by Anego
-Studios. The vanilla Vintage Story source code and assets are not redistributed
-by this project. Users must obtain their own legal copy of Vintage Story to
-build or run Stratum.
+This license applies only to the original work contained in this repository:
+the Stratum source code, patches, scripts, and documentation. It does not grant
+any rights to Vintage Story, which is a separate work owned by Anego Studios.
+Release artifacts may include Stratum-patched managed server files with Anego
+Studios permission. The official server archive is resolved and downloaded from
+Anego's release manifest at install time.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

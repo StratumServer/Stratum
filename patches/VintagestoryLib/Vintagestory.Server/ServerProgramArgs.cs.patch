@@ -45,7 +45,7 @@ index 849be87..d129b0a 100644
  	public string GetUsage(ParserResult<ServerProgramArgs> parser)
  	{
  		HelpText obj = HelpText.AutoBuild<ServerProgramArgs>(parser, (Func<HelpText, HelpText>)((HelpText h) => h), (Func<Example, Example>)((Example e) => e), false, 80);
--		obj.Heading = "Vintage Story Server 1.22.3";
+-		obj.Heading = "Vintage Story Server 1.22.4";
 +		obj.Heading = StratumInfo.FullName + " server (Vintage Story " + StratumInfo.BaseGameVersion + ")";
 +		obj.Copyright = string.Empty;
  		return ((object)obj).ToString();

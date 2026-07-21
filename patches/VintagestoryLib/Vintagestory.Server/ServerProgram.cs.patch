@@ -20,7 +20,7 @@ index b3219a5..9cbd88d 100644
  		if (progArgs.PrintVersion)
  		{
  			Console.WriteLine();
--			Console.Write("1.22.3");
+-			Console.Write("1.22.4");
 +			Console.Write(StratumInfo.FullName + " (Vintage Story " + StratumInfo.BaseGameVersion + ")");
  		}
  		else if (progArgs.PrintHelp)
