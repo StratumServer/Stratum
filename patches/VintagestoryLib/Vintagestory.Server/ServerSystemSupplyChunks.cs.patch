@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index d6e727a..b8ef11d 100644
+index d6e727a..9d925ee 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 @@ -9,131 +9,611 @@ using Vintagestory.API.Datastructures;
@@ -288,18 +288,18 @@ index d6e727a..b8ef11d 100644
 +						if (!handedOff)
 +						{
 +							stratumStageBusy[stage] = false;
-+							SignalDispatcher();
++							// SignalDispatcher();	// The call seems unnecessary
 +						}
 +					}
 +				}
 +			}
 +			catch (InvalidOperationException) when (!readyTasksQueue.IsAddingCompleted)
 +			{
-+				// Collection was modified during iteration — normal, will retry next tick
++				// Collection was modified during iteration - normal, will retry next tick
  			}
 +			catch (InvalidOperationException)
 +			{
-+				// Channel completed (CompleteAdding) — exit
++				// Channel completed (CompleteAdding) - exit
 +				return false;
 +			}
 +
