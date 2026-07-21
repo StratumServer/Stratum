@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index d6e727a..79f8e93 100644
+index d6e727a..b8ef11d 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 @@ -9,131 +9,611 @@ using Vintagestory.API.Datastructures;
@@ -1488,9 +1488,10 @@ index d6e727a..79f8e93 100644
  				return value;
  			}
  		}
+-		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.3");
 +
 +		// Create a new MapChunk
- 		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.3");
++		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.4");
  		orCreateMapRegionEnsureNeighbours = GetOrCreateMapRegionEnsureNeighbours(chunkX, chunkZ, chunkRequest.chunkGenParams, updateEarlierVersion);
  		value = CreateMapChunk(chunkX, chunkZ, orCreateMapRegionEnsureNeighbours);
  		server.loadedMapChunks[key] = value;
@@ -1878,7 +1879,8 @@ index d6e727a..79f8e93 100644
 +					// Get/create region (without storing in the global registry)
  					if (!dictionary.TryGetValue(num3, out var value))
  					{
- 						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.3");
+-						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.3");
++						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.4");
  						value = (dictionary[num3] = GetOrCreateMapRegionNoStore(regionX, regionZ, num3, chunkGenParams, updateEarlierVersion));
  						chunkthread.peekingMapRegions.TryAdd(num3, value);
  					}
