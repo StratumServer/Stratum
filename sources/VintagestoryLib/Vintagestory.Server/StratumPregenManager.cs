@@ -225,15 +225,18 @@ internal sealed class StratumPregenManager
 		columnBudgetAccumulator = Math.Min(columnBudgetAccumulator, config.MaxColumnsPerSecond);
 		scanBudgetAccumulator = Math.Min(scanBudgetAccumulator, config.MaxScansPerSecond);
 
-		// We guarantee a minimum of 1 so that there is no starvation at low rates
-		maxColumnsThisTick = Math.Max(1, maxColumnsThisTick);
-		maxScansThisTick = Math.Max(1, maxScansThisTick);
+		// If no full unit has accumulated, skip work this tick
+		if (maxColumnsThisTick <= 0 || maxScansThisTick <= 0)
+		{
+			MaybeLogProgress(server);
+			return;
+		}
 
 		int queuedThisTick = 0;
 		int scannedThisTick = 0;
 		while (queuedThisTick < maxColumnsThisTick
-			&& scannedThisTick < maxScansThisTick
-			&& HasMoreColumns())
+		       && scannedThisTick < maxScansThisTick
+		       && HasMoreColumns())
 		{
 			if (IsQueuePressureHigh(server, config))
 			{
