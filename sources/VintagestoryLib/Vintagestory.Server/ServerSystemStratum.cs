@@ -170,7 +170,6 @@ internal class ServerSystemStratum : ServerSystem
 	{
 		if (server.RunPhase == EnumServerRunPhase.RunGame)
 		{
-			StratumRuntime.Pregen.Tick(server);
 			StratumMetricsPublisher.Publish(server);
 			StratumServerStats.Tick(server);
 		}

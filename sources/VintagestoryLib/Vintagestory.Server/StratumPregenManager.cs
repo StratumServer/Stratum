@@ -48,6 +48,10 @@ internal sealed class StratumPregenManager
 	private long lastProgressLogMilliseconds;
 	private string lastPauseReason = "none";
 
+	private long lastTickMilliseconds = -1;
+	private float columnBudgetAccumulator;
+	private float scanBudgetAccumulator;
+
 	public string ShortStatus
 	{
 		get
@@ -146,13 +150,13 @@ internal sealed class StratumPregenManager
 
 
 
-
 	public void Tick(ServerMain server)
 	{
 		if (!running)
 		{
 			if (ttlBoosted)
 				RestoreTtl();   // restore TTL
+			lastTickMilliseconds = -1; // reset so next start gets a fresh dt
 			return;
 		}
 
@@ -160,8 +164,26 @@ internal sealed class StratumPregenManager
 		{
 			if (ttlBoosted)
 				RestoreTtl();   // restore TTL
+			lastTickMilliseconds = -1;
 			return;
 		}
+
+		// We calculate the real dt
+		long now = server.ElapsedMilliseconds;
+		float dtSeconds;
+		if (lastTickMilliseconds < 0)
+		{
+			// First tick after start/resume - we take the nominal 50 ms
+			dtSeconds = 0.05f;
+		}
+		else
+		{
+			dtSeconds = (now - lastTickMilliseconds) / 1000f;
+		}
+		lastTickMilliseconds = now;
+
+		// Anomaly protection (sleep mode, debugger, GC pause > 2 s)
+		dtSeconds = Math.Clamp(dtSeconds, 0.001f, 2.0f);
 
 		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
 		config.EnsureSane();
@@ -171,7 +193,7 @@ internal sealed class StratumPregenManager
 			pressurePauses++;
 			lastPauseReason = "disabled in config";
 			if (ttlBoosted)
-				RestoreTtl();   // restore TTL
+				RestoreTtl();
 			return;
 		}
 
@@ -183,17 +205,35 @@ internal sealed class StratumPregenManager
 			return;
 		}
 
-		// There's no pressure, pre-gen is active. If TTL was restored during the last pause, boost again.
 		if (!ttlBoosted)
 		{
-			ApplyTtlBoost();    // reduce TTL
+			ApplyTtlBoost();
 		}
 
-
 		lastPauseReason = "none";
+
+		// Time-scaled budget for this tick
+		columnBudgetAccumulator += config.MaxColumnsPerSecond * dtSeconds;
+		scanBudgetAccumulator += config.MaxScansPerSecond * dtSeconds;
+
+		int maxColumnsThisTick = (int)columnBudgetAccumulator;
+		int maxScansThisTick = (int)scanBudgetAccumulator;
+
+		// We don't let the budget grow indefinitely (long-pause protection)
+		columnBudgetAccumulator -= maxColumnsThisTick;
+		scanBudgetAccumulator -= maxScansThisTick;
+		columnBudgetAccumulator = Math.Min(columnBudgetAccumulator, config.MaxColumnsPerSecond);
+		scanBudgetAccumulator = Math.Min(scanBudgetAccumulator, config.MaxScansPerSecond);
+
+		// We guarantee a minimum of 1 so that there is no starvation at low rates
+		maxColumnsThisTick = Math.Max(1, maxColumnsThisTick);
+		maxScansThisTick = Math.Max(1, maxScansThisTick);
+
 		int queuedThisTick = 0;
 		int scannedThisTick = 0;
-		while (queuedThisTick < config.MaxColumnsPerSecond && scannedThisTick < config.MaxScansPerSecond && HasMoreColumns())
+		while (queuedThisTick < maxColumnsThisTick
+			&& scannedThisTick < maxScansThisTick
+			&& HasMoreColumns())
 		{
 			if (IsQueuePressureHigh(server, config))
 			{
