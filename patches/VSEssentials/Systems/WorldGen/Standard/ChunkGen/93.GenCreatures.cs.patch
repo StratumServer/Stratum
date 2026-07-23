@@ -1,0 +1,252 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs
+index 647310c..8df05ba 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs
+@@ -20,35 +20,42 @@ namespace Vintagestory.ServerMods
+     }
+ 
+     public class GenCreatures : ModStdWorldGen
+     {
+         protected ICoreServerAPI api;
+-        protected Random rnd;
+         protected int worldheight;
+         protected IWorldGenBlockAccessor wgenBlockAccessor;
+         protected Dictionary<EntityProperties, EntityProperties[]> entityTypeGroups = new Dictionary<EntityProperties, EntityProperties[]>();
+ 
+         public Dictionary<string, MapLayerBase> animalMapGens = new Dictionary<string, MapLayerBase>();
+         protected int noiseSizeDensityMap;
+         protected int regionSize;
+ 
+-
+-        protected int climateUpLeft;
+-        protected int climateUpRight;
+-        protected int climateBotLeft;
+-        protected int climateBotRight;
+-
+-        protected int forestUpLeft;
+-        protected int forestUpRight;
+-        protected int forestBotLeft;
+-        protected int forestBotRight;
+-
+-        protected int shrubsUpLeft;
+-        protected int shrubsUpRight;
+-        protected int shrubsBotLeft;
+-        protected int shrubsBotRight;
+-        protected List<SpawnOppurtunity> spawnPositions = new List<SpawnOppurtunity>();
++        // Stratum start: this generator can now run concurrently for distant columns
++        // on different worker threads (see StratumWorldGenStages / PreDone concurrency
++        // cap). Everything that used to be a plain instance field here was written by
++        // OnChunkColumnGen and read a few calls later by TrySpawnGroupAt/CreateEntity,
++        // all within the processing of ONE column; sharing the field across threads
++        // let two concurrently-processed columns clobber each other's climate/forest/
++        // shrub readings and creature-position scratch list. [ThreadStatic] keeps each
++        // field private to the thread that is currently inside OnChunkColumnGen for a
++        // given column, at zero cost for the still-common case of one thread at a time.
++        //
++        // rnd needed a different fix, not just isolation: the old field was a single
++        // Random seeded once for the whole world and advanced across every column in
++        // whatever order the dispatcher happened to hand them out, so two runs of the
++        // same seed could already spawn different creatures depending on processing
++        // order, with or without concurrency. Seeding a fresh Random per column from a
++        // hash of (world seed, chunkX, chunkZ) removes that order dependency and is
++        // safe under concurrency for the same reason it is safe today: two different
++        // columns always get two different seeds.
++        [ThreadStatic] private static Random stratumRnd;
++        [ThreadStatic] private static int stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight;
++        [ThreadStatic] private static int stratumForestUpLeft, stratumForestUpRight, stratumForestBotLeft, stratumForestBotRight;
++        [ThreadStatic] private static int stratumShrubsUpLeft, stratumShrubsUpRight, stratumShrubsBotLeft, stratumShrubsBotRight;
++        [ThreadStatic] private static List<SpawnOppurtunity> stratumSpawnPositions;
++        // Stratum end
+ 
+ 
+         public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Server;
+         public override double ExecuteOrder() => 0.1;
+ 
+@@ -96,12 +103,11 @@ namespace Vintagestory.ServerMods
+ 
+ 
+         protected void initWorldGen()
+         {
+             LoadGlobalConfig(api);
+-            rnd = new Random(api.WorldManager.Seed - 18722);
+-            worldheight = api.WorldManager.MapSizeY;
++            worldheight = api.WorldManager.MapSizeY; // Stratum: stratumRnd is now seeded per column in OnChunkColumnGen, not once here
+ 
+             Dictionary<AssetLocation, EntityProperties> entityTypesByCode = new Dictionary<AssetLocation, EntityProperties>();
+ 
+             for (int i = 0; i < api.World.EntityTypes.Count; i++)
+             {
+@@ -180,61 +186,68 @@ namespace Vintagestory.ServerMods
+ 
+             if (GetIntersectingStructure(chunkX * chunksize + chunksize / 2, chunkZ * chunksize + chunksize / 2, CreaturesHashCode) != null)
+             {
+                 return;
+             }
++
++            // Stratum: reseed per column instead of reading a shared, world-lifetime
++            // Random. Two different columns always get two different seeds, so this
++            // stays correct whether this stage runs one column at a time or several
++            // concurrently, and it removes the old dependency on processing order.
++            stratumRnd = new Random(GameMath.MurmurHash3(api.WorldManager.Seed, chunkX, chunkZ) - 18722);
++
+             wgenBlockAccessor.BeginColumn();
+             IntDataMap2D climateMap = chunks[0].MapChunk.MapRegion.ClimateMap;
+             ushort[] heightMap = chunks[0].MapChunk.WorldGenTerrainHeightMap;
+ 
+             int regionChunkSize = api.WorldManager.RegionSize / chunksize;
+             int rlX = chunkX % regionChunkSize;
+             int rlZ = chunkZ % regionChunkSize;
+ 
+             float facC = (float)climateMap.InnerSize / regionChunkSize;
+-            climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC));
+-            climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
+-            climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC + facC));
+-            climateBotRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC + facC));
++            stratumClimateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC));
++            stratumClimateUpRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
++            stratumClimateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC + facC));
++            stratumClimateBotRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC + facC));
+ 
+             IntDataMap2D forestMap = chunks[0].MapChunk.MapRegion.ForestMap;
+             float facF = (float)forestMap.InnerSize / regionChunkSize;
+-            forestUpLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF));
+-            forestUpRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF));
+-            forestBotLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF + facF));
+-            forestBotRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF + facF));
++            stratumForestUpLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF));
++            stratumForestUpRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF));
++            stratumForestBotLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF + facF));
++            stratumForestBotRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF + facF));
+ 
+             IntDataMap2D shrubMap = chunks[0].MapChunk.MapRegion.ShrubMap;
+             float facS = (float)shrubMap.InnerSize / regionChunkSize;
+-            shrubsUpLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS));
+-            shrubsUpRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS));
+-            shrubsBotLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS + facS));
+-            shrubsBotRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS + facS));
++            stratumShrubsUpLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS));
++            stratumShrubsUpRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS));
++            stratumShrubsBotLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS + facS));
++            stratumShrubsBotRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS + facS));
+ 
+             Vec3d posAsVec = new Vec3d();
+             BlockPos pos = new BlockPos(Dimensions.NormalWorld);
+ 
+             foreach (var val in entityTypeGroups)
+             {
+                 EntityProperties entitytype = val.Key;
+-                float tries = entitytype.Server.SpawnConditions.Worldgen.TriesPerChunk.nextFloat(1, rnd);
++                float tries = entitytype.Server.SpawnConditions.Worldgen.TriesPerChunk.nextFloat(1, stratumRnd);
+                 if (tries == 0f) continue;
+ 
+                 var scRuntime = entitytype.Server.SpawnConditions.Runtime;   // the Group ("hostile"/"neutral"/"passive") is only held in the Runtime spawn conditions
+                 if (scRuntime == null || scRuntime.Group != "hostile") tries *= gcfg.neutralCreatureSpawnMultiplier;
+ 
+-                while (tries-- > rnd.NextDouble())
++                while (tries-- > stratumRnd.NextDouble())
+                 {
+-                    int dx = rnd.Next(chunksize);
+-                    int dz = rnd.Next(chunksize);
++                    int dx = stratumRnd.Next(chunksize);
++                    int dz = stratumRnd.Next(chunksize);
+ 
+                     pos.Set(chunkX * chunksize + dx, 0, chunkZ * chunksize + dz);
+ 
+                     pos.Y =
+                         entitytype.Server.SpawnConditions.Worldgen.TryOnlySurface ?
+                         heightMap[dz * chunksize + dx] + 1 :
+-                        rnd.Next(worldheight)
++                        stratumRnd.Next(worldheight)
+                     ;
+                     posAsVec.Set(pos.X + 0.5, pos.Y + 0.005, pos.Z + 0.5);
+ 
+                     TrySpawnGroupAt(request.Chunks[0].MapChunk.MapRegion, pos, posAsVec, entitytype, val.Value);
+                 }
+@@ -244,10 +257,11 @@ namespace Vintagestory.ServerMods
+ 
+ 
+ 
+         protected void TrySpawnGroupAt(IMapRegion mr, BlockPos origin, Vec3d posAsVec, EntityProperties entityType, EntityProperties[] grouptypes)
+         {
++            List<SpawnOppurtunity> spawnPositions = stratumSpawnPositions ??= new List<SpawnOppurtunity>(); // Stratum: per-thread, see the field declaration
+             BlockPos pos = origin.Copy();
+             int climate;
+             float temp;
+             float rain;
+             float forestDensity;
+@@ -268,11 +282,11 @@ namespace Vintagestory.ServerMods
+             {
+                 float val = sc.HerdSize.nextFloat();
+ #if PERFTEST
+                 val *= 40;
+ #endif
+-                nextGroupSize = (int)val + ((val - (int)val) > rnd.NextDouble() ? 1 : 0);
++                nextGroupSize = (int)val + ((val - (int)val) > stratumRnd.NextDouble() ? 1 : 0);
+             }
+ 
+ 
+             for (int i = 0; i < nextGroupSize * 4 + 5; i++)
+             {
+@@ -281,13 +295,13 @@ namespace Vintagestory.ServerMods
+                 EntityProperties typeToSpawn = entityType;
+ 
+                 // First entity with valid spawnpos (typically the male) must be the dominant creature, every subsequent only 20% chance for males (or even lower if more than 5 companion types)
+                 double dominantChance = spawned == 0 ? 1 : Math.Min(0.2, 1f / grouptypes.Length);
+ 
+-                if (grouptypes.Length > 1 && rnd.NextDouble() > dominantChance)
++                if (grouptypes.Length > 1 && stratumRnd.NextDouble() > dominantChance)
+                 {
+-                    typeToSpawn = grouptypes[1 + rnd.Next(grouptypes.Length - 1)];
++                    typeToSpawn = grouptypes[1 + stratumRnd.Next(grouptypes.Length - 1)];
+                 }
+ 
+                 IBlockAccessor blockAccessor = wgenBlockAccessor.GetChunkAtBlockPos(pos) == null ? api.World.BlockAccessor : wgenBlockAccessor;
+ 
+                 IMapChunk mapchunk = blockAccessor.GetMapChunkAtBlockPos(pos);
+@@ -305,15 +319,15 @@ namespace Vintagestory.ServerMods
+ 
+                         xRel = (float)(posAsVec.X % chunksize) / chunksize;
+                         zRel = (float)(posAsVec.Z % chunksize) / chunksize;
+ 
+                         // We check temperature at 109% of sea level for the sake of consistency (no polar bears on tall mountains)
+-                        climate = GameMath.BiLerpRgbColor(xRel, zRel, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight);
++                        climate = GameMath.BiLerpRgbColor(xRel, zRel, stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight);
+                         temp = Climate.GetScaledAdjustedTemperatureFloat((climate >> 16) & 0xff, (int)(TerraGenConfig.seaLevel * 0.09));
+                         rain = ((climate >> 8) & 0xff) / 255f;
+-                        forestDensity = GameMath.BiLerp(forestUpLeft, forestUpRight, forestBotLeft, forestBotRight, xRel, zRel) / 255f;
+-                        shrubDensity = GameMath.BiLerp(shrubsUpLeft, shrubsUpRight, shrubsBotLeft, shrubsBotRight, xRel, zRel) / 255f;
++                        forestDensity = GameMath.BiLerp(stratumForestUpLeft, stratumForestUpRight, stratumForestBotLeft, stratumForestBotRight, xRel, zRel) / 255f;
++                        shrubDensity = GameMath.BiLerp(stratumShrubsUpLeft, stratumShrubsUpRight, stratumShrubsBotLeft, stratumShrubsBotRight, xRel, zRel) / 255f;
+ 
+ 
+                         if (CanSpawnAtConditions(blockAccessor, typeToSpawn, pos, posAsVec, sc, rain, temp, forestDensity, shrubDensity))
+                         {
+                             spawnPositions.Add(new SpawnOppurtunity() { ForType = typeToSpawn, Pos = posAsVec.Clone() });
+@@ -321,12 +335,12 @@ namespace Vintagestory.ServerMods
+                         }
+ 
+                     }
+                 }
+ 
+-                pos.X = origin.X + ((rnd.Next(11) - 5) + (rnd.Next(11) - 5)) / 2;
+-                pos.Z = origin.Z + ((rnd.Next(11) - 5) + (rnd.Next(11) - 5)) / 2;
++                pos.X = origin.X + ((stratumRnd.Next(11) - 5) + (stratumRnd.Next(11) - 5)) / 2;
++                pos.Z = origin.Z + ((stratumRnd.Next(11) - 5) + (stratumRnd.Next(11) - 5)) / 2;
+             }
+ 
+ 
+             // Only spawn if the group reached the minimum group size
+             if (spawnPositions.Count >= nextGroupSize)
+@@ -362,11 +376,11 @@ namespace Vintagestory.ServerMods
+ 
+         protected Entity CreateEntity(EntityProperties entityType, Vec3d spawnPosition)
+         {
+             Entity entity = api.ClassRegistry.CreateEntity(entityType);
+             entity.Pos.SetPosWithDimension(spawnPosition);
+-            entity.Pos.SetYaw((float)rnd.NextDouble() * GameMath.TWOPI);
++            entity.Pos.SetYaw((float)stratumRnd.NextDouble() * GameMath.TWOPI);
+             entity.PositionBeforeFalling.Set(entity.Pos.X, entity.Pos.Y, entity.Pos.Z);
+             entity.Attributes.SetString("origin", "worldgen");
+             return entity;
+         }
+ 
