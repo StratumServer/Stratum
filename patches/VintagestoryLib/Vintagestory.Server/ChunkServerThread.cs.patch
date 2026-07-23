@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-index ee7d12d..1862ecc 100644
+index ee7d12d..64084f2 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 @@ -12,10 +12,12 @@ namespace Vintagestory.Server;
@@ -24,7 +24,7 @@ index ee7d12d..1862ecc 100644
 -		int val = 5;
 -		additionalWorldGenThreadsCount = Math.Min(val, MagicNum.MaxWorldgenThreads - 1);
 -		if (server.ReducedServerThreads)
-+		int val = (int)EnumWorldGenPass.Done - 1; // Stratum:  Getting rid of the magic number
++		int val = StratumWorldGenStages.Done - 1; // Stratum: one thread per internal worker stage
 +        additionalWorldGenThreadsCount = Math.Min(val, MagicNum.MaxWorldgenThreads); // Stratum: We take as many streams as are actually needed for each generation stage.
 +        if (server.ReducedServerThreads)
  		{
@@ -56,7 +56,7 @@ index ee7d12d..1862ecc 100644
  	}
  
  	internal ServerMapChunk GetMapChunk(long index2d)
-@@ -143,11 +151,11 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -143,19 +151,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	IWorldChunk IChunkProvider.GetUnpackedChunkFast(int chunkX, int chunkY, int chunkZ, bool notRecentlyAccessed)
  	{
  		ServerChunk generatingChunk = GetGeneratingChunk(chunkX, chunkY, chunkZ);
@@ -67,6 +67,15 @@ index ee7d12d..1862ecc 100644
  			return generatingChunk;
  		}
  		return generatingChunk;
+ 	}
+ 
+ 	internal bool addChunkColumnRequest(long index2d, int chunkX, int chunkZ, int clientid, EnumWorldGenPass untilPass = EnumWorldGenPass.Done, ITreeAttribute chunkLoadParams = null)
+ 	{
+-		return addChunkColumnRequest(new ChunkColumnLoadRequest(index2d, chunkX, chunkZ, clientid, (int)untilPass, server)
++		return addChunkColumnRequest(new ChunkColumnLoadRequest(index2d, chunkX, chunkZ, clientid, StratumWorldGenStages.FromVanilla((int)untilPass), server) // Stratum: public pass to internal
+ 		{
+ 			chunkGenParams = chunkLoadParams
+ 		});
  	}
  
 @@ -186,38 +194,50 @@ public class ChunkServerThread : ServerThread, IChunkProvider

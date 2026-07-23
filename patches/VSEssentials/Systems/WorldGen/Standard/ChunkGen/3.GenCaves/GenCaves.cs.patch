@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..2a019cc 100644
+index 30f034d..def7acd 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 @@ -30,18 +30,18 @@ namespace Vintagestory.ServerMods
@@ -17,7 +17,7 @@ index 30f034d..2a019cc 100644
                  api.Event.MapChunkGeneration(OnMapChunkGen, "standard");
                  api.Event.MapChunkGeneration(OnMapChunkGen, "superflat");
 -                api.Event.ChunkColumnGeneration(GenChunkColumn, EnumWorldGenPass.Terrain, "standard");
-+                api.Event.ChunkColumnGeneration(GenChunkColumn, EnumWorldGenPass.Terrain2, "standard");// Stratum: we use our generation sub-stage
++                StratumTerrainSplit.Register(api, GenChunkColumn, "standard"); // Stratum: late half of the split Terrain pass
                  api.Event.InitWorldGenerator(initWorldGen, "superflat");
              }
          }

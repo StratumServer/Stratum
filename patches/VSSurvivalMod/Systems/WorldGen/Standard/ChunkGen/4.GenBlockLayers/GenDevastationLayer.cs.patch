@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenDevastationLayer.cs b/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenDevastationLayer.cs
-index eb5ff1a..4163ce5 100644
+index eb5ff1a..a5ecaac 100644
 --- a/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenDevastationLayer.cs
 +++ b/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenDevastationLayer.cs
 @@ -52,11 +52,11 @@ namespace Vintagestory.ServerMods
@@ -9,7 +9,7 @@ index eb5ff1a..4163ce5 100644
              if (TerraGenConfig.DoDecorationPass)
              {
 -                api.Event.ChunkColumnGeneration(OnChunkColumnGeneration, EnumWorldGenPass.Terrain, "standard");
-+                api.Event.ChunkColumnGeneration(OnChunkColumnGeneration, EnumWorldGenPass.Terrain2, "standard"); // Stratum: we use our generation sub-stage
++                StratumTerrainSplit.Register(api, OnChunkColumnGeneration, "standard"); // Stratum: late half of the split Terrain pass
                  api.Event.GetWorldgenBlockAccessor(OnWorldGenBlockAccessor);
              }
  

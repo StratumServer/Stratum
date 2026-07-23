@@ -1,48 +1,44 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs b/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs
-index 20f5814..f0ad9e1 100644
+index 20f5814..ca914a7 100644
 --- a/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs
 +++ b/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs
-@@ -13,30 +13,33 @@ public class WorldGenHandler : IWorldGenHandler
- 
- 	public List<MapRegionGeneratorDelegate> OnMapRegionNeighborsLoaded = new List<MapRegionGeneratorDelegate>();
+@@ -15,11 +15,17 @@ public class WorldGenHandler : IWorldGenHandler
  
  	public List<MapChunkGeneratorDelegate> OnMapChunkGen = new List<MapChunkGeneratorDelegate>();
  
--	public List<ChunkColumnGenerationDelegate>[] OnChunkColumnGen = new List<ChunkColumnGenerationDelegate>[6];
-+	public List<ChunkColumnGenerationDelegate>[] OnChunkColumnGen = new List<ChunkColumnGenerationDelegate>[(int)EnumWorldGenPass.Done]; // Stratum:  Getting rid of the magic number
+ 	public List<ChunkColumnGenerationDelegate>[] OnChunkColumnGen = new List<ChunkColumnGenerationDelegate>[6];
  
 -	public Dictionary<string, WorldGenHookDelegate> SpecialHooks = new Dictionary<string, WorldGenHookDelegate>();
++	// Stratum: second half of the split Terrain pass. Vanilla generators that
++	// used to run late inside Terrain (rock strata, caves, block layers)
++	// register here through StratumTerrainSplit; OnChunkColumnGen keeps its
++	// vanilla shape and numbering for mods that index it directly.
++	public List<ChunkColumnGenerationDelegate> OnChunkColumnGenTerrainLate = new List<ChunkColumnGenerationDelegate>();
++
 +    public Dictionary<string, WorldGenHookDelegate> SpecialHooks = new Dictionary<string, WorldGenHookDelegate>();
  
  	List<MapRegionGeneratorDelegate> IWorldGenHandler.OnMapRegionGen => OnMapRegionGen;
  
  	List<MapChunkGeneratorDelegate> IWorldGenHandler.OnMapChunkGen => OnMapChunkGen;
  
- 	List<ChunkColumnGenerationDelegate>[] IWorldGenHandler.OnChunkColumnGen => OnChunkColumnGen;
+@@ -32,18 +38,19 @@ public class WorldGenHandler : IWorldGenHandler
+ 		OnChunkColumnGen[3] = new List<ChunkColumnGenerationDelegate>();
+ 		OnChunkColumnGen[4] = new List<ChunkColumnGenerationDelegate>();
+ 		OnChunkColumnGen[5] = new List<ChunkColumnGenerationDelegate>();
+ 	}
  
- 	public WorldGenHandler()
- 	{
--		OnChunkColumnGen[1] = new List<ChunkColumnGenerationDelegate>();
--		OnChunkColumnGen[2] = new List<ChunkColumnGenerationDelegate>();
--		OnChunkColumnGen[3] = new List<ChunkColumnGenerationDelegate>();
--		OnChunkColumnGen[4] = new List<ChunkColumnGenerationDelegate>();
--		OnChunkColumnGen[5] = new List<ChunkColumnGenerationDelegate>();
--	}
--
 -	public void WipeAllHandlers()
-+        // Stratum start: Initialize the generator lists for all work stages
-+        // regardless of how many there may be
-+        // (Terrain..PreDone), excluding None (0) and Done
-+        for (int pass = (int)EnumWorldGenPass.None+1; pass < (int)EnumWorldGenPass.Done; pass++)
-+        {
-+            OnChunkColumnGen[pass] = new List<ChunkColumnGenerationDelegate>();
-+        }
-+        // Stratum end
-+    }
-+
 +    public void WipeAllHandlers()
  	{
  		OnMapRegionGen.Clear();
  		OnMapChunkGen.Clear();
  		for (int i = 0; i < OnChunkColumnGen.Length; i++)
  		{
+ 			if (OnChunkColumnGen[i] != null)
+ 			{
+ 				OnChunkColumnGen[i].Clear();
+ 			}
+ 		}
++		OnChunkColumnGenTerrainLate.Clear(); // Stratum
+ 	}
+ }

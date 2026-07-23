@@ -1,8 +1,15 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-index 04b25be..fd3a909 100644
+index 04b25be..a990f2a 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-@@ -46,13 +46,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+@@ -40,19 +40,20 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+ 
+ 	internal bool Disposed => (disposeOrRequeueFlags & 1) == 1;
+ 
+ 	public long Index => mapIndex2d;
+ 
+-	public EnumWorldGenPass GenerateUntilPass => (EnumWorldGenPass)untilPass;
++	public EnumWorldGenPass GenerateUntilPass => (EnumWorldGenPass)StratumWorldGenStages.ToVanilla(untilPass); // Stratum: untilPass is internal numbering
  
  	public EnumWorldGenPass CurrentIncompletePass
  	{

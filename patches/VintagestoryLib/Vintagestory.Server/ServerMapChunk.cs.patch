@@ -1,37 +1,42 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
-index 672877b..633ecc7 100644
+index 672877b..c112949 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
-@@ -76,11 +76,27 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -63,24 +63,30 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+ 
+ 	public SmallBoolArray NeighboursLoaded;
+ 
+ 	public byte UnloadGeneration = 3;
+ 
++	// Stratum: currentpass holds the INTERNAL stage numbering (Terrain split
++	// into two sub-stages, Done = 7). The public enum keeps vanilla values, so
++	// this property translates through StratumWorldGenStages. Everything that
++	// reads or writes the enum, vanilla code and mods alike, sees vanilla
++	// numbering; scheduler code uses currentpass directly. The same mapping is
++	// the on-disk format, which keeps saves interchangeable with vanilla.
+ 	public EnumWorldGenPass CurrentIncompletePass
+ 	{
+ 		get
+ 		{
+-			return (EnumWorldGenPass)currentpass;
++			return (EnumWorldGenPass)StratumWorldGenStages.ToVanilla(currentpass);
+ 		}
+ 		set
+ 		{
  			DirtyForSaving = true;
- 			currentpass = (int)value;
+-			currentpass = (int)value;
++			currentpass = StratumWorldGenStages.FromVanilla((int)value);
  		}
  	}
  
 -	[ProtoMember(11)]
-+    // Stratum Start:
-+    // Conversion between our pass numbering (Terrain is divided into
-+    // Terrain+Terrain2, so Done=7) and the saved vanilla numbering, compatible with
-+    // standard / pre-split Stratum saves (Done=6).
-+    // This is only necessary for the read/write boundary – all in-memory logic continues to use the full internal range of 0..7.
-+    private static int ToPersistedPass(int internalPass)
-+    {
-+        return internalPass <= 1 ? internalPass : internalPass - 1;
-+    }
-+
-+    private static int FromPersistedPass(int persistedPass)
-+    {
-+        return persistedPass <= 1 ? persistedPass : persistedPass + 1;
-+    }
-+    // Stratum end
-+
 +    [ProtoMember(11)]
  	public byte[] CaveHeightDistort { get; set; }
  
  	[ProtoMember(12)]
  	public ushort[] SedimentaryThicknessMap { get; set; }
  
-@@ -148,11 +164,14 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -148,11 +154,14 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  	}
  
  	public static ServerMapChunk FromBytes(byte[] serializedChunk)
@@ -39,7 +44,7 @@ index 672877b..633ecc7 100644
  		ServerMapChunk serverMapChunk = Serializer.Deserialize<ServerMapChunk>((Stream)new MemoryStream(serializedChunk));
 -		if (serverMapChunk.WorldGenTerrainHeightMap == null)
 +        // Stratum: converting the vanilla stage to ours
-+        serverMapChunk.currentpass = FromPersistedPass(serverMapChunk.currentpass);
++        serverMapChunk.currentpass = StratumWorldGenStages.FromVanilla(serverMapChunk.currentpass);
 +
 +        if (serverMapChunk.WorldGenTerrainHeightMap == null)
  		{
@@ -47,7 +52,7 @@ index 672877b..633ecc7 100644
  		}
  		if (serverMapChunk.TopRockIdMapOld != null)
  		{
-@@ -282,12 +301,12 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -282,12 +291,12 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  	public byte[] FastSerialize(FastMemoryStream ms)
  	{
  		ms.Reset();
@@ -55,7 +60,7 @@ index 672877b..633ecc7 100644
  		FastSerializer.Write(ms, 3, RainHeightMap);
 -		FastSerializer.Write(ms, 4, currentpass);
 -		FastSerializer.Write(ms, 6, TopRockIdMapOld);
-+        FastSerializer.Write(ms, 4, ToPersistedPass(currentpass));   // Stratum: distilling our stages into vanilla
++        FastSerializer.Write(ms, 4, StratumWorldGenStages.ToVanilla(currentpass));   // Stratum: distilling our stages into vanilla
 +        FastSerializer.Write(ms, 6, TopRockIdMapOld);
  		FastSerializer.Write(ms, 7, WorldGenTerrainHeightMap);
  		FastSerializer.Write(ms, 8, ScheduledBlockUpdates);

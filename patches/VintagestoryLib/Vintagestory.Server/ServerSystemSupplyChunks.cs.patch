@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index 617ac0b..de0787c 100644
+index 617ac0b..fe47b50 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 @@ -9,131 +9,690 @@ using Vintagestory.API.Datastructures;
@@ -91,9 +91,9 @@ index 617ac0b..de0787c 100644
 +	private readonly HashSet<ChunkPos> stratumDeleteRegionsSet = new HashSet<ChunkPos>();
 +
 +	// Generation stage occupancy array.
-+	// Indexes correspond to EnumWorldGenPass (Terrain..PreDone).
++	// Indexes correspond to internal stages (Terrain..PreDone, see StratumWorldGenStages).
 +	// false = stage is free, true = stage is occupied by a thread.
-+	private volatile bool[] stratumStageBusy = new bool[(int)EnumWorldGenPass.Done];
++	private volatile bool[] stratumStageBusy = new bool[StratumWorldGenStages.Done];
 +
 +	// Channel of ready-to-execute tasks (dispatcher → workers)
 +	private BlockingCollection<DispatchedTask> readyTasksQueue;
@@ -262,7 +262,7 @@ index 617ac0b..de0787c 100644
 +	/// </summary>
 +	private bool AnyWorkerStageFree()
 +	{
-+		for (int stage = 1; stage < (int)EnumWorldGenPass.Done; stage++)
++		for (int stage = 1; stage < StratumWorldGenStages.Done; stage++)
 +		{
 +			if (!stratumStageBusy[stage]) return true;
 +		}
@@ -281,7 +281,7 @@ index 617ac0b..de0787c 100644
 +
 +		// Determine the current incomplete generation stage
 +		int stage = req.CurrentIncompletePass_AsInt;
-+		if (stage < 1 || stage >= (int)EnumWorldGenPass.Done) return false;
++		if (stage < 1 || stage >= StratumWorldGenStages.Done) return false;
 +
 +		// Skip if the stage is already occupied by another thread
 +		if (stratumStageBusy[stage]) return false;
@@ -939,8 +939,8 @@ index 617ac0b..de0787c 100644
 +				// Stratum: With workers, the chunk thread only handles stage 0 (loading) and Done (finalization).
 +				// Without workers (ReducedServerThreads), it handles EVERY stage.
 +				if (noWorkers
-+					|| currentIncompletePass_AsInt == (int)EnumWorldGenPass.None
-+					|| currentIncompletePass_AsInt >= (int)EnumWorldGenPass.Done)
++					|| currentIncompletePass_AsInt == StratumWorldGenStages.None
++					|| currentIncompletePass_AsInt >= StratumWorldGenStages.Done)
 +				{
 +					if (server.Suspended)
 +					{
@@ -970,8 +970,8 @@ index 617ac0b..de0787c 100644
 +			// Stratum: With workers, the chunk thread only handles stage 0 (loading) and Done (finalization).
 +			// Without workers (ReducedServerThreads), it handles EVERY stage.
 +			if (noWorkers
-+			    || currentIncompletePass_AsInt == (int)EnumWorldGenPass.None
-+			    || currentIncompletePass_AsInt >= (int)EnumWorldGenPass.Done)
++			    || currentIncompletePass_AsInt == StratumWorldGenStages.None
++			    || currentIncompletePass_AsInt >= StratumWorldGenStages.Done)
  			{
  				if (server.Suspended)
  				{
@@ -1104,7 +1104,7 @@ index 617ac0b..de0787c 100644
 -		if (orCreateMapChunk.currentpass != stage && orCreateMapChunk.currentpass <= chunkthread.additionalWorldGenThreadsCount)
 +
 +		// Stratum start: if the stage doesn't match and it's a working stage (not Done) — skip
-+		if (orCreateMapChunk.currentpass != stage && orCreateMapChunk.currentpass < (int)EnumWorldGenPass.Done)
++		if (orCreateMapChunk.currentpass != stage && orCreateMapChunk.currentpass < StratumWorldGenStages.Done)
  		{
  			return stage == 0;
  		}
@@ -1952,7 +1952,7 @@ index 617ac0b..de0787c 100644
  		Dictionary<long, ServerMapRegion> dictionary = new Dictionary<long, ServerMapRegion>();
  		int i = 1;
 -		int num = Math.Min((int)untilPass, 5);
-+		int num = Math.Min((int)untilPass, (int)EnumWorldGenPass.PreDone); // Clamp to PreDone
++		int num = Math.Min(StratumWorldGenStages.FromVanilla((int)untilPass), StratumWorldGenStages.PreDone); // Stratum: public pass to internal, clamped to PreDone
  		int num2 = num - i;
 +
 +		// Create requests for the area (2*num2+1)²
@@ -1961,7 +1961,7 @@ index 617ac0b..de0787c 100644
  		{
  			for (int k = -num2; k <= num2; k++)
  			{
-@@ -1174,16 +2050,20 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1174,18 +2050,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					long index2d = server.WorldMap.MapChunkIndex2D(x + j, y + k);
  					int regionX = (x + j) / MagicNum.ChunkRegionSizeInChunks;
@@ -1978,10 +1978,13 @@ index 617ac0b..de0787c 100644
 +
 +					// Create MapChunk and generate the column
  					ServerMapChunk mapChunk = CreateMapChunk(x, y, value);
- 					ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(index2d, x + j, y + k, 0, (int)untilPass, server)
+-					ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(index2d, x + j, y + k, 0, (int)untilPass, server)
++					ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(index2d, x + j, y + k, 0, StratumWorldGenStages.FromVanilla((int)untilPass), server) // Stratum: public pass to internal
  					{
  						chunkGenParams = ((j == 0 && k == 0) ? chunkGenParams : null)
  					};
+ 					chunkColumnLoadRequest.MapChunk = mapChunk;
+ 					GenerateNewChunkColumn(mapChunk, chunkColumnLoadRequest);
 @@ -1196,10 +2076,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						chunkthread.peekingChunkColumns.Enqueue(chunkColumnLoadRequest);
  					}
@@ -2080,7 +2083,7 @@ index 617ac0b..de0787c 100644
 +						return;
 +					}
 +
-+					ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(server.WorldMap.MapChunkIndex2D(i, j), i, j, server.serverConsoleId, (int)EnumWorldGenPass.Done, server)
++					ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(server.WorldMap.MapChunkIndex2D(i, j), i, j, server.serverConsoleId, StratumWorldGenStages.Done, server)
  					{
  						chunkGenParams = chunkGenParams
  					};
@@ -2138,8 +2141,8 @@ index 617ac0b..de0787c 100644
 -				if (currentIncompletePass_AsInt == 0 || currentIncompletePass_AsInt > chunkthread.additionalWorldGenThreadsCount)
 +				
 +				if (noWorkers
-+				    || currentIncompletePass_AsInt == (int)EnumWorldGenPass.None
-+				    || currentIncompletePass_AsInt >= (int)EnumWorldGenPass.Done)
++				    || currentIncompletePass_AsInt == StratumWorldGenStages.None
++				    || currentIncompletePass_AsInt >= StratumWorldGenStages.Done)
  				{
  					if (server.exitState.Mode == EnumExitMode.HardExit || server.stopped)
  					{
@@ -2192,7 +2195,7 @@ index 617ac0b..de0787c 100644
  				if (chunkRequest.CurrentIncompletePass == EnumWorldGenPass.Terrain)
  				{
  					ushort sunLight = (ushort)server.sunBrightness;
-@@ -1359,29 +2306,43 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1359,32 +2306,51 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					}
  				}
  			}
@@ -2200,7 +2203,7 @@ index 617ac0b..de0787c 100644
  			{
 -				runGenerators(chunkRequest, chunkRequest.MapChunk.currentpass);
 +				// Stratum: guard against generating stage Done or higher
-+				if (chunkRequest.MapChunk.currentpass < (int)EnumWorldGenPass.Done)
++				if (chunkRequest.MapChunk.currentpass < StratumWorldGenStages.Done)
 +				{
 +					runGenerators(chunkRequest, chunkRequest.MapChunk.currentpass);
 +				}
@@ -2234,10 +2237,19 @@ index 617ac0b..de0787c 100644
 +	/// </summary>
  	private void runGenerators(ChunkColumnLoadRequest chunkRequest, int forPass)
  	{
- 		List<ChunkColumnGenerationDelegate> list = worldgenHandler.OnChunkColumnGen[forPass];
+-		List<ChunkColumnGenerationDelegate> list = worldgenHandler.OnChunkColumnGen[forPass];
++		// Stratum: forPass is the internal stage. The late Terrain sub-stage
++		// has its own list; every other stage maps back onto the vanilla-shaped
++		// OnChunkColumnGen array (Terrain and TerrainLate both map to Terrain).
++		List<ChunkColumnGenerationDelegate> list = forPass == StratumWorldGenStages.TerrainLate
++			? worldgenHandler.OnChunkColumnGenTerrainLate
++			: worldgenHandler.OnChunkColumnGen[StratumWorldGenStages.ToVanilla(forPass)];
  		if (list == null)
  		{
-@@ -1396,32 +2357,44 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			return;
+ 		}
+ 		for (int i = 0; i < list.Count; i++)
+@@ -1396,32 +2362,44 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			catch (Exception ex)
  			{
  				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
@@ -2259,7 +2271,7 @@ index 617ac0b..de0787c 100644
  	{
 -		if (chunkRequest.CurrentIncompletePass <= EnumWorldGenPass.Terrain)
 +		// For early stages, neighbours don't matter
-+		if (chunkRequest.CurrentIncompletePass <= EnumWorldGenPass.Terrain2)
++		if (chunkRequest.CurrentIncompletePass_AsInt <= StratumWorldGenStages.TerrainLate)
  		{
  			return true;
  		}
@@ -2284,7 +2296,7 @@ index 617ac0b..de0787c 100644
  			for (int j = num3; j <= num4; j++)
  			{
  				if (i == chunkRequest.chunkX && j == chunkRequest.chunkZ)
-@@ -1431,54 +2404,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1431,54 +2409,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				long index2d = server.WorldMap.MapChunkIndex2D(i, j);
  				if (!chunkthread.EnsureMinimumWorldgenPassAt(index2d, i, j, currentIncompletePass_AsInt, chunkRequest.creationTime))
  				{
@@ -2356,7 +2368,7 @@ index 617ac0b..de0787c 100644
  			chunkthread.requestedChunkColumns.Enqueue(curRequest);
  			return true;
  		}
-@@ -1490,13 +2468,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1490,13 +2473,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				ServerMain.Logger.VerboseDebug("Un-pausing all worldgen threads.");
  			}
  		}
@@ -2376,7 +2388,7 @@ index 617ac0b..de0787c 100644
  			if (requestedChunkColumn != null && !requestedChunkColumn.Disposed)
  			{
  				server.loadedMapChunks.Remove(requestedChunkColumn.mapIndex2d);
-@@ -1505,104 +2489,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1505,104 +2494,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		}
  		chunkthread.requestedChunkColumns.Clear();
  		ServerMain.Logger.VerboseDebug("Incomplete chunks stored and wiped.");

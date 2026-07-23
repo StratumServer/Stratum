@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index de3f6cc..4cad2c3 100644
+index de3f6cc..8059420 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -27,10 +27,13 @@ using VintagestoryLib.Server.Systems;
@@ -1563,3 +1563,16 @@ index de3f6cc..4cad2c3 100644
  			Id = 3,
  			PlayerPing = packet_ServerPlayerPing
  		};
+@@ -5140,11 +5850,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		}
+ 	}
+ 
+ 	public void LoadChunkColumnForDimension(int cx, int cz, int dim)
+ 	{
+-		ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(WorldMap.MapChunkIndex2D(cx, cz), cx, cz, -1, 6, this);
++		ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(WorldMap.MapChunkIndex2D(cx, cz), cx, cz, -1, StratumWorldGenStages.Done, this); // Stratum: was the vanilla Done literal 6
+ 		chunkColumnLoadRequest.dimension = dim;
+ 		simpleLoadRequests.Enqueue(chunkColumnLoadRequest);
+ 	}
+ 
+ 	public void ForceSendChunkColumn(IServerPlayer player, int cx, int cz, int dimension)
