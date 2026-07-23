@@ -449,6 +449,14 @@ internal sealed class StratumPregenManager
 		string duration = FormatDuration(elapsedMilliseconds);
 
 		StratumRuntime.LogInfo($"pregen complete in {duration}: inspected={inspectedColumns}/{totalColumns} queued={queuedColumns} skippedLoaded={skippedLoadedColumns} skippedInvalid={skippedInvalidColumns}");
+
+		// Stratum: per-stage breakdown, points at the next stage worth splitting
+		// instead of guessing from the generator list.
+		string stageReport = server.chunkThread?.loadsavechunks?.GetStageTimingsReport();
+		if (!string.IsNullOrEmpty(stageReport))
+		{
+			StratumRuntime.LogInfo($"pregen stage timings: {stageReport}");
+		}
 	}
 
 	private bool TryInspectNextColumn(ServerMain server, out bool queued)
