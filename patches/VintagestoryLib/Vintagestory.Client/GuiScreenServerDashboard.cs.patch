@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs b/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs
-index 39d65f2..25ee6b2 100644
+index b9165e8..e97a234 100644
 --- a/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs
 +++ b/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs
-@@ -589,12 +589,12 @@ public class GuiScreenServerDashboard : GuiScreen
+@@ -588,12 +588,12 @@ public class GuiScreenServerDashboard : GuiScreen
  	private void OnReturnFromCustomizer(bool didApply)
  	{
  		if (didApply)

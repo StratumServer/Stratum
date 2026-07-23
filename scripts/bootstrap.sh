@@ -142,7 +142,10 @@ normalize_lf() {
     -name '*.targets' \
   \) -print0 |
     while IFS= read -r -d '' file; do
-      perl -0pi -e 's/\r\n/\n/g' "$file"
+      # Strip UTF-8 BOMs as well as CRLF: extract-patches.sh diffs against
+      # BOM-free LF content, so a BOM in the working file makes git apply
+      # reject any hunk that touches line 1 (bootstrap.ps1 already does both).
+      perl -0pi -e 's/^\xEF\xBB\xBF//; s/\r\n/\n/g' "$file"
     done
 }
 
@@ -332,8 +335,11 @@ PY
       git clone --quiet "$url" "$base"
       git -C "$base" checkout --quiet "$ref"
       rm -rf "$base/.git"
-      normalize_lf "$base"
     fi
+
+    # Run on every bootstrap, not only at clone time: it is idempotent and
+    # heals baselines checked out before BOM stripping existed.
+    normalize_lf "$base"
 
     copy_tree_fresh "$base" "$repo_root/$name"
   done
@@ -369,6 +375,7 @@ if [[ -d "$patches_dir" ]]; then
     echo "${#failed[@]} patch(es) failed to apply:" >&2
     printf '  %s\n' "${failed[@]}" >&2
     echo "Fix the conflicts in the working tree, then run scripts/extract-patches.sh." >&2
+    failed_patch_count="${#failed[@]}"
   fi
 else
   echo "No patches/ directory, skipping patch step."
@@ -404,4 +411,11 @@ if [[ -d "$sources_dir" ]]; then
 fi
 
 echo
+if [[ "${failed_patch_count:-0}" -gt 0 ]]; then
+  # A build after a failed bootstrap compiles vanilla files for the failed
+  # patches and extract-patches then silently deletes their content, so this
+  # must be a hard failure, not a note in the scroll-back.
+  echo "Bootstrap FAILED: $failed_patch_count patch(es) did not apply. The working tree is incomplete." >&2
+  exit 1
+fi
 echo "Bootstrap complete. Run: dotnet build VintageStory.slnx -c Release"

@@ -1,7 +1,8 @@
 diff --git a/VintagestoryApi/Common/Entity/Player/IPlayer.cs b/VintagestoryApi/Common/Entity/Player/IPlayer.cs
+index e05bebf..f4e057d 100644
 --- a/VintagestoryApi/Common/Entity/Player/IPlayer.cs
 +++ b/VintagestoryApi/Common/Entity/Player/IPlayer.cs
-@@ -1,4 +1,7 @@
+@@ -1,6 +1,9 @@
  using System.Collections.Generic;
 +// Stratum: Vintage Story 1.22.4's range checks use these API types.
 +using Vintagestory.API.Common.Entities;
@@ -9,7 +10,11 @@ diff --git a/VintagestoryApi/Common/Entity/Player/IPlayer.cs b/VintagestoryApi/C
  
  #nullable disable
  
-@@ -102,6 +104,14 @@ namespace Vintagestory.API.Common
+ namespace Vintagestory.API.Common
+ {
+@@ -101,10 +104,18 @@ namespace Vintagestory.API.Common
+         /// </summary>
+         /// <param name = "privilegeCode">The privilege to check</param>
          /// <returns>true if the player has the given privilege, false otherwise</returns>
          bool HasPrivilege(string privilegeCode);
  
@@ -24,3 +29,5 @@ diff --git a/VintagestoryApi/Common/Entity/Player/IPlayer.cs b/VintagestoryApi/C
  
  
          /*/// <summary>
+         /// Sends a redirection request to the specified client. The target server has to be public!
+         /// </summary>

@@ -1,8 +1,8 @@
 diff --git a/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs b/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
-index 078e651..dded57d 100644
+index 4e4704b..6ffea38 100644
 --- a/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
 +++ b/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
-@@ -2560,29 +2560,64 @@ namespace Vintagestory.GameContent
+@@ -2557,29 +2557,64 @@ namespace Vintagestory.GameContent
          {
              return GetEncompassingHitbox(VoxelCuboids);
          }

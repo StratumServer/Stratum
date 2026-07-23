@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
-index 5b0cc42..9f9ee45 100644
+index 6b3cdd0..918da9e 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 @@ -3,10 +3,11 @@ using System.Collections.Concurrent;
@@ -331,7 +331,7 @@ index 5b0cc42..9f9ee45 100644
  			ServerMain.Logger.Audit("{0} tried to interact with a block out of range.", player.PlayerName);
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			return;
-@@ -489,10 +737,21 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -483,10 +731,21 @@ public class ServerSystemBlockSimulation : ServerSystem
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.UP), sendPlayerData: false);
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.DOWN), sendPlayerData: false);
  		server.SendOwnPlayerData(targetPlayer);
@@ -353,7 +353,7 @@ index 5b0cc42..9f9ee45 100644
  		server.SendSetBlock(targetPlayer, server.WorldMap.RawRelaxedBlockAccess.GetBlockId(pos), pos.X, pos.InternalY, pos.Z);
  		BlockEntity blockEntity = server.WorldMap.RawRelaxedBlockAccess.GetBlockEntity(pos);
  		if (blockEntity != null)
-@@ -663,11 +922,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -650,11 +909,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  		return false;
  	}
  
@@ -369,7 +369,7 @@ index 5b0cc42..9f9ee45 100644
  	private void UpdateEvery100ms(float t1)
  	{
  		HandleDirtyAndUpdatedBlocks();
-@@ -791,12 +1053,20 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -778,12 +1040,20 @@ public class ServerSystemBlockSimulation : ServerSystem
  	{
  		if (server.RunPhase != EnumServerRunPhase.RunGame)
  		{
@@ -392,7 +392,7 @@ index 5b0cc42..9f9ee45 100644
  			{
  				continue;
  			}
-@@ -825,22 +1095,37 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -812,22 +1082,37 @@ public class ServerSystemBlockSimulation : ServerSystem
  			catch (Exception e)
  			{
  				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
@@ -431,7 +431,7 @@ index 5b0cc42..9f9ee45 100644
  			foreach (int clientId in clientIds)
  			{
  				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
-@@ -875,34 +1160,116 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -862,34 +1147,116 @@ public class ServerSystemBlockSimulation : ServerSystem
  						}
  					}
  				}
@@ -551,7 +551,7 @@ index 5b0cc42..9f9ee45 100644
  		{
  			int num6 = rand.Next(32);
  			int num7 = rand.Next(32);
-@@ -918,29 +1285,73 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -905,29 +1272,73 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (fluid != 0)
  			{
  				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));

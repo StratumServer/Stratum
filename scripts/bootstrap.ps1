@@ -257,22 +257,24 @@ try {
                 git -C $base checkout --quiet $ref
                 # Drop the upstream .git so this is just a baseline snapshot.
                 Remove-Item -Recurse -Force (Join-Path $base '.git')
+            }
 
-                # Normalize text files to LF and strip UTF-8 BOMs. extract-patches.ps1
-                # diffs against LF-normalized BOM-free content, so the patches in patches/
-                # assume LF and no BOM; some upstream repos ship .gitattributes that force
-                # CRLF on checkout (or Windows autocrlf does), and some files have BOMs,
-                # both of which make `git apply` reject hunks.
-                Get-ChildItem -Path $base -Recurse -File -Include '*.cs','*.csproj','*.json','*.xml','*.props','*.targets' -ErrorAction SilentlyContinue | ForEach-Object {
-                    $bytes = [IO.File]::ReadAllBytes($_.FullName)
-                    $hasBOM = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
-                    $hasCR = $false
-                    foreach ($byte in $bytes) { if ($byte -eq 13) { $hasCR = $true; break } }
-                    if ($hasCR -or $hasBOM) {
-                        $start = if ($hasBOM) { 3 } else { 0 }
-                        $text = [Text.Encoding]::UTF8.GetString($bytes, $start, $bytes.Length - $start) -replace "`r`n", "`n"
-                        [IO.File]::WriteAllBytes($_.FullName, [Text.Encoding]::UTF8.GetBytes($text))
-                    }
+            # Normalize text files to LF and strip UTF-8 BOMs. extract-patches.ps1
+            # diffs against LF-normalized BOM-free content, so the patches in patches/
+            # assume LF and no BOM; some upstream repos ship .gitattributes that force
+            # CRLF on checkout (or Windows autocrlf does), and some files have BOMs,
+            # both of which make `git apply` reject hunks. Runs on every bootstrap,
+            # not only at clone time: it is idempotent and heals baselines checked
+            # out before BOM stripping existed.
+            Get-ChildItem -Path $base -Recurse -File -Include '*.cs','*.csproj','*.json','*.xml','*.props','*.targets' -ErrorAction SilentlyContinue | ForEach-Object {
+                $bytes = [IO.File]::ReadAllBytes($_.FullName)
+                $hasBOM = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+                $hasCR = $false
+                foreach ($byte in $bytes) { if ($byte -eq 13) { $hasCR = $true; break } }
+                if ($hasCR -or $hasBOM) {
+                    $start = if ($hasBOM) { 3 } else { 0 }
+                    $text = [Text.Encoding]::UTF8.GetString($bytes, $start, $bytes.Length - $start) -replace "`r`n", "`n"
+                    [IO.File]::WriteAllBytes($_.FullName, [Text.Encoding]::UTF8.GetBytes($text))
                 }
             }
 
@@ -350,6 +352,13 @@ try {
     }
 
     Write-Host ""
+    if ($failed -and $failed.Count -gt 0) {
+        # A build after a failed bootstrap compiles vanilla files for the failed
+        # patches and extract-patches then silently deletes their content, so this
+        # must be a hard failure, not a note in the scroll-back.
+        Write-Host "Bootstrap FAILED: $($failed.Count) patch(es) did not apply. The working tree is incomplete." -ForegroundColor Red
+        exit 1
+    }
     Write-Host "Bootstrap complete. Run: dotnet build VintageStory.slnx -c Release" -ForegroundColor Green
 } finally {
     Pop-Location

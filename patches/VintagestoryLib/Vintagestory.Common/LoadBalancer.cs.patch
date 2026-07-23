@@ -1,7 +1,10 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs b/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs
+index 66d9771..c51089d 100644
 --- a/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs
-@@ -31,7 +31,8 @@ internal class LoadBalancer
+@@ -32,11 +32,12 @@ internal class LoadBalancer
+ 	{
+ 		Thread thread = TyronThreadPool.CreateDedicatedThread(delegate
  		{
  			caller.StartWorkerThread(threadnum);
  		}, name + threadnum);
@@ -11,3 +14,5 @@ diff --git a/VintagestoryLib/Vintagestory.Common/LoadBalancer.cs b/VintagestoryL
  		thread.Priority = Thread.CurrentThread.Priority;
  		return thread;
  	}
+ 
+ 	internal void SynchroniseWorkToMainThread(object source)
