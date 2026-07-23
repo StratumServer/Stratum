@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index f644852..d80ccdb 100644
+index f644852..728d245 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 @@ -9,131 +9,802 @@ using Vintagestory.API.Datastructures;
@@ -136,12 +136,11 @@ index f644852..d80ccdb 100644
 +	// the end, so two columns running at once each get their own set. See GenTerra.cs
 +	// for the pool itself and the reasoning for not using ThreadLocal here.
 +	//
-+	// PreDone and TerrainLate's caps are raised to the worker thread count: nothing
-+	// above that number can ever be dispatched into a stage anyway, so this is a
-+	// ceiling, not a target. Terrain stays fixed at the default of 1 despite being
-+	// fixed the same way; see the field's own comment where Terrain's cap is set,
-+	// below, for why raising it is not safe to ship yet even though it is now
-+	// correct to do so.
++	// PreDone, TerrainLate, and Terrain's caps are raised to the worker thread
++	// count: the dispatcher cannot send more columns than that into a single
++	// stage, so this is a ceiling, not a target. See the field's own comment
++	// where Terrain's cap is set, below, for the regression that once held
++	// Terrain back and why it turned out not to be real.
 +	private readonly int[] stratumStageActiveCount = new int[StratumWorldGenStages.Done];
 +	private readonly int[] stratumStageMaxConcurrent;
 +
@@ -208,26 +207,27 @@ index f644852..d80ccdb 100644
 +		readyTasksQueue = new BlockingCollection<DispatchedTask>
 +			(new ConcurrentQueue<DispatchedTask>());  // Stratum: Initialize the ready-tasks channel
 +
-+		// Stratum: every stage defaults to exclusive (cap 1); PreDone and TerrainLate
-+		// are the audited-safe exceptions, see the field's own comment. Both capped at
-+		// the actual worker thread count, not left unbounded.
++		// Stratum: every stage defaults to exclusive (cap 1); PreDone, TerrainLate,
++		// and Terrain are the audited-safe exceptions, see the field's own comment.
++		// All three capped at the actual worker thread count, not left unbounded.
 +		stratumStageMaxConcurrent = new int[StratumWorldGenStages.Done];
 +		for (int i = 0; i < stratumStageMaxConcurrent.Length; i++) stratumStageMaxConcurrent[i] = 1;
 +		stratumStageMaxConcurrent[StratumWorldGenStages.PreDone] = Math.Max(1, chunkthread.additionalWorldGenThreadsCount);
 +		stratumStageMaxConcurrent[StratumWorldGenStages.TerrainLate] = Math.Max(1, chunkthread.additionalWorldGenThreadsCount);
-+		// Terrain's cap stays at 1 on purpose. GenTerra.cs got the same per-column
-+		// buffer pool as the other two stages, so it is no longer unsafe to raise —
-+		// but raising it measured a 4x wall-clock regression on a same-seed A/B
-+		// pregen run (roughly 95s at cap 1 versus 421s at cap 4), and the two most
-+		// likely causes did not check out: GenTerra's own internal Parallel.For
-+		// only asks for 2 threads on the machine this was measured on, and the
-+		// buffer pool itself saw close to zero contention (pool size stayed at 1,
-+		// no misses, across hundreds of columns). Something else in the dispatcher
-+		// degrades once Terrain specifically has more than one column in flight;
-+		// PreDone and TerrainLate at cap 4 with Terrain held at 1 measured within
-+		// noise of the fully serial baseline on the same seed, so this is not a
-+		// general "raising any cap is bad" result. Left at 1 until that root cause
-+		// is understood.
++		stratumStageMaxConcurrent[StratumWorldGenStages.Terrain] = Math.Max(1, chunkthread.additionalWorldGenThreadsCount);
++		// Terrain's cap matches PreDone and TerrainLate. GenTerra.cs carries the
++		// same per-column buffer pool as the other two stages, so raising this cap
++		// was safe, only unmeasured. An earlier same-seed A/B run found a 4x
++		// wall-clock regression at cap 4 against cap 1 (95s against 421s) and held
++		// the cap at 1 pending a root cause. That regression did not survive a
++		// second look: the same session had accumulated 20 orphaned
++		// MSBuild.dll/VBCSCompiler processes from repeated dotnet build
++		// invocations, some costing 13-17% CPU each. Killing them and rerunning
++		// the same comparison found cap 1 and cap 4 within noise of each other. A
++		// follow-up run of 5 interleaved samples per cap, same seed, confirmed it:
++		// medians of 55s (cap 1) and 56s (cap 4), means of 56.0s and 58.0s, each
++		// cap's own run-to-run spread wider than the gap between the two caps.
++		// Zero worldgen exceptions across all 10 runs.
  	}
  
 +	/// <summary>

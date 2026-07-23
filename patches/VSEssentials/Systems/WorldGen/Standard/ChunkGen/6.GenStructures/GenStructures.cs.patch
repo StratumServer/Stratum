@@ -1,0 +1,71 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
+index 95025db..8927e57 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
+@@ -493,40 +493,56 @@ namespace Vintagestory.ServerMods
+                 }
+             }, spawnPos);
+         }
+ 
+ 
++        // Stratum: treeAndShrubSupressingStructures is a single instance field, one
++        // GenStructures per world, that PreventPlacementBroadlyAt clears and rebuilds
++        // per column and PreventPlacementAt reads a bit later for the same column's
++        // Vegetation-stage processing. Both currently only run from within Vegetation,
++        // which stays at same-stage cap 1, so today's callers never overlap. The moment
++        // anyone raises Vegetation's cap the way PreDone/TerrainLate/Terrain already
++        // got raised, two columns' clear-then-read sequences would interleave on the
++        // same shared list. Locked now, while the cost is zero (Vegetation is already
++        // serialized), instead of leaving it as a landmine for whoever raises that cap.
++        readonly object stratumTreeShrubSuppressLock = new object();
+         List<Cuboidi> treeAndShrubSupressingStructures = new List<Cuboidi>();
+         int chunkMapSizeY;
+ 
+         public bool PreventPlacementAt(int x, int z, int category)
+         {
+             if (category != ShrubsHashCode && category != TreesHashCode) return false;
+ 
+-            for (int i = 0; i < treeAndShrubSupressingStructures.Count; i++)
++            lock (stratumTreeShrubSuppressLock)
+             {
+-                if (treeAndShrubSupressingStructures[i].Contains(x, z)) return true;
++                for (int i = 0; i < treeAndShrubSupressingStructures.Count; i++)
++                {
++                    if (treeAndShrubSupressingStructures[i].Contains(x, z)) return true;
++                }
+             }
+ 
+             return false;
+         }
+ 
+         public bool PreventPlacementBroadlyAt(int chunkX, int chunkZ)
+         {
+             BlockPos chunkStart = new BlockPos(Dimensions.NormalWorld);
+             BlockPos chunkEnd = new BlockPos(Dimensions.NormalWorld);
+ 
+-            treeAndShrubSupressingStructures.Clear();
+-            api.World.BlockAccessor.WalkStructures(
+-                chunkStart.Set(chunkX * chunksize, 0, chunkZ * chunksize),
+-                chunkEnd.Set(chunkX * chunksize + chunksize, chunkMapSizeY * chunksize, chunkZ * chunksize + chunksize), (struc) =>
++            lock (stratumTreeShrubSuppressLock)
+             {
+-                if (struc.SuppressTreesAndShrubs)
++                treeAndShrubSupressingStructures.Clear();
++                api.World.BlockAccessor.WalkStructures(
++                    chunkStart.Set(chunkX * chunksize, 0, chunkZ * chunksize),
++                    chunkEnd.Set(chunkX * chunksize + chunksize, chunkMapSizeY * chunksize, chunkZ * chunksize + chunksize), (struc) =>
+                 {
+-                    treeAndShrubSupressingStructures.Add(struc.Location.Clone().GrowBy(1, 1, 1));
+-                }
+-            });
++                    if (struc.SuppressTreesAndShrubs)
++                    {
++                        treeAndShrubSupressingStructures.Add(struc.Location.Clone().GrowBy(1, 1, 1));
++                    }
++                });
++            }
+ 
+             return false;
+         }
+ 
+         public BlockPatchConfig GetPatchProviderAt(int chunkX, int chunkZ, ref EnumHandling handling)
