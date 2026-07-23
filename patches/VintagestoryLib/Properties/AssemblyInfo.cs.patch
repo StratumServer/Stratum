@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Properties/AssemblyInfo.cs b/VintagestoryLib/Properties/AssemblyInfo.cs
-index 3d786fd..5107446 100644
+index 16759e7..d2530b6 100644
 --- a/VintagestoryLib/Properties/AssemblyInfo.cs
 +++ b/VintagestoryLib/Properties/AssemblyInfo.cs
 @@ -12,6 +12,6 @@ using System.Security.Permissions;
@@ -7,6 +7,6 @@ index 3d786fd..5107446 100644
  [assembly: AssemblyCopyright("Copyright © 2016-2026 Anego Studios")]
  [assembly: ComVisible(false)]
  [assembly: Guid("8495b9b8-6974-45de-b896-87f195304ede")]
- [assembly: AssemblyFileVersion("1.22.4")]
--[assembly: AssemblyVersion("1.22.4.0")]
+ [assembly: AssemblyFileVersion("1.22.5")]
+-[assembly: AssemblyVersion("1.22.5.0")]
 +[assembly: AssemblyVersion("1.0.0.0")]

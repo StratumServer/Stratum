@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs b/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
-index 060b4ff..d129b0a 100644
+index 08bc6af..d129b0a 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
 @@ -5,11 +5,11 @@ using CommandLine.Text;
@@ -45,7 +45,7 @@ index 060b4ff..d129b0a 100644
  	public string GetUsage(ParserResult<ServerProgramArgs> parser)
  	{
  		HelpText obj = HelpText.AutoBuild<ServerProgramArgs>(parser, (Func<HelpText, HelpText>)((HelpText h) => h), (Func<Example, Example>)((Example e) => e), false, 80);
--		obj.Heading = "Vintage Story Server 1.22.4";
+-		obj.Heading = "Vintage Story Server 1.22.5";
 +		obj.Heading = StratumInfo.FullName + " server (Vintage Story " + StratumInfo.BaseGameVersion + ")";
 +		obj.Copyright = string.Empty;
  		return ((object)obj).ToString();

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index de3f6cc..8059420 100644
+index 1103a72..6bc1ee9 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -27,10 +27,13 @@ using VintagestoryLib.Server.Systems;
@@ -337,8 +337,8 @@ index de3f6cc..8059420 100644
  		}
  		if ("1.22.6" != identification.NetworkVersion)
  		{
--			DisconnectPlayer(client, null, Lang.Get("disconnect-wrongversion", identification.ShortGameVersion, identification.NetworkVersion, "1.22.4", "1.22.6"));
-+			DisconnectPlayer(client, StratumServerTheme.WrongVersion(identification.ShortGameVersion, identification.NetworkVersion, "1.22.4", "1.22.6"));
+-			DisconnectPlayer(client, null, Lang.Get("disconnect-wrongversion", identification.ShortGameVersion, identification.NetworkVersion, "1.22.5", "1.22.6"));
++			DisconnectPlayer(client, StratumServerTheme.WrongVersion(identification.ShortGameVersion, identification.NetworkVersion, "1.22.5", "1.22.6"));
  			return;
  		}
  		if (!client.IsSinglePlayerClient && Config.IsPasswordProtected() && identification.ServerPassword != Config.Password)
@@ -448,9 +448,9 @@ index de3f6cc..8059420 100644
 -		Logger.Event("Launching server...");
  		PlayerDataManager.Load();
  		Logger.StoryEvent(Lang.Get("It senses..."));
--		Logger.Event("Server v1.22.4, network v1.22.6, api v1.22.0");
+-		Logger.Event("Server v1.22.5, network v1.22.6, api v1.22.0");
 +		Logger.Event("Powered by Stratum | Made by imtsubaki and contributors");
-+		Logger.Event("Vintagestory v1.22.4 | Network v1.22.6 | API v1.22.0");
++		Logger.Event("Vintagestory v1.22.5 | Network v1.22.6 | API v1.22.0");
 +		Logger.Event("Launching server...");
  		totalUnpausedTime.Start();
  		AssetManager = new AssetManager(GamePaths.AssetsPath, EnumAppSide.Server);

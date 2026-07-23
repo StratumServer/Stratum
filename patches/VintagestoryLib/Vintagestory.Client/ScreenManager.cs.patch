@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Client/ScreenManager.cs b/VintagestoryLib/Vintagestory.Client/ScreenManager.cs
-index aace768..6964ba4 100644
+index 244b371..433cbdc 100644
 --- a/VintagestoryLib/Vintagestory.Client/ScreenManager.cs
 +++ b/VintagestoryLib/Vintagestory.Client/ScreenManager.cs
 @@ -601,11 +601,11 @@ public class ScreenManager : KeyEventHandler, MouseEventHandler, NewFrameHandler

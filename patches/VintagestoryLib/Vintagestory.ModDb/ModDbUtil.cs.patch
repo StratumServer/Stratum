@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.ModDb/ModDbUtil.cs b/VintagestoryLib/Vintagestory.ModDb/ModDbUtil.cs
-index daba8b1..07ed7ce 100644
+index 496706f..0334c93 100644
 --- a/VintagestoryLib/Vintagestory.ModDb/ModDbUtil.cs
 +++ b/VintagestoryLib/Vintagestory.ModDb/ModDbUtil.cs
 @@ -12,11 +12,10 @@ using System.Threading.Tasks;

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs b/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs
-index b9165e8..e97a234 100644
+index 6c40846..b1cc47d 100644
 --- a/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs
 +++ b/VintagestoryLib/Vintagestory.Client/GuiScreenServerDashboard.cs
 @@ -588,12 +588,12 @@ public class GuiScreenServerDashboard : GuiScreen

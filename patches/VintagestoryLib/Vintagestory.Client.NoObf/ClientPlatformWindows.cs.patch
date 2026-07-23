@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Client.NoObf/ClientPlatformWindows.cs b/VintagestoryLib/Vintagestory.Client.NoObf/ClientPlatformWindows.cs
-index d87c56a..79c4c0e 100644
+index 7c0bb2c..bd48f3f 100644
 --- a/VintagestoryLib/Vintagestory.Client.NoObf/ClientPlatformWindows.cs
 +++ b/VintagestoryLib/Vintagestory.Client.NoObf/ClientPlatformWindows.cs
 @@ -362,11 +362,11 @@ public sealed class ClientPlatformWindows : ClientPlatformAbstract

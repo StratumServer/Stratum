@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Client.NoObf/GuiElementModCell.cs b/VintagestoryLib/Vintagestory.Client.NoObf/GuiElementModCell.cs
-index dafb7e6..1cacae3 100644
+index 5c17bca..905f143 100644
 --- a/VintagestoryLib/Vintagestory.Client.NoObf/GuiElementModCell.cs
 +++ b/VintagestoryLib/Vintagestory.Client.NoObf/GuiElementModCell.cs
 @@ -112,11 +112,11 @@ public class GuiElementModCell : GuiElementTextBase, IGuiElementCell, IDisposabl

@@ -11,7 +11,7 @@ Builds a clean working tree by laying down:
   3. Stratum patches and sources over those baselines.
 
 Options:
-  --version VERSION        Vintage Story server version to download. Default: 1.22.4
+  --version VERSION        Vintage Story server version to download. Default: 1.22.5
   --server-archive PATH    Existing vs_server_*.zip or .tar.gz archive to use.
   --client-lib-dir PATH    Optional full client Lib/ folder for client-only deps.
   --refresh               Force re-extract, re-decompile, and re-clone.
@@ -19,7 +19,7 @@ Options:
 EOF
 }
 
-version="1.22.4"
+version="1.22.5"
 server_archive=""
 client_lib_dir="${VS_CLIENT_LIB_DIR:-}"
 refresh=0
