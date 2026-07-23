@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerProgram.cs b/VintagestoryLib/Vintagestory.Server/ServerProgram.cs
-index b3219a5..9cbd88d 100644
+index ea3dbd1..9cbd88d 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerProgram.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerProgram.cs
 @@ -4,11 +4,10 @@ using System.Runtime.InteropServices;

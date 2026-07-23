@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Client/GuiScreenDownloadMods.cs b/VintagestoryLib/Vintagestory.Client/GuiScreenDownloadMods.cs
-index 2fb4996..df84b6d 100644
+index e07f526..5e79bf0 100644
 --- a/VintagestoryLib/Vintagestory.Client/GuiScreenDownloadMods.cs
 +++ b/VintagestoryLib/Vintagestory.Client/GuiScreenDownloadMods.cs
 @@ -69,11 +69,11 @@ public class GuiScreenDownloadMods : GuiScreen

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs b/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
-index 849be87..d129b0a 100644
+index 060b4ff..d129b0a 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerProgramArgs.cs
 @@ -5,11 +5,11 @@ using CommandLine.Text;

@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index 617ac0b..00db232 100644
+index 617ac0b..3300a67 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-@@ -9,131 +9,592 @@ using Vintagestory.API.Datastructures;
+@@ -9,131 +9,613 @@ using Vintagestory.API.Datastructures;
  using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
  using Vintagestory.API.Util;
@@ -32,9 +32,21 @@ index 617ac0b..00db232 100644
 +	// Whether the "empty chunk" flag needs to be set (for worlds before 1.12-dev.1)
  	private bool requiresSetEmptyFlag;
  
-+	// Pause counter for all worldgen threads (>0 = pause active)
++	// Pause request flag for all worldgen threads (0 = run, 1 = pause requested).
++	// Acknowledgements live in pauseAckState, so a late or raced acknowledgement
++	// can never leave this flag above zero with no pauser active.
  	private volatile int pauseAllWorldgenThreads;
  
++	// Packed pause acknowledgement state: the upper bits carry the pause epoch,
++	// the low 16 bits count workers parked for that epoch. The epoch moves on
++	// every pause start, cancel, and resume, so an acknowledgement from a worker
++	// that raced a cancelled pause fails its CAS instead of polluting the count
++	// of the next pause.
++	private long pauseAckState;
++
++	private const int PauseAckCountBits = 16;
++	private const long PauseAckCountMask = (1L << PauseAckCountBits) - 1;
++
 +	// Thread-local stream for chunk serialization during saving
  	[ThreadStatic]
  	private static FastMemoryStream saveChunksStream;
@@ -296,11 +308,11 @@ index 617ac0b..00db232 100644
 +						}
 +					}
 +				}
- 			}
++			}
 +			catch (InvalidOperationException) when (!readyTasksQueue.IsAddingCompleted)
 +			{
 +				// Collection was modified during iteration - normal, will retry next tick
-+			}
+ 			}
 +			catch (InvalidOperationException)
 +			{
 +				// Channel completed (CompleteAdding) - exit
@@ -559,11 +571,22 @@ index 617ac0b..00db232 100644
 +		// Process "peek" requests — generation without saving
  		if (!server.peekChunkColumnQueue.IsEmpty && server.peekChunkColumnQueue.TryDequeue(out var result3))
  		{
++			// Stratum: resume only a pause this path actually holds. The old
++			// unconditional resume cancelled a pause another thread was inside
++			// of (EnsureQueueSpace on the dispatcher) whenever the CAS lost.
  			if (PauseAllWorldgenThreads(3600))
  			{
- 				PeekChunkAreaLocking(result3.Key, result3.Value.UntilPass, result3.Value.OnGenerated, result3.Value.ChunkGenParams);
+-				PeekChunkAreaLocking(result3.Key, result3.Value.UntilPass, result3.Value.OnGenerated, result3.Value.ChunkGenParams);
++				try
++				{
++					PeekChunkAreaLocking(result3.Key, result3.Value.UntilPass, result3.Value.OnGenerated, result3.Value.ChunkGenParams);
++				}
++				finally
++				{
++					ResumeAllWorldgenThreads();
++				}
  			}
- 			ResumeAllWorldgenThreads();
+-			ResumeAllWorldgenThreads();
  		}
 +
 +		// Check chunk existence in the database (async requests)
@@ -615,7 +638,7 @@ index 617ac0b..00db232 100644
  			if (!tryLoadOrGenerateChunkColumnsInQueue())
  			{
  				break;
-@@ -143,39 +604,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -143,39 +625,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				break;
  			}
  		}
@@ -677,7 +700,7 @@ index 617ac0b..00db232 100644
  				ServerChunk serverChunk = (ServerChunk)server.WorldMap.GetChunk(x, i, z);
  				if (serverChunk != null)
  				{
-@@ -183,11 +664,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -183,11 +685,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					for (int j = 0; j < entities.Length; j++)
  					{
  						Entity entity = entities[j];
@@ -690,7 +713,7 @@ index 617ac0b..00db232 100644
  						{
  							if (j >= serverChunk.EntitiesCount)
  							{
-@@ -211,19 +692,23 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -211,19 +713,23 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				});
  			}
  			list2.Add(item);
@@ -715,7 +738,7 @@ index 617ac0b..00db232 100644
  		{
  			ChunkPos item2 = server.WorldMap.MapRegionPosFromIndex2D(result2);
  			if (hashSet == null)
-@@ -237,28 +722,46 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -237,28 +743,46 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		{
  			chunkthread.gameDatabase.DeleteMapRegions(hashSet);
  		}
@@ -767,7 +790,7 @@ index 617ac0b..00db232 100644
  		ServerMapChunk orCreateMapChunk = chunkthread.loadsavechunks.GetOrCreateMapChunk(request);
  		if (orCreateMapChunk == null)
  		{
-@@ -267,44 +770,108 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -267,44 +791,108 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		ServerChunk[] array = chunkthread.loadsavechunks.TryLoadChunkColumn(request);
  		if (array == null)
  		{
@@ -877,7 +900,7 @@ index 617ac0b..00db232 100644
  				{
  					return false;
  				}
-@@ -315,46 +882,63 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -315,46 +903,63 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			}
  		}
  		return false;
@@ -942,7 +965,7 @@ index 617ac0b..00db232 100644
  				chunkRequest.Chunks = TryLoadChunkColumn(chunkRequest);
  				if (chunkRequest.Chunks != null)
  				{
-@@ -364,31 +948,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -364,31 +969,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						obj.serverMapChunk = orCreateMapChunk;
  						obj.MarkFresh();
  					}
@@ -985,7 +1008,7 @@ index 617ac0b..00db232 100644
  				ServerEventAPI eventapi = server.api.eventapi;
  				ServerMapChunk mapChunk = orCreateMapChunk;
  				int chunkX = chunkRequest.chunkX;
-@@ -404,117 +999,105 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -404,117 +1020,105 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					ServerMain.Logger.Error("Repair mode is enabled so will delete the entire chunk column.");
  					GenerateNewChunkColumn(orCreateMapChunk, chunkRequest);
  					return false;
@@ -1133,7 +1156,7 @@ index 617ac0b..00db232 100644
  				try
  				{
  					serverChunk.Unpack();
-@@ -529,10 +1112,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -529,10 +1133,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						ServerMain.FrameProfiler.Leave();
  						return;
  					}
@@ -1146,7 +1169,7 @@ index 617ac0b..00db232 100644
  			{
  				for (int j = 0; j < serverChunk.Entities.Length; j++)
  				{
-@@ -548,10 +1133,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -548,10 +1154,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					{
  						if (server.LoadEntity(entity, num2))
  						{
@@ -1158,7 +1181,7 @@ index 617ac0b..00db232 100644
  						{
  							string text = "-";
  							try
-@@ -564,14 +1150,18 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -564,14 +1171,18 @@ internal class ServerSystemSupplyChunks : ServerSystem
  							ServerMain.Logger.Log(EnumLogType.Worldgen, "In " + server.WorldName + ", villager " + text + " removed at " + entity.Pos.AsBlockPos?.ToString() + " due to an exception on loading");
  						}
  					}
@@ -1177,7 +1200,7 @@ index 617ac0b..00db232 100644
  			{
  				BlockEntity value = blockEntity.Value;
  				if (value == null)
-@@ -580,10 +1170,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -580,10 +1191,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				}
  				try
  				{
@@ -1189,7 +1212,7 @@ index 617ac0b..00db232 100644
  						serverChunk.serverMapChunk.NewBlockEntities.Remove(value.Pos);
  						value.OnBlockPlaced();
  					}
-@@ -594,23 +1185,33 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -594,23 +1206,33 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					ServerMain.Logger.Notification("Exception thrown when trying to initialize a block entity @{0}: {1}", value.Pos, ex3);
  					value.UnregisterAllTickListeners();
  				}
@@ -1223,7 +1246,7 @@ index 617ac0b..00db232 100644
  		mapChunk.NeighboursLoaded = default(SmallBoolArray);
  		mapChunk.SelfLoaded = true;
  		for (int i = 0; i < Cardinal.ALL.Length; i++)
-@@ -623,20 +1224,26 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -623,20 +1245,26 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				serverMapChunk.NeighboursLoaded[cardinal.Opposite.Index] = true;
  			}
  		}
@@ -1250,7 +1273,7 @@ index 617ac0b..00db232 100644
  			serverMapChunk.NeighboursLoaded[4] = false;
  		}
  		if (serverMapChunk2 != null)
-@@ -667,12 +1274,17 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -667,12 +1295,17 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		{
  			serverMapChunk8.NeighboursLoaded[3] = false;
  		}
@@ -1268,7 +1291,7 @@ index 617ac0b..00db232 100644
  			for (int j = -1; j <= 1; j++)
  			{
  				bool flag = false;
-@@ -682,19 +1294,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -682,19 +1315,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				}
  				if (!flag)
  				{
@@ -1293,7 +1316,7 @@ index 617ac0b..00db232 100644
  		int num = 0;
  		for (int i = -1; i <= 1; i++)
  		{
-@@ -707,60 +1324,78 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -707,60 +1345,78 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			}
  		}
  		return num == 8;
@@ -1373,7 +1396,7 @@ index 617ac0b..00db232 100644
  				dictionary = value.ModData;
  				dictionary2 = value.OreMaps;
  				intDataMap2D = value.GeologicProvinceMap;
-@@ -770,12 +1405,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -770,12 +1426,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			{
  				flag = false;
  				value.loadedTotalMs = server.ElapsedMilliseconds;
@@ -1388,7 +1411,7 @@ index 617ac0b..00db232 100644
  			if (list != null)
  			{
  				value.GeneratedStructures = list;
-@@ -798,35 +1435,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -798,35 +1456,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			}
  		}
  		return value;
@@ -1437,7 +1460,7 @@ index 617ac0b..00db232 100644
  		byte[] array = chunkGenParams?.GetBytes("GeneratedStructures");
  		if (array == null)
  		{
-@@ -836,44 +1486,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -836,44 +1507,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		long key = server.api.WorldManager.MapRegionIndex2D(regionX, regionZ);
  		if (!dictionary.TryGetValue(key, out var value) || value == null)
  		{
@@ -1498,7 +1521,7 @@ index 617ac0b..00db232 100644
  		long key = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
  		server.loadedMapChunks.TryGetValue(key, out var value);
  		if (value != null)
-@@ -881,31 +1546,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -881,31 +1567,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			return value;
  		}
  		return TryLoadMapChunk(chunkX, chunkZ);
@@ -1541,7 +1564,7 @@ index 617ac0b..00db232 100644
  			for (int j = 0; j < Cardinal.ALL.Length; j++)
  			{
  				Cardinal cardinal = Cardinal.ALL[j];
-@@ -918,47 +1594,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -918,47 +1615,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					}
  					chunkRequest.NeighbourTerrainHeight[j] = serverMapChunk.WorldGenTerrainHeightMap;
  				}
@@ -1669,7 +1692,7 @@ index 617ac0b..00db232 100644
  			foreach (ServerChunk serverChunk in array)
  			{
  				if (serverChunk != null)
-@@ -967,10 +1707,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -967,10 +1728,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					serverChunk.MarkModified();
  					serverChunk.TryPackAndCommit();
  				}
@@ -1682,7 +1705,7 @@ index 617ac0b..00db232 100644
  			ServerMain.Logger.Error("Loaded some but not all chunks of a column? Discarding whole column.");
  			return null;
  		}
-@@ -979,18 +1721,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -979,18 +1742,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			return null;
  		}
  		return array;
@@ -1705,7 +1728,7 @@ index 617ac0b..00db232 100644
  					serverMapChunk.YMax = (ushort)(server.SaveGameData.MapSizeY - 1);
  				}
  				return serverMapChunk;
-@@ -1011,10 +1757,13 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1011,10 +1778,13 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			}
  		}
  		return null;
@@ -1719,7 +1742,7 @@ index 617ac0b..00db232 100644
  		byte[] mapRegion = chunkthread.gameDatabase.GetMapRegion(regionX, regionZ);
  		try
  		{
-@@ -1035,14 +1784,20 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1035,14 +1805,20 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			throw;
  		}
  		return null;
@@ -1740,7 +1763,7 @@ index 617ac0b..00db232 100644
  			storyChunkSpawnEvents = new string[15]
  			{
  				Lang.Get("...the carved mountains"),
-@@ -1060,23 +1815,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1060,23 +1836,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				Lang.Get("...a misty sunrise"),
  				Lang.Get("...dew drops on a blade of grass"),
  				Lang.Get("...a soft breeze")
@@ -1768,7 +1791,7 @@ index 617ac0b..00db232 100644
  					double value = random.NextDouble() * 6.2831854820251465;
  					double num7 = num6 * GameMath.Sin(value);
  					double num8 = num6 * GameMath.Cos(value);
-@@ -1096,10 +1855,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1096,10 +1876,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					server.api.Logger.Notification("Trying another spawn location ({0}/{1})...", i + 2, num3);
  				}
  			}
@@ -1780,7 +1803,7 @@ index 617ac0b..00db232 100644
  				if (!server.blockAccessor.GetBlock(blockPos).SideSolid[BlockFacing.UP.Index])
  				{
  					server.blockAccessor.SetBlock(server.blockAccessor.GetBlock(new AssetLocation("planks-oak-we")).Id, blockPos);
-@@ -1107,13 +1867,16 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1107,13 +1888,16 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				blockPos.Y++;
  			}
  		}
@@ -1797,7 +1820,7 @@ index 617ac0b..00db232 100644
  			x = blockPos.X,
  			y = blockPos.Y,
  			z = blockPos.Z
-@@ -1123,10 +1886,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1123,10 +1907,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			server.mapMiddleSpawnPos.y = null;
  		}
  		server.api.Logger.VerboseDebug("Done spawn chunk");
@@ -1812,7 +1835,7 @@ index 617ac0b..00db232 100644
  		int num = 60;
  		int num2 = 0;
  		int num3 = 0;
-@@ -1137,36 +1904,47 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1137,36 +1925,47 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		{
  			num4 = GameMath.Clamp(num2 + pos.X, 0, server.WorldMap.MapSizeX - 1);
  			num6 = GameMath.Clamp(num3 + pos.Z, 0, server.WorldMap.MapSizeZ - 1);
@@ -1861,7 +1884,7 @@ index 617ac0b..00db232 100644
  		{
  			for (int k = -num2; k <= num2; k++)
  			{
-@@ -1174,16 +1952,20 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1174,16 +1973,20 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					long index2d = server.WorldMap.MapChunkIndex2D(x + j, y + k);
  					int regionX = (x + j) / MagicNum.ChunkRegionSizeInChunks;
@@ -1882,7 +1905,7 @@ index 617ac0b..00db232 100644
  					{
  						chunkGenParams = ((j == 0 && k == 0) ? chunkGenParams : null)
  					};
-@@ -1196,10 +1978,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1196,10 +1999,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						chunkthread.peekingChunkColumns.Enqueue(chunkColumnLoadRequest);
  					}
  				}
@@ -1895,7 +1918,7 @@ index 617ac0b..00db232 100644
  		{
  			num4 = num - i;
  			for (int l = -num4; l <= num4; l++)
-@@ -1212,10 +1996,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1212,10 +2017,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						runGenerators(chunkRequest, i);
  					}
  				}
@@ -1908,7 +1931,7 @@ index 617ac0b..00db232 100644
  		{
  			for (int n = -num2; n <= num2; n++)
  			{
-@@ -1232,61 +2018,107 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1232,61 +2039,107 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						dictionary2[key] = chunks;
  					}
  				}
@@ -2018,7 +2041,7 @@ index 617ac0b..00db232 100644
  				millisecondsSinceStart = server.totalUnpausedTime.ElapsedMilliseconds;
  				float num4 = 100f * ((float)server.loadedChunks.Count / (float)server.WorldMap.ChunkMapSizeY - (float)num) / (float)num2;
  				ServerMain.Logger.Event(num4.ToString("0.#") + "% ({0} in queue)", chunkthread.requestedChunkColumns.Count);
-@@ -1298,37 +2130,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1298,37 +2151,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					ServerMain.Logger.StoryEvent("...");
  				}
@@ -2069,7 +2092,7 @@ index 617ac0b..00db232 100644
  				foreach (ChunkColumnLoadRequest requestedChunkColumn3 in chunkthread.requestedChunkColumns)
  				{
  					if (requestedChunkColumn3 != null)
-@@ -1340,16 +2183,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1340,16 +2204,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				throw new Exception("Somehow worldgen has become stuck in an endless loop, please report this as a bug!  Additional data in the server-main log");
  			}
  		}
@@ -2092,7 +2115,7 @@ index 617ac0b..00db232 100644
  				if (chunkRequest.CurrentIncompletePass == EnumWorldGenPass.Terrain)
  				{
  					ushort sunLight = (ushort)server.sunBrightness;
-@@ -1359,29 +2208,43 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1359,29 +2229,43 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					}
  				}
  			}
@@ -2137,7 +2160,7 @@ index 617ac0b..00db232 100644
  		List<ChunkColumnGenerationDelegate> list = worldgenHandler.OnChunkColumnGen[forPass];
  		if (list == null)
  		{
-@@ -1396,32 +2259,44 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1396,32 +2280,44 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			catch (Exception ex)
  			{
  				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
@@ -2184,7 +2207,7 @@ index 617ac0b..00db232 100644
  			for (int j = num3; j <= num4; j++)
  			{
  				if (i == chunkRequest.chunkX && j == chunkRequest.chunkZ)
-@@ -1431,54 +2306,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1431,54 +2327,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				long index2d = server.WorldMap.MapChunkIndex2D(i, j);
  				if (!chunkthread.EnsureMinimumWorldgenPassAt(index2d, i, j, currentIncompletePass_AsInt, chunkRequest.creationTime))
  				{
@@ -2256,7 +2279,7 @@ index 617ac0b..00db232 100644
  			chunkthread.requestedChunkColumns.Enqueue(curRequest);
  			return true;
  		}
-@@ -1490,13 +2370,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1490,13 +2391,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				ServerMain.Logger.VerboseDebug("Un-pausing all worldgen threads.");
  			}
  		}
@@ -2276,7 +2299,7 @@ index 617ac0b..00db232 100644
  			if (requestedChunkColumn != null && !requestedChunkColumn.Disposed)
  			{
  				server.loadedMapChunks.Remove(requestedChunkColumn.mapIndex2d);
-@@ -1505,104 +2391,133 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1505,104 +2412,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		}
  		chunkthread.requestedChunkColumns.Clear();
  		ServerMain.Logger.VerboseDebug("Incomplete chunks stored and wiped.");
@@ -2339,19 +2362,16 @@ index 617ac0b..00db232 100644
 -			Thread.Sleep(1);
 +			dispatcherThread.Join(2000); // Wait up to 2 seconds
  		}
--		BlockAccessorWorldGen.ThreadDispose();
--	}
- 
--	public override void OnSeperateThreadShutDown()
--	{
++
 +		readyTasksQueue.CompleteAdding(); // Stratum: Close the channel for workers
  		BlockAccessorWorldGen.ThreadDispose();
  	}
  
+-	public override void OnSeperateThreadShutDown()
 +	/// <summary>
 +	/// Resource disposal. Duplicates shutdown logic to guarantee correct shutdown.
 +	/// </summary>
- 	public override void Dispose()
++	public override void Dispose()
  	{
 +		dispatcherRunning = false;
 +		dispatcherShuttingDown = true;
@@ -2366,9 +2386,28 @@ index 617ac0b..00db232 100644
  		BlockAccessorWorldGen.ThreadDispose();
  	}
  
+-	public override void Dispose()
++	/// <summary>
++	/// Retires the current pause epoch: bumps the epoch bits and zeroes the
++	/// acknowledgement count in one atomic swap.
++	/// </summary>
++	private void RetirePauseEpoch()
+ 	{
+-		BlockAccessorWorldGen.ThreadDispose();
++		while (true)
++		{
++			long cur = Interlocked.Read(ref pauseAckState);
++			long next = ((cur >> PauseAckCountBits) + 1) << PauseAckCountBits;
++			if (Interlocked.CompareExchange(ref pauseAckState, next, cur) == cur)
++			{
++				return;
++			}
++		}
+ 	}
+ 
 +	/// <summary>
 +	/// Pauses all worldgen threads. Waits until all workers acknowledge the pause.
-+	/// Returns false on timeout (resets the flag to prevent deadlock).
++	/// Returns false on timeout (cancels the request to prevent deadlock).
 +	/// </summary>
  	public bool PauseAllWorldgenThreads(int timeoutms)
  	{
@@ -2378,21 +2417,28 @@ index 617ac0b..00db232 100644
 -			return false;
 +			return false; // Already paused
  		}
++
++		// Fresh epoch, zero acknowledgements. Acknowledgements from an earlier
++		// pause CAS against retired epoch bits and fail.
++		RetirePauseEpoch();
++
  		if (chunkthread.additionalWorldGenThreadsCount > 0)
  		{
  			ServerMain.Logger.VerboseDebug("Pausing all worldgen threads.");
  		}
 +
  		long num = Environment.TickCount + timeoutms;
-+		// Wait until all workers increment the counter (acknowledge pause)
- 		while (pauseAllWorldgenThreads < chunkthread.additionalWorldGenThreadsCount + 1 && !server.stopped)
+-		while (pauseAllWorldgenThreads < chunkthread.additionalWorldGenThreadsCount + 1 && !server.stopped)
++		// Wait until every worker parks (acknowledgement count reaches the worker count)
++		while ((Interlocked.Read(ref pauseAckState) & PauseAckCountMask) < chunkthread.additionalWorldGenThreadsCount && !server.stopped)
  		{
  			if (Environment.TickCount > num)
  			{
  				ServerMain.Logger.VerboseDebug("Pausing all worldgen threads - exceeded timeout!");
-+				// Critical: reset the flag on timeout!
-+				// Otherwise workers will increment it on next access and hang forever.
-+				Interlocked.Exchange(ref pauseAllWorldgenThreads, 0);
++				// Cancel: retire the epoch first, so an acknowledgement racing
++				// this cancellation fails its CAS, then drop the request flag.
++				RetirePauseEpoch();
++				pauseAllWorldgenThreads = 0;
 +				SignalDispatcher(); // Stratum: nudge the dispatcher just in case
  				return false;
  			}
@@ -2406,13 +2452,15 @@ index 617ac0b..00db232 100644
 +	/// </summary>
  	public void ResumeAllWorldgenThreads()
  	{
++		RetirePauseEpoch();
  		pauseAllWorldgenThreads = 0;
 +		SignalDispatcher(); // Stratum: wake the dispatcher — time to work
  	}
  
 +	/// <summary>
 +	/// Called by a worker to acknowledge the pause.
-+	/// Increments the counter and waits for the pause to be lifted.
++	/// Registers the acknowledgement against the current epoch and waits for
++	/// the pause to be lifted.
 +	/// </summary>
  	public void PauseWorldgenThreadIfRequired(bool onChunkthread)
  	{
@@ -2422,21 +2470,30 @@ index 617ac0b..00db232 100644
  		}
 -		Interlocked.Increment(ref pauseAllWorldgenThreads);
 +
-+		int after = Interlocked.Increment(ref pauseAllWorldgenThreads);
-+
-+		// Stratum:
-+		// If after our increment the value == 1, then the pauser has already
-+		// timed out and executed Exchange(0), and we returned 0-1.
-+		// No pauser is waiting for us. We cancel our ack and leave
-+		if (after == 1)
++		// Acknowledge against the epoch we observed. If the pause gets
++		// cancelled or resumed in this window, the epoch moves and the CAS
++		// fails, so no stale acknowledgement can leak into a later pause.
++		long observed = Interlocked.Read(ref pauseAckState);
++		while (true)
 +		{
-+			Interlocked.Decrement(ref pauseAllWorldgenThreads);
-+			return;
++			if (pauseAllWorldgenThreads <= 0)
++			{
++				return; // Pause ended before we parked
++			}
++			long prev = Interlocked.CompareExchange(ref pauseAckState, observed + 1, observed);
++			if (prev == observed)
++			{
++				break;
++			}
++			observed = prev;
 +		}
++		long epoch = observed >> PauseAckCountBits;
 +
  		long num = Environment.TickCount + 5000;
-+		// Wait until the caller lifts the pause (resets to 0)
- 		while (pauseAllWorldgenThreads != 0 && !server.stopped)
+-		while (pauseAllWorldgenThreads != 0 && !server.stopped)
++		// Park until the pauser resumes, the epoch retires, or the 5s escape
++		// hatch fires (same escape the old counter had)
++		while (pauseAllWorldgenThreads != 0 && Interlocked.Read(ref pauseAckState) >> PauseAckCountBits == epoch && !server.stopped)
  		{
  			if (Environment.TickCount > num)
  			{
@@ -2445,6 +2502,21 @@ index 617ac0b..00db232 100644
  			}
  			Thread.Sleep(15);
  		}
++
++		// Withdraw the acknowledgement if this epoch is still live; a retired
++		// epoch took the count with it.
++		while (true)
++		{
++			long cur = Interlocked.Read(ref pauseAckState);
++			if (cur >> PauseAckCountBits != epoch || (cur & PauseAckCountMask) == 0)
++			{
++				return;
++			}
++			if (Interlocked.CompareExchange(ref pauseAckState, cur - 1, cur) == cur)
++			{
++				return;
++			}
++		}
  	}
 -}
 +}

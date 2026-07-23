@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Properties/AssemblyInfo.cs b/VintagestoryLib/Properties/AssemblyInfo.cs
-index 1b0c457..7c915d7 100644
+index 3d786fd..5107446 100644
 --- a/VintagestoryLib/Properties/AssemblyInfo.cs
 +++ b/VintagestoryLib/Properties/AssemblyInfo.cs
 @@ -12,6 +12,6 @@ using System.Security.Permissions;

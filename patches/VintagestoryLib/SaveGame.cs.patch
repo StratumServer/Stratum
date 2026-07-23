@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/SaveGame.cs b/VintagestoryLib/SaveGame.cs
-index fb5472f..2d9b1e9 100644
+index db7b85b..71e203a 100644
 --- a/VintagestoryLib/SaveGame.cs
 +++ b/VintagestoryLib/SaveGame.cs
 @@ -254,11 +254,11 @@ public class SaveGame : ISaveGame
