@@ -1,0 +1,71 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
+index aadf540..28ca821 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
+@@ -47,10 +47,25 @@ namespace Vintagestory.ServerMods
+ 
+         /// <summary>
+         /// Vegetation and BlockPatch sub seed
+         /// </summary>
+         protected const int subSeed = 87698;
++
++        // Stratum: genPatches/genShrubs/genTrees each allocated a fresh LCGRandom every
++        // column, six per column between them (genPatches runs twice, pre-pass and
++        // post-pass). LCGRandom.SetWorldSeed() overwrites every field the class has
++        // (worldSeed, mapGenSeed, currentSeed) before InitPositionSeed() runs, so a
++        // reused instance behaves identically to a fresh one, nothing carries over
++        // between calls. [ThreadStatic] instead of a shared field: this class also has
++        // an actual shared LCGRandom (rnd, above), reseeded the same way per column,
++        // which stays a real cross-column race risk the moment Vegetation's same-stage
++        // cap moves off 1, flagged separately, not touched by this change.
++        [ThreadStatic] private static LCGRandom stratumPatchIterRandom;
++        [ThreadStatic] private static LCGRandom stratumBlockPatchRandom;
++        [ThreadStatic] private static LCGRandom stratumShrubTryRandom;
++        [ThreadStatic] private static LCGRandom stratumTreeTryRandom;
++
+         public override bool ShouldLoad(EnumAppSide side)
+         {
+             return side == EnumAppSide.Server;
+         }
+ 
+@@ -245,12 +260,12 @@ namespace Vintagestory.ServerMods
+         {
+             int dx, dz, x, z;
+             Block liquidBlock;
+             int mapsizeY = blockAccessor.MapSizeY;
+ 
+-            var patchIterRandom = new LCGRandom();
+-            var blockPatchRandom = new LCGRandom();
++            var patchIterRandom = stratumPatchIterRandom ??= new LCGRandom();
++            var blockPatchRandom = stratumBlockPatchRandom ??= new LCGRandom();
+ 
+             // get temp pos to check if we need a story location patch or a regular one
+             patchIterRandom.SetWorldSeed(sapi.WorldManager.Seed - subSeed);
+             patchIterRandom.InitPositionSeed(chunkX, chunkZ);
+ 
+@@ -366,11 +381,11 @@ namespace Vintagestory.ServerMods
+         {
+             rnd.InitPositionSeed(chunkX, chunkZ);
+             int triesShrubs = (int)treeSupplier.treeGenProps.shrubsPerChunk.nextFloat(1f, rnd);
+             int dx, dz, x, z;
+             Block block;
+-            var shrubTryRandom = new LCGRandom();
++            var shrubTryRandom = stratumShrubTryRandom ??= new LCGRandom();
+ 
+             while (triesShrubs > 0)
+             {
+                 shrubTryRandom.SetWorldSeed(sapi.World.Seed - subSeed + triesShrubs);
+                 shrubTryRandom.InitPositionSeed(chunkX, chunkZ);
+@@ -429,11 +444,11 @@ namespace Vintagestory.ServerMods
+             Block block;
+             int treesGenerated = 0;
+ 
+             EnumHemisphere hemisphere = sapi.World.Calendar.GetHemisphere(new BlockPos(chunkX * chunksize + chunksize / 2, 0, chunkZ * chunksize + chunksize / 2));
+ 
+-            var treeTryRandom = new LCGRandom();
++            var treeTryRandom = stratumTreeTryRandom ??= new LCGRandom();
+             while (triesTrees > 0)
+             {
+                 treeTryRandom.SetWorldSeed(sapi.World.Seed - subSeed + triesTrees);
+                 treeTryRandom.InitPositionSeed(chunkX, chunkZ);
+                 triesTrees--;
