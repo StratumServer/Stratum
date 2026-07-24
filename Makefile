@@ -6,6 +6,12 @@ CONFIGURATION ?= Release
 VERSION ?= 1.22.5
 SERVER_ARCHIVE ?=
 CLIENT_LIB_DIR ?=
+# Embeds this working tree's compiled DLLs into StratumServer so
+# PatchedFileOverlay actually overlays them at runtime. Without this, the
+# server silently falls back to vanilla's unpatched VintagestoryLib.dll from
+# the downloaded archive; the failure mode is a working build that boots but
+# runs none of this repo's patches.
+EMBED_PATCHED_FILES ?= true
 
 BOOTSTRAP_ARGS :=
 ifneq ($(SERVER_ARCHIVE),)
@@ -28,7 +34,7 @@ bootstrap: ## Download, decompile, and apply patches
 
 build: ## Build Release (runs bootstrap if working tree is missing)
 	@if [ ! -f VintagestoryApi/VintagestoryAPI.csproj ]; then $(MAKE) bootstrap; fi
-	dotnet build VintageStory.slnx -c $(CONFIGURATION)
+	dotnet build VintageStory.slnx -c $(CONFIGURATION) -p:EmbedPatchedFiles=$(EMBED_PATCHED_FILES)
 
 smoke: build ## Build and boot-test the server
 	bash scripts/smoke-test.sh
