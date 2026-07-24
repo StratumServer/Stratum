@@ -1,0 +1,111 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs
+index b6ab588..e497139 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs
+@@ -26,10 +26,26 @@ namespace Vintagestory.ServerMods
+ 
+         IBlockAccessor blockAccessor;
+ 
+         public LCGRandom depositRand;
+ 
++        // Stratum: an instance lock, not [ThreadStatic]/ThreadLocal. GeneratePartial
++        // reseeds depositRand then immediately generates with it, the same shape as the
++        // other landmines this session found, but depositRand's actual value gets
++        // captured by reference into every DepositGeneratorBase this class's variants
++        // create (DepositVariant.Init -> DepositGeneratorBase.DepositRand = depositRand,
++        // done once at load time). Swapping depositRand itself to a per-thread instance
++        // would not isolate anything: every generator would still read whatever
++        // depositRand reference existed on whichever thread ran initAssets, not the one
++        // reseeded on the thread actually generating. A lock preserves the existing
++        // object-identity relationship exactly, at the cost of serializing GeneratePartial
++        // calls once TerrainFeatures' same-stage cap ever rises off 1 (it stays at 1
++        // today, so this is not a live race yet, only a landmine closed early). Also
++        // covers subDepositsToPlace and tmpPos below, cleared/set at the top of every
++        // GeneratePartial call and safe to keep as plain fields under the same lock.
++        private readonly object stratumGenDepositsLock = new object();
++
+         BlockPos tmpPos = new BlockPos(API.Config.Dimensions.NormalWorld);
+ 
+         NormalizedSimplexNoise depositShapeDistortNoise;
+         Dictionary<BlockPos, DepositVariant> subDepositsToPlace = new Dictionary<BlockPos, DepositVariant>();
+         MapLayerBase verticalDistortTop;
+@@ -207,48 +223,51 @@ namespace Vintagestory.ServerMods
+             base.GenChunkColumn(request);
+         }
+ 
+         public override void GeneratePartial(IServerChunk[] chunks, int chunkX, int chunkZ, int chunkdX, int chunkdZ)
+         {
+-            LCGRandom chunkRand = this.chunkRand;
+-            int fromChunkx = chunkX + chunkdX;
+-            int fromChunkz = chunkZ + chunkdZ;
++            lock (stratumGenDepositsLock)
++            {
++                LCGRandom chunkRand = this.chunkRand;
++                int fromChunkx = chunkX + chunkdX;
++                int fromChunkz = chunkZ + chunkdZ;
+ 
+-            int fromBaseX = fromChunkx * chunksize;
+-            int fromBaseZ = fromChunkz * chunksize;
++                int fromBaseX = fromChunkx * chunksize;
++                int fromBaseZ = fromChunkz * chunksize;
+ 
+-            subDepositsToPlace.Clear();
++                subDepositsToPlace.Clear();
+ 
+-            float scaleAdjustMul = (float)api.WorldManager.MapSizeY / 256;
++                float scaleAdjustMul = (float)api.WorldManager.MapSizeY / 256;
+ 
+-            for (int i = 0; i < Deposits.Length; i++)
+-            {
+-                DepositVariant variant = Deposits[i];
+-                
+-                float quantityFactor = variant.WithOreMap ? variant.GetOreMapFactor(fromChunkx, fromChunkz) : 1;
++                for (int i = 0; i < Deposits.Length; i++)
++                {
++                    DepositVariant variant = Deposits[i];
+ 
+-                float qModified = variant.TriesPerChunk * quantityFactor * chanceMultiplier * (variant.ScaleWithWorldheight ? scaleAdjustMul : 1);
+-                int quantity = (int)qModified;
+-                quantity += chunkRand.NextInt(100) < 100 * (qModified - quantity) ? 1 : 0;
++                    float quantityFactor = variant.WithOreMap ? variant.GetOreMapFactor(fromChunkx, fromChunkz) : 1;
+ 
+-                while (quantity-- > 0)
+-                {
+-                    tmpPos.Set(fromBaseX + chunkRand.NextInt(chunksize), -99, fromBaseZ + chunkRand.NextInt(chunksize));
+-                    long crseed = chunkRand.NextInt(10000000);
+-                    depositRand.SetWorldSeed(crseed);
+-                    depositRand.InitPositionSeed(fromChunkx, fromChunkz);
++                    float qModified = variant.TriesPerChunk * quantityFactor * chanceMultiplier * (variant.ScaleWithWorldheight ? scaleAdjustMul : 1);
++                    int quantity = (int)qModified;
++                    quantity += chunkRand.NextInt(100) < 100 * (qModified - quantity) ? 1 : 0;
+ 
+-                    GenDeposit(chunks, chunkX, chunkZ, tmpPos, variant);
++                    while (quantity-- > 0)
++                    {
++                        tmpPos.Set(fromBaseX + chunkRand.NextInt(chunksize), -99, fromBaseZ + chunkRand.NextInt(chunksize));
++                        long crseed = chunkRand.NextInt(10000000);
++                        depositRand.SetWorldSeed(crseed);
++                        depositRand.InitPositionSeed(fromChunkx, fromChunkz);
++
++                        GenDeposit(chunks, chunkX, chunkZ, tmpPos, variant);
++                    }
+                 }
+-            }
+ 
+-            foreach (var val in subDepositsToPlace)
+-            {
+-                depositRand.SetWorldSeed(chunkRand.NextInt(10000000));
+-                depositRand.InitPositionSeed(fromChunkx, fromChunkz);
++                foreach (var val in subDepositsToPlace)
++                {
++                    depositRand.SetWorldSeed(chunkRand.NextInt(10000000));
++                    depositRand.InitPositionSeed(fromChunkx, fromChunkz);
+ 
+-                val.Value.GeneratorInst.GenDeposit(blockAccessor, chunks, chunkX, chunkZ, val.Key, ref subDepositsToPlace);
++                    val.Value.GeneratorInst.GenDeposit(blockAccessor, chunks, chunkX, chunkZ, val.Key, ref subDepositsToPlace);
++                }
+             }
+         }
+ 
+ 
+ 
