@@ -1,8 +1,20 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
-index aadf540..28ca821 100644
+index aadf540..ffa4195 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
-@@ -47,10 +47,25 @@ namespace Vintagestory.ServerMods
+@@ -29,11 +29,10 @@ namespace Vintagestory.ServerMods
+     }
+ 
+     public class GenVegetationAndPatches : ModStdWorldGen
+     {
+         protected ICoreServerAPI sapi;
+-        protected LCGRandom rnd;
+         protected IWorldGenBlockAccessor blockAccessor;
+         protected WgenTreeSupplier treeSupplier;
+         protected int worldheight;
+         protected int regionChunkSize;
+         protected IBlockPatchModifier[] patchMod = new IBlockPatchModifier[0];
+@@ -47,10 +46,25 @@ namespace Vintagestory.ServerMods
  
          /// <summary>
          /// Vegetation and BlockPatch sub seed
@@ -28,7 +40,156 @@ index aadf540..28ca821 100644
              return side == EnumAppSide.Server;
          }
  
-@@ -245,12 +260,12 @@ namespace Vintagestory.ServerMods
+@@ -112,12 +126,10 @@ namespace Vintagestory.ServerMods
+             regionSize = sapi.WorldManager.RegionSize;
+             noiseSizeDensityMap = regionSize / TerraGenConfig.blockPatchesMapScale;
+ 
+             LoadGlobalConfig(sapi);
+ 
+-            rnd = new LCGRandom(sapi.WorldManager.Seed - subSeed);
+-
+             treeSupplier.LoadTrees();
+ 
+             worldheight = sapi.WorldManager.MapSizeY;
+             regionChunkSize = sapi.WorldManager.RegionSize / chunksize;
+ 
+@@ -139,11 +151,11 @@ namespace Vintagestory.ServerMods
+             {
+                 allPatches.AddRange(patches.Value);
+             }
+             bpc.Patches = allPatches.ToArray();
+ 
+-            bpc.ResolveBlockIds(sapi, rockstrata, rnd);
++            bpc.ResolveBlockIds(sapi, rockstrata, stratumRnd ??= new LCGRandom(sapi.WorldManager.Seed - subSeed));
+             treeSupplier.treeGenerators.forestFloorSystem.SetBlockPatches(bpc);
+ 
+ 
+             ITreeAttribute worldConfig = sapi.WorldManager.SaveGame.WorldConfiguration;
+             forestMod = worldConfig.GetString("globalForestation").ToFloat(0);
+@@ -157,80 +169,88 @@ namespace Vintagestory.ServerMods
+                 int seed = sapi.World.Seed + 112897 + hs;
+                 blockPatchMapGens[patch.MapCode] = new MapLayerWobbled(seed, 2, 0.9f, TerraGenConfig.forestMapScale, 4000, -2500);
+             }
+         }
+ 
+-        ushort[] heightmap;
+-        int forestUpLeft;
+-        int forestUpRight;
+-        int forestBotLeft;
+-        int forestBotRight;
+-
+-        int shrubUpLeft;
+-        int shrubUpRight;
+-        int shrubBotLeft;
+-        int shrubBotRight;
+-
+-        int climateUpLeft;
+-        int climateUpRight;
+-        int climateBotLeft;
+-        int climateBotRight;
+-
+-        BlockPos tmpPos = new BlockPos(API.Config.Dimensions.NormalWorld);
++        // Stratum: every field below used to be a plain instance field, written by
++        // OnChunkColumnGen and read a few calls later by genPatches/genShrubs/genTrees/
++        // canGenerateAt, all within the processing of ONE column, the same shape of bug
++        // GenCreatures had for PreDone (see the comment on that class's own [ThreadStatic]
++        // block). Vegetation's own same-stage cap stays at 1 today, so this was not a live
++        // race yet, but two columns' write-then-read sequences would clobber each other
++        // the moment anyone raises that cap, the same way rnd (below) and
++        // treeAndShrubSupressingStructures in GenStructures already did. [ThreadStatic]
++        // keeps every field private to whichever thread is currently inside
++        // OnChunkColumnGen for a given column, at zero cost while only one thread at a
++        // time is ever in here.
++        [ThreadStatic] private static ushort[] stratumHeightmap;
++        [ThreadStatic] private static int stratumForestUpLeft, stratumForestUpRight, stratumForestBotLeft, stratumForestBotRight;
++        [ThreadStatic] private static int stratumShrubUpLeft, stratumShrubUpRight, stratumShrubBotLeft, stratumShrubBotRight;
++        [ThreadStatic] private static int stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight;
++        [ThreadStatic] private static BlockPos stratumTmpPos;
+ 
+         /// <summary>
+         /// Structures generally are sparsely placed in the world, so 99% of the time we can generate block patches unimpeded.
+         /// So for performance reasons, lets do a single broad test first, which allows us to skip detail testing later
+         /// </summary>
+-        bool preventBroadly;
++        [ThreadStatic] private static bool stratumPreventBroadly;
++
++        // Stratum: rnd used to be seeded once for the whole world in initWorldGen and
++        // reseeded per column via InitPositionSeed alone, no SetWorldSeed. That reseed
++        // does not depend on rnd's own prior state (InitPositionSeed derives currentSeed
++        // from mapGenSeed, xPos, and zPos only, and mapGenSeed itself never changes after
++        // the one-time SetWorldSeed call in the constructor), so this needed isolation,
++        // not GenCreatures' extra fix of removing a dispatch-order dependency: two
++        // different columns already got two different, order-independent seeds here.
++        [ThreadStatic] private static LCGRandom stratumRnd;
+ 
+         private void OnChunkColumnGen(IChunkColumnGenerateRequest request)
+         {
+             var chunks = request.Chunks;
+             int chunkX = request.ChunkX;
+             int chunkZ = request.ChunkZ;
+ 
+             blockAccessor.BeginColumn();
+-            rnd.InitPositionSeed(chunkX, chunkZ);
++            (stratumRnd ??= new LCGRandom(sapi.WorldManager.Seed - subSeed)).InitPositionSeed(chunkX, chunkZ);
+ 
+             IMapChunk mapChunk = chunks[0].MapChunk;
+ 
+             IntDataMap2D forestMap = mapChunk.MapRegion.ForestMap;
+             IntDataMap2D shrubMap = mapChunk.MapRegion.ShrubMap;
+             IntDataMap2D climateMap = mapChunk.MapRegion.ClimateMap;
+             int rlX = chunkX % regionChunkSize;
+             int rlZ = chunkZ % regionChunkSize;
+ 
+             float facS = (float)shrubMap.InnerSize / regionChunkSize;
+-            shrubUpLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS));
+-            shrubUpRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS));
+-            shrubBotLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS + facS));
+-            shrubBotRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS + facS));
++            stratumShrubUpLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS));
++            stratumShrubUpRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS));
++            stratumShrubBotLeft = shrubMap.GetUnpaddedInt((int)(rlX * facS), (int)(rlZ * facS + facS));
++            stratumShrubBotRight = shrubMap.GetUnpaddedInt((int)(rlX * facS + facS), (int)(rlZ * facS + facS));
+ 
+             // A region has 16 chunks
+             // Size of the forest map is RegionSize / TerraGenConfig.forestMapScale  => 32*16 / 32  = 16 pixel
+             // rlX, rlZ goes from 0..16 pixel
+             // facF = 16/16 = 1
+             // Get 4 pixels for chunkx, chunkz, chunkx+1 and chunkz+1 inside the map
+             float facF = (float)forestMap.InnerSize / regionChunkSize;
+-            forestUpLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF));
+-            forestUpRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF));
+-            forestBotLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF + facF));
+-            forestBotRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF + facF));
++            stratumForestUpLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF));
++            stratumForestUpRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF));
++            stratumForestBotLeft = forestMap.GetUnpaddedInt((int)(rlX * facF), (int)(rlZ * facF + facF));
++            stratumForestBotRight = forestMap.GetUnpaddedInt((int)(rlX * facF + facF), (int)(rlZ * facF + facF));
+ 
+             float facC = (float)climateMap.InnerSize / regionChunkSize;
+-            climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC));
+-            climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
+-            climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC + facC));
+-            climateBotRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC + facC));
++            stratumClimateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC));
++            stratumClimateUpRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
++            stratumClimateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC + facC));
++            stratumClimateBotRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC + facC));
+ 
+-            heightmap = chunks[0].MapChunk.RainHeightMap;
+-            preventBroadly = false;
++            stratumHeightmap = chunks[0].MapChunk.RainHeightMap;
++            stratumPreventBroadly = false;
+ 
+             foreach (var provider in patchMod)
+             {
+-                preventBroadly |= provider.PreventPlacementBroadlyAt(chunkX, chunkZ);
++                stratumPreventBroadly |= provider.PreventPlacementBroadlyAt(chunkX, chunkZ);
+             }
+ 
+ 
+             if (TerraGenConfig.GenerateVegetation)
+             {
+@@ -245,12 +265,12 @@ namespace Vintagestory.ServerMods
          {
              int dx, dz, x, z;
              Block liquidBlock;
@@ -43,10 +204,79 @@ index aadf540..28ca821 100644
              patchIterRandom.SetWorldSeed(sapi.WorldManager.Seed - subSeed);
              patchIterRandom.InitPositionSeed(chunkX, chunkZ);
  
-@@ -366,11 +381,11 @@ namespace Vintagestory.ServerMods
+@@ -272,29 +292,29 @@ namespace Vintagestory.ServerMods
+                     dx = patchIterRandom.NextInt(chunksize);
+                     dz = patchIterRandom.NextInt(chunksize);
+                     x = dx + chunkX * chunksize;
+                     z = dz + chunkZ * chunksize;
+ 
+-                    int y = heightmap[dz * chunksize + dx];
++                    int y = stratumHeightmap[dz * chunksize + dx];
+                     if (y <= 0 || y >= worldheight - 15) continue;
+ 
+-                    tmpPos.Set(x, y, z);
++                    (stratumTmpPos ??= new BlockPos(API.Config.Dimensions.NormalWorld)).Set(x, y, z);
+ 
+-                    liquidBlock = blockAccessor.GetBlock(tmpPos, BlockLayersAccess.Fluid);
++                    liquidBlock = blockAccessor.GetBlock(stratumTmpPos, BlockLayersAccess.Fluid);
+ 
+                     // Place according to forest value
+-                    float forestRel = GameMath.BiLerp(forestUpLeft, forestUpRight, forestBotLeft, forestBotRight, (float)dx / chunksize, (float)dz / chunksize) / 255f;
++                    float forestRel = GameMath.BiLerp(stratumForestUpLeft, stratumForestUpRight, stratumForestBotLeft, stratumForestBotRight, (float)dx / chunksize, (float)dz / chunksize) / 255f;
+                     forestRel = GameMath.Clamp(forestRel + forestMod, 0, 1);
+ 
+-                    float shrubRel = GameMath.BiLerp(shrubUpLeft, shrubUpRight, shrubBotLeft, shrubBotRight, (float)dx / chunksize, (float)dz / chunksize) / 255f;
++                    float shrubRel = GameMath.BiLerp(stratumShrubUpLeft, stratumShrubUpRight, stratumShrubBotLeft, stratumShrubBotRight, (float)dx / chunksize, (float)dz / chunksize) / 255f;
+                     shrubRel = GameMath.Clamp(shrubRel + shrubMod, 0, 1);
+ 
+-                    int climate = GameMath.BiLerpRgbColor((float)dx / chunksize, (float)dz / chunksize, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight);
++                    int climate = GameMath.BiLerpRgbColor((float)dx / chunksize, (float)dz / chunksize, stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight);
+ 
+                     if (bpc.IsPatchSuitableAt(blockPatch, liquidBlock, mapsizeY, climate, y, forestRel, shrubRel))
+                     {
+-                        if (!preventBroadly && !canGenerateAt(tmpPos.X, tmpPos.Z, blockPatch.CategoryHashCode)) continue;
++                        if (!stratumPreventBroadly && !canGenerateAt(stratumTmpPos.X, stratumTmpPos.Z, blockPatch.CategoryHashCode)) continue;
+ 
+                         if (blockPatch.MapCode != null && patchIterRandom.NextInt(255) > GetPatchDensity(blockPatch.MapCode, x, z, mapregion))
+                         {
+                             continue;
+                         }
+@@ -306,11 +326,11 @@ namespace Vintagestory.ServerMods
+                         {
+                             found = false;
+                             int dy = 1;
+                             while (dy < 5 && y - dy > 0)
+                             {
+-                                string lastCodePart = blockAccessor.GetBlockBelow(tmpPos, dy, BlockLayersAccess.Solid).LastCodePart();
++                                string lastCodePart = blockAccessor.GetBlockBelow(stratumTmpPos, dy, BlockLayersAccess.Solid).LastCodePart();
+                                 if (RockBlockIdsByType.TryGetValue(lastCodePart, out firstBlockId)) { found = true; break; }
+                                 dy++;
+                             }
+                         }
+ 
+@@ -318,11 +338,11 @@ namespace Vintagestory.ServerMods
+                         {
+                             blockPatchRandom.SetWorldSeed(sapi.WorldManager.Seed - subSeed + i);
+                             blockPatchRandom.InitPositionSeed(x, z);
+                             blockPatch.Generate(
+                                 blockAccessor, patchIterRandom, x, y, z, firstBlockId,
+-                                !preventBroadly ? null : (tx, tz) => canGenerateAt(tx, tz, PatchesHashCode)
++                                !stratumPreventBroadly ? null : (tx, tz) => canGenerateAt(tx, tz, PatchesHashCode)
+                             );
+                         }
+                     }
+                 }
+             }
+@@ -362,15 +382,15 @@ namespace Vintagestory.ServerMods
+             return bpcPatchesNonTree;
+         }
+ 
+         void genShrubs(int chunkX, int chunkZ)
          {
-             rnd.InitPositionSeed(chunkX, chunkZ);
-             int triesShrubs = (int)treeSupplier.treeGenProps.shrubsPerChunk.nextFloat(1f, rnd);
+-            rnd.InitPositionSeed(chunkX, chunkZ);
+-            int triesShrubs = (int)treeSupplier.treeGenProps.shrubsPerChunk.nextFloat(1f, rnd);
++            (stratumRnd ??= new LCGRandom(sapi.WorldManager.Seed - subSeed)).InitPositionSeed(chunkX, chunkZ);
++            int triesShrubs = (int)treeSupplier.treeGenProps.shrubsPerChunk.nextFloat(1f, stratumRnd);
              int dx, dz, x, z;
              Block block;
 -            var shrubTryRandom = new LCGRandom();
@@ -56,7 +286,70 @@ index aadf540..28ca821 100644
              {
                  shrubTryRandom.SetWorldSeed(sapi.World.Seed - subSeed + triesShrubs);
                  shrubTryRandom.InitPositionSeed(chunkX, chunkZ);
-@@ -429,11 +444,11 @@ namespace Vintagestory.ServerMods
+@@ -379,61 +399,61 @@ namespace Vintagestory.ServerMods
+                 dx = shrubTryRandom.NextInt(chunksize);
+                 dz = shrubTryRandom.NextInt(chunksize);
+                 x = dx + chunkX * chunksize;
+                 z = dz + chunkZ * chunksize;
+ 
+-                int y = heightmap[dz * chunksize + dx];
++                int y = stratumHeightmap[dz * chunksize + dx];
+                 if (y <= 0 || y >= worldheight - 15) continue;
+ 
+-                tmpPos.Set(x, y, z);
++                (stratumTmpPos ??= new BlockPos(API.Config.Dimensions.NormalWorld)).Set(x, y, z);
+ 
+-                block = blockAccessor.GetBlock(tmpPos);
++                block = blockAccessor.GetBlock(stratumTmpPos);
+                 if (block.Fertility == 0) continue;
+ 
+                 // Place according to forest value
+-                int climate = GameMath.BiLerpRgbColor((float)dx / chunksize, (float)dz / chunksize, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight);
+-                float shrubChance = GameMath.BiLerp(shrubUpLeft, shrubUpRight, shrubBotLeft, shrubBotRight, (float)dx / chunksize, (float)dz / chunksize);
++                int climate = GameMath.BiLerpRgbColor((float)dx / chunksize, (float)dz / chunksize, stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight);
++                float shrubChance = GameMath.BiLerp(stratumShrubUpLeft, stratumShrubUpRight, stratumShrubBotLeft, stratumShrubBotRight, (float)dx / chunksize, (float)dz / chunksize);
+                 shrubChance = GameMath.Clamp(shrubChance + 255*forestMod, 0, 255);
+ 
+                 if (shrubTryRandom.NextFloat() > (shrubChance / 255f) * (shrubChance / 255f)) continue;
+                 TreeGenInstance treegenParams = treeSupplier.GetRandomShrubGenForClimate(shrubTryRandom, climate, (int)shrubChance, y);
+ 
+                 if (treegenParams != null)
+                 {
+-                    if (preventBroadly && !canGenerateAt(tmpPos.X, tmpPos.Z, ShrubsHashCode)) continue;
++                    if (stratumPreventBroadly && !canGenerateAt(stratumTmpPos.X, stratumTmpPos.Z, ShrubsHashCode)) continue;
+ 
+-                    if (blockAccessor.GetBlock(tmpPos).Replaceable >= 6000)
++                    if (blockAccessor.GetBlock(stratumTmpPos).Replaceable >= 6000)
+                     {
+-                        tmpPos.Y--;
++                        stratumTmpPos.Y--;
+                     }
+ 
+                     treegenParams.skipForestFloor = true;
+ 
+-                    treegenParams.GrowTree(blockAccessor, tmpPos, shrubTryRandom);
++                    treegenParams.GrowTree(blockAccessor, stratumTmpPos, shrubTryRandom);
+                 }
+             }
+         }
+ 
+         void genTrees(int chunkX, int chunkZ)
+         {
+-            rnd.InitPositionSeed(chunkX, chunkZ);
+-            int climate = GameMath.BiLerpRgbColor((float)0.5f, (float)0.5f, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight);
+-            float wetrel = Climate.GetRainFall((climate >> 8) & 0xff, heightmap[(chunksize / 2) * chunksize + chunksize/2]) / 255f;
++            (stratumRnd ??= new LCGRandom(sapi.WorldManager.Seed - subSeed)).InitPositionSeed(chunkX, chunkZ);
++            int climate = GameMath.BiLerpRgbColor((float)0.5f, (float)0.5f, stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight);
++            float wetrel = Climate.GetRainFall((climate >> 8) & 0xff, stratumHeightmap[(chunksize / 2) * chunksize + chunksize/2]) / 255f;
+             float temprel = ((climate>>16) & 0xff) / 255f;
+             float dryrel = 1 - wetrel;
+ 
+             float drypenalty = 1 - GameMath.Clamp(2f * (dryrel - 0.5f + 1.5f*Math.Max(temprel - 0.6f, 0)), 0, 0.8f); // Reduce tree generation by up to 70% in low rain places
+             float wetboost = 1 + 3 * Math.Max(0, wetrel - 0.75f);
+ 
+-            int triesTrees = (int)(treeSupplier.treeGenProps.treesPerChunk.nextFloat(1f, rnd) * drypenalty * wetboost);
++            int triesTrees = (int)(treeSupplier.treeGenProps.treesPerChunk.nextFloat(1f, stratumRnd) * drypenalty * wetboost);
+             int dx, dz, x, z;
              Block block;
              int treesGenerated = 0;
  
@@ -69,3 +362,64 @@ index aadf540..28ca821 100644
                  treeTryRandom.SetWorldSeed(sapi.World.Seed - subSeed + triesTrees);
                  treeTryRandom.InitPositionSeed(chunkX, chunkZ);
                  triesTrees--;
+@@ -441,26 +461,26 @@ namespace Vintagestory.ServerMods
+                 dx = treeTryRandom.NextInt(chunksize);
+                 dz = treeTryRandom.NextInt(chunksize);
+                 x = dx + chunkX * chunksize;
+                 z = dz + chunkZ * chunksize;
+ 
+-                int y = heightmap[dz * chunksize + dx];
++                int y = stratumHeightmap[dz * chunksize + dx];
+                 if (y <= 0 || y >= worldheight - 15) continue;
+ 
+                 bool underwater = false;
+ 
+-                tmpPos.Set(x, y, z);
+-                block = blockAccessor.GetBlock(tmpPos, BlockLayersAccess.Fluid);
++                (stratumTmpPos ??= new BlockPos(API.Config.Dimensions.NormalWorld)).Set(x, y, z);
++                block = blockAccessor.GetBlock(stratumTmpPos, BlockLayersAccess.Fluid);
+ 
+-                if (block.IsLiquid()) { underwater = true; tmpPos.Y--; block = blockAccessor.GetBlock(tmpPos, BlockLayersAccess.Fluid); if (block.IsLiquid()) tmpPos.Y--; }
++                if (block.IsLiquid()) { underwater = true; stratumTmpPos.Y--; block = blockAccessor.GetBlock(stratumTmpPos, BlockLayersAccess.Fluid); if (block.IsLiquid()) stratumTmpPos.Y--; }
+ 
+-                block = blockAccessor.GetBlock(tmpPos);
++                block = blockAccessor.GetBlock(stratumTmpPos);
+                 if (block.Fertility == 0) continue;
+ 
+                 // Place according to forest value
+-                float treeDensity = GameMath.BiLerp(forestUpLeft, forestUpRight, forestBotLeft, forestBotRight, (float)dx / chunksize, (float)dz / chunksize);
+-                climate = GameMath.BiLerpRgbColor((float)dx / chunksize, (float)dz / chunksize, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight);
++                float treeDensity = GameMath.BiLerp(stratumForestUpLeft, stratumForestUpRight, stratumForestBotLeft, stratumForestBotRight, (float)dx / chunksize, (float)dz / chunksize);
++                climate = GameMath.BiLerpRgbColor((float)dx / chunksize, (float)dz / chunksize, stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight);
+ 
+                 treeDensity = GameMath.Clamp(treeDensity + forestMod*255, 0, 255);
+ 
+                 float treeDensityNormalized = treeDensity / 255f;
+ 
+@@ -471,22 +491,22 @@ namespace Vintagestory.ServerMods
+                 if (treeTryRandom.NextFloat() > Math.Max(0.0025f, treeDensityNormalized * treeDensityNormalized) || forestMod <= -1) continue;
+                 TreeGenInstance treegenParams = treeSupplier.GetRandomTreeGenForClimate(treeTryRandom, climate, (int)treeDensity, y, underwater);
+ 
+                 if (treegenParams != null)
+                 {
+-                    if (preventBroadly && !canGenerateAt(tmpPos.X, tmpPos.Z, TreesHashCode)) continue;
++                    if (stratumPreventBroadly && !canGenerateAt(stratumTmpPos.X, stratumTmpPos.Z, TreesHashCode)) continue;
+ 
+-                    if (blockAccessor.GetBlock(tmpPos).Replaceable >= 6000)
++                    if (blockAccessor.GetBlock(stratumTmpPos).Replaceable >= 6000)
+                     {
+-                        tmpPos.Y--;
++                        stratumTmpPos.Y--;
+                     }
+ 
+                     treegenParams.skipForestFloor = false;
+                     treegenParams.hemisphere = hemisphere;
+                     treegenParams.treesInChunkGenerated = treesGenerated;
+ 
+-                    treegenParams.GrowTree(blockAccessor, tmpPos, treeTryRandom);
++                    treegenParams.GrowTree(blockAccessor, stratumTmpPos, treeTryRandom);
+ 
+                     treesGenerated++;
+                 }
+             }
+         }
