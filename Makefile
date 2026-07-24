@@ -34,7 +34,16 @@ bootstrap: ## Download, decompile, and apply patches
 
 build: ## Build Release (runs bootstrap if working tree is missing)
 	@if [ ! -f VintagestoryApi/VintagestoryAPI.csproj ]; then $(MAKE) bootstrap; fi
-	dotnet build VintageStory.slnx -c $(CONFIGURATION) -p:EmbedPatchedFiles=$(EMBED_PATCHED_FILES)
+	dotnet build VintageStory.slnx -c $(CONFIGURATION)
+# Second pass, only if embedding is on: StratumServer's EmbeddedResource list
+# points at sibling projects' bin output by raw path, not a ProjectReference,
+# so on a build where those outputs do not exist yet (a fresh bootstrap, or
+# after clean/refresh) the embed can race the projects that produce them.
+# The pass above guarantees every output exists before this one tries to
+# embed it.
+ifeq ($(EMBED_PATCHED_FILES),true)
+	dotnet build VintageStory.slnx -c $(CONFIGURATION) -p:EmbedPatchedFiles=true
+endif
 
 smoke: build ## Build and boot-test the server
 	bash scripts/smoke-test.sh
