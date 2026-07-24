@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs b/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
-index 7573f32..27a7943 100644
+index 7573f32..d75ab17 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
 @@ -12,11 +12,30 @@ using Vintagestory.ServerMods.NoObf;
@@ -123,3 +123,61 @@ index 7573f32..27a7943 100644
              return placed;
          }
  
+@@ -512,29 +536,52 @@ namespace Vintagestory.ServerMods
+             cloned.OriginalPos = OriginalPos;
+ 
+             return cloned;
+         }
+ 
++        // Stratum: guards the lazy unpack below. schematicDatas entries (see WorldGenStructure)
++        // are cached objects reused by every column that draws this schematic, and worldgen has
++        // always let different columns run in different pipeline stages at the same time,
++        // independent of any one stage's own concurrency cap. The original check-then-act let a
++        // second thread observe blocksByPos already non-null, since Init() sets it early, well
++        // before LoadMetaInformationAndValidate finishes populating fields like PathwayStarts,
++        // and skip straight into reading those fields before the thread doing the unpack had set
++        // them. That is the PathwayStarts crash reported while reviewing #179.
++        //
++        // No lock-free fast path on purpose: blocksByPos becoming non-null does not mean
++        // unpacking has finished, so every caller has to go through the lock, not just the one
++        // that finds blocksByPos still null.
++        private readonly object stratumUnpackLock = new object();
++
+         /// <summary>
+         /// Unpack blocks and indices to an array of positioned blocks, and other initialisation steps needed prior to placement and prior to Pathway checks
+         /// <br/>From 1.19.4 we do this Unpack() lazily, only when required, to save RAM [maybe also speeds up game start time, especially if mods add more schematics]
+         /// </summary>
+         /// <param name="api"></param>
+         public void Unpack(ICoreAPI api)
+         {
+-            if (blocksByPos == null)
++            lock (stratumUnpackLock)
+             {
+-                Init(api.World.BlockAccessor);
+-                LoadMetaInformationAndValidate(api.World.BlockAccessor, api.World, FromFile);
++                if (blocksByPos == null)
++                {
++                    Init(api.World.BlockAccessor);
++                    LoadMetaInformationAndValidate(api.World.BlockAccessor, api.World, FromFile);
++                }
+             }
+         }
+ 
+         public void Unpack(ICoreAPI api, int orientation)
+         {
+-            if (orientation > 0 && blocksByPos == null)
++            if (orientation > 0)
+             {
+-                TransformWhilePacked(api.World, EnumOrigin.BottomCenter, orientation * 90, null);
++                lock (stratumUnpackLock)
++                {
++                    if (blocksByPos == null)
++                    {
++                        TransformWhilePacked(api.World, EnumOrigin.BottomCenter, orientation * 90, null);
++                    }
++                }
+             }
+             Unpack(api);
+         }
+     }
+ }

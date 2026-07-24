@@ -1,0 +1,68 @@
+diff --git a/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs b/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
+index 0c59a67..a7ed24d 100644
+--- a/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
++++ b/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
+@@ -326,14 +326,23 @@ public class SQLiteDbConnectionv2 : SQLiteDBConnection, IGameDbConnection, IDisp
+ 		return ChunkExists(position, (DbCommand)(object)val);
+ 	}
+ 
+ 	public bool ChunkExists(ulong position, DbCommand preparedCmd)
+ 	{
+-		using DbCommand dbCommand = preparedCmd;
+-		dbCommand.Parameters["position"].Value = position;
+-		using DbDataReader dbDataReader = dbCommand.ExecuteReader();
+-		return dbDataReader.HasRows;
++		// Stratum: every write path here (DeleteChunks, SetChunks, StoreGameData) holds
++		// transactionLock around its own BeginTransaction/Commit; this read path did not
++		// hold it at all, so a concurrent write's open transaction on the shared
++		// sqliteConn could leave this command's Transaction property unset while a
++		// transaction was still pending, throwing at ExecuteReader(). Locking here
++		// matches the discipline the write paths already use.
++		lock (transactionLock)
++		{
++			using DbCommand dbCommand = preparedCmd;
++			dbCommand.Parameters["position"].Value = position;
++			using DbDataReader dbDataReader = dbCommand.ExecuteReader();
++			return dbDataReader.HasRows;
++		}
+ 	}
+ 
+ 	public byte[] GetChunk(ulong position, string tablename)
+ 	{
+ 		SqliteCommand val = sqliteConn.CreateCommand();
+@@ -349,19 +358,28 @@ public class SQLiteDbConnectionv2 : SQLiteDBConnection, IGameDbConnection, IDisp
+ 		}
+ 	}
+ 
+ 	public byte[] GetChunk(ulong position, DbCommand preparedCmd)
+ 	{
+-		using DbCommand dbCommand = preparedCmd;
+-		dbCommand.Parameters["position"].Value = position;
+-		using DbDataReader dbDataReader = dbCommand.ExecuteReader();
+-		byte[] result = null;
+-		if (dbDataReader.Read())
++		// Stratum: see the matching comment on ChunkExists(ulong, DbCommand). This is
++		// the exact call site behind the reported crash: "Execute requires the command
++		// to have a transaction object when the connection assigned to the command is
++		// in a pending local transaction", thrown from GetChunk while a concurrent
++		// write held an open transaction on the same connection with no lock stopping
++		// this read from running in the middle of it.
++		lock (transactionLock)
+ 		{
+-			result = dbDataReader["data"] as byte[];
++			using DbCommand dbCommand = preparedCmd;
++			dbCommand.Parameters["position"].Value = position;
++			using DbDataReader dbDataReader = dbCommand.ExecuteReader();
++			byte[] result = null;
++			if (dbDataReader.Read())
++			{
++				result = dbDataReader["data"] as byte[];
++			}
++			return result;
+ 		}
+-		return result;
+ 	}
+ 
+ 	public void DeleteChunks(IEnumerable<ChunkPos> chunkpositions)
+ 	{
+ 		DeleteChunks(chunkpositions, "chunk");
