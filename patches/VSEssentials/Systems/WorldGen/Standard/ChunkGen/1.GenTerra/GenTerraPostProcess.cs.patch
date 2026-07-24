@@ -1,0 +1,90 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
+index 79c481d..691b108 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
+@@ -13,12 +13,24 @@ namespace Vintagestory.ServerMods
+     public class GenTerraPostProcess : ModStdWorldGen
+     {
+         ICoreServerAPI api;
+         IWorldGenBlockAccessor blockAccessor;
+ 
+-        HashSet<int> chunkVisitedNodes = new HashSet<int>();
+-        List<int> solidNodes = new List<int>(40);
++        // Stratum: every field below used to be a plain instance field, written
++        // and read within the processing of a single column (OnChunkColumnGen ->
++        // deletePotentialFloatingBlocks -> AddToChunkVisitedNodesIfSameChunk),
++        // unsafe once TerrainFeatures' same-stage cap moves off 1. Matches the
++        // InvalidOperationException: Collection was modified crash reported
++        // against this class: two columns concurrently mutating the same shared
++        // HashSet/List. [ThreadStatic] since GenTerraPostProcess is a singleton
++        // ModSystem with no second live instance anywhere in the codebase
++        // (confirmed by search).
++        [ThreadStatic] private static HashSet<int> stratumChunkVisitedNodes;
++        [ThreadStatic] private static List<int> stratumSolidNodes;
++        [ThreadStatic] private static QueueOfInt stratumBfsQueue;
++        [ThreadStatic] private static int[] stratumCurrentVisited;
++        [ThreadStatic] private static int stratumIteration;
+ 
+         public override bool ShouldLoad(EnumAppSide side)
+         {
+             return side == EnumAppSide.Server;
+         }
+@@ -56,10 +68,11 @@ namespace Vintagestory.ServerMods
+             const int chunksize = GlobalConstants.ChunkSize;
+             const int chunksizeSquared = chunksize * chunksize;
+             int chunkY = seaLevel / chunksize;
+             int yMax = chunks[0].MapChunk.YMax;
+             int cyMax = Math.Min(yMax / chunksize + 1, api.World.BlockAccessor.MapSizeY / chunksize);
++            HashSet<int> chunkVisitedNodes = stratumChunkVisitedNodes ??= new HashSet<int>();
+             chunkVisitedNodes.Clear();
+ 
+             for (int cy = chunkY; cy < cyMax; cy++)
+             {
+                 IChunkBlocks chunkdata = chunks[cy].Data;
+@@ -106,28 +119,29 @@ namespace Vintagestory.ServerMods
+             }
+         }
+ 
+ 
+ 
+-        QueueOfInt bfsQueue = new QueueOfInt();
+         const int ARRAYSIZE = 41;  // Note if this constant is increased beyond 64, the bitshifts for compressedPos in the bfsQueue.Enqueue() and .Dequeue() calls may need updating
+-        readonly int[] currentVisited = new int[ARRAYSIZE * ARRAYSIZE * ARRAYSIZE];
+-        int iteration = 0;
+ 
+         /// <summary>
+         /// Very similar to RoomRegistry room search code: we will search for contiguous islands of blocks, surrounded by air on all sides
+         /// </summary>
+         private void deletePotentialFloatingBlocks(int X, int Y, int Z)
+         {
++            List<int> solidNodes = stratumSolidNodes ??= new List<int>(40);
++            QueueOfInt bfsQueue = stratumBfsQueue ??= new QueueOfInt();
++            int[] currentVisited = stratumCurrentVisited ??= new int[ARRAYSIZE * ARRAYSIZE * ARRAYSIZE];
++
+             int halfSize = (ARRAYSIZE - 1) / 2;
+             solidNodes.Clear();
+             bfsQueue.Clear();
+             int compressedPos = halfSize << 12 | halfSize << 6 | halfSize;
+             bfsQueue.Enqueue(compressedPos);
+             solidNodes.Add(compressedPos);
+ 
+-            int iteration = ++this.iteration;
++            int iteration = ++stratumIteration;
+             int visitedIndex = (halfSize * ARRAYSIZE + halfSize) * ARRAYSIZE + halfSize; // Center node
+             currentVisited[visitedIndex] = iteration;
+ 
+             int baseX = X - halfSize;
+             int baseY = Y - halfSize;
+@@ -225,11 +239,11 @@ namespace Vintagestory.ServerMods
+             if (((nposZ ^ origZ) & chunkMask) != 0) return;
+             if (((nposY ^ origY) & chunkMask) != 0) return;
+ 
+             const int inChunkMask = chunksize - 1;
+             int index3d = ((nposY & inChunkMask) * chunksize + (nposZ & inChunkMask)) * chunksize + (nposX & inChunkMask);
+-            chunkVisitedNodes.Add(index3d);
++            stratumChunkVisitedNodes.Add(index3d);
+         }
+ 
+         //struct VisitNode : IEquatable<VisitNode>
+         //{
+         //    public int X, Y, Z;
