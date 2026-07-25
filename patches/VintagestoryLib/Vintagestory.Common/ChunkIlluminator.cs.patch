@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-index e2ca303..f081f03 100644
+index e2ca303..12cfa03 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
 @@ -1,1110 +1,1572 @@
@@ -204,7 +204,7 @@ index e2ca303..f081f03 100644
 +		currentVisited = new int[DARKNESS_VISITED_SIZE];
 +		lightGrid = new LightCell[LIGHT_GRID_SIZE];
 +
-+		int maxSources = 27 * chunkSize * chunkSize * chunkSize;
++		int maxSources = 27 * YPlus * chunkSize;
 +		nearbyLightSourcesArray = new NearbyLightSourceStruct[maxSources];
 +		nearbyH = new byte[maxSources];
 +		nearbyS = new byte[maxSources];
@@ -2115,7 +2115,8 @@ index e2ca303..f081f03 100644
 +
  					foreach (int lightPosition in chunk.LightPositions)
  					{
- 						int num4 = (num2 + j) * chunkSize + lightPosition / (chunkSize * chunkSize);
+-						int num4 = (num2 + j) * chunkSize + lightPosition / (chunkSize * chunkSize);
++						int num4 = (num2 + j) * chunkSize + lightPosition / (YPlus);
  						int num5 = (num3 + k) * chunkSize + lightPosition / chunkSize % chunkSize;
  						int num6 = (num + i) * chunkSize + lightPosition % chunkSize;
 -						int num7 = Math.Abs(posX - num6) + Math.Abs(posY - num4) + Math.Abs(posZ - num5);
