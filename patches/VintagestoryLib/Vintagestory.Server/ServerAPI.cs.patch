@@ -1,0 +1,18 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerAPI.cs b/VintagestoryLib/Vintagestory.Server/ServerAPI.cs
+index 5c3672d..e6c8bd5 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerAPI.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerAPI.cs
+@@ -46,10 +46,13 @@ internal class ServerAPI : ServerAPIComponentBase, IServerAPI
+ 
+ 	public IServerPlayer[] Players => server.PlayersByUid.Values.ToArray();
+ 
+ 	public bool ReducedServerThreads => server.ReducedServerThreads;
+ 
++	// Stratum: see the interface member's own doc comment.
++	public int GetWorldgenPassConcurrency(EnumWorldGenPass pass) => server.chunkThread?.loadsavechunks?.GetStageConcurrency(pass) ?? 1;
++
+ 	public ServerAPI(ServerMain server)
+ 		: base(server)
+ 	{
+ 	}
+ 
