@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-index e2ca303..12cfa03 100644
+index e2ca303..ae4762d 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-@@ -1,1110 +1,1572 @@
+@@ -1,1110 +1,1592 @@
  using System;
  using System.Collections.Generic;
 +using System.Runtime.CompilerServices;
@@ -31,8 +31,8 @@ index e2ca303..12cfa03 100644
 +// Not thread-safe: Shared arrays and pools require creating a separate instance of the class for each thread. Vanilla is also not thread-safe. 
 +
 +// Tested on the generation of 10200 chunk columns:
-+// - UpdateLightAt summary method execution time:  from 22.9 s to 40.8 s
-+// - SunLightFloodNeighbourChunks summary method execution time:from 11.1 s to 24.4 s
++// - UpdateLightAt summary method execution time:  from 22.9 s to 30...42 s
++// - SunLightFloodNeighbourChunks summary method execution time:from 11.1 s to 22..25 s
 +// - GC memory allocations: reduced from 9.88 GB to 194 MB
 +// P.S. can be calculated in several threads simultaneously.
 +
@@ -83,6 +83,7 @@ index e2ca303..12cfa03 100644
 +	// Temporary position variables (reused to avoid creating new objects in memory)
 +	private BlockPos tmpDiPos = new BlockPos(0);
 +	private BlockPos tmpPos = new BlockPos(0);
++	private BlockPos tmpPos2 = new BlockPos(0); 
 +	private BlockPos tmpPosDimensionAware = new BlockPos(0);
  
 -	internal IChunkProvider chunkProvider;
@@ -385,7 +386,7 @@ index e2ca303..12cfa03 100644
 +	/// 4. Returns 0 for "air-like" empty space (e.g., light passing horizontally through the empty top half of a bottom slab).
 +	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-+	private int GetEffectiveAbsorption(Block block, int baseAbsorption, BlockFacing dir)
++	private int GetEffectiveAbsorption(Block block, int baseAbsorption, BlockFacing dir, BlockPos pos = null)
 +	{
 +		// If the block inherently doesn't absorb light, skip all face checks.
 +		if (baseAbsorption <= 0) return 0;
@@ -395,8 +396,20 @@ index e2ca303..12cfa03 100644
 +
 +		// 1. Standard check for solid faces 
 +		// If the light hits a solid boundary, it interacts with the block's mass.
-+		if (block.SideSolid[incoming.Index]) return baseAbsorption;
-+		if (block.SideSolid[outgoing.Index]) return baseAbsorption;
++		// Use virtual method if position is available (correct for chiseled blocks)
++		// Otherwise fall back to static SideSolid[] array
++
++		// This is the best option without direct access to BlockMicroBlock
++		bool incomingSolid = (pos != null && readBlockAccess != null) 
++			? block.SideIsSolid(readBlockAccess, pos, incoming.Index)
++			: block.SideSolid[incoming.Index];
++
++		bool outgoingSolid = (pos != null && readBlockAccess != null)
++			? block.SideIsSolid(readBlockAccess, pos, outgoing.Index)
++			: block.SideSolid[outgoing.Index];
++
++		if (incomingSolid) return baseAbsorption;
++		if (outgoingSolid) return baseAbsorption;
 +
 +		// 2. Volumetric transparent/replacable blocks
 +		// These blocks lack solid collision faces but fill the 1x1x1 volume
@@ -416,8 +429,8 @@ index e2ca303..12cfa03 100644
 +		// but the specific faces the light crosses are not solid. Thus, light passes through untouched.
 +		return 0;
  	}
++	
  
-+
 +	/// <summary> Calculation of direct sunlight falling from top to bottom, taking into account absorption by blocks. </summary>
  	public void Sunlight(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ, int dim)
  	{
@@ -470,7 +483,8 @@ index e2ca303..12cfa03 100644
 +						Block block = blockTypes[worldChunk.Data[num7]];
 +
 +						// Light travels from top to bottom
-+						int effectiveAbs = GetEffectiveAbsorption(block, lightAbsorptionAt, BlockFacing.DOWN);
++						tmpPosDimensionAware.Set(num3 + i, num6 * num + num8, num4 + j);
++						int effectiveAbs = GetEffectiveAbsorption(block, lightAbsorptionAt, BlockFacing.DOWN, tmpPosDimensionAware);
 +
 +						if (effectiveAbs > num5)
  						{
@@ -688,9 +702,12 @@ index e2ca303..12cfa03 100644
 +						int nBaseAbs = worldChunk.GetLightAbsorptionAt(index3d2, tmpPosDimensionAware, blockTypes);
 +
 +						// Ray from Current chunk to Neighbor chunk
-+						int absCurToN = GetEffectiveAbsorption(curBlock, curBaseAbs, dir);
++						tmpPos2.Set(num2 + array2[0], num6 * num + array2[1], num3 + array2[2]);
++						tmpPos2.dimension = dimension;
++						int absCurToN = GetEffectiveAbsorption(curBlock, curBaseAbs, dir, tmpPos2);
 +						int lightArrivingAtN = curLight - absCurToN - 1;
-+						int absNFromCur = GetEffectiveAbsorption(nBlock, nBaseAbs, dir);
++						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num4 + num10);
++						int absNFromCur = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, tmpPosDimensionAware);
 +						int finalLightToN = lightArrivingAtN;
 +						if (absNFromCur > lightArrivingAtN) finalLightToN = 0;
 +
@@ -920,7 +937,7 @@ index e2ca303..12cfa03 100644
 +					int nIndex3d = ((ny & chunkSizeMask) * num + nlz) * num + nlx;
 +
 +					BlockFacing dir = BlockFacing.ALLFACES[i];
-+					int effectiveAbs = GetEffectiveAbsorption(posBlock, baseAbsorption, dir);
++					int effectiveAbs = GetEffectiveAbsorption(posBlock, baseAbsorption, dir, tmpPos);
 +					int newLight = currentLight - effectiveAbs - 1;
 +
 +					// Prevent light from propagating into fully opaque blocks or dying out
@@ -930,7 +947,9 @@ index e2ca303..12cfa03 100644
 +					Block nBlock = blockTypes[worldChunk.Data[nIndex3d]];
 +					tmpPos.Set(chunkX * num + nlx, ny, chunkZ * num + nlz);
 +					int nBaseAbs = worldChunk.GetLightAbsorptionAt(nIndex3d, tmpPos, blockTypes);
-+					int nEffectiveAbs = GetEffectiveAbsorption(nBlock, nBaseAbs, dir);
++					tmpPos2.Set(chunkX * num + nlx, ny, chunkZ * num + nlz);
++					tmpPos2.dimension = pos.Dim;
++					int nEffectiveAbs = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, tmpPos2);
 +
 +					int finalLight = newLight;
 +					if (nEffectiveAbs > newLight) finalLight = 0;
@@ -1074,17 +1093,20 @@ index e2ca303..12cfa03 100644
  		{
 -			IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / chunkSize, posY / chunkSize, posZ / chunkSize, notRecentlyAccessed: true);
 -			if (unpackedChunkFast == null)
--			{
++			// Extinguish sunlight ONLY in chunks from startChunkY down to 0
++			for (int cy = startChunkY; cy >= 0; cy--)
+ 			{
 -				return fastSetOfLongs;
--			}
++				IChunkLight lighting = chunks[cy].Lighting;
++				for (int idx = 0; idx < totalBlocks; idx++)
++					lighting.SetSunlight(idx, 0);
+ 			}
 -			int index3d = (posY % chunkSize * chunkSize + posZ % chunkSize) * chunkSize + posX % chunkSize;
 -			int sunlight = unpackedChunkFast.Lighting.GetSunlight(index3d);
 -			unpackedChunkFast.Lighting.SetSunlight_Buffered(index3d, 0);
 -			QueueOfInt queueOfInt2 = new QueueOfInt();
 -			for (int i = 0; i < 6; i++)
-+			// Extinguish sunlight ONLY in chunks from startChunkY down to 0
-+			for (int cy = startChunkY; cy >= 0; cy--)
- 			{
+-			{
 -				Vec3i vec3i = BlockFacing.ALLNORMALI[i];
 -				int num2 = posX + vec3i.X;
 -				int num3 = posY + vec3i.Y;
@@ -1098,10 +1120,7 @@ index e2ca303..12cfa03 100644
 -						queueOfInt2.Enqueue(vec3i.X, vec3i.Y, vec3i.Z, num5 + (TileSideEnum.GetOpposite(i) + 1 << 5));
 -					}
 -				}
-+				IChunkLight lighting = chunks[cy].Lighting;
-+				for (int idx = 0; idx < totalBlocks; idx++)
-+					lighting.SetSunlight(idx, 0);
- 			}
+-			}
 -			ClearSunlightAt(queueOfInt2, centerPos, flag, queueOfInt, fastSetOfLongs);
 -		}
 -		queueOfInt.Enqueue(0, 0, 0, GetSunLightFromNeighbour(posX, posY, posZ, flag));
@@ -1575,7 +1594,8 @@ index e2ca303..12cfa03 100644
 +		int baseZ = posZ - LIGHT_GRID_HALF;
 +
 +		for (int i = 0; i < touchedCells.Count; i++)
-+		{
+ 		{
+-			CollectLightValuesForLightSource(nearbyLightSource.posX, nearbyLightSource.posY, nearbyLightSource.posZ, posX, posY, posZ, range);
 +			int idx = touchedCells[i];
 +			ref var cell = ref lightGrid[idx];
 +
@@ -1585,7 +1605,8 @@ index e2ca303..12cfa03 100644
 +			// Pass cell by reference
 +			RecalcBlockLightAtPos(wx, wy, wz, ref cell);
 +			touchedChunks.Add(chunkProvider.ChunkIndex3D(wx / num, wy / num, wz / num));
-+		}
+ 		}
+-		foreach (KeyValuePair<Vec3i, LightSourcesAtBlock> visitedNode in VisitedNodes)
 +
 +	}
 +
@@ -1640,7 +1661,8 @@ index e2ca303..12cfa03 100644
 +		// 1. Initialization: place all light sources in their starting positions
 +		for (int srcIdx = 0; srcIdx < nearbyCount; srcIdx++)
  		{
--			CollectLightValuesForLightSource(nearbyLightSource.posX, nearbyLightSource.posY, nearbyLightSource.posZ, posX, posY, posZ, range);
+-			RecalcBlockLightAtPos(visitedNode.Key, visitedNode.Value);
+-			touchedChunks.Add(chunkProvider.ChunkIndex3D(visitedNode.Key.X / num, visitedNode.Key.Y / num, visitedNode.Key.Z / num));
 +			byte h = nearbyH[srcIdx], s = nearbyS[srcIdx], b = nearbyB[srcIdx];
 +			if (b <= 0) continue;
 +
@@ -1673,16 +1695,13 @@ index e2ca303..12cfa03 100644
 +			}
 +
 +			buckets[b].Add((idx, srcIdx));
- 		}
--		foreach (KeyValuePair<Vec3i, LightSourcesAtBlock> visitedNode in VisitedNodes)
++		}
 +
 +		IWorldChunk chunk;
 +
 +		// 2. BFS traversal from the brightest (31) to the dimmest (1)
 +		for (int level = 31; level >= 1; level--)
- 		{
--			RecalcBlockLightAtPos(visitedNode.Key, visitedNode.Value);
--			touchedChunks.Add(chunkProvider.ChunkIndex3D(visitedNode.Key.X / num, visitedNode.Key.Y / num, visitedNode.Key.Z / num));
++		{
 +			var bucket = buckets[level];
 +
 +			for (int bi = 0; bi < bucket.Count; bi++)
@@ -1715,7 +1734,7 @@ index e2ca303..12cfa03 100644
 +					BlockFacing dir = BlockFacing.ALLFACES[d];
 +
 +					// Calculate how much light LEAVES the current block in this direction
-+					int curEffectiveAbs = GetEffectiveAbsorption(curBlock, baseAbsorption, dir);
++					int curEffectiveAbs = GetEffectiveAbsorption(curBlock, baseAbsorption, dir, tmpPos);
 +					int lightLeavingCur = level - curEffectiveAbs - 1;
 +					if (lightLeavingCur <= 0) continue;
 +
@@ -1731,7 +1750,8 @@ index e2ca303..12cfa03 100644
 +					int nBaseAbs = nChunk.GetLightAbsorptionAt(nIndex3d, tmpPos.Set(nwx, nwy, nwz), blockTypes);
 +
 +					// Calculate how much light the neighbor block ABSORBS upon entry
-+					int nEffectiveAbs = GetEffectiveAbsorption(nBlock, nBaseAbs, dir);
++					tmpPos2.Set(nwx, nwy, nwz);
++					int nEffectiveAbs = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, tmpPos2);
 +					int effectiveNewLevel = lightLeavingCur;
 +
 +					// If the neighbor block completely absorbs the light (e.g. light hits the solid face of a slab)
