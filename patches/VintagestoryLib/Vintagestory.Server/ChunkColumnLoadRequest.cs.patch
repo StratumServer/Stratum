@@ -1,30 +1,50 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-index 04b25be..052df79 100644
+index 04b25be..bea4514 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-@@ -34,25 +34,45 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+@@ -34,25 +34,65 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
  
  	internal bool prettified;
  
  	internal bool blockingRequest;
  
-+	// Stratum: guards against the same request being claimed for its current
-+	// stage by two concurrent TryClaimStage callers at once. stratumStageActiveCount
-+	// only caps the aggregate number of concurrent claims *per stage*, across all
-+	// requests; it says nothing about a single request being claimed twice. With
-+	// a stage cap of 1 that was masked, since the aggregate counter degenerated
-+	// into a full mutex for that stage. Raising a cap above 1 (PreDone) exposed
-+	// it: two racing claims can both read the same CurrentIncompletePass_AsInt,
-+	// both pass every TryClaimStage check (neither has run PopulateChunk yet, so
-+	// the pass hasn't moved), and both get dispatched. PopulateChunk always does
-+	// currentpass++ regardless of whether it actually ran a generator for that
-+	// pass, so the second, redundant run drives currentpass one past what it
-+	// should be. For a request whose last stage is PreDone, that means Done+1,
-+	// and ToVanilla() only ever shifts by exactly 1, so it never maps back down
-+	// to vanilla Done again, the request is never recognised as complete, and it
-+	// leaks forever, one live count in blockingRequestsRemaining. 0 = free, 1 =
-+	// claimed. CompareExchange'd in TryClaimStage; released everywhere
-+	// stratumStageActiveCount[stage] is released.
++	// Stratum: guards against the same request being processed by two
++	// concurrent callers at once, at any pass. stratumStageActiveCount only
++	// caps the aggregate number of concurrent claims *per worker stage*,
++	// across all requests; it says nothing about a single request being
++	// claimed twice. With a stage cap of 1 that was masked, since the
++	// aggregate counter degenerated into a full mutex for that stage. Raising
++	// a cap above 1 (PreDone) exposed it: two racing claims can both read the
++	// same CurrentIncompletePass_AsInt, both pass every TryClaimStage check
++	// (neither has run PopulateChunk yet, so the pass hasn't moved), and both
++	// get dispatched. PopulateChunk always does currentpass++ regardless of
++	// whether it actually ran a generator for that pass, so the second,
++	// redundant run drives currentpass one past what it should be. For a
++	// request whose last stage is PreDone, that means Done+1, and
++	// ToVanilla() only ever shifts by exactly 1, so it never maps back down
++	// to vanilla Done again, the request is never recognised as complete,
++	// and it leaks forever, one live count in blockingRequestsRemaining.
++	//
++	// The same missing-claim shape exists in vanilla's own dispatch code for
++	// the None/Done boundary passes (GenerateChunkColumns_OnSeparateThread,
++	// tryLoadOrGenerateChunkColumnsInQueue, loadChunkAreaBlocking's own
++	// boundary scan all pick a candidate and act on it with no atomic claim
++	// in between), matching a currently open, unfixed upstream issue
++	// (anegostudios/VintageStory-Issues#5143, "changing MaxWorldgenThreads to
++	// any other value than 1 results in an error", open since 2025-01-27).
++	// Not reachable today in Stratum's own None/Done boundary scans, since
++	// every caller of loadOrGenerateChunkColumn_OnChunkThread for those
++	// passes runs on the chunk thread's own OnSeparateThreadTick, either
++	// gated off by the RunPhase != RunGame check during startup or
++	// sequenced after loadChunkAreaBlocking's fastChunkQueue call within the
++	// same tick, so this field is claimed there too, ahead of any future
++	// change to that threading assumption rather than after a second live
++	// bug is found.
++	//
++	// 0 = free, 1 = claimed. CompareExchange'd in TryClaimStage and at each
++	// None/Done boundary-scan call site; released everywhere
++	// stratumStageActiveCount[stage] is released, and immediately after each
++	// boundary-scan call returns.
 +	internal int dispatchClaimed;
 +
  	private static long counter;
@@ -51,7 +71,7 @@ index 04b25be..052df79 100644
  		}
  		set
  		{
-@@ -62,13 +82,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+@@ -62,13 +102,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
  
  	public int CurrentIncompletePass_AsInt
  	{
