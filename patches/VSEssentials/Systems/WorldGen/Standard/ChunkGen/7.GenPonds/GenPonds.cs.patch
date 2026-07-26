@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/7.GenPonds/GenPonds.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/7.GenPonds/GenPonds.cs
-index acfac74..1bb1cce 100644
+index acfac74..ecbfb47 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/7.GenPonds/GenPonds.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/7.GenPonds/GenPonds.cs
 @@ -9,27 +9,37 @@ using Vintagestory.API.Server;
@@ -144,7 +144,22 @@ index acfac74..1bb1cce 100644
              while (pondPositions.Count > 0)
              {
                  int p = pondPositions.Dequeue();
-@@ -300,14 +312,14 @@ namespace Vintagestory.ServerMods
+@@ -281,10 +293,14 @@ namespace Vintagestory.ServerMods
+                 // Get correct chunk and correct climate data if we don't have it already
+                 if (curChunkX != prevChunkX || curChunkZ != prevChunkZ)
+                 {
+                     chunk = (IServerChunk)blockAccessor.GetChunk(curChunkX, pondYPos / chunksize, curChunkZ);
+                     if (chunk == null) chunk = api.WorldManager.GetChunk(curChunkX, pondYPos / chunksize, curChunkZ);
++                    // Stratum: the fallback lookup can still return null (e.g. a neighbour column that's absent or mid-unload
++                    // while multiple columns run TerrainFeatures concurrently); the sibling chunkOneBlockBelow lookup just
++                    // below already guards this way, so bail out here too instead of NRE'ing on Unpack().
++                    if (chunk == null) return;
+                     chunk.Unpack();
+ 
+                     if (ly == 0)
+                     {
+                         chunkOneBlockBelow = ((IServerChunk)blockAccessor.GetChunk(curChunkX, (pondYPos - 1) / chunksize, curChunkZ));
+@@ -300,14 +316,14 @@ namespace Vintagestory.ServerMods
  
                      float fac = (float)climateMap.InnerSize / regionChunkSize;
                      int rlX = curChunkX % regionChunkSize;
@@ -163,7 +178,7 @@ index acfac74..1bb1cce 100644
                      prevChunkZ = curChunkZ;
  
                      chunkOneBlockBelow.MarkModified();
-@@ -317,11 +329,11 @@ namespace Vintagestory.ServerMods
+@@ -317,11 +333,11 @@ namespace Vintagestory.ServerMods
  
                  // Raise heightmap by 1 (only relevant for above-ground ponds)
                  if (mapchunk.RainHeightMap[lz * chunksize + lx] < pondYPos) mapchunk.RainHeightMap[lz * chunksize + lx] = (ushort)pondYPos;
@@ -176,7 +191,7 @@ index acfac74..1bb1cce 100644
  
                  // 1. Place water or ice block
                  int index3d = (ly * chunksize + lz) * chunksize + lx;
-@@ -355,11 +367,11 @@ namespace Vintagestory.ServerMods
+@@ -355,11 +371,11 @@ namespace Vintagestory.ServerMods
  
                  float rainRel = Climate.GetRainFall((climate >> 8) & 0xff, pondYPos) / 255f;
                  int rockBlockId = mapchunk.TopRockIdMap[lz * chunksize + lx];
