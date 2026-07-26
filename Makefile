@@ -3,9 +3,15 @@
 # Windows: use Git Bash, WSL, or run the .ps1 scripts directly.
 
 CONFIGURATION ?= Release
-VERSION ?= 1.22.3
+VERSION ?= 1.22.5
 SERVER_ARCHIVE ?=
 CLIENT_LIB_DIR ?=
+# Embeds this working tree's compiled DLLs into StratumServer so
+# PatchedFileOverlay actually overlays them at runtime. Without this, the
+# server silently falls back to vanilla's unpatched VintagestoryLib.dll from
+# the downloaded archive; the failure mode is a working build that boots but
+# runs none of this repo's patches.
+EMBED_PATCHED_FILES ?= true
 
 BOOTSTRAP_ARGS :=
 ifneq ($(SERVER_ARCHIVE),)
@@ -14,7 +20,7 @@ endif
 ifneq ($(CLIENT_LIB_DIR),)
   BOOTSTRAP_ARGS += --client-lib-dir $(CLIENT_LIB_DIR)
 endif
-ifneq ($(VERSION),1.22.3)
+ifneq ($(VERSION),1.22.5)
   BOOTSTRAP_ARGS += --version $(VERSION)
 endif
 
@@ -29,6 +35,15 @@ bootstrap: ## Download, decompile, and apply patches
 build: ## Build Release (runs bootstrap if working tree is missing)
 	@if [ ! -f VintagestoryApi/VintagestoryAPI.csproj ]; then $(MAKE) bootstrap; fi
 	dotnet build VintageStory.slnx -c $(CONFIGURATION)
+# Second pass, only if embedding is on: StratumServer's EmbeddedResource list
+# points at sibling projects' bin output by raw path, not a ProjectReference,
+# so on a build where those outputs do not exist yet (a fresh bootstrap, or
+# after clean/refresh) the embed can race the projects that produce them.
+# The pass above guarantees every output exists before this one tries to
+# embed it.
+ifeq ($(EMBED_PATCHED_FILES),true)
+	dotnet build VintageStory.slnx -c $(CONFIGURATION) -p:EmbedPatchedFiles=true
+endif
 
 smoke: build ## Build and boot-test the server
 	bash scripts/smoke-test.sh

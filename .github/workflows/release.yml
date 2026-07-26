@@ -12,7 +12,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Install PowerShell
         run: |
@@ -35,20 +35,22 @@ jobs:
           $tag = "${{ github.ref_name }}"
           if (-not $tag.StartsWith('v')) { throw "Tag must start with 'v' (got '$tag')" }
           $ver = $tag.Substring(1)
-          # Expected: <base>-stratum.<rev>[-<pre>]  e.g. 1.22.3-stratum.1 or 1.22.3-stratum.2-rc.1
-          if ($ver -notmatch '^(?<base>\d+\.\d+\.\d+)-stratum\.(?<rev>\d+)(?:-(?<pre>[0-9A-Za-z.-]+))?$') {
-            throw "Tag must match v<MAJOR.MINOR.PATCH>-stratum.<N>[-<pre>] (got '$tag')"
+          # Expected: <base>-stratum.<rev>[-<pre>]  e.g. 1.22.5-stratum.1.1 or 1.22.5-stratum.2-rc.1
+          if ($ver -notmatch '^(?<base>\d+\.\d+\.\d+)-stratum\.(?<rev>\d+(?:\.\d+)*)(?:-(?<pre>[0-9A-Za-z.-]+))?$') {
+            throw "Tag must match v<MAJOR.MINOR.PATCH>-stratum.<N[.N...]>[-<pre>] (got '$tag')"
           }
+          $isPrerelease = if ($Matches.pre) { "true" } else { "false" }
           "version=$ver"                              | Out-File -Append $env:GITHUB_OUTPUT
           "base=$($Matches.base)"                     | Out-File -Append $env:GITHUB_OUTPUT
           "rev=$($Matches.rev)"                       | Out-File -Append $env:GITHUB_OUTPUT
           "pre=$($Matches.pre)"                       | Out-File -Append $env:GITHUB_OUTPUT
+          "is_prerelease=$isPrerelease"               | Out-File -Append $env:GITHUB_OUTPUT
 
       - name: Build and pack release
         shell: pwsh
         env:
           STRATUM_VER: ${{ steps.ver.outputs.version }}
-        run: ./scripts/pack-release.ps1 -Rids linux-x64,win-x64 -OutDir release-out
+        run: ./scripts/pack-release.ps1 -Rids linux-x64,win-x64 -OutDir release-out -Version "${{ steps.ver.outputs.version }}"
 
       - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
@@ -57,3 +59,4 @@ jobs:
           files: release-out/*.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
+          prerelease: ${{ steps.ver.outputs.is_prerelease }}

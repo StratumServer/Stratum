@@ -32,14 +32,17 @@ internal class ServerSystemStratum : ServerSystem
 
 		// BlockEntity stratum stagger hook requires API-side extensions not present in this build graph.
 
-		// Raise Windows multimedia timer resolution so Thread.Sleep(N) is accurate to ~1ms instead
-		// of the default ~15.6ms scheduler tick. Without this, the server's tick-sleep math
-		// (Config.TickTime - elapsed) rounds up to the next 15.6ms boundary, capping the
-		// achievable tickrate at ~25 tps on Windows regardless of how little work each tick does.
-		// Process-wide; cleaned up automatically at process exit.
+		// Windows otherwise rounds the main tick sleep up to roughly 15.6ms and keeps 30 TPS out of reach.
 		StratumTimerResolutionConfig timerCfg = StratumRuntime.Config.Performance.TimerResolution;
-		if (timerCfg != null && timerCfg.Enabled && stratumActiveTimerPeriodMs == 0
-			&& RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
+			StratumRuntime.SetTimerResolutionStatus(true, "native");
+		}
+		else if (timerCfg == null || !timerCfg.Enabled)
+		{
+			StratumRuntime.SetTimerResolutionStatus(false, "disabled");
+		}
+		else if (stratumActiveTimerPeriodMs == 0)
 		{
 			uint period = (uint)Math.Max(1, timerCfg.PeriodMs);
 			try
@@ -48,17 +51,24 @@ internal class ServerSystemStratum : ServerSystem
 				if (result == 0)
 				{
 					stratumActiveTimerPeriodMs = (int)period;
+					StratumRuntime.SetTimerResolutionStatus(true, period + "ms");
 					StratumRuntime.LogInfo("timer resolution raised to " + period + "ms (was ~15.6ms default)");
 				}
 				else
 				{
-					StratumRuntime.LogWarning("timeBeginPeriod(" + period + ") returned " + result + " — timer resolution unchanged");
+					StratumRuntime.SetTimerResolutionStatus(false, "timeBeginPeriod returned " + result);
+					StratumRuntime.LogWarning("timeBeginPeriod(" + period + ") returned " + result + ": timer resolution unchanged");
 				}
 			}
 			catch (Exception ex)
 			{
+				StratumRuntime.SetTimerResolutionStatus(false, "failed: " + ex.Message);
 				StratumRuntime.LogWarning("could not raise timer resolution: " + ex.Message);
 			}
+		}
+		else
+		{
+			StratumRuntime.SetTimerResolutionStatus(true, stratumActiveTimerPeriodMs + "ms");
 		}
 
 		if (StratumRuntime.Config.Performance.Timings.EnabledOnStartup)
@@ -89,16 +99,28 @@ internal class ServerSystemStratum : ServerSystem
 
 	public override void OnBeginRunGame()
 	{
+		StratumRuntime.InitAdaptiveRadius(server);
 		StratumPlayerPrivacy.Initialize(server);
 		StratumMetricsPublisher.Start();
 		StratumUpdateChecker.CheckOnStartup();
 		StratumServerStats.Start(server);
+		StratumHarmonyVisibility.LogPatchedMethods(server);
 		if (StratumRuntime.Config.Backup.Enabled)
 		{
 			new StratumBackupScheduler(server);
 			StratumRuntime.LogInfo("backup scheduler armed: first backup in about 1min, interval=" + StratumRuntime.Config.Backup.IntervalMinutes + "min retain=" + StratumRuntime.Config.Backup.RetainCount);
 		}
-		StratumTrimClassRegistry();
+		if (StratumRuntime.Config.Performance.ItemCleanup.Enabled)
+		{
+			new StratumItemCleanup(server);
+			StratumRuntime.LogInfo($"item cleanup scheduler armed: first cleanup in {StratumRuntime.Config.Performance.ItemCleanup.IntervalSeconds}s, interval={StratumRuntime.Config.Performance.ItemCleanup.IntervalSeconds}s");
+        }
+		if (StratumRuntime.Config.Announcements.Enabled && StratumRuntime.Config.Announcements.Messages.Length > 0)
+		{
+			new StratumAnnouncementScheduler(server);
+			StratumRuntime.LogInfo("announcements armed: " + StratumRuntime.Config.Announcements.Messages.Length + " messages, interval=" + StratumRuntime.Config.Announcements.IntervalSeconds + "s");
+		}
+        StratumTrimClassRegistry();
 		StratumRuntime.LogInfo("runtime ready. Use /stratum health, /stratum status, and /stratum timings start.");
 	}
 
@@ -148,7 +170,6 @@ internal class ServerSystemStratum : ServerSystem
 	{
 		if (server.RunPhase == EnumServerRunPhase.RunGame)
 		{
-			StratumRuntime.Pregen.Tick(server);
 			StratumMetricsPublisher.Publish(server);
 			StratumServerStats.Tick(server);
 		}

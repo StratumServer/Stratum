@@ -1,8 +1,36 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..3a09055 100644
+index 30f034d..6c87d18 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-@@ -30,11 +30,11 @@ namespace Vintagestory.ServerMods
+@@ -1,7 +1,8 @@
+ using System;
+ using System.Collections.Generic;
++using System.Threading;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.MathTools;
+ using Vintagestory.API.Server;
+ 
+ #nullable disable
+@@ -12,11 +13,17 @@ namespace Vintagestory.ServerMods
+     {
+         protected override int chunkRange { get { return 5; } }
+ 
+         public override double ExecuteOrder() { return 0.3; }
+ 
+-        internal LCGRandom caveRand;
++        // Stratum: ThreadLocal, not a plain field. GeneratePartial reseeds caveRand per
++        // (chunkX+cdx, chunkZ+cdz) then hands it into CarveTunnel/CarveShaft's recursive
++        // NextInt() sequence; if TerrainLate ever runs two columns at once, a shared
++        // field lets one thread's reseed land mid-sequence of another thread's carve,
++        // splicing two columns' cave shapes together.
++        ThreadLocal<LCGRandom> caveRandThreadLocal;
++        internal LCGRandom caveRand => caveRandThreadLocal.Value;
+         IWorldGenBlockAccessor worldgenBlockAccessor;
+ 
+         NormalizedSimplexNoise basaltNoise;
+         NormalizedSimplexNoise heightvarNoise;
+         int regionsize;
+@@ -30,27 +37,28 @@ namespace Vintagestory.ServerMods
                  api.Event.GetWorldgenBlockAccessor(OnWorldGenBlockAccessor);
  
                  api.ChatCommands.GetOrCreate("dev")
@@ -15,11 +43,34 @@ index 30f034d..3a09055 100644
                      .EndSubCommand();
  
                  api.Event.MapChunkGeneration(OnMapChunkGen, "standard");
-@@ -77,16 +77,23 @@ namespace Vintagestory.ServerMods
+                 api.Event.MapChunkGeneration(OnMapChunkGen, "superflat");
+-                api.Event.ChunkColumnGeneration(GenChunkColumn, EnumWorldGenPass.Terrain, "standard");
++                StratumTerrainSplit.Register(api, GenChunkColumn, "standard"); // Stratum: late half of the split Terrain pass
+                 api.Event.InitWorldGenerator(initWorldGen, "superflat");
+             }
+         }
+ 
+ 
+         public override void initWorldGen()
+         {
+             base.initWorldGen();
+-            caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
++            int caveSeed = api.WorldManager.Seed + 123128;
++            caveRandThreadLocal = new ThreadLocal<LCGRandom>(() => new LCGRandom(caveSeed));
+             basaltNoise = NormalizedSimplexNoise.FromDefaultOctaves(2, 1f / 3.5f, 0.9f, api.World.Seed + 12);
+             heightvarNoise = NormalizedSimplexNoise.FromDefaultOctaves(3, 1f / 20f, 0.9f, api.World.Seed + 12);
+ 
+             regionsize = api.World.BlockAccessor.RegionSize;
+         }
+@@ -74,19 +82,25 @@ namespace Vintagestory.ServerMods
+             }
+         }
+ 
          private TextCommandResult CmdCaveGenTest(TextCommandCallingArgs args)
          {
-             caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
-             initWorldGen();
+-            caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
+-            initWorldGen();
++            initWorldGen(); // Stratum: this already reseeds caveRandThreadLocal with the same formula, no need to do it twice
  
 +            // Stratum start:
 +            // Adding light recalculation for caves
@@ -41,7 +92,7 @@ index 30f034d..3a09055 100644
                  for (int dz = -5; dz <= 5; dz++)
                  {
                      int chunkX = baseChunkX + dx;
-@@ -96,19 +103,19 @@ namespace Vintagestory.ServerMods
+@@ -96,19 +110,19 @@ namespace Vintagestory.ServerMods
  
                      for (int i = 0; i < chunks.Length; i++)
                      {
@@ -63,7 +114,7 @@ index 30f034d..3a09055 100644
                  for (int dz = -5; dz <= 5; dz++)
                  {
                      int chunkX = baseChunkX + dx;
-@@ -125,15 +132,24 @@ namespace Vintagestory.ServerMods
+@@ -125,15 +139,24 @@ namespace Vintagestory.ServerMods
                              chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
                              GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
                          }
@@ -88,7 +139,7 @@ index 30f034d..3a09055 100644
          }
  
          private IServerChunk[] GetChunkColumn(int chunkX, int chunkZ)
-@@ -506,160 +522,225 @@ namespace Vintagestory.ServerMods
+@@ -506,160 +529,225 @@ namespace Vintagestory.ServerMods
  
  
  

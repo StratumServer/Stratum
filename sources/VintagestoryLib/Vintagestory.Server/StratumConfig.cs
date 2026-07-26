@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Vintagestory.API.Common.Entities;
 
 namespace Vintagestory.Server;
@@ -45,6 +46,8 @@ internal class StratumConfig
 
 	public StratumBackupConfig Backup { get; set; } = new StratumBackupConfig();
 
+	public StratumAnnouncementsConfig Announcements { get; set; } = new StratumAnnouncementsConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
 	public void EnsurePopulated()
@@ -67,6 +70,7 @@ internal class StratumConfig
 		PlayerPrivacy ??= new StratumPlayerPrivacyConfig();
 		Nametags ??= new StratumNametagsConfig();
 		Backup ??= new StratumBackupConfig();
+		Announcements ??= new StratumAnnouncementsConfig();
 		ServerStats ??= new StratumServerStatsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
@@ -83,6 +87,7 @@ internal class StratumConfig
 		PlayerPrivacy.EnsurePopulated();
 		Nametags.EnsurePopulated();
 		Backup.EnsureSane();
+		Announcements.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
 		MigrateLegacyDefaults();
@@ -110,6 +115,11 @@ internal class StratumConfig
 	{
 		return new StratumConfig();
 	}
+
+	public static readonly Newtonsoft.Json.JsonSerializerSettings LoadSerializerSettings = new Newtonsoft.Json.JsonSerializerSettings
+	{
+		ObjectCreationHandling = Newtonsoft.Json.ObjectCreationHandling.Replace
+	};
 
 	// Serializer settings used when writing the main stratum.json. Skips Commands and Performance
 	// because those live in stratum-commands.json / stratum-performance.json sidecars.
@@ -426,6 +436,11 @@ internal class StratumDiagnosticsConfig
 	public bool RunStartupPreflight { get; set; } = true;
 
 	public bool LogPreflightWarnings { get; set; } = true;
+
+	// Logs every mod-owned Harmony patch at startup (grouped by mod, split by prefix/postfix/
+	// transpiler/finalizer). Visibility only, does not cross-reference against Stratum's own
+	// source-patched methods -- see StratumHarmonyVisibility.
+	public bool LogModHarmonyPatches { get; set; } = false;
 }
 
 internal class StratumHardeningConfig
@@ -620,6 +635,12 @@ internal class StratumPerformanceConfig
 
 	public StratumJoinConfig Join { get; set; } = new StratumJoinConfig();
 
+	public StratumAdaptiveRadiusConfig AdaptiveRadius { get; set; } = new StratumAdaptiveRadiusConfig();
+
+	public StratumItemCleanupConfig ItemCleanup { get; set; } = new StratumItemCleanupConfig();
+
+	public StratumNetworkConfig Network { get; set; } = new StratumNetworkConfig();
+
 	public void EnsurePopulated()
 	{
 		ChunkSending ??= new StratumChunkSendingConfig();
@@ -643,6 +664,9 @@ internal class StratumPerformanceConfig
 		BlockEntityInit ??= new StratumBlockEntityInitConfig();
 		TimerResolution ??= new StratumTimerResolutionConfig();
 		Join ??= new StratumJoinConfig();
+		AdaptiveRadius ??= new StratumAdaptiveRadiusConfig();
+		ItemCleanup ??= new StratumItemCleanupConfig();
+		Network ??= new StratumNetworkConfig();
 		ChunkSending.EnsureSane();
 		ChunkGeneration.EnsureSane();
 		ChunkRequestManagement.EnsureSane();
@@ -664,6 +688,32 @@ internal class StratumPerformanceConfig
 		BlockEntityInit.EnsureSane();
 		TimerResolution.EnsureSane();
 		Join.EnsureSane();
+		AdaptiveRadius.EnsureSane();
+		ItemCleanup.EnsureSane();
+		Network.EnsureSane();
+	}
+}
+
+internal class StratumNetworkConfig
+{
+	// Off by default. The queue removes the packet reordering bug from the old
+	// StratumNetworkFlush (disabled after client crashes, see PR #138), but it is new code
+	// on the hottest path in the server. Soak on a community server before flipping the
+	// shipped default.
+	public bool SendQueueEnabled { get; set; } = false;
+
+	// Packets at or above this size skip coalescing and go out alone. Matches the TCP MTU
+	// assumption the old flush buffer used.
+	public int LargeThresholdBytes { get; set; } = 1400;
+
+	// Upper bound on one coalesced send. Caps the reusable drain buffer and how much data
+	// a single SendAsync call carries.
+	public int CoalesceLimitBytes { get; set; } = 65536;
+
+	public void EnsureSane()
+	{
+		LargeThresholdBytes = Math.Max(64, LargeThresholdBytes);
+		CoalesceLimitBytes = Math.Max(LargeThresholdBytes, CoalesceLimitBytes);
 	}
 }
 
@@ -683,6 +733,57 @@ internal class StratumJoinConfig
 	{
 		MaxQueueAdmissionsPerPass = Math.Max(0, Math.Min(64, MaxQueueAdmissionsPerPass));
 		MaxJoinsPerTick = Math.Max(0, Math.Min(64, MaxJoinsPerTick));
+	}
+}
+
+internal class StratumAdaptiveRadiusConfig
+{
+	public bool Enabled { get; set; } = false;
+
+	public double SmoothingAlpha { get; set; } = 0.15;
+
+	public double DecreaseMsptThreshold { get; set; } = 45.0;
+
+	public double IncreaseMsptThreshold { get; set; } = 35.0;
+
+	// Instant radius drop when a single tick exceeds this value (ms).
+	public double OverloadDropThresholdMs { get; set; } = 500.0;
+
+	public int FloorChunks { get; set; } = 4;
+
+	public float AdjustmentIntervalSeconds { get; set; } = 2.0f;
+
+	public void EnsureSane()
+	{
+		SmoothingAlpha = Math.Max(0.01, Math.Min(0.5, SmoothingAlpha));
+		DecreaseMsptThreshold = Math.Max(1.0, DecreaseMsptThreshold);
+		IncreaseMsptThreshold = Math.Max(1.0, IncreaseMsptThreshold);
+		OverloadDropThresholdMs = Math.Max(50.0, OverloadDropThresholdMs);
+		FloorChunks = Math.Max(1, FloorChunks);
+		AdjustmentIntervalSeconds = Math.Max(1.0f, AdjustmentIntervalSeconds);
+	}
+}
+
+internal class StratumItemCleanupConfig
+{
+	public bool Enabled { get; set; } = false;
+	public int IntervalSeconds { get; set; } = 60;
+	public int MinimumEntityAgeSeconds { get; set; } = 10;
+	public string CleanupWarningMessage { get; set; } = "Cleaning up dropped items in {0} seconds.";
+	public int[] CleanupWarningTimeOffsets { get; set; } = [30, 10];
+	public string CleanupStartingMessage { get; set; } = "Cleaning up dropped items...";
+	public string CleanupDoneMessage { get; set; } = "Cleaned up {0} items.";
+
+	public void EnsureSane()
+	{
+		IntervalSeconds = Math.Max(1, IntervalSeconds);
+		MinimumEntityAgeSeconds = Math.Max(0, MinimumEntityAgeSeconds);
+		CleanupWarningMessage ??= "";
+		CleanupStartingMessage ??= "";
+		CleanupDoneMessage ??= "";
+		CleanupWarningTimeOffsets ??= [];
+
+		CleanupWarningTimeOffsets = CleanupWarningTimeOffsets.Select(n => Math.Clamp(n, 1, IntervalSeconds)).Distinct().ToArray();
 	}
 }
 
@@ -898,13 +999,13 @@ internal class StratumPregenConfig
 {
 	public bool Enabled { get; set; } = true;
 
-	public int MaxColumnsPerSecond { get; set; } = 32;
+	public int MaxColumnsPerSecond { get; set; } = 500;
 
 	public int MaxScansPerSecond { get; set; } = 4096;
 
-	public int MaxPendingColumnQueue { get; set; } = 256;
+	public int MaxPendingColumnQueue { get; set; } = 500;
 
-	public int MaxWorkerColumnQueue { get; set; } = 512;
+	public int MaxWorkerColumnQueue { get; set; } = 1000;
 
 	public int MaxLoadedChunkColumns { get; set; } = 4096;
 
@@ -914,7 +1015,7 @@ internal class StratumPregenConfig
 
 	public bool PauseWhenPlayersOnline { get; set; } = true;
 
-	public double PauseBelowTps { get; set; } = 20.0;
+	public double PauseBelowTps { get; set; } = 15.0;
 
 	public int ProgressLogIntervalSeconds { get; set; } = 60;
 
@@ -929,6 +1030,34 @@ internal class StratumPregenConfig
 		MaxAreaColumns = Math.Min(100000000, Math.Max(1, MaxAreaColumns));
 		PauseBelowTps = Math.Min(20, Math.Max(0, PauseBelowTps));
 		ProgressLogIntervalSeconds = Math.Min(3600, Math.Max(0, ProgressLogIntervalSeconds));
+
+		// Automatic protection against deadlocks and throttling
+		int sysQueueLimit = MagicNum.RequestChunkColumnsQueueSize;
+
+		// MaxPendingColumnQueue <= 1/4 of RequestChunkColumnsQueueSize
+		int maxPendingAllowed = Math.Max(64, sysQueueLimit / 4);
+		if (MaxPendingColumnQueue > maxPendingAllowed)
+		{
+			StratumRuntime.LogWarning($"MaxPendingColumnQueue ({MaxPendingColumnQueue}) was automatically clamped to {maxPendingAllowed} (1/4 of engine RequestChunkColumnsQueueSize: {sysQueueLimit}).");
+			MaxPendingColumnQueue = maxPendingAllowed;
+		}
+
+		// MaxWorkerColumnQueue <= 1/2 of RequestChunkColumnsQueueSize
+		int maxWorkerAllowed = Math.Max(128, sysQueueLimit / 2);
+		if (MaxWorkerColumnQueue > maxWorkerAllowed)
+		{
+			StratumRuntime.LogWarning($"MaxWorkerColumnQueue ({MaxWorkerColumnQueue}) was automatically clamped to {maxWorkerAllowed} (1/2 of engine RequestChunkColumnsQueueSize: {sysQueueLimit}).");
+			MaxWorkerColumnQueue = maxWorkerAllowed;
+		}
+
+		// MaxColumnsPerSecond must not exceed MaxPendingColumnQueue
+		// If the insertion rate is higher than the buffer size,
+		// the queue will instantly overflow, causing constant pauses
+		if (MaxColumnsPerSecond > MaxPendingColumnQueue)
+		{
+			StratumRuntime.LogWarning($"MaxColumnsPerSecond ({MaxColumnsPerSecond}) was automatically clamped to MaxPendingColumnQueue ({MaxPendingColumnQueue}) to prevent instant queue pressure thrashing.");
+			MaxColumnsPerSecond = MaxPendingColumnQueue;
+		}
 	}
 }
 
@@ -1079,6 +1208,11 @@ internal class StratumPhysicsConfig
 	// Stride for entities beyond MidActivationRadiusBlocks but still tracked (IsTracked > 0).
 	public int FarBandTickStride { get; set; } = 3;
 
+	// Max entities to dequeue from the toAdd queue per tick. Prevents spikes when multiple
+	// chunks load simultaneously and dump 50-100 new physics tickables in one frame.
+	// Deferred entities stay in the queue and drain on subsequent ticks. 0 = no limit.
+	public int MaxActivationsPerTick { get; set; } = 50;
+
 	public void EnsureSane()
 	{
 		MaxCatchUpTicksPerServerTick = Math.Min(12, Math.Max(1, MaxCatchUpTicksPerServerTick));
@@ -1091,6 +1225,7 @@ internal class StratumPhysicsConfig
 		FarTrackedTickStride = Math.Min(8, Math.Max(1, FarTrackedTickStride));
 		UntrackedBehaviorTickStride = Math.Min(16, Math.Max(1, UntrackedBehaviorTickStride));
 		FarBandTickStride = Math.Min(16, Math.Max(1, FarBandTickStride));
+		MaxActivationsPerTick = Math.Max(0, MaxActivationsPerTick);
 		NearActivationRadiusBlocks = Math.Max(0f, NearActivationRadiusBlocks);
 		MidActivationRadiusBlocks = Math.Max(NearActivationRadiusBlocks, MidActivationRadiusBlocks);
 	}
@@ -1212,6 +1347,13 @@ internal class StratumEntityTickingConfig
 		"chicken-", "hen-", "rooster-", "pig-", "sheep-"
 	};
 
+	// Asset domains whose entities never get throttled, regardless of distance/tier. Custom
+	// AI/pathfinder mods can assume near-constant tick frequency; throttling them can break
+	// their internal state machine (observed with VSVillage's custom pathfinder: villagers
+	// froze at town edges under a distance-based throttle in a prior version of this system).
+	// Resolved once per entity and cached alongside the ambient-fauna tier.
+	public List<string> ExcludedModDomains { get; set; } = new List<string> { "vsvillage" };
+
 	// Paper-style hard despawn: creatures that have been beyond HardDespawnDistanceBlocks
 	// from every player for HardDespawnGracePeriodSeconds get unloaded. Off by default —
 	// enable only on long-running worlds where stray mobs accumulate in old chunks.
@@ -1256,13 +1398,54 @@ internal class StratumEntityTickingConfig
 		MovingEntitySpeedThreshold = Math.Max(0, MovingEntitySpeedThreshold);
 		MaxCreatureTicksPerTick = Math.Max(0, MaxCreatureTicksPerTick);
 		AmbientFaunaTickMultiplier = Math.Max(1, Math.Min(16, AmbientFaunaTickMultiplier));
-		AmbientFaunaCodePrefixes ??= new List<string>();
+		AmbientFaunaCodePrefixes = NormalizeCodeList(AmbientFaunaCodePrefixes);
+		ExcludedModDomains = NormalizeCodeList(ExcludedModDomains);
 		HardDespawnDistanceBlocks = Math.Max(32, HardDespawnDistanceBlocks);
 		HardDespawnGracePeriodSeconds = Math.Max(1, HardDespawnGracePeriodSeconds);
-		HardDespawnExemptCodePrefixes ??= new List<string>();
+		HardDespawnExemptCodePrefixes = NormalizeCodeList(HardDespawnExemptCodePrefixes);
 		EntityCapsEnforcementIntervalSeconds = Math.Max(1, EntityCapsEnforcementIntervalSeconds);
 		MaxCreaturesPerChunkColumn = Math.Max(0, MaxCreaturesPerChunkColumn);
 		MaxItemEntitiesPerChunkColumn = Math.Max(0, MaxItemEntitiesPerChunkColumn);
+	}
+
+	private static List<string> NormalizeCodeList(List<string> values)
+	{
+		if (values == null)
+		{
+			return new List<string>();
+		}
+
+		int writeIndex = 0;
+		for (int readIndex = 0; readIndex < values.Count; readIndex++)
+		{
+			string value = values[readIndex]?.Trim();
+			if (string.IsNullOrEmpty(value))
+			{
+				continue;
+			}
+
+			bool duplicate = false;
+			for (int i = 0; i < writeIndex; i++)
+			{
+				if (string.Equals(values[i], value, StringComparison.OrdinalIgnoreCase))
+				{
+					duplicate = true;
+					break;
+				}
+			}
+
+			if (!duplicate)
+			{
+				values[writeIndex++] = value;
+			}
+		}
+
+		if (writeIndex < values.Count)
+		{
+			values.RemoveRange(writeIndex, values.Count - writeIndex);
+		}
+
+		return values;
 	}
 }
 
@@ -1337,9 +1520,10 @@ internal class StratumChunkIoConfig
 // still consumed via the standard requeue/dispose flow, this only changes which request the
 // chunk thread picks up *first* on each tick — useful when many players are spreading load
 // across the world simultaneously and FIFO would otherwise round-robin them slowly.
+// sampling now correctly takes into account the entire queue via bounded max-heap, and not just its head
 internal class StratumChunkPriorityConfig
 {
-	public bool Enabled { get; set; } = false;
+	public bool Enabled { get; set; } = true;
 
 	// Cap on requests pulled into the sort window each chunk-thread iteration. Keeps the sort
 	// cost bounded regardless of queue size.
@@ -1843,5 +2027,33 @@ internal class StratumBackupConfig
 	{
 		if (IntervalMinutes < 1) IntervalMinutes = 1;
 		if (RetainCount < 1) RetainCount = 1;
+	}
+}
+
+internal class StratumAnnouncementsConfig
+{
+	public bool Enabled { get; set; }
+
+	// Seconds between broadcasts.
+	public int IntervalSeconds { get; set; } = 300;
+
+	// Messages to rotate through. Supports the same HTML formatting as /announce.
+	public string[] Messages { get; set; } = Array.Empty<string>();
+
+	// Prepended to every message. Default matches /announce orange bold styling.
+	public string Prefix { get; set; } = "<strong><font color=\"orange\">";
+
+	// Appended to every message. Closes the Prefix tags.
+	public string Suffix { get; set; } = "</font></strong>";
+
+	// If true, pick a random message each time instead of sequential rotation.
+	public bool RandomOrder { get; set; }
+
+	public void EnsureSane()
+	{
+		if (IntervalSeconds < 10) IntervalSeconds = 10;
+		Messages ??= Array.Empty<string>();
+		Prefix ??= "";
+		Suffix ??= "";
 	}
 }

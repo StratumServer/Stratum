@@ -79,19 +79,27 @@ internal sealed class StratumChunkReadPool : IDisposable
 		}
 	}
 
+	// Returns null only when the row does not exist. Every failure path throws:
+	// callers treat null as "chunk absent from the database" and regenerate the
+	// column, so a swallowed read error would silently overwrite saved terrain
+	// with fresh worldgen. The sequential GameDatabase path propagates read
+	// errors the same way.
 	public byte[] GetChunkBytes(ulong position)
 	{
-		if (disposed) return null;
-		if (!available.Wait(15000)) return null; // very generous; never hit in healthy operation
+		ObjectDisposedException.ThrowIf(disposed, this);
+		if (!available.Wait(15000))
+		{
+			throw new TimeoutException("[Stratum] chunk read pool: no free connection within 15s");
+		}
 		int slot = -1;
 		try
 		{
 			if (!freeSlots.TryTake(out slot))
 			{
 				// Should never happen — semaphore should mirror bag count exactly.
-				return null;
+				throw new InvalidOperationException("[Stratum] chunk read pool: semaphore and free-slot bag disagree");
 			}
-			if (disposed) return null;
+			ObjectDisposedException.ThrowIf(disposed, this);
 
 			SqliteCommand cmd = getChunkCmds[slot];
 			cmd.Parameters["position"].Value = position;
@@ -105,10 +113,10 @@ internal sealed class StratumChunkReadPool : IDisposable
 			}
 			return result;
 		}
-		catch (Exception ex)
+		catch (SqliteException ex)
 		{
-			ServerMain.Logger?.Warning("[Stratum] chunk read pool slot {0} read failed: {1}", slot, ex.Message);
-			return null;
+			ServerMain.Logger?.Error("[Stratum] chunk read pool slot {0} read failed: {1}", slot, ex.Message);
+			throw;
 		}
 		finally
 		{

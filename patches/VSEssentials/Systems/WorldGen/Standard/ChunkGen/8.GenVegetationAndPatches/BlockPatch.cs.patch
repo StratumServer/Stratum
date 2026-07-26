@@ -1,0 +1,18 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/BlockPatch.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/BlockPatch.cs
+index 6076f3d..2d1eae2 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/BlockPatch.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/BlockPatch.cs
+@@ -235,12 +235,11 @@ namespace Vintagestory.ServerMods.NoObf
+             const int chunkSize = GlobalConstants.ChunkSize;
+ 
+             Block[] blocks = getBlocks(firstBlockId);
+             if (blocks.Length == 0) return;
+ 
+-            ModStdWorldGen modSys = null;
+-            if (blockAccessor is IWorldGenBlockAccessor wgba) modSys = wgba.WorldgenWorldAccessor.Api.ModLoader.GetModSystem<GenVegetationAndPatches>();
++            // Stratum: The modSys initialization in this part of the code is no longer used, but was eating up performance.
+ 
+             while (quantity-- > 0)
+             {
+                 if (quantity < 1 && rnd.NextFloat() > quantity) break;
+ 

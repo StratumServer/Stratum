@@ -24,6 +24,17 @@ internal sealed class StratumPregenManager
 	private int maxChunkZ;
 	private int nextChunkX;
 	private int nextChunkZ;
+
+	// fields to support the circle shape
+	private int centerX;
+	private int centerZ;
+	private long radiusSq;
+
+	// Storing original TTL values ​​for restoring them after pregen
+	private int originalUncompressedChunkTTL;
+	private long originalCompressedChunkTTL;
+	private bool ttlBoosted = false;
+
 	private long totalColumns;
 	private long inspectedColumns;
 	private long queuedColumns;
@@ -36,6 +47,10 @@ internal sealed class StratumPregenManager
 	private long finishedAtMilliseconds;
 	private long lastProgressLogMilliseconds;
 	private string lastPauseReason = "none";
+
+	private long lastTickMilliseconds = -1;
+	private float columnBudgetAccumulator;
+	private float scanBudgetAccumulator;
 
 	public string ShortStatus
 	{
@@ -72,6 +87,9 @@ internal sealed class StratumPregenManager
 
 			paused = true;
 			lastPauseReason = "manual";
+
+			RestoreTtl(); // restore TTL
+
 			return TextCommandResult.Success(BuildStatus(server));
 		}
 
@@ -84,6 +102,9 @@ internal sealed class StratumPregenManager
 
 			paused = false;
 			lastPauseReason = "none";
+
+			ApplyTtlBoost();    // reduce TTL
+
 			return TextCommandResult.Success(BuildStatus(server));
 		}
 
@@ -96,12 +117,73 @@ internal sealed class StratumPregenManager
 		return TextCommandResult.Error(Usage);
 	}
 
+
+	private void ApplyTtlBoost()
+	{
+		if (ttlBoosted) return;
+
+		originalUncompressedChunkTTL = MagicNum.UncompressedChunkTTL;
+		originalCompressedChunkTTL = MagicNum.CompressedChunkTTL;
+
+		// Divide by 5, but not less than 1000 ms (1 second) to prevent the server from going crazy,
+		// trying to dump chunks to disk every tick
+		int newUncompressed = Math.Max(1000, originalUncompressedChunkTTL / 5);
+		long newCompressed = Math.Max(1000, originalCompressedChunkTTL / 5);
+
+		MagicNum.UncompressedChunkTTL = newUncompressed;
+		MagicNum.CompressedChunkTTL = newCompressed;
+
+		ttlBoosted = true;
+		StratumRuntime.LogInfo($"Chunk TTL boosted for faster unload: Uncompressed {originalUncompressedChunkTTL} -> {newUncompressed}ms, Compressed {originalCompressedChunkTTL} -> {newCompressed}ms");
+	}
+
+	private void RestoreTtl()
+	{
+		if (!ttlBoosted) return;
+
+		MagicNum.UncompressedChunkTTL = originalUncompressedChunkTTL;
+		MagicNum.CompressedChunkTTL = originalCompressedChunkTTL;
+
+		ttlBoosted = false;
+		StratumRuntime.LogInfo($"Chunk TTL restored: Uncompressed {originalUncompressedChunkTTL}ms, Compressed {originalCompressedChunkTTL}ms");
+	}
+
+
+
 	public void Tick(ServerMain server)
 	{
-		if (!running || paused)
+		if (!running)
 		{
+			if (ttlBoosted)
+				RestoreTtl();   // restore TTL
+			lastTickMilliseconds = -1; // reset so next start gets a fresh dt
 			return;
 		}
+
+		if (paused)
+		{
+			if (ttlBoosted)
+				RestoreTtl();   // restore TTL
+			lastTickMilliseconds = -1;
+			return;
+		}
+
+		// We calculate the real dt
+		long now = server.ElapsedMilliseconds;
+		float dtSeconds;
+		if (lastTickMilliseconds < 0)
+		{
+			// First tick after start/resume - we take the nominal 50 ms
+			dtSeconds = 0.05f;
+		}
+		else
+		{
+			dtSeconds = (now - lastTickMilliseconds) / 1000f;
+		}
+		lastTickMilliseconds = now;
+
+		// Anomaly protection (sleep mode, debugger, GC pause > 2 s)
+		dtSeconds = Math.Clamp(dtSeconds, 0.001f, 2.0f);
 
 		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
 		config.EnsureSane();
@@ -110,6 +192,8 @@ internal sealed class StratumPregenManager
 		{
 			pressurePauses++;
 			lastPauseReason = "disabled in config";
+			if (ttlBoosted)
+				RestoreTtl();
 			return;
 		}
 
@@ -121,10 +205,38 @@ internal sealed class StratumPregenManager
 			return;
 		}
 
+		if (!ttlBoosted)
+		{
+			ApplyTtlBoost();
+		}
+
 		lastPauseReason = "none";
+
+		// Time-scaled budget for this tick
+		columnBudgetAccumulator += config.MaxColumnsPerSecond * dtSeconds;
+		scanBudgetAccumulator += config.MaxScansPerSecond * dtSeconds;
+
+		int maxColumnsThisTick = (int)columnBudgetAccumulator;
+		int maxScansThisTick = (int)scanBudgetAccumulator;
+
+		// We don't let the budget grow indefinitely (long-pause protection)
+		columnBudgetAccumulator -= maxColumnsThisTick;
+		scanBudgetAccumulator -= maxScansThisTick;
+		columnBudgetAccumulator = Math.Min(columnBudgetAccumulator, config.MaxColumnsPerSecond);
+		scanBudgetAccumulator = Math.Min(scanBudgetAccumulator, config.MaxScansPerSecond);
+
+		// If no full unit has accumulated, skip work this tick
+		if (maxColumnsThisTick <= 0 || maxScansThisTick <= 0)
+		{
+			MaybeLogProgress(server);
+			return;
+		}
+
 		int queuedThisTick = 0;
 		int scannedThisTick = 0;
-		while (queuedThisTick < config.MaxColumnsPerSecond && scannedThisTick < config.MaxScansPerSecond && HasMoreColumns())
+		while (queuedThisTick < maxColumnsThisTick
+		       && scannedThisTick < maxScansThisTick
+		       && HasMoreColumns())
 		{
 			if (IsQueuePressureHigh(server, config))
 			{
@@ -200,6 +312,7 @@ internal sealed class StratumPregenManager
 
 		int centerChunkX;
 		int centerChunkZ;
+
 		if (TryParseInt(args[4] as string, out int parsedCenterX) && TryParseInt(args[5] as string, out int parsedCenterZ))
 		{
 			centerChunkX = parsedCenterX;
@@ -216,7 +329,12 @@ internal sealed class StratumPregenManager
 			centerChunkZ = server.WorldMap.MapSizeZ / MagicNum.ServerChunkSize / 2;
 		}
 
-		return Start(server, "radius", centerChunkX - radiusChunks, centerChunkZ - radiusChunks, centerChunkX + radiusChunks, centerChunkZ + radiusChunks, config);
+		int minChunkX = centerChunkX - radiusChunks;
+		int maxChunkX = centerChunkX + radiusChunks;
+		int minChunkZ = centerChunkZ - radiusChunks;
+		int maxChunkZ = centerChunkZ + radiusChunks;
+
+		return Start(server, "radius", minChunkX, minChunkZ, maxChunkX, maxChunkZ, config, centerChunkX, centerChunkZ, radiusChunks);
 	}
 
 	private TextCommandResult StartRect(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config)
@@ -229,7 +347,7 @@ internal sealed class StratumPregenManager
 		return Start(server, "rect", x1, z1, x2, z2, config);
 	}
 
-	private TextCommandResult Start(ServerMain server, string newMode, int x1, int z1, int x2, int z2, StratumPregenConfig config)
+	private TextCommandResult Start(ServerMain server, string newMode, int x1, int z1, int x2, int z2, StratumPregenConfig config, int centerX = 0, int centerZ = 0, int radius = 0)
 	{
 		int normalizedMinX = Math.Min(x1, x2);
 		int normalizedMaxX = Math.Max(x1, x2);
@@ -250,7 +368,34 @@ internal sealed class StratumPregenManager
 		maxChunkZ = normalizedMaxZ;
 		nextChunkX = minChunkX;
 		nextChunkZ = minChunkZ;
-		totalColumns = area;
+
+		// Accurate calculation of the number of chunks depending on the shape
+		if (newMode == "radius")
+		{
+			this.centerX = centerX;
+			this.centerZ = centerZ;
+			this.radiusSq = (long)radius * radius;
+
+			long count = 0;
+			for (int dx = 0; dx <= radius; dx++)
+			{
+				long rem = this.radiusSq - (long)dx * dx;
+				int maxDz = (int)Math.Sqrt(rem);
+
+				// Correction of possible inaccuracies Math.Sqrt (protection against floating point errors)
+				while ((long)(maxDz + 1) * (maxDz + 1) <= rem) maxDz++;
+				while ((long)maxDz * maxDz > rem) maxDz--;
+
+				if (dx == 0) count += 2 * maxDz + 1;
+				else count += 2 * (2 * maxDz + 1);
+			}
+			totalColumns = count;
+		}
+		else
+		{
+			totalColumns = area;
+		}
+
 		inspectedColumns = 0;
 		queuedColumns = 0;
 		completedColumns = 0;
@@ -267,6 +412,7 @@ internal sealed class StratumPregenManager
 		paused = false;
 		running = true;
 		StratumRuntime.LogInfo($"pregen started: {mode} chunks {minChunkX},{minChunkZ} to {maxChunkX},{maxChunkZ} ({totalColumns} columns)");
+		ApplyTtlBoost();    // reduce TTL
 		return TextCommandResult.Success(BuildStatus(server));
 	}
 
@@ -283,6 +429,8 @@ internal sealed class StratumPregenManager
 		finishedAtMilliseconds = server.ElapsedMilliseconds;
 		activeRequests.Clear();
 		lastPauseReason = reason;
+
+		RestoreTtl();   // restore TTL
 		StratumRuntime.LogInfo("pregen stopped: " + reason);
 	}
 
@@ -293,53 +441,82 @@ internal sealed class StratumPregenManager
 		completed = true;
 		finishedAtMilliseconds = server.ElapsedMilliseconds;
 		lastPauseReason = "none";
-		StratumRuntime.LogInfo($"pregen complete: inspected={inspectedColumns}/{totalColumns} queued={queuedColumns} skippedLoaded={skippedLoadedColumns} skippedInvalid={skippedInvalidColumns}");
+
+		RestoreTtl();   // restore TTL
+
+		// calculate the time spent
+		long elapsedMilliseconds = Math.Max(0, finishedAtMilliseconds - startedAtMilliseconds);
+		string duration = FormatDuration(elapsedMilliseconds);
+
+		StratumRuntime.LogInfo($"pregen complete in {duration}: inspected={inspectedColumns}/{totalColumns} queued={queuedColumns} skippedLoaded={skippedLoadedColumns} skippedInvalid={skippedInvalidColumns}");
+
+		// Stratum: per-stage breakdown, points at the next stage worth splitting
+		// instead of guessing from the generator list.
+		string stageReport = server.chunkThread?.loadsavechunks?.GetStageTimingsReport();
+		if (!string.IsNullOrEmpty(stageReport))
+		{
+			StratumRuntime.LogInfo($"pregen stage timings: {stageReport}");
+		}
 	}
 
 	private bool TryInspectNextColumn(ServerMain server, out bool queued)
 	{
 		queued = false;
-		if (!HasMoreColumns())
-		{
-			return false;
-		}
 
-		int chunkX = nextChunkX;
-		int chunkZ = nextChunkZ;
-		AdvanceCursor();
-		inspectedColumns++;
-		if (!server.WorldMap.IsValidChunkPos(chunkX, 0, chunkZ))
+		// Loop to skip chunks that are not included in the circle
+		while (HasMoreColumns())
 		{
-			skippedInvalidColumns++;
+			int chunkX = nextChunkX;
+			int chunkZ = nextChunkZ;
+			AdvanceCursor();
+
+			if (mode == "radius")
+			{
+				long dx = chunkX - centerX;
+				long dz = chunkZ - centerZ;
+				// If a chunk is outside the radius, skip it (do not count it in inspectedColumns)
+				if (dx * dx + dz * dz > radiusSq)
+				{
+					continue;
+				}
+			}
+
+			inspectedColumns++;
+			if (!server.WorldMap.IsValidChunkPos(chunkX, 0, chunkZ))
+			{
+				skippedInvalidColumns++;
+				return true;
+			}
+
+			long mapChunkIndex = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
+			if (activeRequests.Contains(mapChunkIndex) || IsColumnQueuedOrGenerating(server, mapChunkIndex))
+			{
+				activeRequests.Add(mapChunkIndex);
+				alreadyQueuedColumns++;
+				return true;
+			}
+
+			if (server.IsChunkColumnFullyLoaded(chunkX, chunkZ))
+			{
+				skippedLoadedColumns++;
+				return true;
+			}
+
+			if (TryQueueColumn(server, mapChunkIndex))
+			{
+				activeRequests.Add(mapChunkIndex);
+				queuedColumns++;
+				queued = true;
+			}
+			else
+			{
+				alreadyQueuedColumns++;
+			}
+
 			return true;
 		}
 
-		long mapChunkIndex = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
-		if (activeRequests.Contains(mapChunkIndex) || IsColumnQueuedOrGenerating(server, mapChunkIndex))
-		{
-			activeRequests.Add(mapChunkIndex);
-			alreadyQueuedColumns++;
-			return true;
-		}
-
-		if (server.IsChunkColumnFullyLoaded(chunkX, chunkZ))
-		{
-			skippedLoadedColumns++;
-			return true;
-		}
-
-		if (TryQueueColumn(server, mapChunkIndex))
-		{
-			activeRequests.Add(mapChunkIndex);
-			queuedColumns++;
-			queued = true;
-		}
-		else
-		{
-			alreadyQueuedColumns++;
-		}
-
-		return true;
+		return false;
 	}
 
 	private bool TryQueueColumn(ServerMain server, long mapChunkIndex)
@@ -445,8 +622,16 @@ internal sealed class StratumPregenManager
 			pendingColumns = server.requestedChunkColumns.Count;
 		}
 
-		int workerColumns = server.chunkThread?.requestedChunkColumns.Count ?? 0;
-		return pendingColumns >= config.MaxPendingColumnQueue || workerColumns >= config.MaxWorkerColumnQueue;
+		var workerQueue = server.chunkThread?.requestedChunkColumns;
+		int workerColumns = workerQueue?.Count ?? 0;
+		int workerCapacity = workerQueue?.Capacity ?? int.MaxValue;
+
+		// We leave a reserve for competitive requests from players (the same 200 as in moveRequestsToGeneratingQueue)
+		int safetyMargin = 300;
+
+		return pendingColumns >= config.MaxPendingColumnQueue
+			   || workerColumns >= config.MaxWorkerColumnQueue
+			   || workerColumns >= workerCapacity - safetyMargin;   // real physical limit
 	}
 
 	private static bool TryGetRecentTps(ServerMain server, out decimal tps)

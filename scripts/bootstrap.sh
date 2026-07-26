@@ -11,7 +11,7 @@ Builds a clean working tree by laying down:
   3. Stratum patches and sources over those baselines.
 
 Options:
-  --version VERSION        Vintage Story server version to download. Default: 1.22.3
+  --version VERSION        Vintage Story server version to download. Default: 1.22.5
   --server-archive PATH    Existing vs_server_*.zip or .tar.gz archive to use.
   --client-lib-dir PATH    Optional full client Lib/ folder for client-only deps.
   --refresh               Force re-extract, re-decompile, and re-clone.
@@ -19,7 +19,7 @@ Options:
 EOF
 }
 
-version="1.22.3"
+version="1.22.5"
 server_archive=""
 client_lib_dir="${VS_CLIENT_LIB_DIR:-}"
 refresh=0
@@ -142,7 +142,10 @@ normalize_lf() {
     -name '*.targets' \
   \) -print0 |
     while IFS= read -r -d '' file; do
-      perl -0pi -e 's/\r\n/\n/g' "$file"
+      # Strip UTF-8 BOMs as well as CRLF: extract-patches.sh diffs against
+      # BOM-free LF content, so a BOM in the working file makes git apply
+      # reject any hunk that touches line 1 (bootstrap.ps1 already does both).
+      perl -0pi -e 's/^\xEF\xBB\xBF//; s/\r\n/\n/g' "$file"
     done
 }
 
@@ -158,17 +161,69 @@ download_server_archive() {
   local cache_dir="$1"
   mkdir -p "$cache_dir"
 
-  local archive_name="vs_server_linux-x64_${version}.tar.gz"
+  # The manifest is passed as a file: it is over 128 KiB and Linux caps a single
+  # exec argument at MAX_ARG_STRLEN (32 pages), so passing it through argv fails
+  # with "Argument list too long".
+  local manifest_file="$cache_dir/.stable-unstable.json"
+  curl -L --fail --silent https://api.vintagestory.at/stable-unstable.json -o "$manifest_file"
+  local archive_info
+  archive_info="$(python3 - "$version" "$manifest_file" <<'PY'
+import json
+import sys
+
+version = sys.argv[1]
+with open(sys.argv[2], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+try:
+    entry = data[version]["linuxserver"]
+except KeyError as exc:
+    raise SystemExit(f"server archive not found in Anego manifest for linuxserver {version}") from exc
+
+print(entry["filename"])
+print(entry["urls"]["cdn"])
+print(entry["md5"])
+PY
+)"
+  local archive_name url md5
+  archive_name="$(printf '%s\n' "$archive_info" | sed -n '1p')"
+  url="$(printf '%s\n' "$archive_info" | sed -n '2p')"
+  md5="$(printf '%s\n' "$archive_info" | sed -n '3p')"
   local archive_path="$cache_dir/$archive_name"
   if [[ -f "$archive_path" ]]; then
+    local actual_md5
+    actual_md5="$(python3 - "$archive_path" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    print(hashlib.md5(file.read()).hexdigest())
+PY
+)"
+    if [[ "${actual_md5,,}" == "${md5,,}" ]]; then
       echo "Using cached $archive_path" >&2
       printf '%s\n' "$archive_path"
       return
+    fi
+    echo "Cached archive failed checksum, downloading a fresh copy" >&2
+    rm -f "$archive_path"
   fi
 
-  local url="https://cdn.vintagestory.at/gamefiles/stable/$archive_name"
   echo "Downloading $url" >&2
   curl -L --fail --output "$archive_path" "$url"
+  local actual_md5
+  actual_md5="$(python3 - "$archive_path" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    print(hashlib.md5(file.read()).hexdigest())
+PY
+)"
+  if [[ "${actual_md5,,}" != "${md5,,}" ]]; then
+    rm -f "$archive_path"
+    echo "Downloaded server archive failed MD5 verification: $archive_name" >&2
+    exit 1
+  fi
   printf '%s\n' "$archive_path"
 }
 
@@ -280,8 +335,11 @@ PY
       git clone --quiet "$url" "$base"
       git -C "$base" checkout --quiet "$ref"
       rm -rf "$base/.git"
-      normalize_lf "$base"
     fi
+
+    # Run on every bootstrap, not only at clone time: it is idempotent and
+    # heals baselines checked out before BOM stripping existed.
+    normalize_lf "$base"
 
     copy_tree_fresh "$base" "$repo_root/$name"
   done
@@ -317,6 +375,7 @@ if [[ -d "$patches_dir" ]]; then
     echo "${#failed[@]} patch(es) failed to apply:" >&2
     printf '  %s\n' "${failed[@]}" >&2
     echo "Fix the conflicts in the working tree, then run scripts/extract-patches.sh." >&2
+    failed_patch_count="${#failed[@]}"
   fi
 else
   echo "No patches/ directory, skipping patch step."
@@ -352,4 +411,11 @@ if [[ -d "$sources_dir" ]]; then
 fi
 
 echo
+if [[ "${failed_patch_count:-0}" -gt 0 ]]; then
+  # A build after a failed bootstrap compiles vanilla files for the failed
+  # patches and extract-patches then silently deletes their content, so this
+  # must be a hard failure, not a note in the scroll-back.
+  echo "Bootstrap FAILED: $failed_patch_count patch(es) did not apply. The working tree is incomplete." >&2
+  exit 1
+fi
 echo "Bootstrap complete. Run: dotnet build VintageStory.slnx -c Release"

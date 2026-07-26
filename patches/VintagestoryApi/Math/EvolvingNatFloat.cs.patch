@@ -1,0 +1,33 @@
+diff --git a/VintagestoryApi/Math/EvolvingNatFloat.cs b/VintagestoryApi/Math/EvolvingNatFloat.cs
+index d7f08db..4992a13 100644
+--- a/VintagestoryApi/Math/EvolvingNatFloat.cs
++++ b/VintagestoryApi/Math/EvolvingNatFloat.cs
+@@ -154,16 +154,25 @@ namespace Vintagestory.API.MathTools
+                 factor = reader.ReadSingle()
+             };
+             return evo;
+         }
+ 
+-        public override bool Equals([NotNullWhen(true)] object obj)
++        // Stratum start:
++        // Add a typed overload 
++        // This way we avoid constant conversions of EvolvingNatFloat to object
++        public bool Equals(EvolvingNatFloat other)
+         {
+-            if (obj is not EvolvingNatFloat enf) return false;
+-            return enf.Transform == Transform && enf.factor == factor;
++            return other.Transform == Transform && other.factor == factor;
+         }
+ 
++        public override bool Equals(object obj)
++        {
++            return obj is EvolvingNatFloat other && Equals(other);
++        }
++
++        // Stratum end
++
+         public static bool operator ==(EvolvingNatFloat left, EvolvingNatFloat right)
+         {
+             return left.Equals(right);
+         }
+ 

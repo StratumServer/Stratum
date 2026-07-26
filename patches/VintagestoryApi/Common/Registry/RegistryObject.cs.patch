@@ -1,8 +1,359 @@
 diff --git a/VintagestoryApi/Common/Registry/RegistryObject.cs b/VintagestoryApi/Common/Registry/RegistryObject.cs
-index 505a304..6267f74 100644
+index 505a304..117ca25 100644
 --- a/VintagestoryApi/Common/Registry/RegistryObject.cs
 +++ b/VintagestoryApi/Common/Registry/RegistryObject.cs
-@@ -210,29 +210,103 @@ namespace Vintagestory.API.Common
+@@ -20,11 +20,11 @@ namespace Vintagestory.API.Common
+         public AssetLocation Code = null;
+ 
+         /// <summary>
+         /// Variant values as resolved from blocktype/itemtype.  NOT set for entities - use entity.Properties.VariantStrict instead.
+         /// </summary>
+-        public Datastructures.OrderedDictionary<string, string> VariantStrict = new ();
++        public Datastructures.OrderedDictionary<string, string> VariantStrict = new();
+ 
+         /// <summary>
+         /// Variant values as resolved from blocktype/itemtype. Will not throw an null pointer exception when the key does not exist, but return null instead. NOT set for entities - use entity.Properties.Variant instead
+         /// </summary>
+         public RelaxedReadOnlyDictionary<string, string> Variant;
+@@ -48,32 +48,39 @@ namespace Vintagestory.API.Common
+         public AssetLocation CodeWithPath(string path)
+         {
+             return Code.CopyWithPath(path);
+         }
+ 
+-        /// <summary>
+-        /// Removes componentsToRemove parts from the blocks code end by splitting it up at every occurence of a dash ('-'). Right to left.
+-        /// </summary>
+-        /// <param name="componentsToRemove"></param>
+-        /// <returns></returns>
+-        public string CodeWithoutParts(int componentsToRemove)
++        // Shared right-to-left dash search, extracted from CodeWithoutParts so it can be
++        // reused without forcing a substring allocation when the caller doesn't need one.
++        private static int FindCutIndexFromRight(string path, int componentsToRemove)
+         {
+-            int i = Code.Path.Length;
++            int i = path.Length;
+             int index = 0;
+             while (--i > 0 && componentsToRemove > 0)
+             {
+-                if (Code.Path[i] == '-')
++                if (path[i] == '-')
+                 {
+                     index = i;
+                     componentsToRemove--;
+                 }
+             }
++            return index;
++        }
+ 
+-            return Code.Path.Substring(0, index);
++        /// <summary>
++        /// Removes componentsToRemove parts from the blocks code end by splitting it up at every occurence of a dash ('-'). Right to left.
++        /// </summary>
++        /// <param name="componentsToRemove"></param>
++        /// <returns></returns>
++        public string CodeWithoutParts(int componentsToRemove)
++        {
++            return Code.Path.Substring(0, FindCutIndexFromRight(Code.Path, componentsToRemove));
+         }
+ 
+ 
++
+         /// <summary>
+         /// Removes componentsToRemove parts from the blocks code beginning by splitting it up at every occurence of a dash ('-'). Left to Right
+         /// </summary>
+         /// <param name="componentsToRemove"></param>
+         /// <returns></returns>
+@@ -91,148 +98,340 @@ namespace Vintagestory.API.Common
+             }
+ 
+             return Code.Path.Substring(index, Code.Path.Length - index);
+         }
+ 
+-
+         /// <summary>
+         /// Replaces the last parts from the blocks code and replaces it with components by splitting it up at every occurence of a dash ('-')
+         /// </summary>
+-        /// <param name="components"></param>
+-        /// <returns></returns>
+         public AssetLocation CodeWithParts(params string[] components)
+         {
+-            if (Code == null) return null;
++            if (Code == null)
++                return null;
++
++            // Stratum start:
++            // Calculate the exact length of the final string and use string.Create to avoid unnecessary allocations
++            // during concatenation and Span operations.
++            string path = Code.Path;
++            int cut = FindCutIndexFromRight(path, components.Length);
+ 
+-            AssetLocation newCode = Code.CopyWithPath(CodeWithoutParts(components.Length));
+-            for (int i = 0; i < components.Length; i++) newCode.Path += "-" + components[i];
+-            return newCode;
++            // Account for possible null in components.
++            int totalLength = cut;
++            for (int i = 0; i < components.Length; i++)
++                totalLength += 1 + (components[i]?.Length ?? 0);
++
++            string newPath = string.Create(totalLength, (path, cut, components), static (span, state) =>
++            {
++                var (pathState, cutState, componentsState) = state;
++                // Copy the immutable prefix.
++                pathState.AsSpan(0, cutState).CopyTo(span);
++                int pos = cutState;
++                // Append components sequentially with a dash.
++                for (int i = 0; i < componentsState.Length; i++)
++                {
++                    span[pos++] = '-';
++                    var comp = componentsState[i] ?? string.Empty;
++                    comp.AsSpan().CopyTo(span[pos..]);
++                    pos += comp.Length;
++                }
++            });
++
++            return Code.CopyWithPath(newPath);
++            // Stratum end
+         }
+ 
+         /// <summary>
+         /// More efficient version of CodeWithParts if there is only a single parameter
+         /// </summary>
+-        /// <param name="component"></param>
+         public AssetLocation CodeWithParts(string component)
+         {
+-            if (Code == null) return null;
++            if (Code == null)
++                return null;    // Protection against NRE
++
++            // Stratum start:
++            // Optimized version for a single component: concatenate the string in a single allocation.
++            string path = Code.Path;
++            int cut = FindCutIndexFromRight(path, 1);
+ 
+-            return Code.CopyWithPath(CodeWithoutParts(1) + "-" + component);
++            var comp = component ?? string.Empty;
++
++            string newPath = string.Create(cut + 1 + comp.Length, (path, cut, comp), static (span, state) =>
++            {
++                var (pathState, cutState, componentState) = state;
++                pathState.AsSpan(0, cutState).CopyTo(span);
++                span[cutState] = '-';
++                componentState.AsSpan().CopyTo(span[(cutState + 1)..]);
++            });
++
++            return Code.CopyWithPath(newPath);
++            // Stratum end
+         }
+ 
+         public AssetLocation CodeWithVariant(string type, string value)
+         {
+-            StringBuilder sb = new StringBuilder(FirstCodePart());
++            // Stratum start:
++
++            if (Code == null)
++                return null; // Protection against NRE when calling FirstCodePart()
++
++            string firstPart = FirstCodePart();
++
++            int totalLength = firstPart.Length;
+ 
+-            foreach (var val in Variant)
++            // Iterate over VariantStrict instead of Variant to avoid wrapper overhead.
++            foreach (var val in VariantStrict)
+             {
+-                sb.Append("-");
++                string chosen = (val.Key == type ? value : val.Value) ?? string.Empty;
++                totalLength += 1 + chosen.Length;
++            }
+ 
+-                if (val.Key == type)
+-                {
+-                    sb.Append(value);
+-                } else
++            return new AssetLocation(Code.Domain, string.Create(totalLength, (this, firstPart, type, value), static (span, state) =>
++            {
++                var (self, firstPartState, typeState, valueState) = state;
++                firstPartState.AsSpan().CopyTo(span);
++                int pos = firstPartState.Length;
++                foreach (var val in self.VariantStrict)
+                 {
+-                    sb.Append(val.Value);
++                    span[pos++] = '-';
++                    string chosen = (val.Key == typeState ? valueState : val.Value) ?? string.Empty;
++                    chosen.AsSpan().CopyTo(span[pos..]);
++                    pos += chosen.Length;
+                 }
+-            }
++            }));
+ 
+-            return new AssetLocation(Code.Domain, sb.ToString());
++            // Stratum end
+         }
+ 
+-
+         public AssetLocation CodeWithVariants(Dictionary<string, string> valuesByType)
+         {
+-            StringBuilder sb = new StringBuilder(FirstCodePart());
++            // Stratum start:
++            if (Code == null)
++                return null; // Protection against NRE
+ 
+-            foreach (var val in Variant)
+-            {
+-                sb.Append("-");
++            string firstPart = FirstCodePart();
+ 
++            int totalLength = firstPart.Length;
+ 
+-                if (valuesByType.TryGetValue(val.Key, out string value))
+-                {
+-                    sb.Append(value);
+-                }
+-                else
++            // Iterate over VariantStrict instead of Variant to avoid wrapper overhead.
++            foreach (var val in VariantStrict)
++            {
++                string chosen = (valuesByType.TryGetValue(val.Key, out string v) ? v : val.Value) ?? string.Empty;
++                totalLength += 1 + chosen.Length;
++            }
++
++            return new AssetLocation(Code.Domain, string.Create(totalLength, (this, firstPart, valuesByType), static (span, state) =>
++            {
++                var (self, firstPartState, valuesByTypeState) = state;
++                firstPartState.AsSpan().CopyTo(span);
++                int pos = firstPartState.Length;
++                foreach (var val in self.VariantStrict)
+                 {
+-                    sb.Append(val.Value);
++                    span[pos++] = '-';
++                    string chosen = (valuesByTypeState.TryGetValue(val.Key, out string v) ? v : val.Value) ?? string.Empty;
++                    chosen.AsSpan().CopyTo(span[pos..]);
++                    pos += chosen.Length;
+                 }
+-            }
++            }));
+ 
+-            return new AssetLocation(Code.Domain, sb.ToString());
++            // Stratum end
+         }
+ 
+         public AssetLocation CodeWithVariants(string[] types, string[] values)
+         {
+-            StringBuilder sb = new StringBuilder(FirstCodePart());
++            // Stratum start:
++            if (Code == null)
++                return null; // Protection against NRE
+ 
+-            foreach (var val in Variant)
+-            {
+-                sb.Append("-");
++            string firstPart = FirstCodePart();
+ 
++            int totalLength = firstPart.Length;
++            foreach (var val in VariantStrict)
++            {
+                 int index = types.IndexOf(val.Key);
++                string chosen = (index >= 0 ? values[index] : val.Value) ?? string.Empty;
++                totalLength += 1 + chosen.Length;
++            }
+ 
+-                if (index >= 0)
++            return new AssetLocation(Code.Domain, string.Create(totalLength, (this, firstPart, types, values), static (span, state) =>
++            {
++                var (self, firstPartState, typesState, valuesState) = state;
++                firstPartState.AsSpan().CopyTo(span);
++                int pos = firstPartState.Length;
++                foreach (var val in self.VariantStrict)
+                 {
+-                    sb.Append(values[index]);
++                    span[pos++] = '-';
++                    int index = typesState.IndexOf(val.Key);
++                    string chosen = (index >= 0 ? valuesState[index] : val.Value) ?? string.Empty;
++                    chosen.AsSpan().CopyTo(span[pos..]);
++                    pos += chosen.Length;
+                 }
+-                else
++            }));
++            // Stratum end
++        }
++
++        private static (int start, int end) FindPartSpan(string path, int atPosition)
++        {
++            // Stratum start:
++            // Search for the boundaries of the desired part of the string without allocating an array via Split.
++            int leftBoundary = 0;
++            int dashesSeen = -1;
++
++            for (int i = 0; i < path.Length; i++)
++            {
++                if (path[i] != '-')
++                    continue;
++
++                dashesSeen++;
++                if (dashesSeen == atPosition)
+                 {
+-                    sb.Append(val.Value);
++                    return (leftBoundary, i);
+                 }
++                leftBoundary = i + 1;
+             }
+ 
+-            return new AssetLocation(Code.Domain, sb.ToString());
+-        }
++            // If there are no more dashes, the requested part (if index is valid) is the last one.
++            if (atPosition != dashesSeen + 1)
++            {
++                throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
++            }
+ 
++            return (leftBoundary, path.Length);
++            // Stratum end
++        }
+ 
+         /// <summary>
+         /// Replaces one part from the blocks code and replaces it with components by splitting it up at every occurence of a dash ('-')
+         /// </summary>
+-        /// <param name="part"></param>
+-        /// <param name="atPosition"></param>
+-        /// <returns></returns>
+         public AssetLocation CodeWithPart(string part, int atPosition = 0)
+         {
+-            if (Code == null) return null;
++            if (Code == null)
++                return null;    // Protection against NRE
++
++            // Stratum start:
++            // Replace part of the string without using Split and Join.
++            string path = Code.Path;
++            (int start, int end) = FindPartSpan(path, atPosition);
+ 
+-            AssetLocation newCode = Code.Clone();
+-            string[] parts = newCode.Path.Split('-');
+-            parts[atPosition] = part;
+-            newCode.Path = String.Join("-", parts);
++            var safePart = part ?? string.Empty;
++            int totalLength = path.Length - (end - start) + safePart.Length;
+ 
+-            return newCode;
++            string newPath = string.Create(totalLength, (path, start, end, safePart), static (span, state) =>
++            {
++                var (pathState, startState, endState, partState) = state;
++                // Copy the beginning of the string.
++                pathState.AsSpan(0, startState).CopyTo(span);
++                // Insert the new part.
++                partState.AsSpan().CopyTo(span[startState..]);
++                // Copy the remaining tail of the string.
++                pathState.AsSpan(endState).CopyTo(span[(startState + partState.Length)..]);
++            });
++
++            return Code.CopyWithPath(newPath);
++            // Stratum end
+         }
+ 
+ 
+         /// <summary>
+         /// Returns the n-th code part in inverse order. If the code contains no dash ('-') the whole code is returned. Returns null if posFromRight is too high.
          /// </summary>
          /// <param name="posFromRight"></param>
          /// <returns></returns>
@@ -10,12 +361,12 @@ index 505a304..6267f74 100644
          {
 -            if (Code == null) return null;
 -            if (posFromRight == 0 && !Code.Path.Contains('-')) return Code.Path;
-+            // Stratun start:
++            // Stratum start:
 +            // Replacing the resource-intensive Split() with a character-by-character iteration with early exit allowed
 +            // the string to be read exactly once, stopping at the required hyphen without creating intermediate arrays.
 +            // This dramatically reduced the load on the garbage collector and significantly accelerated the method's execution
 +            // in hot sections of code by completely eliminating unnecessary memory allocations.
-+
++            //
 +            // Tested on the generation of 10200 chunk columns:
 +            // - GenVegetationAndPatches.genPatches method execution time: reduced from 6564 ms to 6015 ms;
 +            // - GenVegetationAndPatches.genPatches GC memory allocations: reduced from 1.24 GB to 827 MB.
@@ -33,7 +384,9 @@ index 505a304..6267f74 100644
 +            {
 +                if (path[i] != '-')
 +                    continue;
-+
+ 
+-            string[] parts = Code.Path.Split('-');
+-            return parts.Length - 1 - posFromRight >= 0 ? parts[parts.Length - 1 - posFromRight] : null;
 +                dashesSeen++;
 +
 +                // If we found the needed dash (index posFromRight), return the part between it and rightBoundary
@@ -44,9 +397,7 @@ index 505a304..6267f74 100644
 +                // Otherwise shift the right boundary — now it points to the current dash
 +                rightBoundary = i;
 +            }
- 
--            string[] parts = Code.Path.Split('-');
--            return parts.Length - 1 - posFromRight >= 0 ? parts[parts.Length - 1 - posFromRight] : null;
++
 +            // Reached the start of the string — not enough dashes
 +            // If the last part was requested
 +            if (posFromRight == 0)
@@ -68,21 +419,21 @@ index 505a304..6267f74 100644
          {
 -            if (Code == null) return null;
 -            if (posFromLeft == 0 && !Code.Path.Contains('-')) return Code.Path;
-+            // Stratun start:
++            // Stratum start:
 +            // Replacing the resource-intensive Split() with a character-by-character iteration with early exit allowed
 +            // the string to be read exactly once, stopping at the required hyphen without creating intermediate arrays.
 +            // This dramatically reduced the load on the garbage collector and significantly accelerated the method's execution
 +            // in hot sections of code by completely eliminating unnecessary memory allocations.
-+
+ 
+-            string[] parts = Code.Path.Split('-');
+-            return posFromLeft <= parts.Length - 1 ? parts[posFromLeft] : null;
 +            if (Code == null)
 +                return null;
 +
 +            string path = Code.Path;
 +            int leftBoundary = 0;   // Left boundary of the current found part (initially start of string)
 +            int dashesSeen = -1;    // Number of dashes encountered while traversing left to right
- 
--            string[] parts = Code.Path.Split('-');
--            return posFromLeft <= parts.Length - 1 ? parts[posFromLeft] : null;
++
 +            // Traverse the string left to right searching for dashes
 +            for (int i = 0; i < path.Length; i++)
 +            {
@@ -114,7 +465,7 @@ index 505a304..6267f74 100644
          /// <summary>
          /// Returns true if any given wildcard matches the blocks/items code. E.g. water-* will match all water blocks
          /// </summary>
-@@ -299,26 +373,106 @@ namespace Vintagestory.API.Common
+@@ -299,26 +498,106 @@ namespace Vintagestory.API.Common
              }
  
              return input;
@@ -224,3 +575,11 @@ index 505a304..6267f74 100644
          /// </summary>
          /// <param name="input"></param>
          /// <param name="search"></param>
+@@ -329,7 +608,6 @@ namespace Vintagestory.API.Common
+             string pattern = @"\{((" + search + @")|([^\{\}]*\|" + search + @")|(" + search + @"\|[^\{\}]*)|([^\{\}]*\|" + search + @"\|[^\{\}]*))\}";
+ 
+             return Regex.Replace(input, pattern, replace);
+         }
+     }
+-
+ }

@@ -1,20 +1,31 @@
 diff --git a/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs b/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs
-index f2e4020..7fbc98c 100644
+index f2e4020..4b1178a 100644
 --- a/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs
 +++ b/VSSurvivalMod/Systems/MechanicalPower/MechanicalPowerMod.cs
-@@ -59,10 +59,11 @@ namespace Vintagestory.GameContent.Mechanics
+@@ -59,10 +59,22 @@ namespace Vintagestory.GameContent.Mechanics
  
          public ICoreAPI Api;
  
          MechPowerData data = new MechPowerData();
          SimpleParticleProperties smokeParticles;
 +        private readonly List<MechanicalNetwork> stratumTickNetworks = new List<MechanicalNetwork>(); // Stratum: reuse per tick
++        // Stratum: guards data.networksById and the fullyLoaded flag of every network in
++        // it. BlockEntity.Initialize() (which reaches GetOrCreateNetwork for power
++        // producers) runs on the chunk-loading thread
++        // (ServerSystemSupplyChunks.loadOrGenerateChunkColumn_OnChunkThread), not the
++        // main server thread that OnServerGameTick runs on. Without this, that thread
++        // writes into the same plain Dictionary the tick loop enumerates, and can flip
++        // fullyLoaded to true without the tick thread ever reliably observing it. The
++        // second symptom explains reports of a network reading correct conditions
++        // (e.g. wind speed) but never actually ticking: fullyLoaded stays visible as
++        // false to the tick thread even after the chunk thread set it true.
++        private readonly object stratumNetworksLock = new object();
  
          public override bool ShouldLoad(EnumAppSide side)
          {
              return true;
          }
-@@ -151,12 +152,16 @@ namespace Vintagestory.GameContent.Mechanics
+@@ -151,12 +163,19 @@ namespace Vintagestory.GameContent.Mechanics
  
          protected void OnServerGameTick(float dt)
          {
@@ -23,9 +34,12 @@ index f2e4020..7fbc98c 100644
 -            List<MechanicalNetwork> clone = data.networksById.Values.ToList();
 -            foreach (MechanicalNetwork network in clone)
 +            stratumTickNetworks.Clear(); // Stratum: reuse list instead of .ToList() allocation
-+            foreach (MechanicalNetwork network in data.networksById.Values)
++            lock (stratumNetworksLock) // Stratum: see the field's own comment
 +            {
-+                stratumTickNetworks.Add(network);
++                foreach (MechanicalNetwork network in data.networksById.Values)
++                {
++                    stratumTickNetworks.Add(network);
++                }
 +            }
 +            foreach (MechanicalNetwork network in stratumTickNetworks)
              {
@@ -33,3 +47,118 @@ index f2e4020..7fbc98c 100644
                  {
                      network.ServerTick(dt, data.tickNumber);
  
+@@ -207,14 +226,16 @@ namespace Vintagestory.GameContent.Mechanics
+             data.networksById.Remove(networkMessage.networkId);
+         }
+ 
+         protected void OnClientRequestPacket(IServerPlayer player, MechClientRequestPacket networkMessage)
+         {
+-            if (data.networksById.TryGetValue(networkMessage.networkId, out MechanicalNetwork nw))
++            MechanicalNetwork nw;
++            lock (stratumNetworksLock) // Stratum: see the field's own comment
+             {
+-                nw.SendBlocksUpdateToClient(player);
++                data.networksById.TryGetValue(networkMessage.networkId, out nw);
+             }
++            nw?.SendBlocksUpdateToClient(player);
+         }
+ 
+         public void broadcastNetwork(MechNetworkPacket packet)
+         {
+             serverNwChannel.BroadcastPacket(packet);
+@@ -295,19 +316,23 @@ namespace Vintagestory.GameContent.Mechanics
+             Renderer?.Dispose();
+         }
+ 
+         public MechanicalNetwork GetOrCreateNetwork(long networkId)
+         {
+-
+-            if (!data.networksById.TryGetValue(networkId, out MechanicalNetwork mw))
++            // Stratum: this runs on the chunk-loading thread when reached through
++            // BlockEntity.Initialize() for a power producer; see stratumNetworksLock.
++            lock (stratumNetworksLock)
+             {
+-                data.networksById[networkId] = mw = new MechanicalNetwork(this, networkId);
+-            }
++                if (!data.networksById.TryGetValue(networkId, out MechanicalNetwork mw))
++                {
++                    data.networksById[networkId] = mw = new MechanicalNetwork(this, networkId);
++                }
+ 
+-            testFullyLoaded(mw);
++                testFullyLoaded(mw);
+ 
+-            return mw;
++                return mw;
++            }
+         }
+ 
+         public void testFullyLoaded(MechanicalNetwork mw)
+         {
+             if (Api.Side != EnumAppSide.Server || mw.fullyLoaded) return;
+@@ -328,20 +353,25 @@ namespace Vintagestory.GameContent.Mechanics
+             if (allNetworksFullyLoaded || reason == EnumChunkDirtyReason.MarkedDirty) return;
+ 
+             allNetworksFullyLoaded = true;
+             nowFullyLoaded.Clear();
+ 
+-            foreach (var network in data.networksById.Values)
++            // Stratum: fires from TriggerChunkDirty on the chunk-loading thread for a
++            // newly loaded chunk; see stratumNetworksLock.
++            lock (stratumNetworksLock)
+             {
+-                if (network.fullyLoaded) continue;
+-                allNetworksFullyLoaded = false;
++                foreach (var network in data.networksById.Values)
++                {
++                    if (network.fullyLoaded) continue;
++                    allNetworksFullyLoaded = false;
+ 
+-                if (network.inChunks.ContainsKey(chunkCoord)) {
+-                    testFullyLoaded(network);
+-                    if (network.fullyLoaded)
+-                    {
+-                        nowFullyLoaded.Add(network);
++                    if (network.inChunks.ContainsKey(chunkCoord)) {
++                        testFullyLoaded(network);
++                        if (network.fullyLoaded)
++                        {
++                            nowFullyLoaded.Add(network);
++                        }
+                     }
+                 }
+             }
+ 
+             for (int i = 0; i < nowFullyLoaded.Count; i++)
+@@ -354,19 +384,28 @@ namespace Vintagestory.GameContent.Mechanics
+         public MechanicalNetwork CreateNetwork(IMechanicalPowerDevice powerProducerNode)
+         {
+             MechanicalNetwork nw = new MechanicalNetwork(this, data.nextNetworkId);
+             nw.fullyLoaded = true;
+ 
+-            data.networksById[data.nextNetworkId] = nw;
+-            data.nextNetworkId++;
++            // Stratum: see stratumNetworksLock.
++            lock (stratumNetworksLock)
++            {
++                data.networksById[data.nextNetworkId] = nw;
++                data.nextNetworkId++;
++            }
+ 
+             return nw;
+         }
+ 
+         public void DeleteNetwork(MechanicalNetwork network)
+         {
+-            data.networksById.Remove(network.networkId);
++            // Stratum: see stratumNetworksLock. Reentrant-safe: RebuildNetwork can call
++            // this from inside its own Event_ChunkDirty lock, on the same thread.
++            lock (stratumNetworksLock)
++            {
++                data.networksById.Remove(network.networkId);
++            }
+             serverNwChannel.BroadcastPacket<NetworkRemovedPacket>(new NetworkRemovedPacket() { networkId = network.networkId });
+         }
+ 
+         public void SendNetworkBlocksUpdateRequestToServer(long networkId)
+         {

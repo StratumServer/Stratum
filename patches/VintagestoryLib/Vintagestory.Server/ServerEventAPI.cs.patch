@@ -1,0 +1,19 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs b/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs
+index fba8acc..c9c311a 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs
+@@ -449,10 +449,14 @@ internal class ServerEventAPI : ServerAPIComponentBase, IServerEventAPI, IEventA
+ 	}
+ 
+ 	public ServerEventAPI(ServerMain server)
+ 		: base(server)
+ 	{
++		// Stratum: mods and the patched vanilla generators reach the late
++		// Terrain sub-stage through this API-assembly hook, since mod
++		// assemblies reference VintagestoryAPI, not VintagestoryLib.
++		StratumTerrainSplit.RegisterLate = (handler, worldType) => server.ModEventManager.GetWorldGenHandler(worldType).OnChunkColumnGenTerrainLate.Add(handler);
+ 	}
+ 
+ 	public void Trigger<T>(Delegate[] delegates, string eventName, Action<T> onDele, Action onException = null) where T : Delegate
+ 	{
+ 		if (delegates == null)

@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
 using Newtonsoft.Json;
 using Vintagestory.API.Config;
 
@@ -26,6 +29,7 @@ internal static class StratumRuntime
 
 	public static StratumPregenManager Pregen { get; } = new StratumPregenManager();
 
+	public static StratumAdaptiveRadiusController AdaptiveRadius { get; private set; }
 	public static string ConfigPath { get; private set; } = "stratum.json";
 
 	public static string CommandsConfigPath { get; private set; } = "stratum-commands.json";
@@ -38,10 +42,66 @@ internal static class StratumRuntime
 
 	public static StratumPreflightReport LastPreflight { get; private set; } = StratumPreflightReport.NotRun();
 
+	public static bool FineSleepGranularity { get; private set; } = !RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+	public static string TimerResolutionStatus { get; private set; } = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "not requested" : "native";
+
 	// Updated by PhysicsManager.ServerTick each tick: true if the previous tick exceeded
 	// Performance.Physics.OverloadedTickThresholdMs. EventManager reads this to apply
 	// adaptive throttling to non-critical entity tick listeners.
 	public static volatile bool PreviousTickOverloaded;
+
+	public static void SetTimerResolutionStatus(bool fineSleepGranularity, string status)
+	{
+		FineSleepGranularity = fineSleepGranularity;
+		TimerResolutionStatus = status ?? "unknown";
+	}
+
+	public static void WaitForNextTick(Stopwatch tickTimer, float tickBudgetMs)
+	{
+		// Without a 1ms-accurate Sleep, chasing the deadline via Yield/SpinWait means spinning
+		// a full core for the whole ~15.6ms scheduler tick instead of just the sleep overshoot.
+		// Fall back to a single coarse sleep here rather than the precise wait below.
+		if (!FineSleepGranularity)
+		{
+			double coarseRemainingMs = tickBudgetMs - tickTimer.Elapsed.TotalMilliseconds;
+			if (coarseRemainingMs > 0)
+			{
+				Thread.Sleep((int)Math.Ceiling(coarseRemainingMs));
+			}
+			return;
+		}
+
+		while (true)
+		{
+			double remainingMs = tickBudgetMs - tickTimer.Elapsed.TotalMilliseconds;
+			if (remainingMs <= 0)
+			{
+				return;
+			}
+
+			// Sleep once for most of the wait, then trim the last edge without another overshooting sleep.
+			const double coarseMarginMs = 2.0;
+			if (remainingMs > coarseMarginMs)
+			{
+				int sleepMs = Math.Max(1, (int)Math.Floor(remainingMs - coarseMarginMs));
+				Thread.Sleep(sleepMs);
+			}
+			else if (remainingMs > 0.5)
+			{
+				Thread.Yield();
+			}
+			else
+			{
+				Thread.SpinWait(64);
+			}
+		}
+	}
+
+	public static void InitAdaptiveRadius(ServerMain server)
+	{
+		AdaptiveRadius = new StratumAdaptiveRadiusController(server);
+	}
 
 	public static void LogInfo(string message)
 	{
@@ -151,28 +211,25 @@ internal static class StratumRuntime
 		{
 			GamePaths.EnsurePathExists(GamePaths.Config);
 
-			if (!File.Exists(ConfigPath))
+			bool mainConfigExisted = File.Exists(ConfigPath);
+			Config = mainConfigExisted
+				? JsonConvert.DeserializeObject<StratumConfig>(File.ReadAllText(ConfigPath), StratumConfig.LoadSerializerSettings) ?? StratumConfig.CreateDefault()
+				: StratumConfig.CreateDefault();
+
+			// Stratum: load the sidecars whenever they exist, not only when stratum.json also
+			// exists. A first boot on a data dir provisioned with just stratum-performance.json
+			// (or stratum-commands.json) used to skip this check and overwrite it with defaults.
+			if (File.Exists(CommandsConfigPath))
 			{
-				Config = StratumConfig.CreateDefault();
-				SaveConfig();
-				message = "created default config";
+				Config.Commands = JsonConvert.DeserializeObject<StratumCommandsConfig>(File.ReadAllText(CommandsConfigPath), StratumConfig.LoadSerializerSettings) ?? new StratumCommandsConfig();
 			}
-			else
+			if (File.Exists(PerformanceConfigPath))
 			{
-				string json = File.ReadAllText(ConfigPath);
-				Config = JsonConvert.DeserializeObject<StratumConfig>(json) ?? StratumConfig.CreateDefault();
-				if (File.Exists(CommandsConfigPath))
-				{
-					Config.Commands = JsonConvert.DeserializeObject<StratumCommandsConfig>(File.ReadAllText(CommandsConfigPath)) ?? new StratumCommandsConfig();
-				}
-				if (File.Exists(PerformanceConfigPath))
-				{
-					Config.Performance = JsonConvert.DeserializeObject<StratumPerformanceConfig>(File.ReadAllText(PerformanceConfigPath)) ?? new StratumPerformanceConfig();
-				}
-				Config.EnsurePopulated();
-				SaveConfig();
-				message = "loaded config";
+				Config.Performance = JsonConvert.DeserializeObject<StratumPerformanceConfig>(File.ReadAllText(PerformanceConfigPath), StratumConfig.LoadSerializerSettings) ?? new StratumPerformanceConfig();
 			}
+			Config.EnsurePopulated();
+			SaveConfig();
+			message = mainConfigExisted ? "loaded config" : "created default config";
 
 			LastLoadedUtc = DateTime.UtcNow;
 			LastLoadStatus = message;
@@ -184,8 +241,8 @@ internal static class StratumRuntime
 			LastLoadedUtc = DateTime.UtcNow;
 			LastLoadStatus = "failed to load config: " + exception.Message;
 			message = LastLoadStatus;
-			LogError("Failed to load config at " + ConfigPath);
-			ServerMain.Logger.Error(exception);
+			LogError("Failed to load config at " + ConfigPath + ": " + exception.Message);
+			ServerMain.Logger?.Error(exception);
 			return false;
 		}
 	}
@@ -208,8 +265,11 @@ internal static class StratumRuntime
 		CheckDirectory(report, baseDirectory, "Mods");
 		CheckFile(report, baseDirectory, "VintagestoryLib.dll");
 		CheckFile(report, baseDirectory, "VintagestoryAPI.dll");
-		CheckFile(report, baseDirectory, Path.Combine("Lib", "libSkiaSharp.dll"));
-		CheckSuspiciousRootNative(report, baseDirectory, "libSkiaSharp.dll", 1024 * 1024);
+		string skiaSharpNative = System.OperatingSystem.IsWindows() ? "libSkiaSharp.dll"
+			: System.OperatingSystem.IsMacOS() ? "libSkiaSharp.dylib"
+			: "libSkiaSharp.so";
+		CheckFile(report, baseDirectory, Path.Combine("Lib", skiaSharpNative));
+		CheckSuspiciousRootNative(report, baseDirectory, skiaSharpNative, 1024 * 1024);
 		CheckServerConfigShape(report);
 		CheckStratumConfigSafety(report);
 
@@ -233,7 +293,10 @@ internal static class StratumRuntime
 		}
 
 		string serverConfig = File.ReadAllText(serverConfigPath);
-		if (serverConfig.Contains("\"RolesByCode\"", StringComparison.Ordinal) || serverConfig.Contains("\"Roles\"", StringComparison.Ordinal) || serverConfig.Contains("\"DefaultRoleCode\"", StringComparison.Ordinal))
+		bool hasRoleData = serverConfig.Contains("\"RolesByCode\"", StringComparison.Ordinal)
+			|| serverConfig.Contains("\"Roles\"", StringComparison.Ordinal)
+			|| serverConfig.Contains("\"DefaultRoleCode\"", StringComparison.Ordinal);
+		if (hasRoleData && !File.Exists(rolesConfigPath))
 		{
 			report.Warnings.Add("serverconfig.json still contains role data; run --setconfig or /serverconfig once to rewrite it into serverroles.json");
 		}

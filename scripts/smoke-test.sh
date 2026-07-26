@@ -13,13 +13,18 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-# Server binary: prefer VintagestoryServer (runtime entry point after first bootstrap),
-# fall back to StratumServer (first-run launcher that downloads vanilla).
+# Server binary: prefer StratumServer, Stratum's own launcher, which applies
+# VanillaBootstrap and PatchedFileOverlay before handing off to the game. A
+# VintagestoryServer binary in this same directory is not something this repo
+# builds; it is the vanilla archive's own entry point, copied in as a side
+# effect of VanillaBootstrap's first-run overlay once StratumServer has run at
+# least once. Preferring it here would silently boot-test unpatched vanilla
+# code instead of this working tree.
 server_dir="$repo_root/StratumServer/bin/Release/net10.0"
-if [[ -f "$server_dir/VintagestoryServer" ]]; then
-  server_bin="$server_dir/VintagestoryServer"
-elif [[ -f "$server_dir/StratumServer" ]]; then
+if [[ -f "$server_dir/StratumServer" ]]; then
   server_bin="$server_dir/StratumServer"
+elif [[ -f "$server_dir/VintagestoryServer" ]]; then
+  server_bin="$server_dir/VintagestoryServer"
 else
   server_bin=""
 fi
@@ -45,15 +50,18 @@ trap cleanup EXIT
 
 cd "$repo_root"
 
-# Build if binary is missing.
+# Build if binary is missing. -p:EmbedPatchedFiles=true is required so
+# StratumServer actually carries this working tree's patched DLLs; without it
+# PatchedFileOverlay has nothing to overlay and the server silently runs
+# vanilla's unpatched VintagestoryLib.dll from the downloaded archive instead.
 if [[ -z "$server_bin" || ! -f "$server_bin" ]]; then
   echo "Building Release..."
-  dotnet build VintageStory.slnx -c Release --verbosity quiet
-  # Re-detect after build.
-  if [[ -f "$server_dir/VintagestoryServer" ]]; then
-    server_bin="$server_dir/VintagestoryServer"
-  elif [[ -f "$server_dir/StratumServer" ]]; then
+  dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true --verbosity quiet
+  # Re-detect after build, same preference as above.
+  if [[ -f "$server_dir/StratumServer" ]]; then
     server_bin="$server_dir/StratumServer"
+  elif [[ -f "$server_dir/VintagestoryServer" ]]; then
+    server_bin="$server_dir/VintagestoryServer"
   fi
 fi
 

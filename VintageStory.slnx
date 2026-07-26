@@ -7,6 +7,7 @@
   <Folder Name="/Vanilla/">
     <Project Path="Cairo/Cairo.csproj" />
     <Project Path="VintagestoryApi/VintagestoryAPI.csproj" />
+    <Project Path="baseline/VintagestoryLib/VintagestoryLib.csproj" />
   </Folder>
   <Folder Name="/Stratum/">
     <Project Path="StratumServer/StratumServer.csproj" />

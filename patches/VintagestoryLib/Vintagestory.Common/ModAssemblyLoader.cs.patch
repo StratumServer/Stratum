@@ -1,0 +1,53 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs b/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs
+index 9eabde1..0846399 100644
+--- a/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs
++++ b/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs
+@@ -11,30 +11,47 @@ public class ModAssemblyLoader : IDisposable
+ {
+ 	private readonly IReadOnlyCollection<string> modSearchPaths;
+ 
+ 	private readonly IReadOnlyCollection<ModContainer> mods;
+ 
++	// Stratum start: Cecil resolver that probes the same paths as the runtime resolver
++	private readonly DefaultAssemblyResolver StratumCecilResolver;
++	// Stratum end
++
+ 	public ModAssemblyLoader(IReadOnlyCollection<string> modSearchPaths, IReadOnlyCollection<ModContainer> mods)
+ 	{
+ 		this.modSearchPaths = modSearchPaths;
+ 		this.mods = mods;
++		// Stratum start: configure Cecil search directories so mod inspection can resolve dependencies
++		StratumCecilResolver = new DefaultAssemblyResolver();
++		foreach (string searchPath in GetAssemblySearchPaths())
++		{
++			if (Directory.Exists(searchPath))
++			{
++				StratumCecilResolver.AddSearchDirectory(searchPath);
++			}
++		}
++		// Stratum end
+ 		AppDomain.CurrentDomain.AssemblyResolve += AssemblyResolveHandler;
+ 	}
+ 
+ 	public void Dispose()
+ 	{
+ 		AppDomain.CurrentDomain.AssemblyResolve -= AssemblyResolveHandler;
++		StratumCecilResolver.Dispose(); // Stratum: cleanup
+ 	}
+ 
+ 	public Assembly LoadFrom(string path)
+ 	{
+ 		return Assembly.UnsafeLoadFrom(path);
+ 	}
+ 
+ 	public AssemblyDefinition LoadAssemblyDefinition(string path)
+ 	{
+-		return AssemblyDefinition.ReadAssembly(path);
++		// Stratum: use resolver so Cecil can find VintagestoryAPI.dll from BaseDirectory/Lib
++		ReaderParameters readerParams = new ReaderParameters { AssemblyResolver = StratumCecilResolver };
++		return AssemblyDefinition.ReadAssembly(path, readerParams);
+ 	}
+ 
+ 	private IEnumerable<string> GetAssemblySearchPaths()
+ 	{
+ 		yield return AppDomain.CurrentDomain.BaseDirectory;

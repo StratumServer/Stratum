@@ -308,6 +308,7 @@ internal sealed class StratumPerformanceStats
 		StratumSimulationDistanceConfig simulationDistance = config.Performance.SimulationDistance;
 		StratumAutoSaveConfig autoSave = config.Performance.AutoSave;
 		StratumBlockTickConfig blockTicks = config.Performance.BlockTicks;
+		StratumTimerResolutionConfig timerResolution = config.Performance.TimerResolution;
 
 		lock (gate)
 		{
@@ -323,6 +324,7 @@ internal sealed class StratumPerformanceStats
 			decimal averageEntityLookedAtBlocks = totalEntitySelectionTicks <= 0 ? 0m : decimal.Round((decimal)totalEntityLookedAtBlocks / totalEntitySelectionTicks, 2);
 			decimal averageBlockTickChunks = totalBlockTickPasses <= 0 ? 0m : decimal.Round((decimal)totalBlockTickChunksTicked / totalBlockTickPasses, 2);
 			return "Stratum Performance\n" +
+				$"Timer: config={(timerResolution.Enabled ? "on" : "off")} status={StratumRuntime.TimerResolutionStatus} fineSleep={(StratumRuntime.FineSleepGranularity ? "yes" : "no")}\n" +
 				"\nChunk Pipeline\n" +
 				$"  Send: {(chunkSending.Enabled ? "on" : "off")} server={chunkSending.MaxChunksPerServerTick} client={chunkSending.MaxChunksPerClientTick} local={(chunkSending.IncludeLocalClients ? "yes" : "no")} adaptive={(chunkSending.AdaptiveUnderOverload ? "yes" : "no")} overload={chunkSending.OverloadTickMs}ms scale={chunkSending.OverloadScale:0.##}\n" +
 				$"  Last: budget={lastChunkBudget} sent={lastChunksSent} deferredClients={lastDeferredClients}\n" +

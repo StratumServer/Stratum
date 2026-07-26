@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index 1017be9..2930a77 100644
+index 1103a72..59a6cf9 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -27,10 +27,13 @@ using VintagestoryLib.Server.Systems;
@@ -30,7 +30,7 @@ index 1017be9..2930a77 100644
 +	private int stratumAllPlayersCacheTick = -1;
 +	// Stratum: cached admitted client count. Incremented at admission, decremented at disconnect.
 +	private int stratumAdmittedClientCount;
-+	
++
  	[ThreadStatic]
  	private static BoxedPacket reusableBuffer;
  
@@ -45,7 +45,7 @@ index 1017be9..2930a77 100644
  	internal bool doNetBenchmark;
  
  	internal SortedDictionary<int, int> packetBenchmark = new SortedDictionary<int, int>();
-@@ -259,10 +277,30 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -259,10 +277,31 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	private bool serverAssetsSentLocally;
  
@@ -55,6 +55,7 @@ index 1017be9..2930a77 100644
 +	private readonly object stratumJoinPacketCacheLock = new object();
 +
 +	// Stratum start: per-tick RequestJoin budget
++	private const int StratumMaxDeferredJoinPackets = 64;
 +	private readonly Queue<ReceivedClientPacket> stratumDeferredJoinQueue = new Queue<ReceivedClientPacket>();
 +	private int stratumJoinsThisTick;
 +	// Stratum end
@@ -76,7 +77,7 @@ index 1017be9..2930a77 100644
  	internal long lastCalendarFullUpdateSentToClient;
  
  	internal long lastCalendarUpdateSentToClient;
-@@ -337,11 +375,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -337,11 +376,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	public string SavegameIdentifier => SaveGameData.SavegameIdentifier;
  
@@ -90,7 +91,7 @@ index 1017be9..2930a77 100644
  	{
  		get
  		{
-@@ -413,16 +452,66 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -413,16 +453,66 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	public string WorldName => SaveGameData.WorldName;
  
@@ -100,7 +101,7 @@ index 1017be9..2930a77 100644
 -		select c.Player into c
 -		where c != null
 -		select c).ToArray();
-+public IPlayer[] AllOnlinePlayers
++	public IPlayer[] AllOnlinePlayers
 +	{
 +		get
 +		{
@@ -109,7 +110,8 @@ index 1017be9..2930a77 100644
 +			{
 +				return stratumCachedOnlinePlayers;
 +			}
-+
+ 
+-	public IPlayer[] AllPlayers => PlayersByUid.Values.ToArray();
 +			// Stratum: single pass, reuse backing list to avoid per-tick array allocation.
 +			stratumOnlinePlayersList.Clear();
 +			foreach (ConnectedClient client in Clients.Values)
@@ -143,8 +145,7 @@ index 1017be9..2930a77 100644
 +			{
 +				return stratumCachedAllPlayers;
 +			}
- 
--	public IPlayer[] AllPlayers => PlayersByUid.Values.ToArray();
++
 +			ServerPlayer[] result = new ServerPlayer[PlayersByUid.Count];
 +			int idx = 0;
 +			foreach (ServerPlayer player in PlayersByUid.Values)
@@ -162,7 +163,7 @@ index 1017be9..2930a77 100644
  
  	IClassRegistryAPI IWorldAccessor.ClassRegistry => api.ClassRegistry;
  
-@@ -516,11 +605,14 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -516,11 +606,14 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	{
  		ServerPlayer player = client.Player;
  		player.Entity.WatchedAttributes.MarkAllDirty();
@@ -178,7 +179,7 @@ index 1017be9..2930a77 100644
  		string message;
  		try
  		{
-@@ -529,10 +621,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -529,10 +622,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		catch (Exception)
  		{
  			Logger.Warning("Error formatting welcome message: \"" + text.Replace("{", "{{").Replace("}", "}}") + "\" for player " + player.PlayerName);
@@ -190,31 +191,7 @@ index 1017be9..2930a77 100644
  		if (Config.RepairMode)
  		{
  			SendMessage(player, GlobalConstants.GeneralChatGroup, "Server is in repair mode, you are now in spectator mode. If you are not already there, fly to the area that crashes and let the chunks load, then exit the game and run in normal mode.", EnumChatType.Notification);
-@@ -575,10 +668,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
- 		});
- 	}
- 
- 	public void broadCastModeChange(IServerPlayer player)
- 	{
-+		((ServerWorldPlayerData)player.WorldData).stratumOtherPlayersPacketDirty = true; // Stratum: invalidate cached player packet
- 		BroadcastPacket(new Packet_Server
- 		{
- 			Id = 46,
- 			ModeChange = new Packet_PlayerMode
- 			{
-@@ -703,10 +797,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
- 		worldData.FreeMove = (worldData.FreeMove && flag4) || worldData.GameMode == EnumGameMode.Spectator;
- 		worldData.NoClip &= flag4;
- 		worldData.RenderMetaBlocks = requestModeChange.RenderMetaBlocks > 0;
- 		clientByUID.Entityplayer.Controls.IsFlying = worldData.FreeMove || clientByUID.Entityplayer.Controls.Gliding;
- 		clientByUID.Entityplayer.Controls.MovespeedMultiplier = worldData.MoveSpeedMultiplier;
-+		worldData.stratumOtherPlayersPacketDirty = true; // Stratum: invalidate cached player packet
- 		BroadcastPacket(new Packet_Server
- 		{
- 			Id = 46,
- 			ModeChange = new Packet_PlayerMode
- 			{
-@@ -730,13 +825,48 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -730,13 +824,48 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		int num = packet.Chatline.Groupid;
  		if (num < -1)
  		{
@@ -263,7 +240,7 @@ index 1017be9..2930a77 100644
  		IServerPlayer[] skipPlayers = ((!skipSelf) ? Array.Empty<IServerPlayer>() : new IServerPlayer[1] { ofPlayer });
  		if (ofPlayer.InventoryManager?.ActiveHotbarSlot == null)
  		{
-@@ -787,16 +917,59 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -787,16 +916,59 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	}
  
  	private void HandleEntityPacket(Packet_Client packet, ConnectedClient client)
@@ -324,7 +301,7 @@ index 1017be9..2930a77 100644
  		if (groupid > 0 && !PlayerDataManager.PlayerGroupsById.ContainsKey(groupid))
  		{
  			SendMessage(player, GlobalConstants.ServerInfoChatGroup, "No such group exists on this server.", EnumChatType.CommandError);
-@@ -903,71 +1076,82 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -903,71 +1075,82 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	private void HandlePlayerIdentification(Packet_Client p, ConnectedClient client)
  	{
  		Packet_ClientIdentification identification = p.Identification;
@@ -336,8 +313,8 @@ index 1017be9..2930a77 100644
  		}
  		if ("1.22.6" != identification.NetworkVersion)
  		{
--			DisconnectPlayer(client, null, Lang.Get("disconnect-wrongversion", identification.ShortGameVersion, identification.NetworkVersion, "1.22.3", "1.22.6"));
-+			DisconnectPlayer(client, StratumServerTheme.WrongVersion(identification.ShortGameVersion, identification.NetworkVersion, "1.22.3", "1.22.6"));
+-			DisconnectPlayer(client, null, Lang.Get("disconnect-wrongversion", identification.ShortGameVersion, identification.NetworkVersion, "1.22.5", "1.22.6"));
++			DisconnectPlayer(client, StratumServerTheme.WrongVersion(identification.ShortGameVersion, identification.NetworkVersion, "1.22.5", "1.22.6"));
  			return;
  		}
  		if (!client.IsSinglePlayerClient && Config.IsPasswordProtected() && identification.ServerPassword != Config.Password)
@@ -419,19 +396,20 @@ index 1017be9..2930a77 100644
  	}
  
  	public ServerMain(StartServerArgs serverargs, string[] cmdlineArgsRaw, ServerProgramArgs progArgs, bool isDedicatedServer = true)
-@@ -1173,15 +1357,16 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1173,15 +1356,17 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		if (HeartbeatSystem == null)
  		{
  			HeartbeatSystem = new ServerSystemHeartbeat(this);
  		}
  		HeartbeatSystem.Launch();
 -		Systems = new ServerSystem[32]
-+		Systems = new ServerSystem[33]
++		Systems = new ServerSystem[34]
  		{
  			new ServerSystemUpnp(this),
  			(clientAwarenessSystem = new ServerSystemClientAwareness(this)),
  			new ServerSystemLoadConfig(this),
 +			new ServerSystemStratum(this),
++			new ServerSystemStratumPregen(this),
  			new ServerSystemNotifyPing(this),
  			new ServerSystemKickAfkPlayers(this),
  			serverSystemModHandler,
@@ -446,16 +424,38 @@ index 1017be9..2930a77 100644
 -		Logger.Event("Launching server...");
  		PlayerDataManager.Load();
  		Logger.StoryEvent(Lang.Get("It senses..."));
--		Logger.Event("Server v1.22.3, network v1.22.6, api v1.22.0");
+-		Logger.Event("Server v1.22.5, network v1.22.6, api v1.22.0");
 +		Logger.Event("Powered by Stratum | Made by imtsubaki and contributors");
-+		Logger.Event("Vintagestory v1.22.3 | Network v1.22.6 | API v1.21.0");
++		Logger.Event("Vintagestory v1.22.5 | Network v1.22.6 | API v1.22.0");
 +		Logger.Event("Launching server...");
  		totalUnpausedTime.Start();
  		AssetManager = new AssetManager(GamePaths.AssetsPath, EnumAppSide.Server);
  		if (progArgs.AddOrigin != null)
  		{
  			foreach (string item in progArgs.AddOrigin)
-@@ -1482,17 +1668,19 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1280,11 +1466,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		EnterRunPhase(EnumServerRunPhase.WorldReady);
+ 		if (exitState.Exit)
+ 		{
+ 			return;
+ 		}
+-		StartBuildServerAssetsPacket();
++		// Stratum: build the assets packet synchronously instead of on a pool thread
++		// (issue #151). The background build raced late boot work: the block/item
++		// encoders enumerate shared ClassRegistry dictionaries, and a concurrent
++		// insert threw "Collection was modified" on a pool thread with no handler,
++		// killing the process (~1/15 boots under load). Here the registries are
++		// finalized and locked and neither worldgen startup nor the server threads
++		// have run yet, so nothing can mutate what the encoders read. This also
++		// removes the first join's worst case: a 10s WaitOnBuildServerAssetsPacket
++		// timeout followed by a synchronous rebuild.
++		BuildServerAssetsPacket();
+ 		Logger.StoryEvent(Lang.Get("The center unfolding..."));
+ 		Logger.Event("Starting world generators...");
+ 		ModEventManager.TriggerWorldgenStartup();
+ 		if (exitState.Exit)
+ 		{
+@@ -1482,17 +1677,19 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  					ServerSystem serverSystem = Systems[i];
  					long num = elapsedMilliseconds - serverSystem.millisecondsSinceStart;
  					if (num > serverSystem.GetUpdateInterval())
@@ -476,7 +476,7 @@ index 1017be9..2930a77 100644
  				int num2 = 0;
  				while (!FrameProfilerUtil.offThreadProfiles.IsEmpty && num2++ < 25)
  				{
-@@ -1507,18 +1695,22 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1507,18 +1704,22 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  					ServerSystem serverSystem2 = Systems[j];
  					long num = elapsedMilliseconds - serverSystem2.millisecondsSinceStart;
  					if (num > serverSystem2.GetUpdateInterval())
@@ -500,7 +500,21 @@ index 1017be9..2930a77 100644
  			{
  				processConnectionQueue();
  				statsupdate = DateTime.UtcNow;
-@@ -1540,42 +1732,91 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1533,24 +1734,31 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 				{
+ 					StatsCollector[StatsCollectorIndex].tickTimes[k] = 0L;
+ 				}
+ 			}
+ 			long elapsedMilliseconds2 = lastFramePassedTime.ElapsedMilliseconds;
++			// Stratum: keep the chunk radius controller tied to real tick time.
++			if (StratumRuntime.AdaptiveRadius == null)
++			{
++				StratumRuntime.InitAdaptiveRadius(this);
++			}
++			StratumRuntime.AdaptiveRadius.Tick((float)elapsedMilliseconds2 / 1000f);
++
+ 			StatsCollection statsCollection = StatsCollector[StatsCollectorIndex];
+ 			statsCollection.tickTimeTotal += elapsedMilliseconds2;
  			statsCollection.ticksTotal++;
  			statsCollection.tickTimes[statsCollection.tickTimeIndex] = elapsedMilliseconds2;
  			statsCollection.tickTimeIndex = (statsCollection.tickTimeIndex + 1) % statsCollection.tickTimes.Length;
@@ -510,18 +524,19 @@ index 1017be9..2930a77 100644
 +				Logger.Warning("Server may be overloaded. A tick took {0}ms to complete.", elapsedMilliseconds2);
  			}
  			FrameProfiler.Mark("timers-updated");
- 			int num3 = (int)Math.Max(0f, Config.TickTime - (float)elapsedMilliseconds2);
- 			if (num3 > 0)
+-			int num3 = (int)Math.Max(0f, Config.TickTime - (float)elapsedMilliseconds2);
+-			if (num3 > 0)
++			// Stratum: wait against the frame deadline so Windows sleep rounding cannot lower TPS.
++			if (elapsedMilliseconds2 < Config.TickTime)
  			{
- 				Thread.Sleep(num3);
+-				Thread.Sleep(num3);
++				StratumRuntime.WaitForNextTick(lastFramePassedTime, Config.TickTime);
  				FrameProfiler.Mark("sleep");
  			}
  			TickPosition++;
-+			StratumNetworkFlush.FlushAll();
  		}
  		catch (Exception e)
- 		{
-+			StratumNetworkFlush.FlushAll();
+@@ -1558,24 +1766,113 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			Logger.Fatal(e);
  		}
  		FrameProfiler.End();
@@ -570,21 +585,63 @@ index 1017be9..2930a77 100644
 +		while (stratumJoinBudget > 0 && stratumJoinsThisTick < stratumJoinBudget && stratumDeferredJoinQueue.Count > 0)
 +		{
 +			ReceivedClientPacket deferred = stratumDeferredJoinQueue.Dequeue();
-+			if (deferred.client.State != EnumClientState.Offline && !DisconnectedClientsThisTick.Contains(deferred.client.Id))
++			ConnectedClient stratumDeferredClient = deferred.client;
++			if (Clients.ContainsKey(stratumDeferredClient.Id) && stratumDeferredClient.State != EnumClientState.Offline && !DisconnectedClientsThisTick.Contains(stratumDeferredClient.Id))
 +			{
 +				long stratumDeferredJoinTimingStart = StratumRuntime.Timings.GetTimestamp();
++				bool stratumJoinCompleted = false;
 +				try
 +				{
-+					HandleRequestJoin(deferred.packet, deferred.client);
++					HandleRequestJoin(deferred.packet, stratumDeferredClient);
++					stratumJoinCompleted = true;
 +				}
 +				catch (Exception e)
 +				{
-+					Logger.Warning("Exception processing deferred RequestJoin for client " + deferred.client.Id + ". Disconnecting.");
-+					DisconnectPlayer(deferred.client, "Threw an exception at the server", "An action you (or your client) did caused an unhandled exception");
++					Logger.Warning("Exception processing deferred RequestJoin for client " + stratumDeferredClient.Id + ". Disconnecting.");
++					DisconnectPlayer(stratumDeferredClient, "Threw an exception at the server", "An action you (or your client) did caused an unhandled exception");
 +					Logger.Error(e);
 +				}
 +				StratumRuntime.Timings.RecordPacket(11, stratumDeferredJoinTimingStart);
 +				stratumJoinsThisTick++;
++				if (stratumJoinCompleted && Clients.ContainsKey(stratumDeferredClient.Id) && stratumDeferredClient.State != EnumClientState.Offline && !DisconnectedClientsThisTick.Contains(stratumDeferredClient.Id))
++				{
++					stratumDeferredClient.StratumJoinDeferred = false;
++					Queue<ReceivedClientPacket> stratumDeferredPackets = stratumDeferredClient.StratumDeferredJoinPackets;
++					stratumDeferredClient.StratumDeferredJoinPackets = null;
++					if (stratumDeferredPackets != null)
++					{
++						while (stratumDeferredPackets.Count > 0)
++						{
++							ReceivedClientPacket stratumDeferredPacket = stratumDeferredPackets.Dequeue();
++							try
++							{
++								StratumHandleClientPacketAfterLimiter(stratumDeferredPacket);
++							}
++							catch (Exception e)
++							{
++								if (IsDedicatedServer)
++								{
++									Logger.Warning("Exception at client " + stratumDeferredClient.Id + ". Disconnecting client.");
++									DisconnectPlayer(stratumDeferredClient, "Threw an exception at the server", "An action you (or your client) did caused an unhandled exception");
++								}
++								Logger.Error(e);
++							}
++							if (!Clients.ContainsKey(stratumDeferredClient.Id) || stratumDeferredClient.State == EnumClientState.Offline || DisconnectedClientsThisTick.Contains(stratumDeferredClient.Id))
++							{
++								stratumDeferredPackets.Clear();
++								break;
++							}
++						}
++					}
++				}
++				else
++				{
++					StratumClearDeferredJoinState(stratumDeferredClient);
++				}
++			}
++			else
++			{
++				StratumClearDeferredJoinState(stratumDeferredClient);
 +			}
 +		}
 +		// Stratum end
@@ -593,7 +650,7 @@ index 1017be9..2930a77 100644
  			try
  			{
  				HandleClientPacket_mainthread(result);
-@@ -1588,10 +1829,13 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1588,10 +1885,13 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  					DisconnectPlayer(result.client, "Threw an exception at the server", "An action you (or your client) did caused an unhandled exception");
  				}
  				Logger.Error(e);
@@ -607,7 +664,7 @@ index 1017be9..2930a77 100644
  		TickPosition++;
  		foreach (KeyValuePair<Timer, Timer.Tick> timer in Timers)
  		{
-@@ -1882,10 +2126,15 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1882,10 +2182,15 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	}
  
  	public void Dispose()
@@ -623,7 +680,7 @@ index 1017be9..2930a77 100644
  		if (Systems != null)
  		{
  			ServerSystem[] systems = Systems;
-@@ -1946,11 +2195,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1946,11 +2251,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				}
  			});
  		}
@@ -636,23 +693,28 @@ index 1017be9..2930a77 100644
  	}
  
  	public string GetSaveFilepath()
-@@ -1970,10 +2219,15 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
- 		}
+@@ -1971,10 +2276,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		return nextClientID++;
  	}
  
  	public void DisconnectPlayer(ConnectedClient client, string othersKickmessage = null, string hisKickMessage = null)
-+	{
+ 	{
 +		DisconnectPlayer(client, othersKickmessage, hisKickMessage, false);
 +	}
 +
 +	private void DisconnectPlayer(ConnectedClient client, string othersKickmessage, string hisKickMessage, bool hisKickMessageIsScreen)
- 	{
++	{
++		// Stratum: release packets held behind a deferred RequestJoin.
++		if (client != null)
++		{
++			StratumClearDeferredJoinState(client);
++		}
  		if (client == null || ignoreDisconnectCalls || !Clients.ContainsKey(client.Id))
  		{
  			return;
  		}
-@@ -1982,17 +2236,23 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		if (client.State == EnumClientState.Queued)
+@@ -1982,17 +2297,23 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			lock (ConnectionQueue)
  			{
  				ConnectionQueue.RemoveAll((QueuedClient e) => e.Client.Id == client.Id);
@@ -677,7 +739,7 @@ index 1017be9..2930a77 100644
  			{
  			}
  			Logger.Notification($"Client {client.Id} disconnected: {hisKickMessage}");
-@@ -2004,10 +2264,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -2004,10 +2325,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			Clients.Remove(client.Id);
  			client.CloseConnection();
  		}
@@ -689,7 +751,7 @@ index 1017be9..2930a77 100644
  				Logger.Audit("Client {0} got removed: '{1}' ({2})", client.PlayerName, othersKickmessage, hisKickMessage);
  			}
  			else
-@@ -2041,13 +2302,18 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -2041,13 +2363,18 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			string playerName = client.PlayerName;
  			Clients.Remove(client.Id);
  			player.client = null;
@@ -711,7 +773,7 @@ index 1017be9..2930a77 100644
  		}
  		else
  		{
-@@ -2070,10 +2336,15 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -2070,10 +2397,15 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			SendMessageToGeneral(message, chatType, (chatType == EnumChatType.JoinLeave) ? player : null);
  		}
@@ -727,7 +789,7 @@ index 1017be9..2930a77 100644
  		if (Config.MaxClientsInQueue <= 0 || stopped)
  		{
  			if (debugProcessConnectionQueue)
-@@ -2095,19 +2366,25 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -2095,19 +2427,25 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			if (count > 0)
  			{
  				int maxClients = Config.MaxClients;
@@ -756,7 +818,7 @@ index 1017be9..2930a77 100644
  					}
  					if (debugProcessConnectionQueue)
  					{
-@@ -2154,11 +2431,31 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -2154,17 +2492,43 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		}
  	}
  
@@ -789,7 +851,20 @@ index 1017be9..2930a77 100644
  	public int GetAllowedChunkRadius(ConnectedClient client)
  	{
  		int num = (int)Math.Ceiling((float)((client.WorldData == null) ? 128 : client.WorldData.Viewdistance) / (float)MagicNum.ServerChunkSize);
-@@ -2994,11 +3291,62 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+-		int result = Math.Min(Config.MaxChunkRadius, num);
++		int maxRadius = Config.MaxChunkRadius;
++		StratumAdaptiveRadiusController adaptiveController = StratumRuntime.AdaptiveRadius;
++		if (adaptiveController != null)
++		{
++			maxRadius = Math.Min(maxRadius, adaptiveController.EffectiveRadius);
++		}
++		int result = Math.Min(maxRadius, num);
+ 		if (client.IsSinglePlayerClient)
+ 		{
+ 			return num;
+ 		}
+ 		return result;
+@@ -2994,11 +3358,62 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		return WorldMap.GetServerChunk(entity.InChunkIndex3d)?.RemoveEntity(entity.EntityId) ?? false;
  	}
  
@@ -853,7 +928,7 @@ index 1017be9..2930a77 100644
  	public Entity GetEntityById(long entityId)
  	{
  		LoadedEntities.TryGetValue(entityId, out var value);
-@@ -3289,20 +3637,38 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3289,20 +3704,38 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		return result;
  	}
  
@@ -897,7 +972,7 @@ index 1017be9..2930a77 100644
  	public IPlayer PlayerByUid(string playerUid)
  	{
  		if (playerUid == null)
-@@ -3427,11 +3793,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3427,11 +3860,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			{
  				Socket = senderConnection
  			});
@@ -910,7 +985,7 @@ index 1017be9..2930a77 100644
  		case NetworkMessageType.Data:
  		{
  			ConnectedClient client2 = msg.SenderConnection.client;
-@@ -3446,11 +3812,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3446,11 +3879,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			ConnectedClient client = msg.SenderConnection.client;
  			if (client != null)
@@ -923,7 +998,7 @@ index 1017be9..2930a77 100644
  		}
  		}
  	}
-@@ -3472,13 +3838,54 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3472,13 +3905,54 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			DisconnectedClientsThisTick.Add(client.Id);
  			item = new ReceivedClientPacket(client, (client.Player == null) ? "" : "Network error: invalid client packet");
  		}
@@ -948,8 +1023,7 @@ index 1017be9..2930a77 100644
 +		{
 +			DisconnectedClientsThisTick.Add(client.Id);
 +			ClientPackets.Enqueue(new ReceivedClientPacket(client, disconnectReason));
- 		}
--		ClientPackets.Enqueue(item);
++		}
 +	}
 +
 +	private void DispatchClientPacket_mainthread(ReceivedClientPacket pkt)
@@ -966,7 +1040,8 @@ index 1017be9..2930a77 100644
 +				DisconnectPlayer(pkt.client, "Threw an exception at the server", "An action you (or your client) did caused an unhandled exception");
 +			}
 +			Logger.Error(e);
-+		}
+ 		}
+-		ClientPackets.Enqueue(item);
 +	}
 +
 +	private void KickForBackPressure(ConnectedClient client, string reason)
@@ -980,7 +1055,7 @@ index 1017be9..2930a77 100644
  	private void HandleClientPacket_mainthread(ReceivedClientPacket cpk)
  	{
  		ConnectedClient client = cpk.client;
-@@ -3500,15 +3907,42 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3500,15 +3974,67 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			{
  				Logger.Event("Client " + client.Id + " disconnected.");
  				EventManager.TriggerPlayerLeave(client.Player);
@@ -1005,6 +1080,31 @@ index 1017be9..2930a77 100644
 +			{
 +				FrameProfiler.Mark("net-stratumdrop-", packet.Id);
 +			}
++			return;
++		}
++		StratumHandleClientPacketAfterLimiter(cpk); // Stratum: preserve per-client order after RequestJoin deferral.
++	}
++
++	// Stratum start: preserve per-client order after RequestJoin deferral.
++	private void StratumHandleClientPacketAfterLimiter(ReceivedClientPacket cpk)
++	{
++		ConnectedClient client = cpk.client;
++		Packet_Client packet = cpk.packet;
++		if (client.StratumJoinDeferred)
++		{
++			Queue<ReceivedClientPacket> stratumDeferredPackets = client.StratumDeferredJoinPackets;
++			if (stratumDeferredPackets == null)
++			{
++				stratumDeferredPackets = new Queue<ReceivedClientPacket>(4);
++				client.StratumDeferredJoinPackets = stratumDeferredPackets;
++			}
++			if (stratumDeferredPackets.Count >= StratumMaxDeferredJoinPackets)
++			{
++				StratumClearDeferredJoinState(client);
++				DisconnectPlayer(client, null, "Too many packets before join completion");
++				return;
++			}
++			stratumDeferredPackets.Enqueue(cpk);
  			return;
  		}
  		if (client.IsNewClient && packet.Id != 1 && packet.Id != 2 && packet.Id != 14 && packet.Id != 34)
@@ -1024,7 +1124,7 @@ index 1017be9..2930a77 100644
  				FrameProfiler.Mark("net-read-", packet.Id);
  			}
  			return;
-@@ -3516,11 +3950,35 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3516,11 +4042,36 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		ClientPacketHandler<Packet_Client, ConnectedClient> clientPacketHandler = PacketHandlers[packet.Id];
  		if (clientPacketHandler != null && (client.Player != null || PacketHandlingOnConnectingAllowed[packet.Id]))
  		{
@@ -1037,6 +1137,7 @@ index 1017be9..2930a77 100644
 +					int stratumJoinBudgetNow = StratumRuntime.Config.Performance.Join.MaxJoinsPerTick;
 +					if (stratumJoinBudgetNow > 0 && stratumJoinsThisTick >= stratumJoinBudgetNow)
 +					{
++						client.StratumJoinDeferred = true;
 +						stratumDeferredJoinQueue.Enqueue(cpk);
 +						if (FrameProfiler.Enabled)
 +						{
@@ -1061,7 +1162,26 @@ index 1017be9..2930a77 100644
  					FrameProfiler.Mark("net-read-", packet.Id);
  				}
  			}
-@@ -3557,30 +4015,30 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3533,10 +4084,18 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 				FrameProfiler.Mark("net-readerror-", packet.Id);
+ 			}
+ 		}
+ 	}
+ 
++	private static void StratumClearDeferredJoinState(ConnectedClient client)
++	{
++		client.StratumJoinDeferred = false;
++		client.StratumDeferredJoinPackets?.Clear();
++		client.StratumDeferredJoinPackets = null;
++	}
++	// Stratum end
++
+ 	private void VerifyPlayerWithAuthServer(Packet_ClientIdentification packet, ConnectedClient client)
+ 	{
+ 		Logger.Debug("Client uid {0}, mp token {1}: Verifying with auth server", packet.PlayerUID, packet.MpToken);
+ 		AuthServerComm.ValidatePlayerWithServer(packet.MpToken, packet.Playername, packet.PlayerUID, client.LoginToken, delegate(EnumServerResponse result, string entitlements, string errorReason)
+ 		{
+@@ -3557,30 +4116,30 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  						case "missingmptokenv2":
  						case "missingaccount":
  						case "banned":
@@ -1096,7 +1216,7 @@ index 1017be9..2930a77 100644
  			if (!orCreateServerPlayerData.HasPrivilege(Privilege.controlserver, Config.RolesByCode) && !orCreateServerPlayerData.HasPrivilege("ignoremaxclients", Config.RolesByCode))
  			{
  				tryEnqueuePlayer(packet, client, entitlements, maxClients);
-@@ -3635,16 +4093,17 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3635,16 +4194,17 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				Logger.Notification($"Player {packet.Playername} was put into the connection queue at position {count2}");
  				SendPacket(client.Id, packet2);
  				return;
@@ -1115,7 +1235,25 @@ index 1017be9..2930a77 100644
  			return;
  		}
  		if (client.Socket is TcpNetConnection tcpNetConnection)
-@@ -3773,10 +4232,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3704,11 +4264,16 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 					{
+ 						Id = 78
+ 					};
+ 					SendPacket(client.Id, packet2);
+ 					client.FallBackToTcp = true;
+-					ServerUdpNetwork.connectingClients.Remove(client.LoginToken);
++					// Stratum start: LoginToken is only assigned when the client sends the LoginTokenQuery packet (id 33). The vanilla client sends it on connect, but a custom or hostile client can skip it, leaving the token null. Such a client was never added to connectingClients, and Dictionary.Remove throws on a null key.
++					if (client.LoginToken != null)
++					{
++						ServerUdpNetwork.connectingClients.Remove(client.LoginToken);
++					}
++					// Stratum end
+ 				}
+ 				else
+ 				{
+ 					Logger.Debug($"UDP: Client {client.Id} did send UDP");
+ 				}
+@@ -3773,10 +4338,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			SendServerIdentification(client.Player);
  			SpawnPlayerRandomlyAround(client, playername, entityPos, 15);
  			client.IsNewClient = false;
@@ -1136,7 +1274,7 @@ index 1017be9..2930a77 100644
  			SendServerIdentification(client.Player);
  			client.Entityplayer.Pos.SetFrom(entityPos);
  			SpawnEntity(client.Entityplayer);
-@@ -3851,10 +4320,21 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3851,10 +4426,21 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	}
  
  	private void SpawnPlayerRandomlyAround(ConnectedClient client, string playername, EntityPos centerPos, int tries)
@@ -1158,7 +1296,7 @@ index 1017be9..2930a77 100644
  			EntityPos entityPos = centerPos.Copy();
  			if (pos == null)
  			{
-@@ -3869,10 +4349,38 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3869,10 +4455,38 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			}
  			SpawnPlayerHere(client, playername, entityPos);
  		});
@@ -1197,7 +1335,7 @@ index 1017be9..2930a77 100644
  		Clients.TryGetValue(client.Id, out var value);
  		if (value != null)
  		{
-@@ -4244,11 +4752,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4244,11 +4858,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	internal void BroadcastArbitraryPacket(byte[] data, params IServerPlayer[] skipPlayers)
  	{
@@ -1210,7 +1348,7 @@ index 1017be9..2930a77 100644
  			}
  		}
  	}
-@@ -4258,11 +4766,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4258,11 +4872,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		Serialize_(packet);
  		byte[] array = null;
  		bool compressed = false;
@@ -1223,7 +1361,7 @@ index 1017be9..2930a77 100644
  				{
  					array = client.Socket.PreparePacketForSending(reusableBuffer, Config.CompressPackets, out compressed);
  				}
-@@ -4277,17 +4785,42 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4277,17 +4891,42 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	internal void BroadcastArbitraryUdpPacket(Packet_UdpPacket data, params IServerPlayer[] skipPlayers)
  	{
@@ -1267,7 +1405,7 @@ index 1017be9..2930a77 100644
  		if (packetBenchmark.ContainsKey(packetId))
  		{
  			packetBenchmark[packetId]++;
-@@ -4694,15 +5227,40 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4694,15 +5333,40 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	}
  
  	private void SendWorldMetaData(IServerPlayer player)
@@ -1308,7 +1446,7 @@ index 1017be9..2930a77 100644
  		float[] array = blockLightLevels;
  		Packet_WorldMetaData packet_WorldMetaData = new Packet_WorldMetaData();
  		int[] array2 = new int[array.Length];
-@@ -4755,14 +5313,53 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4755,14 +5419,53 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			((DummyUdpNetServer)UdpSockets[0]).Client.Player = player;
  		}
@@ -1316,9 +1454,9 @@ index 1017be9..2930a77 100644
  		{
 -			SendPacket(player, CreatePacketIdentification(player.HasPrivilege("controlserver")));
 +			SendStratumCachedServerIdentification(player);
- 		}
- 	}
- 
++		}
++	}
++
 +	private void SendStratumCachedServerIdentification(ServerPlayer player)
 +	{
 +		bool controlServerPrivilege = player.HasPrivilege("controlserver");
@@ -1339,9 +1477,9 @@ index 1017be9..2930a77 100644
 +				stratumIdentificationCacheKeys[cacheIndex] = cacheKey;
 +			}
 +			SendPacket(player.ClientId, packet);
-+		}
-+	}
-+
+ 		}
+ 	}
+ 
 +	private string GetStratumIdentificationCacheKey(bool controlServerPrivilege)
 +	{
 +		StratumClientModPolicyConfig clientModPolicy = StratumRuntime.Config.ClientModPolicy;
@@ -1363,7 +1501,7 @@ index 1017be9..2930a77 100644
  		List<Packet_ModId> list = (from mod in api.ModLoader.Mods
  			where mod.Info.Side.IsUniversal()
  			select new Packet_ModId
-@@ -4791,15 +5388,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4791,15 +5494,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			RequireRemapping = ((controlServerPrivilege && requiresRemaps) ? 1 : 0)
  		};
  		Logger.Notification((Config.DisableAutoRemap ? ("Sending server identification with remap " + requiresRemaps) : "Sending server identification") + ". Server control privilege is " + controlServerPrivilege);
@@ -1386,19 +1524,7 @@ index 1017be9..2930a77 100644
  		}
  		return new Packet_Server
  		{
-@@ -4808,10 +5410,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
- 		};
- 	}
- 
- 	public void BroadcastPlayerData(IServerPlayer owningPlayer, bool sendInventory = true, bool sendPrivileges = false)
- 	{
-+		((ServerWorldPlayerData)owningPlayer.WorldData).stratumOtherPlayersPacketDirty = true; // Stratum: invalidate cache before rebuild
- 		Packet_Server packet = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacket(owningPlayer, sendInventory, sendPrivileges);
- 		Packet_Server packet2 = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacketForOtherPlayers(owningPlayer);
- 		SendPacket(owningPlayer, packet);
- 		BroadcastPacket(packet2, owningPlayer);
- 	}
-@@ -4843,12 +5446,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4843,12 +5551,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				array[num] = item.Id;
  				array2[num] = (int)(1000f * item.Player.Ping);
  				num++;
@@ -1413,3 +1539,16 @@ index 1017be9..2930a77 100644
  			Id = 3,
  			PlayerPing = packet_ServerPlayerPing
  		};
+@@ -5140,11 +5848,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		}
+ 	}
+ 
+ 	public void LoadChunkColumnForDimension(int cx, int cz, int dim)
+ 	{
+-		ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(WorldMap.MapChunkIndex2D(cx, cz), cx, cz, -1, 6, this);
++		ChunkColumnLoadRequest chunkColumnLoadRequest = new ChunkColumnLoadRequest(WorldMap.MapChunkIndex2D(cx, cz), cx, cz, -1, StratumWorldGenStages.Done, this); // Stratum: was the vanilla Done literal 6
+ 		chunkColumnLoadRequest.dimension = dim;
+ 		simpleLoadRequests.Enqueue(chunkColumnLoadRequest);
+ 	}
+ 
+ 	public void ForceSendChunkColumn(IServerPlayer player, int cx, int cz, int dimension)

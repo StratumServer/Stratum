@@ -1,0 +1,44 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs b/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs
+index 20f5814..ca914a7 100644
+--- a/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs
++++ b/VintagestoryLib/Vintagestory.Server/WorldGenHandler.cs
+@@ -15,11 +15,17 @@ public class WorldGenHandler : IWorldGenHandler
+ 
+ 	public List<MapChunkGeneratorDelegate> OnMapChunkGen = new List<MapChunkGeneratorDelegate>();
+ 
+ 	public List<ChunkColumnGenerationDelegate>[] OnChunkColumnGen = new List<ChunkColumnGenerationDelegate>[6];
+ 
+-	public Dictionary<string, WorldGenHookDelegate> SpecialHooks = new Dictionary<string, WorldGenHookDelegate>();
++	// Stratum: second half of the split Terrain pass. Vanilla generators that
++	// used to run late inside Terrain (rock strata, caves, block layers)
++	// register here through StratumTerrainSplit; OnChunkColumnGen keeps its
++	// vanilla shape and numbering for mods that index it directly.
++	public List<ChunkColumnGenerationDelegate> OnChunkColumnGenTerrainLate = new List<ChunkColumnGenerationDelegate>();
++
++    public Dictionary<string, WorldGenHookDelegate> SpecialHooks = new Dictionary<string, WorldGenHookDelegate>();
+ 
+ 	List<MapRegionGeneratorDelegate> IWorldGenHandler.OnMapRegionGen => OnMapRegionGen;
+ 
+ 	List<MapChunkGeneratorDelegate> IWorldGenHandler.OnMapChunkGen => OnMapChunkGen;
+ 
+@@ -32,18 +38,19 @@ public class WorldGenHandler : IWorldGenHandler
+ 		OnChunkColumnGen[3] = new List<ChunkColumnGenerationDelegate>();
+ 		OnChunkColumnGen[4] = new List<ChunkColumnGenerationDelegate>();
+ 		OnChunkColumnGen[5] = new List<ChunkColumnGenerationDelegate>();
+ 	}
+ 
+-	public void WipeAllHandlers()
++    public void WipeAllHandlers()
+ 	{
+ 		OnMapRegionGen.Clear();
+ 		OnMapChunkGen.Clear();
+ 		for (int i = 0; i < OnChunkColumnGen.Length; i++)
+ 		{
+ 			if (OnChunkColumnGen[i] != null)
+ 			{
+ 				OnChunkColumnGen[i].Clear();
+ 			}
+ 		}
++		OnChunkColumnGenTerrainLate.Clear(); // Stratum
+ 	}
+ }

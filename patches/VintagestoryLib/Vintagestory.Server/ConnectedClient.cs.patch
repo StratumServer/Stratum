@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ConnectedClient.cs b/VintagestoryLib/Vintagestory.Server/ConnectedClient.cs
-index 93feaee..1fc9188 100644
+index 93feaee..3346e33 100644
 --- a/VintagestoryLib/Vintagestory.Server/ConnectedClient.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ConnectedClient.cs
-@@ -20,10 +20,16 @@ public class ConnectedClient
+@@ -20,10 +20,21 @@ public class ConnectedClient
  
  	public long LastAuditFlySuspicionTotalMs;
  
@@ -13,6 +13,11 @@ index 93feaee..1fc9188 100644
 +	public string StratumLastChatMessage;
 +	public long StratumLastChatMessageMs;
 +	public int StratumDroppedChatCount;
++
++	// Stratum start: preserve packet order while RequestJoin waits for its tick budget.
++	internal bool StratumJoinDeferred;
++	internal Queue<ReceivedClientPacket> StratumDeferredJoinPackets;
++	// Stratum end
 +
  	public int TotalFlySuspicions;
  

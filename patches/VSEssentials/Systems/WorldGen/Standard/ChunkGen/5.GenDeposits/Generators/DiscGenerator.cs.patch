@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/Generators/DiscGenerator.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/Generators/DiscGenerator.cs
-index 2b6633c..328948f 100644
+index 2b6633c..1cbe062 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/Generators/DiscGenerator.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/Generators/DiscGenerator.cs
 @@ -206,24 +206,62 @@ namespace Vintagestory.ServerMods
@@ -117,12 +117,12 @@ index 2b6633c..328948f 100644
 +                            posy--;
 +                            continue;
 +                        }
++
++                        int posyChunksizeMod = posy % chunksize;
++                        int posyChunksizeDiv = posy / chunksize;
  
 -                        int index3d = ((posy % chunksize) * chunksize + lz) * chunksize + lx;
 -                        int blockId = chunks[posy / chunksize].Data.GetBlockIdUnsafe(index3d);
-+                        int posyChunksizeMod = posy % chunksize;
-+                        int posyChunksizeDiv = posy / chunksize;
-+
 +                        int index3d = ((posyChunksizeMod) * chunksize + lz) * chunksize + lx;
 +                        int blockId = chunks[posyChunksizeDiv].Data.GetBlockIdUnsafe(index3d);
  
@@ -222,3 +222,43 @@ index 2b6633c..328948f 100644
              return yOffBot * (1 - yRel) + yOffTop * yRel;
  
          }
+@@ -442,33 +493,28 @@ namespace Vintagestory.ServerMods
+ 
+ 
+ 
+         private double oreBearingBlockQuantityRelative(BlockPos pos, string oreCode, int[] blockColumn)
+         {
+-            HashSet<int> oreBearingBlocks = new HashSet<int>();
+-
+             if (variant == null) return 0;
+ 
+-            int[] blocks = GetBearingBlocks();
+-            if (blocks == null) return 1;
+-
+-            foreach (var val in blocks)
+-            {
+-                oreBearingBlocks.Add(val);
+-            }
+-
++            // Stratum start: query placeBlockByInBlockId directly instead of copying its keys into
++            // a fresh int[] via GetBearingBlocks() and rebuilding a HashSet<int> from that array on
++            // every call. placeBlockByInBlockId is populated once during generator setup and
++            // read-only afterward, so ContainsKey here is equivalent and allocation-free.
+             GetYMinMax(pos, out double minYAvg, out double maxYAvg);
+ 
+             int q = 0;
+             for (int ypos = 0; ypos < blockColumn.Length; ypos++)
+             {
+                 if (ypos < minYAvg || ypos > maxYAvg) continue;
+ 
+-                if (oreBearingBlocks.Contains(blockColumn[ypos])) q++;
++                if (placeBlockByInBlockId.ContainsKey(blockColumn[ypos])) q++;
+             }
+ 
+             return (double)q / blockColumn.Length;
++            // Stratum end
+         }
+ 
+         /// <summary>
+         /// This will always return the same result for the same ore generator if Radius or Thickness have not been changed.
+         /// <see cref="GetAbsAvgQuantity(LCGRandom)"/>

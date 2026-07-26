@@ -1,0 +1,69 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
+index 672877b..c112949 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
+@@ -63,24 +63,30 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+ 
+ 	public SmallBoolArray NeighboursLoaded;
+ 
+ 	public byte UnloadGeneration = 3;
+ 
++	// Stratum: currentpass holds the INTERNAL stage numbering (Terrain split
++	// into two sub-stages, Done = 7). The public enum keeps vanilla values, so
++	// this property translates through StratumWorldGenStages. Everything that
++	// reads or writes the enum, vanilla code and mods alike, sees vanilla
++	// numbering; scheduler code uses currentpass directly. The same mapping is
++	// the on-disk format, which keeps saves interchangeable with vanilla.
+ 	public EnumWorldGenPass CurrentIncompletePass
+ 	{
+ 		get
+ 		{
+-			return (EnumWorldGenPass)currentpass;
++			return (EnumWorldGenPass)StratumWorldGenStages.ToVanilla(currentpass);
+ 		}
+ 		set
+ 		{
+ 			DirtyForSaving = true;
+-			currentpass = (int)value;
++			currentpass = StratumWorldGenStages.FromVanilla((int)value);
+ 		}
+ 	}
+ 
+-	[ProtoMember(11)]
++    [ProtoMember(11)]
+ 	public byte[] CaveHeightDistort { get; set; }
+ 
+ 	[ProtoMember(12)]
+ 	public ushort[] SedimentaryThicknessMap { get; set; }
+ 
+@@ -148,11 +154,14 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+ 	}
+ 
+ 	public static ServerMapChunk FromBytes(byte[] serializedChunk)
+ 	{
+ 		ServerMapChunk serverMapChunk = Serializer.Deserialize<ServerMapChunk>((Stream)new MemoryStream(serializedChunk));
+-		if (serverMapChunk.WorldGenTerrainHeightMap == null)
++        // Stratum: converting the vanilla stage to ours
++        serverMapChunk.currentpass = StratumWorldGenStages.FromVanilla(serverMapChunk.currentpass);
++
++        if (serverMapChunk.WorldGenTerrainHeightMap == null)
+ 		{
+ 			serverMapChunk.WorldGenTerrainHeightMap = (ushort[])serverMapChunk.RainHeightMap.Clone();
+ 		}
+ 		if (serverMapChunk.TopRockIdMapOld != null)
+ 		{
+@@ -282,12 +291,12 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+ 	public byte[] FastSerialize(FastMemoryStream ms)
+ 	{
+ 		ms.Reset();
+ 		FastSerializer.Write(ms, 1, Moddata);
+ 		FastSerializer.Write(ms, 3, RainHeightMap);
+-		FastSerializer.Write(ms, 4, currentpass);
+-		FastSerializer.Write(ms, 6, TopRockIdMapOld);
++        FastSerializer.Write(ms, 4, StratumWorldGenStages.ToVanilla(currentpass));   // Stratum: distilling our stages into vanilla
++        FastSerializer.Write(ms, 6, TopRockIdMapOld);
+ 		FastSerializer.Write(ms, 7, WorldGenTerrainHeightMap);
+ 		FastSerializer.Write(ms, 8, ScheduledBlockUpdates);
+ 		FastSerializer.Write(ms, 9, NewBlockEntities);
+ 		FastSerializer.Write(ms, 10, YMax);
+ 		FastSerializer.Write(ms, 11, CaveHeightDistort);

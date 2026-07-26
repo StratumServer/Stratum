@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-index ee7d12d..07e051a 100644
+index ee7d12d..64084f2 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 @@ -12,10 +12,12 @@ namespace Vintagestory.Server;
@@ -15,6 +15,23 @@ index ee7d12d..07e051a 100644
  	internal IndexedFifoQueue<ChunkColumnLoadRequest> peekingChunkColumns;
  
  	internal Dictionary<long, ServerMapRegion> peekingMapRegions = new Dictionary<long, ServerMapRegion>(8);
+@@ -39,13 +41,13 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 	public ILogger Logger => ServerMain.Logger;
+ 
+ 	public ChunkServerThread(ServerMain server, string threadname, CancellationToken cancellationToken)
+ 		: base(server, threadname, cancellationToken)
+ 	{
+-		int val = 5;
+-		additionalWorldGenThreadsCount = Math.Min(val, MagicNum.MaxWorldgenThreads - 1);
+-		if (server.ReducedServerThreads)
++		int val = StratumWorldGenStages.Done - 1; // Stratum: one thread per internal worker stage
++        additionalWorldGenThreadsCount = Math.Min(val, MagicNum.MaxWorldgenThreads); // Stratum: We take as many streams as are actually needed for each generation stage.
++        if (server.ReducedServerThreads)
+ 		{
+ 			additionalWorldGenThreadsCount = 0;
+ 		}
+ 		if (additionalWorldGenThreadsCount < 0)
+ 		{
 @@ -101,15 +103,21 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  		return peekingChunkColumns.GetByIndex(index);
  	}
@@ -39,7 +56,7 @@ index ee7d12d..07e051a 100644
  	}
  
  	internal ServerMapChunk GetMapChunk(long index2d)
-@@ -143,11 +151,11 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -143,19 +151,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	IWorldChunk IChunkProvider.GetUnpackedChunkFast(int chunkX, int chunkY, int chunkZ, bool notRecentlyAccessed)
  	{
  		ServerChunk generatingChunk = GetGeneratingChunk(chunkX, chunkY, chunkZ);
@@ -52,16 +69,91 @@ index ee7d12d..07e051a 100644
  		return generatingChunk;
  	}
  
-@@ -193,11 +201,11 @@ public class ChunkServerThread : ServerThread, IChunkProvider
- 		server.loadedMapChunks.TryGetValue(index2d, out var value);
- 		if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
+ 	internal bool addChunkColumnRequest(long index2d, int chunkX, int chunkZ, int clientid, EnumWorldGenPass untilPass = EnumWorldGenPass.Done, ITreeAttribute chunkLoadParams = null)
+ 	{
+-		return addChunkColumnRequest(new ChunkColumnLoadRequest(index2d, chunkX, chunkZ, clientid, (int)untilPass, server)
++		return addChunkColumnRequest(new ChunkColumnLoadRequest(index2d, chunkX, chunkZ, clientid, StratumWorldGenStages.FromVanilla((int)untilPass), server) // Stratum: public pass to internal
  		{
- 			return true;
+ 			chunkGenParams = chunkLoadParams
+ 		});
+ 	}
+ 
+@@ -186,38 +194,50 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 			requestedChunkColumns.EnqueueWithoutAddingToIndex(chunkRequest);
  		}
+ 		return !orAdd.Disposed;
+ 	}
+ 
+-	internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
+-	{
+-		server.loadedMapChunks.TryGetValue(index2d, out var value);
+-		if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
+-		{
+-			return true;
+-		}
 -		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, (long index2d2) => new ChunkColumnLoadRequest(index2d2, chunkX, chunkZ, server.serverConsoleId, -1, server));
-+		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, static (index2d2, state) => new ChunkColumnLoadRequest(index2d2, state.chunkX, state.chunkZ, state.server.serverConsoleId, -1, state.server), (chunkX, chunkZ, server));
- 		if (orAdd.CurrentIncompletePass_AsInt < minPass)
- 		{
- 			if (orAdd.untilPass < minPass)
- 			{
- 				if (orAdd.untilPass < 0)
+-		if (orAdd.CurrentIncompletePass_AsInt < minPass)
+-		{
+-			if (orAdd.untilPass < minPass)
+-			{
+-				if (orAdd.untilPass < 0)
+-				{
+-					requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
+-				}
+-				orAdd.untilPass = minPass;
+-				if (orAdd.creationTime < requirorTime)
+-				{
+-					orAdd.creationTime = requirorTime;
+-				}
+-			}
+-			return false;
+-		}
+-		return true;
+-	}
+-
+-	public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
++    internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
++    {
++        server.loadedMapChunks.TryGetValue(index2d, out var value);
++        if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
++        {
++            return true;
++        }
++
++        // Stratum start: avoiding Func<> + DisplayClass allocation for each call.
++        // In the vast majority of cases, the entry already exists in the dictionary.
++        if (!requestedChunkColumns.elementsByIndex.TryGetValue(index2d, out var orAdd))
++        {
++            orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(
++                index2d,
++                static (idx, arg) => new ChunkColumnLoadRequest(idx, arg.chunkX, arg.chunkZ, arg.consoleId, -1, arg.server),
++                (chunkX, chunkZ, consoleId: server.serverConsoleId, server));
++        }
++
++        if (orAdd.CurrentIncompletePass_AsInt < minPass)
++        {
++            if (orAdd.untilPass < minPass)
++            {
++                if (orAdd.untilPass < 0)
++                {
++                    requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
++                }
++                orAdd.untilPass = minPass;
++                if (orAdd.creationTime < requirorTime)
++                {
++                    orAdd.creationTime = requirorTime;
++                }
++            }
++            return false;
++        }
++
++        // Stratum end
++        return true;
++    }
++
++    public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
+ 	{
+ 		return ((long)chunkY * (long)server.WorldMap.index3dMulZ + chunkZ) * server.WorldMap.index3dMulX + chunkX;
+ 	}
+ 
+ 	public long ChunkIndex3D(EntityPos pos)
