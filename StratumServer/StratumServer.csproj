@@ -21,7 +21,6 @@
 
   <ItemGroup>
     <Compile Include="$(StratumInfoPath)" Link="StratumInfo.cs" Condition="'$(StratumInfoPath)' != ''" />
-    <EmbeddedResource Include="stratum.default.json" LogicalName="Stratum.Config.stratum.default.json" />
   </ItemGroup>
 
   <Target Name="ValidateStratumInfoPath" BeforeTargets="CoreCompile">
@@ -104,9 +103,6 @@
     <MakeDir Directories="$(StratumInstall)" />
     <MakeDir Directories="$(StratumInstall)\Mods" />
   <MakeDir Directories="$(StratumInstall)\Data" />
-  <Copy SourceFiles="$(MSBuildProjectDirectory)\stratum.default.json"
-      DestinationFiles="$(StratumInstall)\Data\stratum.json"
-      Condition="!Exists('$(StratumInstall)\Data\stratum.json')" />
         <Message Importance="High" Text="Overlaying Stratum launcher and patched server assemblies into $(StratumInstall)" />
     <Copy SourceFiles="@(_StratumRootFiles)"
           DestinationFolder="$(StratumInstall)"

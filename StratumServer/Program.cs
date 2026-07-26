@@ -68,15 +68,6 @@ internal static class Program
 				return 1;
 			}
 
-			try
-			{
-				DefaultConfigSeeder.Seed(AppContext.BaseDirectory);
-			}
-			catch (Exception exception)
-			{
-				Console.Error.WriteLine($"Stratum: default config seed failed: {exception.Message}");
-				return 1;
-			}
 		}
 
 		if (prepareOnly)

@@ -435,7 +435,7 @@ internal class StratumDiagnosticsConfig
 	// Logs every mod-owned Harmony patch at startup (grouped by mod, split by prefix/postfix/
 	// transpiler/finalizer). Visibility only, does not cross-reference against Stratum's own
 	// source-patched methods -- see StratumHarmonyVisibility.
-	public bool LogModHarmonyPatches { get; set; } = true;
+	public bool LogModHarmonyPatches { get; set; } = false;
 }
 
 internal class StratumHardeningConfig
