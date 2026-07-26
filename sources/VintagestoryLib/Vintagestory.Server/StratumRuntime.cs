@@ -213,7 +213,7 @@ internal static class StratumRuntime
 
 			bool mainConfigExisted = File.Exists(ConfigPath);
 			Config = mainConfigExisted
-				? JsonConvert.DeserializeObject<StratumConfig>(File.ReadAllText(ConfigPath)) ?? StratumConfig.CreateDefault()
+				? JsonConvert.DeserializeObject<StratumConfig>(File.ReadAllText(ConfigPath), StratumConfig.LoadSerializerSettings) ?? StratumConfig.CreateDefault()
 				: StratumConfig.CreateDefault();
 
 			// Stratum: load the sidecars whenever they exist, not only when stratum.json also
@@ -221,11 +221,11 @@ internal static class StratumRuntime
 			// (or stratum-commands.json) used to skip this check and overwrite it with defaults.
 			if (File.Exists(CommandsConfigPath))
 			{
-				Config.Commands = JsonConvert.DeserializeObject<StratumCommandsConfig>(File.ReadAllText(CommandsConfigPath)) ?? new StratumCommandsConfig();
+				Config.Commands = JsonConvert.DeserializeObject<StratumCommandsConfig>(File.ReadAllText(CommandsConfigPath), StratumConfig.LoadSerializerSettings) ?? new StratumCommandsConfig();
 			}
 			if (File.Exists(PerformanceConfigPath))
 			{
-				Config.Performance = JsonConvert.DeserializeObject<StratumPerformanceConfig>(File.ReadAllText(PerformanceConfigPath)) ?? new StratumPerformanceConfig();
+				Config.Performance = JsonConvert.DeserializeObject<StratumPerformanceConfig>(File.ReadAllText(PerformanceConfigPath), StratumConfig.LoadSerializerSettings) ?? new StratumPerformanceConfig();
 			}
 			Config.EnsurePopulated();
 			SaveConfig();

@@ -116,6 +116,11 @@ internal class StratumConfig
 		return new StratumConfig();
 	}
 
+	public static readonly Newtonsoft.Json.JsonSerializerSettings LoadSerializerSettings = new Newtonsoft.Json.JsonSerializerSettings
+	{
+		ObjectCreationHandling = Newtonsoft.Json.ObjectCreationHandling.Replace
+	};
+
 	// Serializer settings used when writing the main stratum.json. Skips Commands and Performance
 	// because those live in stratum-commands.json / stratum-performance.json sidecars.
 	public static readonly Newtonsoft.Json.JsonSerializerSettings MainFileSerializerSettings = new Newtonsoft.Json.JsonSerializerSettings
@@ -1393,14 +1398,54 @@ internal class StratumEntityTickingConfig
 		MovingEntitySpeedThreshold = Math.Max(0, MovingEntitySpeedThreshold);
 		MaxCreatureTicksPerTick = Math.Max(0, MaxCreatureTicksPerTick);
 		AmbientFaunaTickMultiplier = Math.Max(1, Math.Min(16, AmbientFaunaTickMultiplier));
-		AmbientFaunaCodePrefixes ??= new List<string>();
-		ExcludedModDomains ??= new List<string>();
+		AmbientFaunaCodePrefixes = NormalizeCodeList(AmbientFaunaCodePrefixes);
+		ExcludedModDomains = NormalizeCodeList(ExcludedModDomains);
 		HardDespawnDistanceBlocks = Math.Max(32, HardDespawnDistanceBlocks);
 		HardDespawnGracePeriodSeconds = Math.Max(1, HardDespawnGracePeriodSeconds);
-		HardDespawnExemptCodePrefixes ??= new List<string>();
+		HardDespawnExemptCodePrefixes = NormalizeCodeList(HardDespawnExemptCodePrefixes);
 		EntityCapsEnforcementIntervalSeconds = Math.Max(1, EntityCapsEnforcementIntervalSeconds);
 		MaxCreaturesPerChunkColumn = Math.Max(0, MaxCreaturesPerChunkColumn);
 		MaxItemEntitiesPerChunkColumn = Math.Max(0, MaxItemEntitiesPerChunkColumn);
+	}
+
+	private static List<string> NormalizeCodeList(List<string> values)
+	{
+		if (values == null)
+		{
+			return new List<string>();
+		}
+
+		int writeIndex = 0;
+		for (int readIndex = 0; readIndex < values.Count; readIndex++)
+		{
+			string value = values[readIndex]?.Trim();
+			if (string.IsNullOrEmpty(value))
+			{
+				continue;
+			}
+
+			bool duplicate = false;
+			for (int i = 0; i < writeIndex; i++)
+			{
+				if (string.Equals(values[i], value, StringComparison.OrdinalIgnoreCase))
+				{
+					duplicate = true;
+					break;
+				}
+			}
+
+			if (!duplicate)
+			{
+				values[writeIndex++] = value;
+			}
+		}
+
+		if (writeIndex < values.Count)
+		{
+			values.RemoveRange(writeIndex, values.Count - writeIndex);
+		}
+
+		return values;
 	}
 }
 
