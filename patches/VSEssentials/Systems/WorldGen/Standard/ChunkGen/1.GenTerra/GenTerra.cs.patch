@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
-index 5f759f1..d526206 100644
+index 5f759f1..b5956e7 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 @@ -1,7 +1,8 @@
@@ -118,7 +118,7 @@ index 5f759f1..d526206 100644
          {
              return side == EnumAppSide.Server;
          }
-@@ -99,11 +159,26 @@ namespace Vintagestory.ServerMods
+@@ -99,11 +159,31 @@ namespace Vintagestory.ServerMods
  
              /*
               *  For info in 1.19 there are 7 running server threads: the main server ticking thread, chunkdbthread, ServerConsole, Relight, CompressChunks, ai-pathfinding, CheckLeafDecay.  There may also be multi-threaded worldgen adding 1-3 more active threads.  Typically 4 threads (ticking, chunkdbthread, ai-pathfinding and at least 1 worldgen thread) will be almost constantly active if there is worldgen demand
@@ -126,27 +126,32 @@ index 5f759f1..d526206 100644
               */
 -            maxThreads = Math.Clamp(Environment.ProcessorCount - (api.Server.IsDedicated ? 4 : 6), 1, api.Server.Config.HostedMode ? 4 : 10);  // We leave at least 4-6 threads free to avoid lag spikes due to CPU unavailability
 +            int reservedThreadsBudget = Math.Clamp(Environment.ProcessorCount - (api.Server.IsDedicated ? 4 : 6), 1, api.Server.Config.HostedMode ? 4 : 10);  // We leave at least 4-6 threads free to avoid lag spikes due to CPU unavailability
-+            // Stratum: this budget assumed only one column is ever generating Terrain
-+            // at a time, true whenever every worldgen stage is exclusive (cap 1, the
-+            // default). Raising Terrain's own same-stage concurrency cap breaks that
-+            // assumption: N columns can each spawn their own Parallel.For below at
-+            // once, oversubscribing the same reserved budget N times over.
-+            // GetWorldgenPassConcurrency reports that N (1 when nothing has changed,
-+            // so this is a no-op there and the original budget applies unchanged);
-+            // dividing by it keeps the total requested parallelism roughly constant
-+            // regardless of how many columns are concurrently in this pass. Measured
-+            // with this cap raised to the worker thread count: removing the
-+            // oversubscription this way dropped a radius-20 pregen's median from 21s
-+            // to 20s and, more consistently, removed a 34s outlier entirely across 5
-+            // same-seed runs.
-+            int sameStageConcurrency = Math.Max(1, api.Server.GetWorldgenPassConcurrency(EnumWorldGenPass.Terrain));
-+            maxThreads = Math.Max(1, reservedThreadsBudget / sameStageConcurrency);
++            // Stratum: an earlier version of this branch divided this budget by Terrain's
++            // same-stage concurrency, on the theory that N concurrent columns each spawning
++            // the Parallel.For below would oversubscribe the CPU N times over. Measured at
++            // radius 40 with 3 worldgen threads, that made things worse, not better, and the
++            // divisor was the whole of the regression a reviewer reported against this branch.
++            //
++            // The reason is that reservedThreadsBudget is already small: it is
++            // ProcessorCount minus 4 or 6, clamped, so a 6 core machine gets 2. Dividing 2 by
++            // a concurrency of 3 floors to 1, which does not trim the fan-out, it deletes it,
++            // and each column then generates its whole 32x32 area single threaded. Giving up
++            // all intra-column parallelism costs far more than the oversubscription it avoids,
++            // because the columns were going to interleave on the same cores either way.
++            //
++            // Four configurations, 3 same-seed radius-40 samples each, 3 worldgen threads:
++            // indev at cap 1 was 78/90/99s, this branch dividing by the cap 78/90/91s, dividing
++            // by live concurrency instead 87/96s, and no divisor at all 60/66/69s. Only the last
++            // separates from the others, and it separates cleanly with no overlap in range, so
++            // the cap raise is worth roughly 27 percent here once the divisor is gone and worth
++            // nothing while it stays.
++            maxThreads = reservedThreadsBudget;
              if (api.Server.ReducedServerThreads && maxThreads > 1) maxThreads = 2;
  
              regionMapSize = (int)Math.Ceiling((double)api.WorldManager.MapSizeX / api.WorldManager.RegionSize);
              noiseScale = Math.Max(1, api.WorldManager.MapSizeY / 256f);
              terrainGenOctaves = TerraGenConfig.GetTerrainOctaveCount(api.WorldManager.MapSizeY);
-@@ -136,23 +211,16 @@ namespace Vintagestory.ServerMods
+@@ -136,23 +216,16 @@ namespace Vintagestory.ServerMods
  
              tempDataThreadLocal = new ThreadLocal<ThreadLocalTempData>(() => new ThreadLocalTempData
              {
@@ -175,7 +180,7 @@ index 5f759f1..d526206 100644
          }
  
          private double[] scaleAdjustedFreqs(double[] vs, float horizontalScale)
-@@ -168,117 +236,149 @@ namespace Vintagestory.ServerMods
+@@ -168,117 +241,149 @@ namespace Vintagestory.ServerMods
  
  
  
@@ -404,7 +409,7 @@ index 5f759f1..d526206 100644
              const int chunksize = GlobalConstants.ChunkSize;
  
              int upheavalMapUpLeft = 0;
-@@ -356,121 +456,161 @@ namespace Vintagestory.ServerMods
+@@ -356,121 +461,161 @@ namespace Vintagestory.ServerMods
              //int cblockId = api.World.GetBlock(new AssetLocation("creativeblock-35")).Id;
  
              const float chunkBlockDelta = 1.0f / chunksize;
@@ -651,7 +656,7 @@ index 5f759f1..d526206 100644
  
              // First set all the fully solid layers in bulk, as much as possible
              chunkBlockData.SetBlockBulk(0, chunksize, chunksize, gcfg.mantleBlockId);
-@@ -566,20 +706,21 @@ namespace Vintagestory.ServerMods
+@@ -566,20 +711,21 @@ namespace Vintagestory.ServerMods
          }
  
  

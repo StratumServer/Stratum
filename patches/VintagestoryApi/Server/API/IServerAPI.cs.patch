@@ -1,27 +1,16 @@
 diff --git a/VintagestoryApi/Server/API/IServerAPI.cs b/VintagestoryApi/Server/API/IServerAPI.cs
-index 1f91e56..297f94c 100644
+index 1f91e56..eaf8ac2 100644
 --- a/VintagestoryApi/Server/API/IServerAPI.cs
 +++ b/VintagestoryApi/Server/API/IServerAPI.cs
-@@ -82,10 +82,22 @@ namespace Vintagestory.API.Server
-         /// <summary>
-         /// If true, code should generally aim to reduce the number of CPU threads used on the server, even at the cost of slight performance delays
+@@ -84,10 +84,11 @@ namespace Vintagestory.API.Server
          /// </summary>
          bool ReducedServerThreads { get; }
  
-+        /// <summary>
-+        /// Returns how many columns the server allows to be concurrently generating the
-+        /// given worldgen pass at once. 1 (the default for every pass) means exclusive:
-+        /// only one column is ever in this pass at a time. Generators that internally
-+        /// fan a single column's own work across multiple threads (for example via
-+        /// Parallel.For) should divide their own degree of parallelism by this value
-+        /// when it is greater than 1, since more than one column's worth of internal
-+        /// parallelism can be in flight for this pass at once, and the two together can
-+        /// oversubscribe the machine's CPU cores.
-+        /// </summary>
-+        int GetWorldgenPassConcurrency(EnumWorldGenPass pass);
+ 
+ 
 +
- 
- 
          long TotalReceivedBytes { get; }
          long TotalSentBytes { get; }
  
+         /// <summary>
+         /// Returns the number of seconds the server has been running since last restart
