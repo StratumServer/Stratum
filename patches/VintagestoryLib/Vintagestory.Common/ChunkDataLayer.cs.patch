@@ -1,8 +1,81 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
-index 4d0bf91..e9e511f 100644
+index 4d0bf91..caad0da 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
-@@ -56,103 +56,81 @@ public class ChunkDataLayer
+@@ -25,10 +25,72 @@ public class ChunkDataLayer
+ 
+ 	protected int bitsize;
+ 
+ 	public FastRWLock readWriteLock;
+ 
++	// Stratum: serialises every writer that can grow the palette or flip plane bits.
++	//
++	// The palette grows by MakeSpaceInPalette, which reassigns the palette field,
++	// claims dataBits[bitsize], and then does a non-atomic bitsize++. Vanilla guards
++	// the Set path with `lock (palette)`, which cannot work: the lock statement
++	// evaluates its argument once at entry, so once MakeSpaceInPalette has swapped
++	// the field, the next thread through locks the NEW array, a different monitor,
++	// and both critical sections run at once. SetUnsafe takes no lock at all.
++	//
++	// Two threads growing together make bitsize advance twice for one allocated
++	// plane. dataBits is a fixed int[15][], so the symptom is either
++	// IndexOutOfRangeException on dataBits[15] or NullReferenceException on a plane
++	// that was skipped, depending on the interleaving. Both were observed once
++	// TerrainFeatures ran several columns at once.
++	//
++	// Vanilla never exposed this because it never ran two threads into one
++	// ChunkDataLayer; the code here is byte-identical to vanilla's, so this is an
++	// upstream latent bug, not something the fork introduced. Locking rather than
++	// swapping in a concurrent structure because palette and dataBits ARE the
++	// on-disk and wire format (see CompressUsing/Decompress), so their shape cannot
++	// change without breaking saves and clients.
++	//
++	// On the granularity, since the obvious objection is that this locks per block
++	// written on a worldgen hot path. Two coarser designs were considered and are
++	// recorded here so they are not re-proposed from theory alone:
++	//
++	//   1. A per-chunk lock taken by callers and held across a whole generator or
++	//      structure-placement call, acquiring every touched chunk's lock up front
++	//      in index order to avoid deadlock. This is what C2ME does for Minecraft
++	//      (AsyncCombinedLock/FlowSched), and it cuts lock acquisitions by orders of
++	//      magnitude rather than shaving the per-acquisition cost.
++	//   2. Single-writer-per-chunk confinement, so no lock is needed at all. This is
++	//      what vanilla Minecraft assumes — its PalettedContainer does not
++	//      synchronise, it uses ThreadingDetector to deliberately crash when two
++	//      threads touch one container — and Paper's Moonrise fork deletes even that
++	//      check once ownership is provable.
++	//
++	// Both are better in the abstract. Neither was adopted, and the honest reason is
++	// structural rather than performance, because the performance case is weaker than
++	// it first looked. Measured at radius 100, same seed and configuration, single
++	// runs: 8m22s with this lock against 7m34s without, so about +10%. Mid-run
++	// progress looked identical (40.4% against 40.8% at three minutes), which is what
++	// made an earlier note here claim the cost was nil — it is not. The figure sits
++	// inside this machine's run-to-run spread, which ranged 6m06s to 7m42s across
++	// comparable configurations the same day, so n=1 cannot separate a real 10% from
++	// noise; treat it as an unresolved upper bound, not a measured cost. Interleaved
++	// sampling is owed before anyone claims either way. Part of the cost is avoided
++	// already: bulk terrain goes through SetBulk, which takes the lock once per bulk
++	// operation rather than once per block, so the per-block callers are deposits and
++	// structures, a minority of total writes.
++	//
++	// Structural, and the part that actually decided it: options 1
++	// and 2 both push correctness onto every caller, and a caller that forgets is
++	// exactly how this bug class keeps recurring here — ServerMapChunk.NewBlockEntities
++	// was locked for precisely this reason while the block write two lines above it in
++	// BlockAccessorWorldGen.SetSolidBlock was not, which is one of the paths that
++	// crashed. Locking centrally protects present and future writers without that
++	// audit. Revisit if profiling ever shows this lock hot, or if the worldgen
++	// scheduler grows a real per-chunk ownership model, at which point option 2 makes
++	// this deletable.
++	private readonly object stratumWriteLock = new object();
++
+ 	public Func<int, int> Get;
+ 
+ 	protected int[] dataBit0;
+ 
+ 	protected int[] dataBit1;
+@@ -56,103 +118,81 @@ public class ChunkDataLayer
  		Get = GetFromBits0;
  		readWriteLock = new FastRWLock(chunkDataPool);
  		pool = chunkDataPool;
@@ -170,3 +243,106 @@ index 4d0bf91..e9e511f 100644
  		{
  			return GetFromBits0;
  		}
+@@ -287,10 +327,18 @@ public class ChunkDataLayer
+ 			throw new Exception("ChunkDataLayer: other null exception, bitsize is " + bitsize);
+ 		}
+ 	}
+ 
+ 	public void Set(int index3d, int value)
++	{
++		lock (stratumWriteLock)
++		{
++			SetCore(index3d, value);
++		}
++	}
++
++	private void SetCore(int index3d, int value)
+ 	{
+ 		if (index3d == (index3d & 0x7FFF))
+ 		{
+ 			int num;
+ 			if (palette != null)
+@@ -314,19 +362,19 @@ public class ChunkDataLayer
+ 									break;
+ 								}
+ 								num++;
+ 								continue;
+ 							}
+-							lock (palette)
++							// Stratum: was `lock (palette)`, which locked the very field
++							// MakeSpaceInPalette reassigns and so guarded nothing. The
++							// caller now holds stratumWriteLock across the whole method.
++							if (num == palette.Length)
+ 							{
+-								if (num == palette.Length)
+-								{
+-									num = MakeSpaceInPalette();
+-								}
+-								palette[num] = value;
+-								paletteCount++;
++								num = MakeSpaceInPalette();
+ 							}
++							palette[num] = value;
++							paletteCount++;
+ 							break;
+ 						}
+ 						setBlockIndexCached = num;
+ 						setBlockValueCached = value;
+ 					}
+@@ -377,10 +425,18 @@ public class ChunkDataLayer
+ 		}
+ 		throw new IndexOutOfRangeException("Chunk blocks index3d must be between 0 and " + 32767 + ", was " + index3d);
+ 	}
+ 
+ 	public void SetUnsafe(int index3d, int value)
++	{
++		lock (stratumWriteLock)
++		{
++			SetUnsafeCore(index3d, value);
++		}
++	}
++
++	private void SetUnsafeCore(int index3d, int value)
+ 	{
+ 		int num = 1 << index3d;
+ 		index3d /= 32;
+ 		int num2 = ~num;
+ 		if (value != 0)
+@@ -450,10 +506,18 @@ public class ChunkDataLayer
+ 			}
+ 		}
+ 	}
+ 
+ 	public void SetZero(int index3d)
++	{
++		lock (stratumWriteLock)
++		{
++			SetZeroCore(index3d);
++		}
++	}
++
++	private void SetZeroCore(int index3d)
+ 	{
+ 		if (palette != null)
+ 		{
+ 			int num = 1 << index3d;
+ 			index3d /= 32;
+@@ -465,10 +529,18 @@ public class ChunkDataLayer
+ 			}
+ 		}
+ 	}
+ 
+ 	public void SetBulk(int index3d, int lenX, int lenZ, int value)
++	{
++		lock (stratumWriteLock)
++		{
++			SetBulkCore(index3d, lenX, lenZ, value);
++		}
++	}
++
++	private void SetBulkCore(int index3d, int lenX, int lenZ, int value)
+ 	{
+ 		int num;
+ 		if (value != 0)
+ 		{
+ 			if (value == setBlockValueCached)
