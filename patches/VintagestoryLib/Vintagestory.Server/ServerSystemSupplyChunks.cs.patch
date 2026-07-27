@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index f644852..a04c162 100644
+index f644852..34e6266 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 @@ -1,139 +1,1029 @@
@@ -439,12 +439,12 @@ index f644852..a04c162 100644
 +			{
 +				// Queue is empty — wait longer
 +				dispatcherWake.WaitOne(100);
- 			}
- 		}
++			}
++		}
 +
 +		ServerMain.Logger.VerboseDebug("Chunk dispatcher thread stopped");
- 	}
- 
++	}
++
 +
 +	/// <summary>
 +	/// Signals the dispatcher that state may have changed
@@ -598,10 +598,10 @@ index f644852..a04c162 100644
 +			{
 +				Interlocked.Decrement(ref stratumStageActiveCount[stage]);
 +				Volatile.Write(ref req.dispatchClaimed, 0);
-+			}
-+		}
-+	}
-+
+ 			}
+ 		}
+ 	}
+ 
 +	/// <summary>
 +	/// Stratum: CallerRunsPolicy-style fallback for loadChunkAreaBlocking's
 +	/// wait loop (see the comment there for when this gets called). TPS01-J
@@ -1651,19 +1651,33 @@ index f644852..a04c162 100644
  			{
  				BlockEntity value = blockEntity.Value;
  				if (value == null)
-@@ -580,10 +1627,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -580,13 +1627,23 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				}
  				try
  				{
  					ServerMain.FrameProfiler.Enter(value.Block.Code.Path);
  					value.Initialize(server.api);
+-					if (serverChunk.serverMapChunk.NewBlockEntities.Contains(value.Pos))
 +					// If the BlockEntity is new — trigger OnBlockPlaced
- 					if (serverChunk.serverMapChunk.NewBlockEntities.Contains(value.Pos))
++					// Stratum: was a check-then-act (Contains then Remove) on a set worldgen
++					// threads write concurrently, see ServerMapChunk.stratumNewBlockEntitiesLock.
++					// HashSet.Remove already reports whether the entry was there, so one locked
++					// call replaces both. OnBlockPlaced runs outside the lock: it is game and mod
++					// code and must never execute while holding a chunk-wide lock.
++					bool stratumWasNew;
++					lock (serverChunk.serverMapChunk.stratumNewBlockEntitiesLock)
++					{
++						stratumWasNew = serverChunk.serverMapChunk.NewBlockEntities.Remove(value.Pos);
++					}
++					if (stratumWasNew)
  					{
- 						serverChunk.serverMapChunk.NewBlockEntities.Remove(value.Pos);
+-						serverChunk.serverMapChunk.NewBlockEntities.Remove(value.Pos);
  						value.OnBlockPlaced();
  					}
-@@ -594,23 +1642,33 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					ServerMain.FrameProfiler.Leave();
+ 				}
+ 				catch (Exception ex3)
+@@ -594,23 +1651,33 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					ServerMain.Logger.Notification("Exception thrown when trying to initialize a block entity @{0}: {1}", value.Pos, ex3);
  					value.UnregisterAllTickListeners();
  				}
@@ -1697,7 +1711,7 @@ index f644852..a04c162 100644
  		mapChunk.NeighboursLoaded = default(SmallBoolArray);
  		mapChunk.SelfLoaded = true;
  		for (int i = 0; i < Cardinal.ALL.Length; i++)
-@@ -623,20 +1681,26 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -623,20 +1690,26 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				serverMapChunk.NeighboursLoaded[cardinal.Opposite.Index] = true;
  			}
  		}
@@ -1724,7 +1738,7 @@ index f644852..a04c162 100644
  			serverMapChunk.NeighboursLoaded[4] = false;
  		}
  		if (serverMapChunk2 != null)
-@@ -667,12 +1731,17 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -667,12 +1740,17 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		{
  			serverMapChunk8.NeighboursLoaded[3] = false;
  		}
@@ -1742,7 +1756,7 @@ index f644852..a04c162 100644
  			for (int j = -1; j <= 1; j++)
  			{
  				bool flag = false;
-@@ -682,19 +1751,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -682,19 +1760,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				}
  				if (!flag)
  				{
@@ -1767,7 +1781,7 @@ index f644852..a04c162 100644
  		int num = 0;
  		for (int i = -1; i <= 1; i++)
  		{
-@@ -707,60 +1781,78 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -707,60 +1790,78 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			}
  		}
  		return num == 8;
@@ -1847,7 +1861,7 @@ index f644852..a04c162 100644
  				dictionary = value.ModData;
  				dictionary2 = value.OreMaps;
  				intDataMap2D = value.GeologicProvinceMap;
-@@ -770,12 +1862,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -770,12 +1871,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			{
  				flag = false;
  				value.loadedTotalMs = server.ElapsedMilliseconds;
@@ -1862,7 +1876,7 @@ index f644852..a04c162 100644
  			if (list != null)
  			{
  				value.GeneratedStructures = list;
-@@ -798,35 +1892,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -798,35 +1901,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			}
  		}
  		return value;
@@ -1911,7 +1925,7 @@ index f644852..a04c162 100644
  		byte[] array = chunkGenParams?.GetBytes("GeneratedStructures");
  		if (array == null)
  		{
-@@ -836,44 +1943,60 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -836,44 +1952,60 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		long key = server.api.WorldManager.MapRegionIndex2D(regionX, regionZ);
  		if (!dictionary.TryGetValue(key, out var value) || value == null)
  		{
@@ -1973,7 +1987,7 @@ index f644852..a04c162 100644
  		long key = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
  		server.loadedMapChunks.TryGetValue(key, out var value);
  		if (value != null)
-@@ -881,31 +2004,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -881,31 +2013,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			return value;
  		}
  		return TryLoadMapChunk(chunkX, chunkZ);
@@ -2016,7 +2030,7 @@ index f644852..a04c162 100644
  			for (int j = 0; j < Cardinal.ALL.Length; j++)
  			{
  				Cardinal cardinal = Cardinal.ALL[j];
-@@ -918,47 +2052,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -918,47 +2061,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					}
  					chunkRequest.NeighbourTerrainHeight[j] = serverMapChunk.WorldGenTerrainHeightMap;
  				}
@@ -2144,7 +2158,7 @@ index f644852..a04c162 100644
  			foreach (ServerChunk serverChunk in array)
  			{
  				if (serverChunk != null)
-@@ -967,10 +2165,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -967,10 +2174,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					serverChunk.MarkModified();
  					serverChunk.TryPackAndCommit();
  				}
@@ -2157,7 +2171,7 @@ index f644852..a04c162 100644
  			ServerMain.Logger.Error("Loaded some but not all chunks of a column? Discarding whole column.");
  			return null;
  		}
-@@ -979,18 +2179,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -979,18 +2188,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			return null;
  		}
  		return array;
@@ -2180,7 +2194,7 @@ index f644852..a04c162 100644
  					serverMapChunk.YMax = (ushort)(server.SaveGameData.MapSizeY - 1);
  				}
  				return serverMapChunk;
-@@ -1011,10 +2215,13 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1011,10 +2224,13 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			}
  		}
  		return null;
@@ -2194,7 +2208,7 @@ index f644852..a04c162 100644
  		byte[] mapRegion = chunkthread.gameDatabase.GetMapRegion(regionX, regionZ);
  		try
  		{
-@@ -1035,14 +2242,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1035,14 +2251,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			throw;
  		}
  		return null;
@@ -2222,7 +2236,7 @@ index f644852..a04c162 100644
  			storyChunkSpawnEvents = new string[15]
  			{
  				Lang.Get("...the carved mountains"),
-@@ -1060,23 +2280,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1060,23 +2289,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				Lang.Get("...a misty sunrise"),
  				Lang.Get("...dew drops on a blade of grass"),
  				Lang.Get("...a soft breeze")
@@ -2250,7 +2264,7 @@ index f644852..a04c162 100644
  					double value = random.NextDouble() * 6.2831854820251465;
  					double num7 = num6 * GameMath.Sin(value);
  					double num8 = num6 * GameMath.Cos(value);
-@@ -1096,10 +2320,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1096,10 +2329,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					server.api.Logger.Notification("Trying another spawn location ({0}/{1})...", i + 2, num3);
  				}
  			}
@@ -2262,7 +2276,7 @@ index f644852..a04c162 100644
  				if (!server.blockAccessor.GetBlock(blockPos).SideSolid[BlockFacing.UP.Index])
  				{
  					server.blockAccessor.SetBlock(server.blockAccessor.GetBlock(new AssetLocation("planks-oak-we")).Id, blockPos);
-@@ -1107,13 +2332,16 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1107,13 +2341,16 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				blockPos.Y++;
  			}
  		}
@@ -2279,7 +2293,7 @@ index f644852..a04c162 100644
  			x = blockPos.X,
  			y = blockPos.Y,
  			z = blockPos.Z
-@@ -1123,10 +2351,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1123,10 +2360,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			server.mapMiddleSpawnPos.y = null;
  		}
  		server.api.Logger.VerboseDebug("Done spawn chunk");
@@ -2294,7 +2308,7 @@ index f644852..a04c162 100644
  		int num = 60;
  		int num2 = 0;
  		int num3 = 0;
-@@ -1137,36 +2369,47 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1137,36 +2378,47 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		{
  			num4 = GameMath.Clamp(num2 + pos.X, 0, server.WorldMap.MapSizeX - 1);
  			num6 = GameMath.Clamp(num3 + pos.Z, 0, server.WorldMap.MapSizeZ - 1);
@@ -2343,7 +2357,7 @@ index f644852..a04c162 100644
  		{
  			for (int k = -num2; k <= num2; k++)
  			{
-@@ -1174,18 +2417,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1174,18 +2426,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					long index2d = server.WorldMap.MapChunkIndex2D(x + j, y + k);
  					int regionX = (x + j) / MagicNum.ChunkRegionSizeInChunks;
@@ -2367,7 +2381,7 @@ index f644852..a04c162 100644
  					};
  					chunkColumnLoadRequest.MapChunk = mapChunk;
  					GenerateNewChunkColumn(mapChunk, chunkColumnLoadRequest);
-@@ -1196,10 +2443,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1196,10 +2452,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						chunkthread.peekingChunkColumns.Enqueue(chunkColumnLoadRequest);
  					}
  				}
@@ -2380,7 +2394,7 @@ index f644852..a04c162 100644
  		{
  			num4 = num - i;
  			for (int l = -num4; l <= num4; l++)
-@@ -1212,10 +2461,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1212,10 +2470,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						runGenerators(chunkRequest, i);
  					}
  				}
@@ -2393,7 +2407,7 @@ index f644852..a04c162 100644
  		{
  			for (int n = -num2; n <= num2; n++)
  			{
-@@ -1232,61 +2483,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1232,61 +2492,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						dictionary2[key] = chunks;
  					}
  				}
@@ -2507,7 +2521,7 @@ index f644852..a04c162 100644
  				millisecondsSinceStart = server.totalUnpausedTime.ElapsedMilliseconds;
  				float num4 = 100f * ((float)server.loadedChunks.Count / (float)server.WorldMap.ChunkMapSizeY - (float)num) / (float)num2;
  				ServerMain.Logger.Event(num4.ToString("0.#") + "% ({0} in queue)", chunkthread.requestedChunkColumns.Count);
-@@ -1298,37 +2599,84 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1298,37 +2608,84 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					ServerMain.Logger.StoryEvent("...");
  				}
@@ -2595,7 +2609,7 @@ index f644852..a04c162 100644
  				foreach (ChunkColumnLoadRequest requestedChunkColumn3 in chunkthread.requestedChunkColumns)
  				{
  					if (requestedChunkColumn3 != null)
-@@ -1340,16 +2688,25 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1340,16 +2697,25 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				throw new Exception("Somehow worldgen has become stuck in an endless loop, please report this as a bug!  Additional data in the server-main log");
  			}
  		}
@@ -2621,7 +2635,7 @@ index f644852..a04c162 100644
  				if (chunkRequest.CurrentIncompletePass == EnumWorldGenPass.Terrain)
  				{
  					ushort sunLight = (ushort)server.sunBrightness;
-@@ -1359,32 +2716,62 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1359,32 +2725,62 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					}
  				}
  			}
@@ -2686,7 +2700,7 @@ index f644852..a04c162 100644
  			return;
  		}
  		for (int i = 0; i < list.Count; i++)
-@@ -1396,89 +2783,117 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1396,89 +2792,117 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			catch (Exception ex)
  			{
  				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
@@ -2821,7 +2835,7 @@ index f644852..a04c162 100644
  			chunkthread.requestedChunkColumns.Enqueue(curRequest);
  			return true;
  		}
-@@ -1490,13 +2905,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1490,13 +2914,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				ServerMain.Logger.VerboseDebug("Un-pausing all worldgen threads.");
  			}
  		}
@@ -2841,7 +2855,7 @@ index f644852..a04c162 100644
  			if (requestedChunkColumn != null && !requestedChunkColumn.Disposed)
  			{
  				server.loadedMapChunks.Remove(requestedChunkColumn.mapIndex2d);
-@@ -1505,104 +2926,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1505,104 +2935,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		}
  		chunkthread.requestedChunkColumns.Clear();
  		ServerMain.Logger.VerboseDebug("Incomplete chunks stored and wiped.");
