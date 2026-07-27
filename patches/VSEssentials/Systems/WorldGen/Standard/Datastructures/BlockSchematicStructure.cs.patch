@@ -1,51 +1,77 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs b/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
-index 7573f32..03c54ee 100644
+index 7573f32..27a7943 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
-@@ -12,11 +12,19 @@ using Vintagestory.ServerMods.NoObf;
+@@ -12,11 +12,30 @@ using Vintagestory.ServerMods.NoObf;
  
  namespace Vintagestory.ServerMods
  {
      public class BlockSchematicStructure : BlockSchematic
      {
 -        public Dictionary<int, AssetLocation> BlockCodesTmpForRemap = new();
-+        // Stratum: was a shared instance field, written by resolveReplaceRemapsForBlockEntities
-+        // and read a few lines later by PlaceEntitiesAndBlockEntities, both within the same
-+        // placement call. Different columns placing the same cached schematic concurrently
-+        // could interleave: one placement's remap overwrites another's before the first reads it
-+        // back, or reassigns the field to a different dictionary entirely (the replaceBlocks
-+        // == null fast path below). Nothing about this needs to outlive a single placement
-+        // call, so it moved to thread-local scratch instead of instance state.
++        // Stratum: scratch storage for the remapped block-code map built below, used only
++        // when replaceBlocks is non-null. It must never be handed a reference to BlockCodes.
++        //
++        // This field used to hold either the scratch dictionary OR BlockCodes itself, and
++        // being [ThreadStatic] on a static it is shared by every BlockSchematicStructure on
++        // the thread, not one per schematic the way the original instance field was. So a
++        // placement with replaceBlocks == null pointed it at that schematic's permanent
++        // BlockCodes, and the next placement on the same thread with replaceBlocks != null
++        // saw a non-null value that did not match ITS OWN BlockCodes and called Clear() on
++        // it, wiping a different schematic's permanent id-to-code map for the rest of the
++        // process. Downstream that surfaces as "block id N not found in block registry"
++        // warnings and a KeyNotFoundException from BlockSchematic.PlaceOneDecor, which
++        // indexes BlockCodes directly, and the wrong blocks it places are persisted.
++        //
++        // Now the resolve method returns the map instead of publishing it here, and the
++        // null-replaceBlocks path returns BlockCodes untouched, matching what vanilla
++        // BlockSchematic does. This field can therefore only ever hold its own scratch
++        // dictionary, which makes clearing and reusing it safe.
 +        [ThreadStatic]
-+        private static Dictionary<int, AssetLocation> stratumBlockCodesTmpForRemap;
++        private static Dictionary<int, AssetLocation> stratumBlockCodesRemapScratch;
  
          public AssetLocation FromFile;
  
          public Block[,,] blocksByPos;
          public Dictionary<int, Block> FluidBlocksByPos;
-@@ -306,35 +314,38 @@ namespace Vintagestory.ServerMods
+@@ -125,11 +144,11 @@ namespace Vintagestory.ServerMods
+             IMapChunk mapchunk = blockAccessor.GetMapChunkAtBlockPos(curPos);
+             int centerrockblockid = mapchunk.TopRockIdMap[(curPos.Z % chunksize) * chunksize + curPos.X % chunksize];
+ 
+             IWorldAccessor worldgenWorldAccessor = blockAccessor is IWorldGenBlockAccessor wgba ? wgba.WorldgenWorldAccessor : worldForCollectibleResolve;
+ 
+-            resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
++            Dictionary<int, AssetLocation> blockCodesForRemap = resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
+ 
+             Dictionary<BlockPos, Block> layerBlockForBlockEntities = new Dictionary<BlockPos, Block>();
+ 
+             for (int x = 0; x < SizeX; x++)
+             {
+@@ -306,38 +325,43 @@ namespace Vintagestory.ServerMods
                      }
                  }
              }
  
              PlaceDecors(blockAccessor, startPos);
 -            PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, BlockCodesTmpForRemap, ItemCodes, replaceBlockEntities, replaceBlocks, centerrockblockid, layerBlockForBlockEntities, replaceMetaBlocks);
-+            PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, stratumBlockCodesTmpForRemap, ItemCodes, replaceBlockEntities, replaceBlocks, centerrockblockid, layerBlockForBlockEntities, replaceMetaBlocks);
++            PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, blockCodesForRemap, ItemCodes, replaceBlockEntities, replaceBlocks, centerrockblockid, layerBlockForBlockEntities, replaceMetaBlocks);
  
              return placed;
          }
  
-         private void resolveReplaceRemapsForBlockEntities(IBlockAccessor blockAccessor, IWorldAccessor worldForCollectibleResolve, Dictionary<int, Dictionary<int, int>> replaceBlocks, int centerrockblockid)
+-        private void resolveReplaceRemapsForBlockEntities(IBlockAccessor blockAccessor, IWorldAccessor worldForCollectibleResolve, Dictionary<int, Dictionary<int, int>> replaceBlocks, int centerrockblockid)
++        private Dictionary<int, AssetLocation> resolveReplaceRemapsForBlockEntities(IBlockAccessor blockAccessor, IWorldAccessor worldForCollectibleResolve, Dictionary<int, Dictionary<int, int>> replaceBlocks, int centerrockblockid)
          {
              if (replaceBlocks == null)
              {
 -                BlockCodesTmpForRemap = BlockCodes;
-+                stratumBlockCodesTmpForRemap = BlockCodes;
-                 return;
+-                return;
++                // Stratum: hand BlockCodes back directly and never store or mutate it, same as vanilla.
++                return BlockCodes;
              }
  
-+            if (stratumBlockCodesTmpForRemap == null || stratumBlockCodesTmpForRemap == BlockCodes) stratumBlockCodesTmpForRemap = new Dictionary<int, AssetLocation>();
-+            else stratumBlockCodesTmpForRemap.Clear();
++            if (stratumBlockCodesRemapScratch == null) stratumBlockCodesRemapScratch = new Dictionary<int, AssetLocation>();
++            else stratumBlockCodesRemapScratch.Clear();
 +
              foreach (var val in BlockCodes)
              {
@@ -53,27 +79,45 @@ index 7573f32..03c54ee 100644
                  if (origBlock == null) continue; // Invalid blocks
  
 -                BlockCodesTmpForRemap[val.Key] = val.Value;
-+                stratumBlockCodesTmpForRemap[val.Key] = val.Value;
++                stratumBlockCodesRemapScratch[val.Key] = val.Value;
  
                  if (replaceBlocks.TryGetValue(origBlock.Id, out var replaceByBlock))
                  {
                      if (replaceByBlock.TryGetValue(centerrockblockid, out int newBlockId))
                      {
 -                        BlockCodesTmpForRemap[val.Key] = blockAccessor.GetBlock(newBlockId).Code;
-+                        stratumBlockCodesTmpForRemap[val.Key] = blockAccessor.GetBlock(newBlockId).Code;
++                        stratumBlockCodesRemapScratch[val.Key] = blockAccessor.GetBlock(newBlockId).Code;
                      }
                  }
              }
++
++            return stratumBlockCodesRemapScratch;
          }
  
-@@ -426,11 +437,11 @@ namespace Vintagestory.ServerMods
+ 
+ 
+ 
+@@ -358,11 +382,11 @@ namespace Vintagestory.ServerMods
+ 
+             const int chunksize = GlobalConstants.ChunkSize;
+             curPos.Set(SizeX / 2 + startPos.X, startPos.Y, SizeZ / 2 + startPos.Z);
+             IMapChunk mapchunk = blockAccessor.GetMapChunkAtBlockPos(curPos);
+             int centerrockblockid = rockBlockId ?? mapchunk.TopRockIdMap[(curPos.Z % chunksize) * chunksize + curPos.X % chunksize];
+-            resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
++            Dictionary<int, AssetLocation> blockCodesForRemap = resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
+ 
+ 
+             PlaceBlockDelegate handler = null;
+             switch (ReplaceMode)
+             {
+@@ -426,11 +450,11 @@ namespace Vintagestory.ServerMods
              }
  
              if (!(blockAccessor is IBlockAccessorRevertable))
              {
                  PlaceDecors(blockAccessor, startPos);
 -                PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, BlockCodesTmpForRemap, ItemCodes, false, null, centerrockblockid, null, GlobalConfig.ReplaceMetaBlocks);
-+                PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, stratumBlockCodesTmpForRemap, ItemCodes, false, null, centerrockblockid, null, GlobalConfig.ReplaceMetaBlocks);
++                PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, blockCodesForRemap, ItemCodes, false, null, centerrockblockid, null, GlobalConfig.ReplaceMetaBlocks);
              }
  
              return placed;
