@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
-index 33c394d..60df24a 100644
+index 33c394d..500bad6 100644
 --- a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
 +++ b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
 @@ -54,38 +54,32 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
@@ -105,7 +105,7 @@ index 33c394d..60df24a 100644
  		else
  		{
  			ServerMain.Logger.Notification("Tried to get block outside generating chunks! Set RuntimeEnv.DebugOutOfRangeBlockAccess to debug.");
-@@ -220,21 +217,22 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -220,21 +217,26 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  	}
  
  	protected int SetSolidBlock(ServerChunk chunk, BlockPos pos, Block newBlock, int blockId)
@@ -119,7 +119,11 @@ index 33c394d..60df24a 100644
  		{
  			chunk.RemoveBlockEntity(pos);
 -			((ServerMapChunk)chunk.MapChunk).NewBlockEntities.Remove(pos);
-+			chunk.serverMapChunk.NewBlockEntities.Remove(pos);
++			// Stratum: see ServerMapChunk.stratumNewBlockEntitiesLock.
++			lock (chunk.serverMapChunk.stratumNewBlockEntitiesLock)
++			{
++				chunk.serverMapChunk.NewBlockEntities.Remove(pos);
++			}
  		}
 -		chunk.Data[index3d] = blockId;
 -		if (newBlock.DisplacesLiquids(this, pos))
@@ -133,3 +137,22 @@ index 33c394d..60df24a 100644
  		return blockId2;
  	}
  
+@@ -308,11 +310,17 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+ 			Block localBlockAtBlockPos = generatingChunkAtPos.GetLocalBlockAtBlockPos(server, position);
+ 			blockEntity.CreateBehaviors(localBlockAtBlockPos, server);
+ 			blockEntity.Pos = position.Copy();
+ 			generatingChunkAtPos.AddBlockEntity(blockEntity);
+ 			blockEntity.stackForWorldgen = byItemStack;
+-			((ServerMapChunk)generatingChunkAtPos.MapChunk).NewBlockEntities.Add(position.Copy());
++			// Stratum: structures cross chunk boundaries, so two worldgen threads can reach
++			// the same map chunk here. See ServerMapChunk.stratumNewBlockEntitiesLock.
++			ServerMapChunk stratumMapChunk = (ServerMapChunk)generatingChunkAtPos.MapChunk;
++			lock (stratumMapChunk.stratumNewBlockEntitiesLock)
++			{
++				stratumMapChunk.NewBlockEntities.Add(position.Copy());
++			}
+ 		}
+ 	}
+ 
+ 	public void AddEntity(Entity entity)
+ 	{
