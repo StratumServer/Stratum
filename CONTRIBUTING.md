@@ -8,11 +8,51 @@ Stratum is a patch set over the vanilla Vintage Story server. The repo does not 
 
 - `patches/` is unified diffs against the decompiled vanilla baseline.
 - `sources/` is files that exist only in Stratum. No vanilla equivalent.
-- `StratumServer/` is the launcher. It downloads the official server archive on first run and writes Stratum's patched files on top.
+- `StratumServer/` is the launcher and the first-run vanilla downloader.
 - `scripts/` holds bootstrap, extract-patches, and smoke-test scripts (`.sh` for Linux/macOS, `.ps1` for Windows).
 - `VintageStory.slnx` is the solution. It only opens after `bootstrap.ps1` has run.
 
 The working tree itself is gitignored. Only `patches/` and `sources/` are tracked.
+
+## Repository workflow
+
+Stratum uses a fork-based workflow. Contributors should not push directly to this repository or create feature branches under `StratumServer/Stratum`.
+
+- `indev` is the integration branch. All normal pull requests target `indev`.
+- `main` is the current stable release. Do not open feature or fix pull requests against it.
+- Work on a short-lived branch in your own fork, based on the latest upstream `indev`.
+- Rebase your branch when `indev` moves. Do not merge `indev` into your branch.
+- Keep one change per branch and delete the branch after it is merged.
+
+Fork the repository on GitHub, then set up the remotes:
+
+```bash
+git clone https://github.com/<your-name>/Stratum.git
+cd Stratum
+git remote add upstream https://github.com/StratumServer/Stratum.git
+git fetch upstream
+git switch -c fix/short-description upstream/indev
+```
+
+Before opening a pull request, and again when `indev` changes:
+
+```bash
+git fetch upstream
+git switch fix/short-description
+git rebase upstream/indev
+git push --force-with-lease origin fix/short-description
+```
+
+Use `--force-with-lease`, not `--force`, after a rebase. It refuses to overwrite remote work you do not have locally.
+
+To update your fork's copy of `indev`:
+
+```bash
+git fetch upstream
+git switch indev
+git rebase upstream/indev
+git push origin indev
+```
 
 ## Setting up
 
@@ -33,7 +73,7 @@ make build
 dotnet build VintageStory.slnx -c Release
 ```
 
-The bootstrap scripts resolve the matching official server archive through Anego's release manifest, verify it, decompile the assemblies into the working tree, apply every patch, then copy `sources/` on top. After that you have a normal C# solution to edit.
+`bootstrap.ps1` downloads the matching vanilla server zip, decompiles the assemblies into the working tree, applies every patch, then copies `sources/` on top. After that you have a normal C# solution to edit.
 
 If a patch fails to apply you usually want to delete the working tree and rerun bootstrap, not hand-edit the rejected hunk.
 
@@ -130,17 +170,27 @@ Stratum versions are `<vs-version>-stratum.<rev>[-<pre>]`:
 
 Examples: `1.22.3-stratum.1`, `1.22.3-stratum.2-rc.1`, `1.23.0-stratum.1`.
 
-Release tags are the version prefixed with `v`: `v1.22.3-stratum.1`. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs bootstrap, builds Windows and Linux launcher zips, and passes the tag version to `dotnet publish` as `Version` / `InformationalVersion`. Release zips contain the Stratum launcher and Stratum patched managed files. They do not contain a full Vintage Story server archive or any Vintage story files. At runtime `StratumInfo.Version` reads the assembly's informational version when present and falls back to the constants in [StratumInfo.cs](sources/VintagestoryLib/Vintagestory/Server/StratumInfo.cs).
+Release tags are the version prefixed with `v`: `v1.22.3-stratum.1`. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which derives the version from the tag and passes it to `dotnet publish` as `Version` / `InformationalVersion`. At runtime `StratumInfo.Version` reads the assembly's informational version when present and falls back to the constants in [StratumInfo.cs](sources/VintagestoryLib/Vintagestory/Server/StratumInfo.cs).
 
 For development builds the constants are authoritative. Bump `StratumRevision` and clear `PreRelease` in the same PR that ships a release.
 
 ## Pull requests
 
-Open the PR against `indev`. The template lists the checks. Don't strip them.
+Open the pull request from your fork branch into `StratumServer/Stratum:indev`. The template lists the checks. Don't strip them.
+
+Pull requests from branches created directly in `StratumServer/Stratum` are reserved for maintainers, releases, and urgent repository work. Contributor feature and fix branches belong in forks.
+
+Rebase onto the latest `upstream/indev` before requesting final review. Keep the branch rebased while the pull request is open if other changes land in the same area.
 
 In the description, say what changed and why. For perf work, include the numbers.
 
 If your PR sits without review for a week, ping it in [Discord](https://discord.gg/pd24fawhsD).
+
+## Stable releases
+
+Stable releases are promoted from `indev` to `main` by a maintainer pull request. That pull request must use **Create a merge commit**. Do not squash or rebase the release pull request; `main` needs to retain `indev` as part of its history so the next release compares cleanly.
+
+Squash or rebase merging normal contributor pull requests into `indev` is fine.
 
 ## Reporting bugs
 
