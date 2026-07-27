@@ -1,0 +1,24 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/MagicNum.cs b/VintagestoryLib/Vintagestory.Server/MagicNum.cs
+index 3963235..60ef753 100644
+--- a/VintagestoryLib/Vintagestory.Server/MagicNum.cs
++++ b/VintagestoryLib/Vintagestory.Server/MagicNum.cs
+@@ -93,11 +93,18 @@ public class MagicNum
+ 		FileName = Path.Combine(GamePaths.Config, "servermagicnumbers.json");
+ 		DefaultEntityTrackingRange = 4;
+ 		DefaultSimulationRange = 128;
+ 		ServerChunkSize = 32;
+ 		ServerChunkSizeMask = 31;
+-		RequestChunkColumnsQueueSize = 2000;
++		// Stratum: raised from vanilla's 2000. TerrainFeatures is a neighbour-gated
++		// pass, so ensurePrettyNeighbourhood actually enqueues lagging neighbours for
++		// it; running several of its columns at once multiplies those nudges and
++		// exhausts a 2000-entry queue outright. Measured at radius 100, seed
++		// 1027995113, 3 worldgen threads: 2000 gives 3091 "Indexed Fifo Queue
++		// overflow" throws and wedges at 7.8%, while 8000 completes with zero. The
++		// ungated passes never needed it, which is why this only surfaced now.
++		RequestChunkColumnsQueueSize = 8000;
+ 		ReadyChunksQueueSize = 200;
+ 		ChunksColumnsToRequestPerTick = 4;
+ 		ChunksToSendPerTick = 192;
+ 		ChunkRequestTickTime = 20;
+ 		ChunkColumnsToGeneratePerThreadTick = 30;
