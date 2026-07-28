@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
-index cb9eefa..dcb6063 100644
+index cb9eefa..cb95600 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
 @@ -1,7 +1,9 @@
@@ -41,14 +41,12 @@ index cb9eefa..dcb6063 100644
          }
  
  
-@@ -134,24 +139,38 @@ namespace Vintagestory.ServerMods
+@@ -134,24 +139,54 @@ namespace Vintagestory.ServerMods
          }
  
  
          // Cheap ugly code for better performance :<
          #region
--        float[] rockGroupMaxThickness = new float[4];
--        int[] rockGroupCurrentThickness = new int[4];
 +        // Stratum start: TerrainLate can now run concurrently for distant columns
 +        // (see StratumWorldGenStages). preLoad/genBlockColumn always run back-to-back
 +        // on the same worker thread for a given column (no internal Parallel.For
@@ -62,36 +60,47 @@ index cb9eefa..dcb6063 100644
 +            public float[] rockGroupMaxThickness = new float[4];
 +            public int[] rockGroupCurrentThickness = new int[4];
 +            public float[] indicesBuf; // resized lazily once province count is known
- 
--        IMapChunk mapChunk;
--        ushort[] heightMap;
--        int rdx;
--        int rdz;
++
 +            public IMapChunk mapChunk;
 +            public ushort[] heightMap;
 +            public int rdx;
 +            public int rdz;
- 
--        LerpedWeightedIndex2DMap map;
--        float lerpMapInv;
--        float chunkInRegionX;
--        float chunkInRegionZ;
++
 +            public LerpedWeightedIndex2DMap map;
 +            public float lerpMapInv;
 +            public float chunkInRegionX;
 +            public float chunkInRegionZ;
- 
--        GeologicProvinces provinces = NoiseGeoProvince.provinces;
++
 +            public GeologicProvinces provinces;
 +        }
 +        readonly ThreadLocal<ThreadLocalScratch> scratchThreadLocal = new ThreadLocal<ThreadLocalScratch>(() => new ThreadLocalScratch());
++
++        // Stratum start: compatibility shims for third-party Harmony patches that
++        // inject or reflect on these fields (e.g. Rock Strata Variety). Values are
++        // written from the per-thread scratch at method entry, valid only within
++        // that call's scope on the current thread. Fixes #201.
+         float[] rockGroupMaxThickness = new float[4];
+         int[] rockGroupCurrentThickness = new int[4];
+-
+         IMapChunk mapChunk;
+         ushort[] heightMap;
+         int rdx;
+         int rdz;
+-
+         LerpedWeightedIndex2DMap map;
+         float lerpMapInv;
+         float chunkInRegionX;
+         float chunkInRegionZ;
+-
+-        GeologicProvinces provinces = NoiseGeoProvince.provinces;
++        GeologicProvinces provinces;
 +        // Stratum end
          #endregion
  
          internal void GenChunkColumn(IChunkColumnGenerateRequest request)
          {
              var chunks = request.Chunks;
-@@ -169,42 +188,60 @@ namespace Vintagestory.ServerMods
+@@ -169,42 +204,71 @@ namespace Vintagestory.ServerMods
              }
          }
  
@@ -120,6 +129,17 @@ index cb9eefa..dcb6063 100644
 +            s.chunkInRegionZ = (chunkZ % regionChunkSize) * s.lerpMapInv * chunksize;
 +
 +            s.provinces = NoiseGeoProvince.provinces;
++
++            // Stratum: populate compat shim fields for third-party Harmony patches (#201)
++            mapChunk = s.mapChunk;
++            heightMap = s.heightMap;
++            rdx = s.rdx;
++            rdz = s.rdz;
++            map = s.map;
++            lerpMapInv = s.lerpMapInv;
++            chunkInRegionX = s.chunkInRegionX;
++            chunkInRegionZ = s.chunkInRegionZ;
++            provinces = s.provinces;
          }
  
          public void genBlockColumn(IServerChunk[] chunks, int chunkX, int chunkZ, int lx, int lz)
@@ -171,7 +191,7 @@ index cb9eefa..dcb6063 100644
                  GeologicProvinceRockStrata[] localstrata = provinces.Variants[i].RockStrataIndexed;
  
                  rockGroupMaxThickness[0] += localstrata[0].ScaledMaxThickness * w;
-@@ -227,24 +264,24 @@ namespace Vintagestory.ServerMods
+@@ -227,24 +291,24 @@ namespace Vintagestory.ServerMods
              while (ylower <= yupper)
              {
                  if (--strataThickness <= 0f)
@@ -200,7 +220,7 @@ index cb9eefa..dcb6063 100644
                      // In 1.21 we ought to simply use normalized noise * rockmapsize
                      nx = Math.Max(nx, -1.499f);
                      nz = Math.Max(nz, -1.499f);
-@@ -312,21 +349,23 @@ namespace Vintagestory.ServerMods
+@@ -312,21 +376,23 @@ namespace Vintagestory.ServerMods
  
          LerpedWeightedIndex2DMap GetOrLoadLerpedProvinceMap(IMapChunk mapchunk, int chunkX, int chunkZ)
          {

@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-index 55b134c..0a3927d 100644
+index 55b134c..220eed6 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 @@ -1,7 +1,8 @@
@@ -11,14 +11,13 @@ index 55b134c..0a3927d 100644
  using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
  
-@@ -12,19 +13,31 @@ namespace Vintagestory.ServerMods
+@@ -12,19 +13,39 @@ namespace Vintagestory.ServerMods
  
      public class GenBlockLayers : ModStdWorldGen
      {
          private ICoreServerAPI api;
  
 -        List<int> BlockLayersIds = new List<int>();
--        LCGRandom rnd;
 +        // Stratum: TerrainLate can now run concurrently for distant columns. rnd gets
 +        // reseeded per column at the top of OnChunkColumnGeneration, then LoadBlockLayers
 +        // writes BlockLayersIds/layersUnderWater and PutLayers reads them back a few
@@ -35,6 +34,14 @@ index 55b134c..0a3927d 100644
 +            public int[] layersUnderWater = Array.Empty<int>();
 +        }
 +        ThreadLocal<ThreadLocalScratch> scratchThreadLocal;
++
++        // Stratum start: compatibility shim for third-party Harmony patches that
++        // reflect on this field (e.g. Watersheds uses GetField("rnd")). Value is
++        // written from the per-thread scratch at OnChunkColumnGeneration entry,
++        // valid only within that call's scope on the current thread. Fixes #201.
+         LCGRandom rnd;
++        // Stratum end
++
          int mapheight;
          ClampedSimplexNoise grassDensity;
          ClampedSimplexNoise grassHeight;
@@ -47,7 +54,7 @@ index 55b134c..0a3927d 100644
          public SimplexNoise distort2dz;
  
          public override bool ShouldLoad(EnumAppSide side)
-@@ -46,11 +59,11 @@ namespace Vintagestory.ServerMods
+@@ -46,11 +67,11 @@ namespace Vintagestory.ServerMods
              //this.api.Event.MapRegionGeneration(OnMapRegionGen, "standard");   // 8.2.24 commented out because the method has no code
  
  
@@ -60,7 +67,7 @@ index 55b134c..0a3927d 100644
              distort2dz = new SimplexNoise(new double[] { 14, 9, 6, 3 }, new double[] { 1 / 100.0, 1 / 50.0, 1 / 25.0, 1 / 12.5 }, api.World.SeaLevel + 20981);
          }
  
-@@ -81,13 +94,15 @@ namespace Vintagestory.ServerMods
+@@ -81,13 +102,15 @@ namespace Vintagestory.ServerMods
              LoadGlobalConfig(api);
  
              api.ObjectCache.Remove(BlockLayerConfig.cacheKey);
@@ -79,7 +86,7 @@ index 55b134c..0a3927d 100644
  
              boilingWaterBlockId = gcfg.boilingWaterBlockId;
          }
-@@ -96,11 +111,12 @@ namespace Vintagestory.ServerMods
+@@ -96,11 +119,13 @@ namespace Vintagestory.ServerMods
          {
              var chunks = request.Chunks;
              int chunkX = request.ChunkX;
@@ -88,19 +95,20 @@ index 55b134c..0a3927d 100644
 -            rnd.InitPositionSeed(chunkX, chunkZ);
 +            ThreadLocalScratch s = scratchThreadLocal.Value; // Stratum: per-thread scratch, fetched once and threaded through for this column
 +            s.rnd.InitPositionSeed(chunkX, chunkZ);
++            rnd = s.rnd; // Stratum: populate compat shim for third-party reflection (#201)
  
              IntDataMap2D forestMap = chunks[0].MapChunk.MapRegion.ForestMap;
              IntDataMap2D climateMap = chunks[0].MapChunk.MapRegion.ClimateMap;
              IntDataMap2D beachMap = chunks[0].MapChunk.MapRegion.BeachMap;
              IntDataMap2D biomeMap = chunks[0].MapChunk.MapRegion.BiomeMap;
-@@ -201,19 +217,19 @@ namespace Vintagestory.ServerMods
+@@ -201,19 +226,19 @@ namespace Vintagestory.ServerMods
                          }
                      }
  
                      herePos.Y = posY;
                      int disty = (int)(distort2dx.Noise(-herePos.X, -herePos.Z) / 4.0);
 -                    posY = PutLayers(transitionRand, x, z, disty, herePos, chunks, rainRel, temp, tempUnscaled, heightMap, biome);
-+                    posY = PutLayers(s, transitionRand, x, z, disty, herePos, chunks, rainRel, temp, tempUnscaled, heightMap, biome);
++                    posY = StratumPutLayersInner(s, transitionRand, x, z, disty, herePos, chunks, rainRel, temp, tempUnscaled, heightMap, biome);
  
                      if (prevY == TerraGenConfig.seaLevel - 1)
                      {
@@ -115,20 +123,28 @@ index 55b134c..0a3927d 100644
                      // Try again to put layers if above sealevel and we found over 10 air blocks
                      int foundAir = 0;
                      while (posY >= TerraGenConfig.seaLevel - 1)
-@@ -255,11 +271,11 @@ namespace Vintagestory.ServerMods
+@@ -255,11 +280,20 @@ namespace Vintagestory.ServerMods
              distx = distort2dx.Noise(herePos.X, herePos.Z);
              distz = distort2dz.Noise(herePos.X, herePos.Z);
              return (int)(distx / 5);
          }
  
--        private int PutLayers(double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
-+        private int PutLayers(ThreadLocalScratch s, double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
++        // Stratum start: compatibility overload for third-party Harmony patches that
++        // bind PutLayers via GetMethod with the original parameter list (e.g. Watersheds).
++        // Resolves per-thread scratch internally, same pattern as the public PlaceTallGrass. Fixes #201.
+         private int PutLayers(double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
++        {
++            return StratumPutLayersInner(scratchThreadLocal.Value, posRand, lx, lz, posyoffs, pos, chunks, rainRel, temp, unscaledTemp, heightMap, biome);
++        }
++        // Stratum end
++
++        private int StratumPutLayersInner(ThreadLocalScratch s, double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
          {
              int i = 0;
              int j = 0;
              bool underWater = false;
              bool isOcean = false;
-@@ -302,24 +318,24 @@ namespace Vintagestory.ServerMods
+@@ -302,24 +336,24 @@ namespace Vintagestory.ServerMods
                      if (heightMap != null && first)
                      {
                          chunks[0].MapChunk.TopRockIdMap[lz * chunksize + lx] = blockId;
@@ -156,7 +172,7 @@ index 55b134c..0a3927d 100644
                  else
                  {
                      if ((i > 0 && temp > -18) || j > 0) return pos.Y;
-@@ -357,27 +373,36 @@ namespace Vintagestory.ServerMods
+@@ -357,27 +391,36 @@ namespace Vintagestory.ServerMods
                      }
                  }
              }
@@ -196,7 +212,7 @@ index 55b134c..0a3927d 100644
                      if (layers[i].Biome == -1 || layers[i].Biome == biome)
                      {
                          chunks[(posY + 1) / chunksize].Data[(chunksize * ((posY + 1) % chunksize) + z) * chunksize + x] = layers[i].BlockId;
-@@ -387,11 +412,11 @@ namespace Vintagestory.ServerMods
+@@ -387,11 +430,11 @@ namespace Vintagestory.ServerMods
              }
  
              if (blockLayerConfig.Tallgrass.BlockCodeByMin != null)
@@ -209,7 +225,7 @@ index 55b134c..0a3927d 100644
                  {
                      TallGrassBlockCodeByMin bcbymin = blockLayerConfig.Tallgrass.BlockCodeByMin[i];
  
-@@ -404,22 +429,23 @@ namespace Vintagestory.ServerMods
+@@ -404,22 +447,23 @@ namespace Vintagestory.ServerMods
                  }
              }
          }
@@ -235,7 +251,7 @@ index 55b134c..0a3927d 100644
              {
                  BlockLayer bl = blockLayerConfig.Blocklayers[j];
                  float yDist = bl.CalcYDistance(posY, mapheight);
-@@ -460,20 +486,20 @@ namespace Vintagestory.ServerMods
+@@ -460,20 +504,20 @@ namespace Vintagestory.ServerMods
              }
  
              int lakeBedId;
