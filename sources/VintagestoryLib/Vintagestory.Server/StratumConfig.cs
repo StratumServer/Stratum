@@ -50,6 +50,8 @@ internal class StratumConfig
 
 	public StratumAnnouncementsConfig Announcements { get; set; } = new StratumAnnouncementsConfig();
 
+	public StratumCombatLogConfig CombatLog { get; set; } = new StratumCombatLogConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
 	public void EnsurePopulated()
@@ -74,6 +76,7 @@ internal class StratumConfig
 		PlayerPrivacy ??= new StratumPlayerPrivacyConfig();
 		Backup ??= new StratumBackupConfig();
 		Announcements ??= new StratumAnnouncementsConfig();
+		CombatLog ??= new StratumCombatLogConfig();
 		ServerStats ??= new StratumServerStatsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
@@ -91,6 +94,7 @@ internal class StratumConfig
 		PlayerPrivacy.EnsurePopulated();
 		Backup.EnsureSane();
 		Announcements.EnsureSane();
+		CombatLog.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
 	}
