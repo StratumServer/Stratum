@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
-index 1d4be19..2b9936e 100644
+index 1d4be19..e8394a8 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
-@@ -21,10 +21,17 @@ internal class ServerSystemCommands : ServerSystem
+@@ -21,10 +21,20 @@ internal class ServerSystemCommands : ServerSystem
  		new CmdEntity(server);
  		new CmdGive(server);
  		new CmdDebug(server);
@@ -13,6 +13,9 @@ index 1d4be19..2b9936e 100644
 +		new CmdStratumEssentials(server);
 +		new CmdStratumStaffCommands(server);
 +		new StratumLoginProtection(server);
++		new StratumCombatLogSystem(server);
++		new StratumCombatLogSystem(server);
++		new StratumCombatLogSystem(server);
 +		new StratumNametags(server);
 +		new StratumEntityCaps(server);
  		new CmdInfo(server);
@@ -20,7 +23,7 @@ index 1d4be19..2b9936e 100644
  		new CmdModDBUtil(server);
  		if (!server.IsDedicatedServer)
  		{
-@@ -33,6 +40,10 @@ internal class ServerSystemCommands : ServerSystem
+@@ -33,6 +43,10 @@ internal class ServerSystemCommands : ServerSystem
  		new CmdSetBlock(server);
  		new CmdExecuteAs(server);
  		new CmdActivate(server);
