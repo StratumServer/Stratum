@@ -1,0 +1,62 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs b/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
+index d06a399..b56c20c 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
+@@ -272,27 +272,46 @@ public class ServerMapRegion : IMapRegion
+ 			createdGameVersion = "1.22.5",
+ 			DirtyForSaving = true
+ 		};
+ 	}
+ 
++	// Stratum: copy-on-write keeps GeneratedStructures safe for the many
++	// concurrent lock-free readers (WalkStructures, structure-overlap checks),
++	// since a reader always sees a complete list, old or new, never a torn
++	// one. It does not make two concurrent writers safe: both copy the same
++	// base list, both append, and whichever assignment to GeneratedStructures
++	// lands second silently discards the other's structure. GenStructures,
++	// WorldGenVillage and GenDungeons all call these two methods from
++	// worldgen threads that can now run the same stage concurrently (see
++	// GenStructures.stratumStructurePlacementLock for the matching read-side
++	// fix), so the write side needs its own lock here regardless of which
++	// caller's registration goes missing.
++	readonly object stratumGeneratedStructuresLock = new object();
++
+ 	public void AddGeneratedStructure(GeneratedStructure newStructure)
+ 	{
+-		List<GeneratedStructure> list = new List<GeneratedStructure>(GeneratedStructures.Count + 1);
+-		list.AddRange(GeneratedStructures);
+-		list.Add(newStructure);
+-		GeneratedStructures = list;
+-		DirtyForSaving = true;
++		lock (stratumGeneratedStructuresLock)
++		{
++			List<GeneratedStructure> list = new List<GeneratedStructure>(GeneratedStructures.Count + 1);
++			list.AddRange(GeneratedStructures);
++			list.Add(newStructure);
++			GeneratedStructures = list;
++			DirtyForSaving = true;
++		}
+ 	}
+ 
+ 	public void AddGeneratedStructures(IEnumerable<GeneratedStructure> newStructures)
+ 	{
+-		newStructures.TryGetNonEnumeratedCount(out var count);
+-		List<GeneratedStructure> list = new List<GeneratedStructure>(GeneratedStructures.Count + count);
+-		list.AddRange(GeneratedStructures);
+-		list.AddRange(newStructures);
+-		GeneratedStructures = list;
+-		DirtyForSaving = true;
++		lock (stratumGeneratedStructuresLock)
++		{
++			newStructures.TryGetNonEnumeratedCount(out var count);
++			List<GeneratedStructure> list = new List<GeneratedStructure>(GeneratedStructures.Count + count);
++			list.AddRange(GeneratedStructures);
++			list.AddRange(newStructures);
++			GeneratedStructures = list;
++			DirtyForSaving = true;
++		}
+ 	}
+ 
+ 	public static ServerMapRegion FromBytes(byte[] serializedMapRegion)
+ 	{
+ 		ServerMapRegion serverMapRegion = SerializerUtil.Deserialize<ServerMapRegion>(serializedMapRegion);
