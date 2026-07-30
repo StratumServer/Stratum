@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs
-index b6ab588..e497139 100644
+index b6ab588..aaa2055 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/5.GenDeposits/GenDeposits.cs
-@@ -26,10 +26,26 @@ namespace Vintagestory.ServerMods
+@@ -26,10 +26,27 @@ namespace Vintagestory.ServerMods
  
          IBlockAccessor blockAccessor;
  
@@ -18,10 +18,11 @@ index b6ab588..e497139 100644
 +        // depositRand reference existed on whichever thread ran initAssets, not the one
 +        // reseeded on the thread actually generating. A lock preserves the existing
 +        // object-identity relationship exactly, at the cost of serializing GeneratePartial
-+        // calls once TerrainFeatures' same-stage cap ever rises off 1 (it stays at 1
-+        // today, so this is not a live race yet, only a landmine closed early). Also
-+        // covers subDepositsToPlace and tmpPos below, cleared/set at the top of every
-+        // GeneratePartial call and safe to keep as plain fields under the same lock.
++        // calls under TerrainFeatures' same-stage cap, which has since risen off 1 (see
++        // ServerSystemSupplyChunks.stratumStageMaxConcurrent); this closed the landmine
++        // before that happened. Also covers subDepositsToPlace and tmpPos below,
++        // cleared/set at the top of every GeneratePartial call and safe to keep as
++        // plain fields under the same lock.
 +        private readonly object stratumGenDepositsLock = new object();
 +
          BlockPos tmpPos = new BlockPos(API.Config.Dimensions.NormalWorld);
@@ -29,7 +30,7 @@ index b6ab588..e497139 100644
          NormalizedSimplexNoise depositShapeDistortNoise;
          Dictionary<BlockPos, DepositVariant> subDepositsToPlace = new Dictionary<BlockPos, DepositVariant>();
          MapLayerBase verticalDistortTop;
-@@ -207,48 +223,51 @@ namespace Vintagestory.ServerMods
+@@ -207,48 +224,51 @@ namespace Vintagestory.ServerMods
              base.GenChunkColumn(request);
          }
  
