@@ -3,7 +3,7 @@ index d06a399..b56c20c 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
 @@ -272,27 +272,46 @@ public class ServerMapRegion : IMapRegion
- 			createdGameVersion = "1.22.5",
+ 			createdGameVersion = "1.22.6",
  			DirtyForSaving = true
  		};
  	}
