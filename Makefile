@@ -3,7 +3,7 @@
 # Windows: use Git Bash, WSL, or run the .ps1 scripts directly.
 
 CONFIGURATION ?= Release
-VERSION ?= 1.22.5
+VERSION ?= 1.22.6
 SERVER_ARCHIVE ?=
 CLIENT_LIB_DIR ?=
 # Embeds this working tree's compiled DLLs into StratumServer so
@@ -20,7 +20,7 @@ endif
 ifneq ($(CLIENT_LIB_DIR),)
   BOOTSTRAP_ARGS += --client-lib-dir $(CLIENT_LIB_DIR)
 endif
-ifneq ($(VERSION),1.22.5)
+ifneq ($(VERSION),1.22.6)
   BOOTSTRAP_ARGS += --version $(VERSION)
 endif
 

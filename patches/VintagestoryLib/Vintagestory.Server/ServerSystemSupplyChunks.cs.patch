@@ -133,10 +133,10 @@ index f644852..bff98da 100644
 +	// Stratum has no way to verify is safe under concurrent execution across
 +	// columns. Checked by name, not by a hardcoded per-generator allowlist,
 +	// so it needs no maintenance as Stratum's own generator set changes.
-+	private static readonly HashSet<string> stratumKnownSafeAssemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-+	{
-+		"VintagestoryLib", "VSEssentials", "VSSurvivalMod", "VSCreativeMod", "VintagestoryAPI"
-+	};
++	// StratumModCompat owns the set. Read it from there instead of keeping a
++	// second copy, since the worldgen compatibility checks and this one have
++	// to agree on what counts as ours.
++	private static HashSet<string> stratumKnownSafeAssemblies => StratumModCompat.ShippedAssemblies;
 +
 +	/// <summary>
 +	/// Stratum: same-stage concurrency for a pass is only safe if every handler
@@ -1987,7 +1987,7 @@ index f644852..bff98da 100644
  		}
 +
 +		// Create a new MapChunk
- 		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.5");
+ 		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.6");
  		orCreateMapRegionEnsureNeighbours = GetOrCreateMapRegionEnsureNeighbours(chunkX, chunkZ, chunkRequest.chunkGenParams, updateEarlierVersion);
  		value = CreateMapChunk(chunkX, chunkZ, orCreateMapRegionEnsureNeighbours);
  		server.loadedMapChunks[key] = value;
@@ -2383,7 +2383,7 @@ index f644852..bff98da 100644
 +					// Get/create region (without storing in the global registry)
  					if (!dictionary.TryGetValue(num3, out var value))
  					{
- 						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.5");
+ 						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.6");
  						value = (dictionary[num3] = GetOrCreateMapRegionNoStore(regionX, regionZ, num3, chunkGenParams, updateEarlierVersion));
  						chunkthread.peekingMapRegions.TryAdd(num3, value);
  					}

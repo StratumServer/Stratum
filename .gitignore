@@ -60,6 +60,7 @@ Thumbs.db
 # Local-only docs scratch
 /wiki/
 /.wiki-push/
+/.mods/
 
 # Local secrets / per-machine config
 *.local.json

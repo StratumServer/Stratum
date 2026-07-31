@@ -28,6 +28,8 @@ internal class StratumConfig
 
 	public StratumPerformanceConfig Performance { get; set; } = new StratumPerformanceConfig();
 
+	public StratumWorldgenConfig Worldgen { get; set; } = new StratumWorldgenConfig();
+
 	public StratumCommandsConfig Commands { get; set; } = new StratumCommandsConfig();
 
 	public StratumChatConfig Chat { get; set; } = new StratumChatConfig();
@@ -61,6 +63,7 @@ internal class StratumConfig
 		Anticheat ??= new StratumAnticheatConfig();
 		ClientModPolicy ??= new StratumClientModPolicyConfig();
 		Performance ??= new StratumPerformanceConfig();
+		Worldgen ??= new StratumWorldgenConfig();
 		Commands ??= new StratumCommandsConfig();
 		Chat ??= new StratumChatConfig();
 		Theme ??= new StratumThemeConfig();
@@ -437,10 +440,22 @@ internal class StratumDiagnosticsConfig
 
 	public bool LogPreflightWarnings { get; set; } = true;
 
-	// Logs every mod-owned Harmony patch at startup (grouped by mod, split by prefix/postfix/
-	// transpiler/finalizer). Visibility only, does not cross-reference against Stratum's own
-	// source-patched methods -- see StratumHarmonyVisibility.
-	public bool LogModHarmonyPatches { get; set; } = false;
+	// Logs every mod-owned Harmony patch at startup, grouped by mod. Visibility only, it does
+	// not cross-reference Stratum's own source-patched methods -- see StratumHarmonyVisibility.
+	// On by default because a mod patch landing on something Stratum reshaped usually goes
+	// missing silently rather than erroring, and this log is what makes it traceable.
+	public bool LogModHarmonyPatches { get; set; } = true;
+}
+
+internal class StratumWorldgenConfig
+{
+	// Runs the Terrain pass as two sub-stages so two threads can share it.
+	// Off gives the stock single-stage pass. See StratumWorldgenCompat.
+	public bool SplitTerrainPass { get; set; } = true;
+
+	// Drops back to the vanilla single-stage pass when a mod registers a handler there or
+	// patches a generator inside it. Leave on unless you have checked this server's mods.
+	public bool AutoDisableSplitForMods { get; set; } = true;
 }
 
 internal class StratumHardeningConfig
@@ -1355,8 +1370,8 @@ internal class StratumEntityTickingConfig
 	public List<string> ExcludedModDomains { get; set; } = new List<string> { "vsvillage" };
 
 	// Paper-style hard despawn: creatures that have been beyond HardDespawnDistanceBlocks
-	// from every player for HardDespawnGracePeriodSeconds get unloaded. Off by default —
-	// enable only on long-running worlds where stray mobs accumulate in old chunks.
+	// from every player for HardDespawnGracePeriodSeconds get unloaded. Off by default.
+	// Enable only on long-running worlds where stray mobs accumulate in old chunks.
 	public bool HardDespawnEnabled { get; set; } = false;
 
 	public int HardDespawnDistanceBlocks { get; set; } = 128;
@@ -1518,7 +1533,7 @@ internal class StratumChunkIoConfig
 // Reorders the next slice of pending chunk-column load requests by distance to the closest
 // online player (optionally forward-predicted along motion). The underlying request queue is
 // still consumed via the standard requeue/dispose flow, this only changes which request the
-// chunk thread picks up *first* on each tick — useful when many players are spreading load
+// chunk thread picks up *first* on each tick. Useful when many players are spreading load
 // across the world simultaneously and FIFO would otherwise round-robin them slowly.
 // sampling now correctly takes into account the entire queue via bounded max-heap, and not just its head
 internal class StratumChunkPriorityConfig
