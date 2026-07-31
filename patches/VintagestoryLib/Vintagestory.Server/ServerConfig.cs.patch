@@ -111,9 +111,13 @@ index 93750fa..6b4edf8 100644
  		ModDbUrl = "https://mods.vintagestory.at/";
  		VerifyPlayerAuth = true;
  		AdvertiseServer = false;
-@@ -390,11 +412,11 @@ public class ServerConfig : IServerConfig
+@@ -402,15 +424,15 @@ public class ServerConfig : IServerConfig
  		DisableModSafetyCheck = false;
  		DisableAutoRemap = false;
+ 		AntiAbuseBufferSize = 100;
+ 		AntiAbuseTriggerOnBlockBreakCount = 40;
+ 		AntiAbuseTriggerOnDurationMs = 2000;
+ 		AntiAbuseBlockBurstAbuseBanDays = 14.0;
  		WorldConfig = new StartServerArgs
  		{
  			SaveFileLocation = Path.Combine(GamePaths.Saves, GamePaths.DefaultSaveFilenameWithoutExtension + ".vcdbs"),

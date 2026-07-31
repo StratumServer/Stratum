@@ -26,7 +26,7 @@ Force re-extract, re-decompile, and re-clone even if cached output already exist
 
 [CmdletBinding()]
 param(
-    [string]$Version = '1.22.5',
+    [string]$Version = '1.22.6',
     [string]$ServerZip,
     [switch]$Refresh
 )

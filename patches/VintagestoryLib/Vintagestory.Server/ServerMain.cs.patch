@@ -326,8 +326,8 @@ index 1103a72..1bf6ac3 100644
  		}
  		if ("1.22.6" != identification.NetworkVersion)
  		{
--			DisconnectPlayer(client, null, Lang.Get("disconnect-wrongversion", identification.ShortGameVersion, identification.NetworkVersion, "1.22.5", "1.22.6"));
-+			DisconnectPlayer(client, StratumServerTheme.WrongVersion(identification.ShortGameVersion, identification.NetworkVersion, "1.22.5", "1.22.6"));
+-			DisconnectPlayer(client, null, Lang.Get("disconnect-wrongversion", identification.ShortGameVersion, identification.NetworkVersion, "1.22.6", "1.22.6"));
++			DisconnectPlayer(client, StratumServerTheme.WrongVersion(identification.ShortGameVersion, identification.NetworkVersion, "1.22.6", "1.22.6"));
  			return;
  		}
  		if (!client.IsSinglePlayerClient && Config.IsPasswordProtected() && identification.ServerPassword != Config.Password)
@@ -409,14 +409,14 @@ index 1103a72..1bf6ac3 100644
  	}
  
  	public ServerMain(StartServerArgs serverargs, string[] cmdlineArgsRaw, ServerProgramArgs progArgs, bool isDedicatedServer = true)
-@@ -1173,15 +1358,17 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -1173,16 +1356,18 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		if (HeartbeatSystem == null)
  		{
  			HeartbeatSystem = new ServerSystemHeartbeat(this);
  		}
  		HeartbeatSystem.Launch();
--		Systems = new ServerSystem[32]
-+		Systems = new ServerSystem[34]
+-		Systems = new ServerSystem[33]
++		Systems = new ServerSystem[35]
  		{
  			new ServerSystemUpnp(this),
  			(clientAwarenessSystem = new ServerSystemClientAwareness(this)),
@@ -425,6 +425,7 @@ index 1103a72..1bf6ac3 100644
 +			new ServerSystemStratumPregen(this),
  			new ServerSystemNotifyPing(this),
  			new ServerSystemKickAfkPlayers(this),
+ 			new PlayerAntiAbuseMonitor(this),
  			serverSystemModHandler,
  			new ServerySystemPlayerGroups(this),
  			new ServerSystemEntitySimulation(this),
@@ -437,9 +438,9 @@ index 1103a72..1bf6ac3 100644
 -		Logger.Event("Launching server...");
  		PlayerDataManager.Load();
  		Logger.StoryEvent(Lang.Get("It senses..."));
--		Logger.Event("Server v1.22.5, network v1.22.6, api v1.22.0");
+-		Logger.Event("Server v1.22.6, network v1.22.6, api v1.22.0");
 +		Logger.Event("Powered by Stratum | Made by imtsubaki and contributors");
-+		Logger.Event("Vintagestory v1.22.5 | Network v1.22.6 | API v1.22.0");
++		Logger.Event("Vintagestory v1.22.6 | Network v1.22.6 | API v1.22.0");
 +		Logger.Event("Launching server...");
  		totalUnpausedTime.Start();
  		AssetManager = new AssetManager(GamePaths.AssetsPath, EnumAppSide.Server);
