@@ -9,7 +9,7 @@ Builds a clean working tree by laying down:
 Then applies every patch in patches/ on top.
 
 .PARAMETER Version
-Vintage Story server version to download when -ServerZip is not provided. Defaults to 1.22.5.
+Vintage Story server version to download when -ServerZip is not provided. Defaults to 1.22.6.
 
 .PARAMETER ServerZip
 Path to an already-downloaded official server archive. If omitted, the script resolves
@@ -20,7 +20,7 @@ Force re-extract, re-decompile, and re-clone even if cached output already exist
 
 .EXAMPLE
 .\scripts\bootstrap.ps1
-.\scripts\bootstrap.ps1 -Version 1.22.5
+.\scripts\bootstrap.ps1 -Version 1.22.6
 .\scripts\bootstrap.ps1 -Refresh
 #>
 
