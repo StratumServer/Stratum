@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenDungeons.cs b/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenDungeons.cs
-index dfdae53..1f1ef56 100644
+index dfdae53..9c8c660 100644
 --- a/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenDungeons.cs
 +++ b/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenDungeons.cs
 @@ -1,5 +1,7 @@
@@ -10,7 +10,7 @@ index dfdae53..1f1ef56 100644
  using System.Linq;
  using ProtoBuf;
  using Vintagestory.API.Common;
-@@ -48,19 +50,40 @@ namespace Vintagestory.ServerMods
+@@ -48,19 +50,41 @@ namespace Vintagestory.ServerMods
      public class GenDungeons : ModStdWorldGen
      {
          private ModSystemTiledDungeons tiledDungeonsSys = null!;
@@ -21,8 +21,9 @@ index dfdae53..1f1ef56 100644
 -        private Dictionary<long, List<DungeonPlaceTask>> dungeonPlaceTasksByRegion = new Dictionary<long, List<DungeonPlaceTask>>();
 +        // Stratum: rand and grassRand used to be plain instance fields, reseeded
 +        // via InitPositionSeed per column/connector and read a few calls later in
-+        // the same call chain, unsafe once TerrainFeatures' same-stage cap moves
-+        // off 1. [ThreadStatic] since GenDungeons is a singleton ModSystem with no
++        // the same call chain, unsafe once TerrainFeatures' same-stage cap moved
++        // off 1, which it since has (see ServerSystemSupplyChunks.stratumStageMaxConcurrent).
++        // [ThreadStatic] since GenDungeons is a singleton ModSystem with no
 +        // second live instance anywhere in the codebase (confirmed by search), and
 +        // both need lazy per-thread construction with the same seed formula the
 +        // old shared instances used, since both are reseeded via InitPositionSeed
@@ -54,7 +55,7 @@ index dfdae53..1f1ef56 100644
  
          public override double ExecuteOrder() { return 0.12; }
  
-@@ -101,17 +124,15 @@ namespace Vintagestory.ServerMods
+@@ -101,17 +125,15 @@ namespace Vintagestory.ServerMods
              {
                  spawnPos = sapi.World.BlockAccessor.MapSize.AsBlockPos / 2;
              }
@@ -72,7 +73,7 @@ index dfdae53..1f1ef56 100644
  
          private void Event_MapRegionLoaded(Vec2i mapCoord, IMapRegion region)
          {
-@@ -131,21 +152,27 @@ namespace Vintagestory.ServerMods
+@@ -131,21 +153,27 @@ namespace Vintagestory.ServerMods
  
          private void Event_GameWorldSave()
          {
@@ -103,7 +104,7 @@ index dfdae53..1f1ef56 100644
  
          private void Event_MapRegionUnloaded(Vec2i mapCoord, IMapRegion region)
          {
-@@ -161,63 +188,69 @@ namespace Vintagestory.ServerMods
+@@ -161,63 +189,69 @@ namespace Vintagestory.ServerMods
              var mapRand = new LCGRandom(sapi.WorldManager.Seed ^ 8991827198);
              mapRand.InitPositionSeed(regionX * size, regionZ * size);
  
@@ -210,7 +211,7 @@ index dfdae53..1f1ef56 100644
  
          private static TiledDungeon pickDungeon(int[] dungeIndices, LCGRandom mapRand, List<TiledDungeon> dungeons)
          {
-@@ -363,10 +396,19 @@ namespace Vintagestory.ServerMods
+@@ -363,10 +397,19 @@ namespace Vintagestory.ServerMods
                      if (!dungeonPlaceTasksByRegion.TryGetValue(mapRegionIndex2D, out var dungePlaceTasks)) continue;
  
                      foreach (var placeTask in dungePlaceTasks)
@@ -230,7 +231,7 @@ index dfdae53..1f1ef56 100644
                          Block? rockBlock = null;
                          // get the rockblock for the first generating chunk and reuse that for each room
                          if (placeTask.RockBlockCode == null)
-@@ -408,10 +450,11 @@ namespace Vintagestory.ServerMods
+@@ -408,10 +451,11 @@ namespace Vintagestory.ServerMods
                              var height = sapi.World.BlockAccessor.GetTerrainMapheightAt(pos);
                              if (height == 0) continue;
                              // skip if we get our of range where we can generate, should not happen if the stairs and surface rooms are not larger than 2 chunks
@@ -242,7 +243,7 @@ index dfdae53..1f1ef56 100644
                              for (int i = 0; i < tileIndices.Length; i++) tileIndices[i] = i;
  
                              DungeonGenWorkspace dgd = new DungeonGenWorkspace(dungeon.StairCase, 0, 0, [], [], [], [], null);
-@@ -500,31 +543,32 @@ namespace Vintagestory.ServerMods
+@@ -500,31 +544,32 @@ namespace Vintagestory.ServerMods
  
                          if (placeTask.SurfacePlaceTasks != null)
                          {
@@ -278,7 +279,7 @@ index dfdae53..1f1ef56 100644
                      // Try any of the 4 sides and see which one can connect
                      for (var i = 0; i < 4; i++)
                      {
-@@ -579,11 +623,11 @@ namespace Vintagestory.ServerMods
+@@ -579,11 +624,11 @@ namespace Vintagestory.ServerMods
                  if (schematic == null) continue;
                  var placed = schematic.PlacePartial(chunks, worldgenBlockAccessor, sapi.World, chunkX, chunkZ, placeTask.Pos, EnumReplaceMode.ReplaceAll, null, GlobalConfig.ReplaceMetaBlocks, true, dungeon.resolvedRockTypeRemaps, dungeon.replacewithblocklayersBlockids, rockBlock);
                  if (placed > 0)

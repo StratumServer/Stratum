@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-index 04b25be..bea4514 100644
+index 04b25be..003c393 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-@@ -34,25 +34,65 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+@@ -34,25 +34,75 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
  
  	internal bool prettified;
  
@@ -47,6 +47,16 @@ index 04b25be..bea4514 100644
 +	// boundary-scan call returns.
 +	internal int dispatchClaimed;
 +
++	// Stratum: 0 = live, 1 = the unload pass has committed to dropping this column.
++	// Set before that pass touches loadedMapChunks or the request queue, so the two
++	// possible orderings both resolve: a pin that lands first makes the dropper back
++	// out and clear this, and a drop that commits first makes the neighbour gate treat
++	// the column as absent, which refuses the claim instead of granting one over a
++	// column that is about to disappear. Without it, the gate can observe a column the
++	// unload pass has already decided to remove, since deciding and removing are not
++	// one step.
++	internal int stratumDropping;
++
  	private static long counter;
  
  	internal bool Disposed => (disposeOrRequeueFlags & 1) == 1;
@@ -71,7 +81,7 @@ index 04b25be..bea4514 100644
  		}
  		set
  		{
-@@ -62,13 +102,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+@@ -62,13 +112,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
  
  	public int CurrentIncompletePass_AsInt
  	{

@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
-index 79c481d..691b108 100644
+index 79c481d..c7a1523 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
-@@ -13,12 +13,24 @@ namespace Vintagestory.ServerMods
+@@ -13,12 +13,25 @@ namespace Vintagestory.ServerMods
      public class GenTerraPostProcess : ModStdWorldGen
      {
          ICoreServerAPI api;
@@ -13,7 +13,8 @@ index 79c481d..691b108 100644
 +        // Stratum: every field below used to be a plain instance field, written
 +        // and read within the processing of a single column (OnChunkColumnGen ->
 +        // deletePotentialFloatingBlocks -> AddToChunkVisitedNodesIfSameChunk),
-+        // unsafe once TerrainFeatures' same-stage cap moves off 1. Matches the
++        // unsafe once TerrainFeatures' same-stage cap moved off 1, which it since has
++        // (see ServerSystemSupplyChunks.stratumStageMaxConcurrent). Matches the
 +        // InvalidOperationException: Collection was modified crash reported
 +        // against this class: two columns concurrently mutating the same shared
 +        // HashSet/List. [ThreadStatic] since GenTerraPostProcess is a singleton
@@ -29,7 +30,7 @@ index 79c481d..691b108 100644
          {
              return side == EnumAppSide.Server;
          }
-@@ -56,10 +68,11 @@ namespace Vintagestory.ServerMods
+@@ -56,10 +69,11 @@ namespace Vintagestory.ServerMods
              const int chunksize = GlobalConstants.ChunkSize;
              const int chunksizeSquared = chunksize * chunksize;
              int chunkY = seaLevel / chunksize;
@@ -41,7 +42,7 @@ index 79c481d..691b108 100644
              for (int cy = chunkY; cy < cyMax; cy++)
              {
                  IChunkBlocks chunkdata = chunks[cy].Data;
-@@ -106,28 +119,29 @@ namespace Vintagestory.ServerMods
+@@ -106,28 +120,29 @@ namespace Vintagestory.ServerMods
              }
          }
  
@@ -75,7 +76,7 @@ index 79c481d..691b108 100644
  
              int baseX = X - halfSize;
              int baseY = Y - halfSize;
-@@ -225,11 +239,11 @@ namespace Vintagestory.ServerMods
+@@ -225,11 +240,11 @@ namespace Vintagestory.ServerMods
              if (((nposZ ^ origZ) & chunkMask) != 0) return;
              if (((nposY ^ origY) & chunkMask) != 0) return;
  
