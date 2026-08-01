@@ -1,19 +1,14 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-index 55b134c..220eed6 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-@@ -1,7 +1,8 @@
+@@ -1,5 +1,6 @@
  using System;
  using System.Collections.Generic;
 +using System.Threading;
  using Vintagestory.API.Common;
  using Vintagestory.API.Datastructures;
  using Vintagestory.API.MathTools;
- using Vintagestory.API.Server;
- 
-@@ -12,19 +13,39 @@ namespace Vintagestory.ServerMods
- 
-     public class GenBlockLayers : ModStdWorldGen
+@@ -14,15 +15,35 @@
      {
          private ICoreServerAPI api;
  
@@ -35,10 +30,9 @@ index 55b134c..220eed6 100644
 +        }
 +        ThreadLocal<ThreadLocalScratch> scratchThreadLocal;
 +
-+        // Stratum start: compatibility shim for third-party Harmony patches that
-+        // reflect on this field (e.g. Watersheds uses GetField("rnd")). Value is
-+        // written from the per-thread scratch at OnChunkColumnGeneration entry,
-+        // valid only within that call's scope on the current thread. Fixes #201.
++        // Stratum start: compat shim for mods that reflect on this field, such as Watersheds.
++        // Seeded at setup so it stays valid when a mod prefix replaces OnChunkColumnGeneration.
++        // Refreshed from the per-thread scratch on entry to that method when it does run.
          LCGRandom rnd;
 +        // Stratum end
 +
@@ -52,11 +46,7 @@ index 55b134c..220eed6 100644
          public BlockLayerConfig blockLayerConfig;
          public SimplexNoise distort2dx;
          public SimplexNoise distort2dz;
- 
-         public override bool ShouldLoad(EnumAppSide side)
-@@ -46,11 +67,11 @@ namespace Vintagestory.ServerMods
-             //this.api.Event.MapRegionGeneration(OnMapRegionGen, "standard");   // 8.2.24 commented out because the method has no code
- 
+@@ -48,7 +69,7 @@
  
              if (TerraGenConfig.DoDecorationPass)
              {
@@ -65,30 +55,20 @@ index 55b134c..220eed6 100644
              }
              distort2dx = new SimplexNoise(new double[] { 14, 9, 6, 3 }, new double[] { 1 / 100.0, 1 / 50.0, 1 / 25.0, 1 / 12.5 }, api.World.SeaLevel + 20980);
              distort2dz = new SimplexNoise(new double[] { 14, 9, 6, 3 }, new double[] { 1 / 100.0, 1 / 50.0, 1 / 25.0, 1 / 12.5 }, api.World.SeaLevel + 20981);
-         }
- 
-@@ -81,13 +102,15 @@ namespace Vintagestory.ServerMods
-             LoadGlobalConfig(api);
- 
+@@ -83,9 +104,11 @@
              api.ObjectCache.Remove(BlockLayerConfig.cacheKey);
              blockLayerConfig = BlockLayerConfig.GetInstance(api);
  
 -            rnd = new LCGRandom(api.WorldManager.Seed);
--            grassDensity = new ClampedSimplexNoise(new double[] { 4 }, new double[] { 0.5 }, rnd.NextInt());
--            grassHeight = new ClampedSimplexNoise(new double[] { 1.5 }, new double[] { 0.5 }, rnd.NextInt());
 +            int seed = api.WorldManager.Seed;
-+            LCGRandom setupRnd = new LCGRandom(seed); // one-time draw for the two noise fields below, not the per-column scratch
-+            grassDensity = new ClampedSimplexNoise(new double[] { 4 }, new double[] { 0.5 }, setupRnd.NextInt());
-+            grassHeight = new ClampedSimplexNoise(new double[] { 1.5 }, new double[] { 0.5 }, setupRnd.NextInt());
++            rnd = new LCGRandom(seed); // Stratum: a field, not a local, so the shim survives a mod prefix skipping the method below.
+             grassDensity = new ClampedSimplexNoise(new double[] { 4 }, new double[] { 0.5 }, rnd.NextInt());
+             grassHeight = new ClampedSimplexNoise(new double[] { 1.5 }, new double[] { 0.5 }, rnd.NextInt());
 +            scratchThreadLocal = new ThreadLocal<ThreadLocalScratch>(() => new ThreadLocalScratch { rnd = new LCGRandom(seed) });
  
              mapheight = api.WorldManager.MapSizeY;
  
-             boilingWaterBlockId = gcfg.boilingWaterBlockId;
-         }
-@@ -96,11 +119,13 @@ namespace Vintagestory.ServerMods
-         {
-             var chunks = request.Chunks;
+@@ -98,7 +121,9 @@
              int chunkX = request.ChunkX;
              int chunkZ = request.ChunkZ;
  
@@ -99,11 +79,7 @@ index 55b134c..220eed6 100644
  
              IntDataMap2D forestMap = chunks[0].MapChunk.MapRegion.ForestMap;
              IntDataMap2D climateMap = chunks[0].MapChunk.MapRegion.ClimateMap;
-             IntDataMap2D beachMap = chunks[0].MapChunk.MapRegion.BeachMap;
-             IntDataMap2D biomeMap = chunks[0].MapChunk.MapRegion.BiomeMap;
-@@ -201,19 +226,19 @@ namespace Vintagestory.ServerMods
-                         }
-                     }
+@@ -203,7 +228,7 @@
  
                      herePos.Y = posY;
                      int disty = (int)(distort2dx.Noise(-herePos.X, -herePos.Z) / 4.0);
@@ -112,7 +88,7 @@ index 55b134c..220eed6 100644
  
                      if (prevY == TerraGenConfig.seaLevel - 1)
                      {
-                         float beachRel = GameMath.BiLerp(beachUpLeft, beachUpRight, beachBotLeft, beachBotRight, (float)x / chunksize, (float)z / chunksize) / 255f;
+@@ -211,7 +236,7 @@
                          GenBeach(x, prevY, z, chunks, rainRel, temp, beachRel, rockblockID);
                      }
  
@@ -121,11 +97,7 @@ index 55b134c..220eed6 100644
  
  
                      // Try again to put layers if above sealevel and we found over 10 air blocks
-                     int foundAir = 0;
-                     while (posY >= TerraGenConfig.seaLevel - 1)
-@@ -255,11 +280,20 @@ namespace Vintagestory.ServerMods
-             distx = distort2dx.Noise(herePos.X, herePos.Z);
-             distz = distort2dz.Noise(herePos.X, herePos.Z);
+@@ -257,8 +282,17 @@
              return (int)(distx / 5);
          }
  
@@ -133,20 +105,17 @@ index 55b134c..220eed6 100644
 +        // bind PutLayers via GetMethod with the original parameter list (e.g. Watersheds).
 +        // Resolves per-thread scratch internally, same pattern as the public PlaceTallGrass. Fixes #201.
          private int PutLayers(double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
-+        {
+         {
 +            return StratumPutLayersInner(scratchThreadLocal.Value, posRand, lx, lz, posyoffs, pos, chunks, rainRel, temp, unscaledTemp, heightMap, biome);
 +        }
 +        // Stratum end
 +
 +        private int StratumPutLayersInner(ThreadLocalScratch s, double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
-         {
++        {
              int i = 0;
              int j = 0;
              bool underWater = false;
-             bool isOcean = false;
-@@ -302,24 +336,24 @@ namespace Vintagestory.ServerMods
-                     if (heightMap != null && first)
-                     {
+@@ -304,20 +338,20 @@
                          chunks[0].MapChunk.TopRockIdMap[lz * chunksize + lx] = blockId;
                          if (underIce) break;   // radfast 30.1.24: Note, under ice we do not set the sea/lake floor layers (gravel etc), for consistency with legacy worldgen prior to 1.19.4
  
@@ -170,11 +139,7 @@ index 55b134c..220eed6 100644
                      chunkdata.SetFluid(index3d, 0);
                  }
                  else
-                 {
-                     if ((i > 0 && temp > -18) || j > 0) return pos.Y;
-@@ -357,27 +391,36 @@ namespace Vintagestory.ServerMods
-                     }
-                 }
+@@ -359,9 +393,18 @@
              }
          }
  
@@ -194,7 +159,7 @@ index 55b134c..220eed6 100644
  
              double extraGrass = Math.Max(0, rainRel * tempRel - 0.25);
  
-             if (rndVal <= GameMath.Clamp(forestRel - extraGrass, 0.05, 0.99) || posY >= mapheight - 1 || posY < 1) return;
+@@ -369,13 +412,13 @@
  
              int blockId = chunks[posY / chunksize].Data[(chunksize * (posY % chunksize) + z) * chunksize + x];
  
@@ -210,11 +175,7 @@ index 55b134c..220eed6 100644
                  for (int i = st; i < layers.Length; i++)
                  {
                      if (layers[i].Biome == -1 || layers[i].Biome == biome)
-                     {
-                         chunks[(posY + 1) / chunksize].Data[(chunksize * ((posY + 1) % chunksize) + z) * chunksize + x] = layers[i].BlockId;
-@@ -387,11 +430,11 @@ namespace Vintagestory.ServerMods
-             }
- 
+@@ -389,7 +432,7 @@
              if (blockLayerConfig.Tallgrass.BlockCodeByMin != null)
              {
                  double gheight = Math.Max(0, grassHeight.Noise(x, z) * blockLayerConfig.Tallgrass.BlockCodeByMin.Length - 1);
@@ -223,11 +184,7 @@ index 55b134c..220eed6 100644
  
                  for (int i = start; i < blockLayerConfig.Tallgrass.BlockCodeByMin.Length; i++)
                  {
-                     TallGrassBlockCodeByMin bcbymin = blockLayerConfig.Tallgrass.BlockCodeByMin[i];
- 
-@@ -404,22 +447,23 @@ namespace Vintagestory.ServerMods
-                 }
-             }
+@@ -406,18 +449,19 @@
          }
  
  
@@ -249,11 +206,7 @@ index 55b134c..220eed6 100644
              BlockLayersIds.Clear();
              for (int j = 0; j < blockLayerConfig.Blocklayers.Length; j++)
              {
-                 BlockLayer bl = blockLayerConfig.Blocklayers[j];
-                 float yDist = bl.CalcYDistance(posY, mapheight);
-@@ -460,20 +504,20 @@ namespace Vintagestory.ServerMods
-             }
- 
+@@ -462,17 +506,17 @@
              int lakeBedId;
              if (isOcean)
              {
@@ -276,4 +229,3 @@ index 55b134c..220eed6 100644
              }
          }
      }
- }
