@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Vintagestory.API.Config;
 
 namespace Vintagestory.Server;
@@ -212,8 +213,14 @@ internal static class StratumRuntime
 			GamePaths.EnsurePathExists(GamePaths.Config);
 
 			bool mainConfigExisted = File.Exists(ConfigPath);
-			Config = mainConfigExisted
-				? JsonConvert.DeserializeObject<StratumConfig>(File.ReadAllText(ConfigPath), StratumConfig.LoadSerializerSettings) ?? StratumConfig.CreateDefault()
+			bool performanceConfigExisted = File.Exists(PerformanceConfigPath);
+			JObject mainConfig = mainConfigExisted ? JObject.Parse(File.ReadAllText(ConfigPath)) : new JObject();
+			JObject performanceConfig = performanceConfigExisted ? JObject.Parse(File.ReadAllText(PerformanceConfigPath)) : null;
+			int loadedConfigVersion = StratumConfigMigration.Upgrade(mainConfig, performanceConfig, mainConfigExisted);
+			bool configMigrated = loadedConfigVersion < StratumConfigMigration.CurrentVersion;
+			JsonSerializer serializer = JsonSerializer.Create(StratumConfig.LoadSerializerSettings);
+			Config = mainConfigExisted || configMigrated
+				? mainConfig.ToObject<StratumConfig>(serializer) ?? StratumConfig.CreateDefault()
 				: StratumConfig.CreateDefault();
 
 			// Stratum: load the sidecars whenever they exist, not only when stratum.json also
@@ -223,13 +230,15 @@ internal static class StratumRuntime
 			{
 				Config.Commands = JsonConvert.DeserializeObject<StratumCommandsConfig>(File.ReadAllText(CommandsConfigPath), StratumConfig.LoadSerializerSettings) ?? new StratumCommandsConfig();
 			}
-			if (File.Exists(PerformanceConfigPath))
+			if (performanceConfigExisted)
 			{
-				Config.Performance = JsonConvert.DeserializeObject<StratumPerformanceConfig>(File.ReadAllText(PerformanceConfigPath), StratumConfig.LoadSerializerSettings) ?? new StratumPerformanceConfig();
+				Config.Performance = performanceConfig.ToObject<StratumPerformanceConfig>(serializer) ?? new StratumPerformanceConfig();
 			}
 			Config.EnsurePopulated();
 			SaveConfig();
-			message = mainConfigExisted ? "loaded config" : "created default config";
+			message = configMigrated
+				? "upgraded config from version " + loadedConfigVersion + " to " + StratumConfigMigration.CurrentVersion
+				: mainConfigExisted ? "loaded config" : "created default config";
 
 			LastLoadedUtc = DateTime.UtcNow;
 			LastLoadStatus = message;
@@ -250,9 +259,9 @@ internal static class StratumRuntime
 	public static void SaveConfig()
 	{
 		Config.EnsurePopulated();
+		File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(Config, StratumConfig.MainFileSerializerSettings));
 		File.WriteAllText(CommandsConfigPath, JsonConvert.SerializeObject(Config.Commands, Formatting.Indented));
 		File.WriteAllText(PerformanceConfigPath, JsonConvert.SerializeObject(Config.Performance, Formatting.Indented));
-		File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(Config, StratumConfig.MainFileSerializerSettings));
 	}
 
 	public static StratumPreflightReport RunPreflight()

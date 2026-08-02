@@ -183,7 +183,7 @@ index 1103a72..1bf6ac3 100644
  		client.State = EnumClientState.Connected;
  		client.MillisecsAtConnect = totalUnpausedTime.ElapsedMilliseconds;
 -		joinLeaveDeathMessage(Lang.Get("player-joined", player.PlayerName), EnumChatType.JoinLeave, player);
-+		if (StratumRuntime.Config.Chat.ShowJoinMessages)
++		if (StratumRuntime.Config.Chat.ConnectionMessages.ShowJoins)
 +		{
 +			joinLeaveDeathMessage(StratumServerTheme.PlayerJoined(player.PlayerName) ?? Lang.Get("player-joined", player.PlayerName), EnumChatType.JoinLeave, player);
 +		}
@@ -219,7 +219,7 @@ index 1103a72..1bf6ac3 100644
  
 +	private static bool ShouldDropStratumChat(ConnectedClient client, string message)
 +	{
-+		StratumChatConfig cfg = StratumRuntime.Config.Performance.Chat;
++		StratumChatRateLimitConfig cfg = StratumRuntime.Config.Chat.RateLimit;
 +		if (!cfg.Enabled || string.IsNullOrEmpty(message))
 +		{
 +			return false;
@@ -229,7 +229,7 @@ index 1103a72..1bf6ac3 100644
 +			return false;
 +		}
 +		long now = Environment.TickCount64;
-+		if (cfg.MinIntervalMs > 0 && client.StratumLastChatMs != 0L && now - client.StratumLastChatMs < cfg.MinIntervalMs)
++		if (cfg.MinimumIntervalMs > 0 && client.StratumLastChatMs != 0L && now - client.StratumLastChatMs < cfg.MinimumIntervalMs)
 +		{
 +			client.StratumDroppedChatCount++;
 +			return true;
@@ -788,7 +788,7 @@ index 1103a72..1bf6ac3 100644
 -				Logger.Event(othersKickmessage);
 +				string logMessage = ((originalOthersKickMessage != null) ? string.Format(Lang.Get("Player {0} got removed. Reason: {1}", playerName, originalOthersKickMessage), default(ReadOnlySpan<object>)) : string.Format(Lang.Get("Player {0} left.", playerName), default(ReadOnlySpan<object>)));
 +				string themedMessage = originalOthersKickMessage != null ? StratumServerTheme.PlayerRemoved(playerName, originalOthersKickMessage) : StratumServerTheme.PlayerLeft(playerName);
-+				bool showMessage = originalOthersKickMessage != null ? StratumRuntime.Config.Chat.ShowDisconnectMessages : StratumRuntime.Config.Chat.ShowLeaveMessages; // Stratum: connection message toggles
++				bool showMessage = originalOthersKickMessage != null ? StratumRuntime.Config.Chat.ConnectionMessages.ShowDisconnects : StratumRuntime.Config.Chat.ConnectionMessages.ShowLeaves; // Stratum: connection message toggles
 +				if (showMessage)
 +				{
 +					joinLeaveDeathMessage(themedMessage ?? logMessage, EnumChatType.JoinLeave, player);

@@ -30,20 +30,21 @@ internal static class StratumChatFormatter
 		formattedMessage = messageBody;
 		StratumConfig config = StratumRuntime.Config;
 		config.EnsurePopulated();
+		StratumRolePrefixesConfig rolePrefixes = config.Appearance.RolePrefixes;
 
-		if (!config.Chat.Enabled || !config.Chat.RolePrefixesEnabled || player?.Role == null)
+		if (!config.Chat.Enabled || !rolePrefixes.Enabled || player?.Role == null)
 		{
 			return false;
 		}
 
-		KeyValuePair<string, StratumChatRolePrefixConfig>? prefixEntry = FindPrefix(config.Chat.RolePrefixes, player.Role.Code);
+		KeyValuePair<string, StratumRolePrefixConfig>? prefixEntry = FindPrefix(rolePrefixes.Roles, player.Role.Code);
 		if (prefixEntry == null)
 		{
 			return false;
 		}
 
-		StratumChatRolePrefixConfig prefix = prefixEntry.Value.Value;
-		string tag = FormatTag(config.Chat.PrefixFormat, prefix.Tag);
+		StratumRolePrefixConfig prefix = prefixEntry.Value.Value;
+		string tag = FormatTag(rolePrefixes.Format, prefix.Tag);
 		string renderedTag = ApplyColorAndWeight(EnsureTrailingSpace(tag), prefix.Color, prefix.Bold);
 		formattedMessage = renderedTag + "<strong>" + EscapeVtml(player.PlayerName) + ":</strong> " + messageBody;
 		return true;
@@ -152,14 +153,14 @@ internal static class StratumChatFormatter
 		return string.IsNullOrEmpty(value) || value.EndsWith(" ", StringComparison.Ordinal) ? value : value + " ";
 	}
 
-	private static KeyValuePair<string, StratumChatRolePrefixConfig>? FindPrefix(Dictionary<string, StratumChatRolePrefixConfig> prefixes, string roleCode)
+	private static KeyValuePair<string, StratumRolePrefixConfig>? FindPrefix(Dictionary<string, StratumRolePrefixConfig> prefixes, string roleCode)
 	{
 		if (prefixes == null || string.IsNullOrWhiteSpace(roleCode))
 		{
 			return null;
 		}
 
-		KeyValuePair<string, StratumChatRolePrefixConfig>[] matches = prefixes
+		KeyValuePair<string, StratumRolePrefixConfig>[] matches = prefixes
 			.Where(entry => entry.Value != null && entry.Value.Enabled && string.Equals(entry.Key, roleCode, StringComparison.OrdinalIgnoreCase))
 			.OrderByDescending(entry => entry.Value.Priority)
 			.ToArray();
