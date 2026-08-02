@@ -1,75 +1,55 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs b/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
-index 7573f32..d75ab17 100644
+index 7573f32..7b9e3e9 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/Datastructures/BlockSchematicStructure.cs
-@@ -12,11 +12,30 @@ using Vintagestory.ServerMods.NoObf;
- 
- namespace Vintagestory.ServerMods
- {
+@@ -15,8 +15,15 @@ namespace Vintagestory.ServerMods
      public class BlockSchematicStructure : BlockSchematic
      {
--        public Dictionary<int, AssetLocation> BlockCodesTmpForRemap = new();
-+        // Stratum: scratch storage for the remapped block-code map built below, used only
-+        // when replaceBlocks is non-null. It must never be handed a reference to BlockCodes.
-+        //
-+        // This field used to hold either the scratch dictionary OR BlockCodes itself, and
-+        // being [ThreadStatic] on a static it is shared by every BlockSchematicStructure on
-+        // the thread, not one per schematic the way the original instance field was. So a
-+        // placement with replaceBlocks == null pointed it at that schematic's permanent
-+        // BlockCodes, and the next placement on the same thread with replaceBlocks != null
-+        // saw a non-null value that did not match ITS OWN BlockCodes and called Clear() on
-+        // it, wiping a different schematic's permanent id-to-code map for the rest of the
-+        // process. Downstream that surfaces as "block id N not found in block registry"
-+        // warnings and a KeyNotFoundException from BlockSchematic.PlaceOneDecor, which
-+        // indexes BlockCodes directly, and the wrong blocks it places are persisted.
-+        //
-+        // Now the resolve method returns the map instead of publishing it here, and the
-+        // null-replaceBlocks path returns BlockCodes untouched, matching what vanilla
-+        // BlockSchematic does. This field can therefore only ever hold its own scratch
-+        // dictionary, which makes clearing and reusing it safe.
+         public Dictionary<int, AssetLocation> BlockCodesTmpForRemap = new();
+
++        // Stratum: reuse remap storage without clearing any schematic's permanent BlockCodes.
 +        [ThreadStatic]
 +        private static Dictionary<int, AssetLocation> stratumBlockCodesRemapScratch;
- 
++
++        // Stratum: capture the public remap result before another placement can replace it.
++        private readonly object stratumRemapLock = new object();
++
          public AssetLocation FromFile;
- 
+
          public Block[,,] blocksByPos;
          public Dictionary<int, Block> FluidBlocksByPos;
-@@ -125,11 +144,11 @@ namespace Vintagestory.ServerMods
-             IMapChunk mapchunk = blockAccessor.GetMapChunkAtBlockPos(curPos);
+@@ -126,9 +133,14 @@ namespace Vintagestory.ServerMods
              int centerrockblockid = mapchunk.TopRockIdMap[(curPos.Z % chunksize) * chunksize + curPos.X % chunksize];
- 
+
              IWorldAccessor worldgenWorldAccessor = blockAccessor is IWorldGenBlockAccessor wgba ? wgba.WorldgenWorldAccessor : worldForCollectibleResolve;
- 
+
 -            resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
-+            Dictionary<int, AssetLocation> blockCodesForRemap = resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
- 
++            Dictionary<int, AssetLocation> blockCodesForRemap;
++            lock (stratumRemapLock)
++            {
++                resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
++                blockCodesForRemap = BlockCodesTmpForRemap;
++            }
+
              Dictionary<BlockPos, Block> layerBlockForBlockEntities = new Dictionary<BlockPos, Block>();
- 
+
              for (int x = 0; x < SizeX; x++)
-             {
-@@ -306,38 +325,43 @@ namespace Vintagestory.ServerMods
-                     }
+@@ -307,9 +319,9 @@ namespace Vintagestory.ServerMods
                  }
              }
- 
+
              PlaceDecors(blockAccessor, startPos);
 -            PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, BlockCodesTmpForRemap, ItemCodes, replaceBlockEntities, replaceBlocks, centerrockblockid, layerBlockForBlockEntities, replaceMetaBlocks);
 +            PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, blockCodesForRemap, ItemCodes, replaceBlockEntities, replaceBlocks, centerrockblockid, layerBlockForBlockEntities, replaceMetaBlocks);
- 
+
              return placed;
          }
- 
--        private void resolveReplaceRemapsForBlockEntities(IBlockAccessor blockAccessor, IWorldAccessor worldForCollectibleResolve, Dictionary<int, Dictionary<int, int>> replaceBlocks, int centerrockblockid)
-+        private Dictionary<int, AssetLocation> resolveReplaceRemapsForBlockEntities(IBlockAccessor blockAccessor, IWorldAccessor worldForCollectibleResolve, Dictionary<int, Dictionary<int, int>> replaceBlocks, int centerrockblockid)
-         {
-             if (replaceBlocks == null)
-             {
--                BlockCodesTmpForRemap = BlockCodes;
--                return;
-+                // Stratum: hand BlockCodes back directly and never store or mutate it, same as vanilla.
-+                return BlockCodes;
+
+@@ -320,23 +332,28 @@ namespace Vintagestory.ServerMods
+                 BlockCodesTmpForRemap = BlockCodes;
+                 return;
              }
- 
+
 +            if (stratumBlockCodesRemapScratch == null) stratumBlockCodesRemapScratch = new Dictionary<int, AssetLocation>();
 +            else stratumBlockCodesRemapScratch.Clear();
 +
@@ -77,10 +57,10 @@ index 7573f32..d75ab17 100644
              {
                  Block origBlock = worldForCollectibleResolve.GetBlock(val.Value);
                  if (origBlock == null) continue; // Invalid blocks
- 
+
 -                BlockCodesTmpForRemap[val.Key] = val.Value;
 +                stratumBlockCodesRemapScratch[val.Key] = val.Value;
- 
+
                  if (replaceBlocks.TryGetValue(origBlock.Id, out var replaceByBlock))
                  {
                      if (replaceByBlock.TryGetValue(centerrockblockid, out int newBlockId))
@@ -91,44 +71,43 @@ index 7573f32..d75ab17 100644
                  }
              }
 +
-+            return stratumBlockCodesRemapScratch;
++            BlockCodesTmpForRemap = stratumBlockCodesRemapScratch;
          }
- 
- 
- 
- 
-@@ -358,11 +382,11 @@ namespace Vintagestory.ServerMods
- 
+
+
+
+@@ -359,9 +376,14 @@ namespace Vintagestory.ServerMods
              const int chunksize = GlobalConstants.ChunkSize;
              curPos.Set(SizeX / 2 + startPos.X, startPos.Y, SizeZ / 2 + startPos.Z);
              IMapChunk mapchunk = blockAccessor.GetMapChunkAtBlockPos(curPos);
              int centerrockblockid = rockBlockId ?? mapchunk.TopRockIdMap[(curPos.Z % chunksize) * chunksize + curPos.X % chunksize];
 -            resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
-+            Dictionary<int, AssetLocation> blockCodesForRemap = resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
- 
- 
++            Dictionary<int, AssetLocation> blockCodesForRemap;
++            lock (stratumRemapLock)
++            {
++                resolveReplaceRemapsForBlockEntities(blockAccessor, worldForCollectibleResolve, replaceBlocks, centerrockblockid);
++                blockCodesForRemap = BlockCodesTmpForRemap;
++            }
+
+
              PlaceBlockDelegate handler = null;
              switch (ReplaceMode)
-             {
-@@ -426,11 +450,11 @@ namespace Vintagestory.ServerMods
-             }
- 
+@@ -427,9 +449,9 @@ namespace Vintagestory.ServerMods
+
              if (!(blockAccessor is IBlockAccessorRevertable))
              {
                  PlaceDecors(blockAccessor, startPos);
 -                PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, BlockCodesTmpForRemap, ItemCodes, false, null, centerrockblockid, null, GlobalConfig.ReplaceMetaBlocks);
 +                PlaceEntitiesAndBlockEntities(blockAccessor, worldForCollectibleResolve, startPos, blockCodesForRemap, ItemCodes, false, null, centerrockblockid, null, GlobalConfig.ReplaceMetaBlocks);
              }
- 
+
              return placed;
          }
- 
-@@ -512,29 +536,52 @@ namespace Vintagestory.ServerMods
-             cloned.OriginalPos = OriginalPos;
- 
+@@ -513,27 +535,50 @@ namespace Vintagestory.ServerMods
+
              return cloned;
          }
- 
+
 +        // Stratum: guards the lazy unpack below. schematicDatas entries (see WorldGenStructure)
 +        // are cached objects reused by every column that draws this schematic, and worldgen has
 +        // always let different columns run in different pipeline stages at the same time,
@@ -162,7 +141,7 @@ index 7573f32..d75ab17 100644
 +                }
              }
          }
- 
+
          public void Unpack(ICoreAPI api, int orientation)
          {
 -            if (orientation > 0 && blocksByPos == null)
@@ -180,4 +159,3 @@ index 7573f32..d75ab17 100644
              Unpack(api);
          }
      }
- }

@@ -1,279 +1,116 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-index 55b134c..220eed6 100644
+index 55b134c..28229c8 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-@@ -1,7 +1,8 @@
- using System;
- using System.Collections.Generic;
-+using System.Threading;
- using Vintagestory.API.Common;
- using Vintagestory.API.Datastructures;
- using Vintagestory.API.MathTools;
- using Vintagestory.API.Server;
- 
-@@ -12,19 +13,39 @@ namespace Vintagestory.ServerMods
- 
+@@ -12,14 +12,18 @@ namespace Vintagestory.ServerMods
+
      public class GenBlockLayers : ModStdWorldGen
      {
          private ICoreServerAPI api;
- 
--        List<int> BlockLayersIds = new List<int>();
-+        // Stratum: TerrainLate can now run concurrently for distant columns. rnd gets
-+        // reseeded per column at the top of OnChunkColumnGeneration, then LoadBlockLayers
-+        // writes BlockLayersIds/layersUnderWater and PutLayers reads them back a few
-+        // calls later, all within the processing of one column, the same shared-scratch
-+        // shape GenCreatures had. ThreadLocal instead of [ThreadStatic] static since
-+        // this class is a plain instance field owner with no other instances today, but
-+        // matches the idiom used across the rest of this pass rather than relying on
-+        // "only one instance exists right now" staying true.
-+        class ThreadLocalScratch
-+        {
-+            public LCGRandom rnd;
-+            public List<int> BlockLayersIds = new List<int>();
-+            public int[] layersUnderWaterTmp = new int[1];
-+            public int[] layersUnderWater = Array.Empty<int>();
-+        }
-+        ThreadLocal<ThreadLocalScratch> scratchThreadLocal;
-+
-+        // Stratum start: compatibility shim for third-party Harmony patches that
-+        // reflect on this field (e.g. Watersheds uses GetField("rnd")). Value is
-+        // written from the per-thread scratch at OnChunkColumnGeneration entry,
-+        // valid only within that call's scope on the current thread. Fixes #201.
+
+         List<int> BlockLayersIds = new List<int>();
          LCGRandom rnd;
-+        // Stratum end
++
++        // Stratum: each worldgen thread gets a complete generator so vanilla fields stay intact.
++        StratumWorkerInstances<GenBlockLayers> stratumWorkers;
 +
          int mapheight;
          ClampedSimplexNoise grassDensity;
          ClampedSimplexNoise grassHeight;
          int boilingWaterBlockId;
- 
--        public int[] layersUnderWaterTmp = new int[1];
--        public int[] layersUnderWater = Array.Empty<int>();
-         public BlockLayerConfig blockLayerConfig;
-         public SimplexNoise distort2dx;
-         public SimplexNoise distort2dz;
- 
-         public override bool ShouldLoad(EnumAppSide side)
-@@ -46,11 +67,11 @@ namespace Vintagestory.ServerMods
+
+         public int[] layersUnderWaterTmp = new int[1];
+         public int[] layersUnderWater = Array.Empty<int>();
+@@ -36,23 +40,24 @@ namespace Vintagestory.ServerMods
+         {
+             return 0.4;
+         }
+
+         public override void StartServerSide(ICoreServerAPI api)
+         {
+             this.api = api;
++            stratumWorkers = new StratumWorkerInstances<GenBlockLayers>(StratumCreateWorker); // Stratum: isolate mutable fields without changing their shape
+
+             this.api.Event.InitWorldGenerator(InitWorldGen, "standard");
+             this.api.Event.InitWorldGenerator(InitWorldGen, "superflat"); // Just the Init so that BlockSoil can grow grass; and both these are needed even if DecoPass is off
              //this.api.Event.MapRegionGeneration(OnMapRegionGen, "standard");   // 8.2.24 commented out because the method has no code
- 
- 
+
+
              if (TerraGenConfig.DoDecorationPass)
              {
 -                this.api.Event.ChunkColumnGeneration(OnChunkColumnGeneration, EnumWorldGenPass.Terrain, "standard");
-+                StratumTerrainSplit.Register(this.api, OnChunkColumnGeneration, "standard"); // Stratum: late half of the split Terrain pass
++                StratumTerrainSplit.Register(this.api, OnChunkColumnGeneration, StratumOnChunkColumnGeneration, "standard"); // Stratum: expose vanilla topology until the worker path is safe
              }
              distort2dx = new SimplexNoise(new double[] { 14, 9, 6, 3 }, new double[] { 1 / 100.0, 1 / 50.0, 1 / 25.0, 1 / 12.5 }, api.World.SeaLevel + 20980);
              distort2dz = new SimplexNoise(new double[] { 14, 9, 6, 3 }, new double[] { 1 / 100.0, 1 / 50.0, 1 / 25.0, 1 / 12.5 }, api.World.SeaLevel + 20981);
          }
- 
-@@ -81,13 +102,15 @@ namespace Vintagestory.ServerMods
-             LoadGlobalConfig(api);
- 
-             api.ObjectCache.Remove(BlockLayerConfig.cacheKey);
-             blockLayerConfig = BlockLayerConfig.GetInstance(api);
- 
--            rnd = new LCGRandom(api.WorldManager.Seed);
--            grassDensity = new ClampedSimplexNoise(new double[] { 4 }, new double[] { 0.5 }, rnd.NextInt());
--            grassHeight = new ClampedSimplexNoise(new double[] { 1.5 }, new double[] { 0.5 }, rnd.NextInt());
-+            int seed = api.WorldManager.Seed;
-+            LCGRandom setupRnd = new LCGRandom(seed); // one-time draw for the two noise fields below, not the per-column scratch
-+            grassDensity = new ClampedSimplexNoise(new double[] { 4 }, new double[] { 0.5 }, setupRnd.NextInt());
-+            grassHeight = new ClampedSimplexNoise(new double[] { 1.5 }, new double[] { 0.5 }, setupRnd.NextInt());
-+            scratchThreadLocal = new ThreadLocal<ThreadLocalScratch>(() => new ThreadLocalScratch { rnd = new LCGRandom(seed) });
- 
+
+         private void OnMapRegionGen(IMapRegion mapRegion, int regionX, int regionZ, ITreeAttribute chunkGenParams = null)
+         {
+@@ -88,14 +93,44 @@ namespace Vintagestory.ServerMods
+             grassHeight = new ClampedSimplexNoise(new double[] { 1.5 }, new double[] { 0.5 }, rnd.NextInt());
+
              mapheight = api.WorldManager.MapSizeY;
- 
+
              boilingWaterBlockId = gcfg.boilingWaterBlockId;
          }
-@@ -96,11 +119,13 @@ namespace Vintagestory.ServerMods
+
++        private void StratumOnChunkColumnGeneration(IChunkColumnGenerateRequest request)
++        {
++            stratumWorkers.Current.OnChunkColumnGeneration(request);
++        }
++
++        private GenBlockLayers StratumCreateWorker()
++        {
++            GenBlockLayers worker = new GenBlockLayers();
++            worker.StratumCopyStateFrom(this);
++            return worker;
++        }
++
++        // Stratum: copy configured state and give mutable scratch to one worldgen thread.
++        private void StratumCopyStateFrom(GenBlockLayers source)
++        {
++            api = source.api;
++            LoadGlobalConfig(api);
++            BlockLayersIds = new List<int>(source.BlockLayersIds);
++            rnd = new LCGRandom(api.WorldManager.Seed);
++            mapheight = source.mapheight;
++            grassDensity = source.grassDensity;
++            grassHeight = source.grassHeight;
++            boilingWaterBlockId = source.boilingWaterBlockId;
++            layersUnderWaterTmp = (int[])source.layersUnderWaterTmp.Clone();
++            layersUnderWater = source.layersUnderWater == source.layersUnderWaterTmp ? layersUnderWaterTmp : (int[])source.layersUnderWater.Clone();
++            blockLayerConfig = source.blockLayerConfig;
++            distort2dx = source.distort2dx;
++            distort2dz = source.distort2dz;
++        }
++
+         private void OnChunkColumnGeneration(IChunkColumnGenerateRequest request)
          {
              var chunks = request.Chunks;
              int chunkX = request.ChunkX;
              int chunkZ = request.ChunkZ;
- 
--            rnd.InitPositionSeed(chunkX, chunkZ);
-+            ThreadLocalScratch s = scratchThreadLocal.Value; // Stratum: per-thread scratch, fetched once and threaded through for this column
-+            s.rnd.InitPositionSeed(chunkX, chunkZ);
-+            rnd = s.rnd; // Stratum: populate compat shim for third-party reflection (#201)
- 
-             IntDataMap2D forestMap = chunks[0].MapChunk.MapRegion.ForestMap;
-             IntDataMap2D climateMap = chunks[0].MapChunk.MapRegion.ClimateMap;
-             IntDataMap2D beachMap = chunks[0].MapChunk.MapRegion.BeachMap;
-             IntDataMap2D biomeMap = chunks[0].MapChunk.MapRegion.BiomeMap;
-@@ -201,19 +226,19 @@ namespace Vintagestory.ServerMods
-                         }
-                     }
- 
-                     herePos.Y = posY;
-                     int disty = (int)(distort2dx.Noise(-herePos.X, -herePos.Z) / 4.0);
--                    posY = PutLayers(transitionRand, x, z, disty, herePos, chunks, rainRel, temp, tempUnscaled, heightMap, biome);
-+                    posY = StratumPutLayersInner(s, transitionRand, x, z, disty, herePos, chunks, rainRel, temp, tempUnscaled, heightMap, biome);
- 
-                     if (prevY == TerraGenConfig.seaLevel - 1)
-                     {
-                         float beachRel = GameMath.BiLerp(beachUpLeft, beachUpRight, beachBotLeft, beachBotRight, (float)x / chunksize, (float)z / chunksize) / 255f;
-                         GenBeach(x, prevY, z, chunks, rainRel, temp, beachRel, rockblockID);
-                     }
- 
--                    PlaceTallGrass(x, prevY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
-+                    PlaceTallGrass(s, x, prevY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
- 
- 
-                     // Try again to put layers if above sealevel and we found over 10 air blocks
-                     int foundAir = 0;
-                     while (posY >= TerraGenConfig.seaLevel - 1)
-@@ -255,11 +280,20 @@ namespace Vintagestory.ServerMods
-             distx = distort2dx.Noise(herePos.X, herePos.Z);
-             distz = distort2dz.Noise(herePos.X, herePos.Z);
-             return (int)(distx / 5);
-         }
- 
-+        // Stratum start: compatibility overload for third-party Harmony patches that
-+        // bind PutLayers via GetMethod with the original parameter list (e.g. Watersheds).
-+        // Resolves per-thread scratch internally, same pattern as the public PlaceTallGrass. Fixes #201.
-         private int PutLayers(double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
-+        {
-+            return StratumPutLayersInner(scratchThreadLocal.Value, posRand, lx, lz, posyoffs, pos, chunks, rainRel, temp, unscaledTemp, heightMap, biome);
-+        }
-+        // Stratum end
-+
-+        private int StratumPutLayersInner(ThreadLocalScratch s, double posRand, int lx, int lz, int posyoffs, BlockPos pos, IServerChunk[] chunks, float rainRel, float temp, int unscaledTemp, ushort[] heightMap, int biome)
-         {
-             int i = 0;
-             int j = 0;
-             bool underWater = false;
-             bool isOcean = false;
-@@ -302,24 +336,24 @@ namespace Vintagestory.ServerMods
-                     if (heightMap != null && first)
-                     {
-                         chunks[0].MapChunk.TopRockIdMap[lz * chunksize + lx] = blockId;
-                         if (underIce) break;   // radfast 30.1.24: Note, under ice we do not set the sea/lake floor layers (gravel etc), for consistency with legacy worldgen prior to 1.19.4
- 
--                        LoadBlockLayers(posRand, rainRel, temp, unscaledTemp, startPosY + posyoffs, pos, blockId, isOcean, biome);
-+                        LoadBlockLayers(s, posRand, rainRel, temp, unscaledTemp, startPosY + posyoffs, pos, blockId, isOcean, biome);
-                         first = false;
- 
-                         if (!underWater) heightMap[lz * chunksize + lx] = (ushort)(pos.Y + 1);
-                     }
- 
--                    if (i >= BlockLayersIds.Count || (underWater && j >= layersUnderWater.Length))
-+                    if (i >= s.BlockLayersIds.Count || (underWater && j >= s.layersUnderWater.Length))
-                     {
-                         return pos.Y;
-                     }
- 
- 
-                     IChunkBlocks chunkdata = chunks[chunkY].Data;
--                    chunkdata.SetBlockUnsafe(index3d, underWater ? layersUnderWater[j++] : BlockLayersIds[i++]);
-+                    chunkdata.SetBlockUnsafe(index3d, underWater ? s.layersUnderWater[j++] : s.BlockLayersIds[i++]);
-                     chunkdata.SetFluid(index3d, 0);
-                 }
-                 else
-                 {
-                     if ((i > 0 && temp > -18) || j > 0) return pos.Y;
-@@ -357,27 +391,36 @@ namespace Vintagestory.ServerMods
+
+             rnd.InitPositionSeed(chunkX, chunkZ);
+@@ -357,14 +392,21 @@ namespace Vintagestory.ServerMods
                      }
                  }
              }
          }
- 
-+        // Stratum: kept for external callers (ModStdWorldGen.GenerateGrass calls this on
-+        // whatever generator invoked it, which may not have a ThreadLocalScratch handle
-+        // of its own) that can't see the private ThreadLocalScratch type. Resolves the
-+        // per-thread scratch itself, same as the internal call sites do explicitly.
+
          public void PlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
          {
--            double rndVal = blockLayerConfig.Tallgrass.RndWeight * rnd.NextDouble() + blockLayerConfig.Tallgrass.PerlinWeight * grassDensity.Noise(x, z, -0.5f);
-+            PlaceTallGrass(scratchThreadLocal.Value, x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
-+        }
++            // Stratum: external callers use the same per-thread generator as the registered handler.
++            if (stratumWorkers != null)
++            {
++                stratumWorkers.Current.PlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++                return;
++            }
 +
-+        private void PlaceTallGrass(ThreadLocalScratch s, int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
-+        {
-+            double rndVal = blockLayerConfig.Tallgrass.RndWeight * s.rnd.NextDouble() + blockLayerConfig.Tallgrass.PerlinWeight * grassDensity.Noise(x, z, -0.5f);
- 
+             double rndVal = blockLayerConfig.Tallgrass.RndWeight * rnd.NextDouble() + blockLayerConfig.Tallgrass.PerlinWeight * grassDensity.Noise(x, z, -0.5f);
+
              double extraGrass = Math.Max(0, rainRel * tempRel - 0.25);
- 
+
              if (rndVal <= GameMath.Clamp(forestRel - extraGrass, 0.05, 0.99) || posY >= mapheight - 1 || posY < 1) return;
- 
+
              int blockId = chunks[posY / chunksize].Data[(chunksize * (posY % chunksize) + z) * chunksize + x];
- 
--            if (api.World.Blocks[blockId].Fertility <= rnd.NextInt(100)) return;
-+            if (api.World.Blocks[blockId].Fertility <= s.rnd.NextInt(100)) return;
- 
-             if (blockLayerConfig.Tallgrass.BlockCodeByBiome != null)
-             {
-                 var layers = blockLayerConfig.Tallgrass.BlockCodeByBiome;
-                 double gh = Math.Max(0, grassHeight.Noise(x, z) * layers.Length - 1);
--                int st = (int)gh + (rnd.NextDouble() < gh ? 1 : 0);
-+                int st = (int)gh + (s.rnd.NextDouble() < gh ? 1 : 0);
-                 for (int i = st; i < layers.Length; i++)
-                 {
-                     if (layers[i].Biome == -1 || layers[i].Biome == biome)
-                     {
-                         chunks[(posY + 1) / chunksize].Data[(chunksize * ((posY + 1) % chunksize) + z) * chunksize + x] = layers[i].BlockId;
-@@ -387,11 +430,11 @@ namespace Vintagestory.ServerMods
-             }
- 
-             if (blockLayerConfig.Tallgrass.BlockCodeByMin != null)
-             {
-                 double gheight = Math.Max(0, grassHeight.Noise(x, z) * blockLayerConfig.Tallgrass.BlockCodeByMin.Length - 1);
--                int start = (int)gheight + (rnd.NextDouble() < gheight ? 1 : 0);
-+                int start = (int)gheight + (s.rnd.NextDouble() < gheight ? 1 : 0);
- 
-                 for (int i = start; i < blockLayerConfig.Tallgrass.BlockCodeByMin.Length; i++)
-                 {
-                     TallGrassBlockCodeByMin bcbymin = blockLayerConfig.Tallgrass.BlockCodeByMin[i];
- 
-@@ -404,22 +447,23 @@ namespace Vintagestory.ServerMods
-                 }
-             }
-         }
- 
- 
--        private void LoadBlockLayers(double posRand, float rainRel, float temperature, int unscaledTemp, int posY, BlockPos pos, int firstBlockId, bool isOcean, int biome)
-+        private void LoadBlockLayers(ThreadLocalScratch s, double posRand, float rainRel, float temperature, int unscaledTemp, int posY, BlockPos pos, int firstBlockId, bool isOcean, int biome)
-         {
-             float heightRel = ((float)posY - TerraGenConfig.seaLevel) / ((float)mapheight - TerraGenConfig.seaLevel);
-             float fertilityRel = Climate.GetFertilityFromUnscaledTemp((int)(rainRel * 255), unscaledTemp, heightRel) / 255f;
- 
-             float depthf = TerraGenConfig.SoilThickness(rainRel, temperature, posY - TerraGenConfig.seaLevel, 1f);
-             int depth = (int)depthf;
--            if (depthf - depth > rnd.NextFloat()) depth++;
-+            if (depthf - depth > s.rnd.NextFloat()) depth++;
- 
-             // Hardcoding crime here. Please don't look. Makes deep layers of ice work
-             if (temperature < -16) depth += 10;
- 
-+            List<int> BlockLayersIds = s.BlockLayersIds;
-             BlockLayersIds.Clear();
-             for (int j = 0; j < blockLayerConfig.Blocklayers.Length; j++)
-             {
-                 BlockLayer bl = blockLayerConfig.Blocklayers[j];
-                 float yDist = bl.CalcYDistance(posY, mapheight);
-@@ -460,20 +504,20 @@ namespace Vintagestory.ServerMods
-             }
- 
-             int lakeBedId;
-             if (isOcean)
-             {
--                lakeBedId = blockLayerConfig.OceanBedLayer.GetSuitable(temperature, rainRel, (float)pos.Y / api.WorldManager.MapSizeY, rnd, firstBlockId);
-+                lakeBedId = blockLayerConfig.OceanBedLayer.GetSuitable(temperature, rainRel, (float)pos.Y / api.WorldManager.MapSizeY, s.rnd, firstBlockId);
-             }
-             else
-             {
--                lakeBedId = blockLayerConfig.LakeBedLayer.GetSuitable(temperature, rainRel, (float)pos.Y / api.WorldManager.MapSizeY, rnd, firstBlockId);
-+                lakeBedId = blockLayerConfig.LakeBedLayer.GetSuitable(temperature, rainRel, (float)pos.Y / api.WorldManager.MapSizeY, s.rnd, firstBlockId);
-             }
--            if (lakeBedId == 0) layersUnderWater = Array.Empty<int>();
-+            if (lakeBedId == 0) s.layersUnderWater = Array.Empty<int>();
-             else
-             {
--                layersUnderWaterTmp[0] = lakeBedId;
--                layersUnderWater = layersUnderWaterTmp;
-+                s.layersUnderWaterTmp[0] = lakeBedId;
-+                s.layersUnderWater = s.layersUnderWaterTmp;
-             }
-         }
-     }
- }

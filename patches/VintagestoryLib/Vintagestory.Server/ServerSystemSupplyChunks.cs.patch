@@ -1,15 +1,13 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index f644852..9bb2256 100644
+index 707d78e..534b43d 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-@@ -1,139 +1,1125 @@
+@@ -1,195 +1,1170 @@
  using System;
  using System.Collections.Generic;
  using System.Linq;
 +using System.Reflection;
-+using System.Text;
  using System.Threading;
-+using HarmonyLib;
  using Vintagestory.API.Common;
  using Vintagestory.API.Common.Entities;
  using Vintagestory.API.Config;
@@ -24,30 +22,30 @@ index f644852..9bb2256 100644
 +using System.Diagnostics;
 +using System.Collections.Concurrent;
  namespace Vintagestory.Server;
- 
+
 +
  internal class ServerSystemSupplyChunks : ServerSystem
  {
 +	// World generation handler (generation pass callbacks)
  	private WorldGenHandler worldgenHandler;
- 
+
 +	// Chunk load/save thread
  	private ChunkServerThread chunkthread;
- 
+
 +	// Flag: 8+ CPU cores — enable multithreaded generation
  	private bool is8Core = Environment.ProcessorCount >= 8;
- 
+
 +	// Whether chunk border smoothing is required (for worlds created before version 3)
  	private bool requiresChunkBorderSmoothing;
- 
+
 +	// Whether the "empty chunk" flag needs to be set (for worlds before 1.12-dev.1)
  	private bool requiresSetEmptyFlag;
- 
+
 +	// Pause request flag for all worldgen threads (0 = run, 1 = pause requested).
 +	// Acknowledgements live in pauseAckState, so a late or raced acknowledgement
 +	// can never leave this flag above zero with no pauser active.
  	private volatile int pauseAllWorldgenThreads;
- 
+
 +	// Packed pause acknowledgement state: the upper bits carry the pause epoch,
 +	// the low 16 bits count workers parked for that epoch. The epoch moves on
 +	// every pause start, cancel, and resume, so an acknowledgement from a worker
@@ -61,19 +59,19 @@ index f644852..9bb2256 100644
 +	// Thread-local stream for chunk serialization during saving
  	[ThreadStatic]
  	private static FastMemoryStream saveChunksStream;
- 
+
 +	// List of entity IDs to remove when unloading a chunk
  	private List<long> entitiesToRemove = new List<long>();
- 
+
 +	// Counter of "story" messages printed during spawn loading
  	private int storyEventPrints;
- 
+
 +	// Array of "story" messages displayed during spawn loading
  	private string[] storyChunkSpawnEvents;
- 
+
 +	// Number of remaining blocking requests (for loadChunkAreaBlocking)
  	private int blockingRequestsRemaining;
- 
+
 +	// Stratum start:
 +
 +
@@ -163,8 +161,8 @@ index f644852..9bb2256 100644
 +	/// research/gap-mod-patch-conflict-visibility.md gave up on: that doc needed
 +	/// a build-time manifest of every method Stratum source-patches, which needs
 +	/// real Roslyn tooling. This needs no manifest, because the only methods that
-+	/// matter for a cap raise are the handlers for the raised stage, and those
-+	/// are already in hand as live MethodInfo.
++	/// matter for a cap raise are the registered handler types, and those are
++	/// already in hand without a build-time manifest.
 +	///
 +	/// Deliberately does not make the transpiler-vs-prefix/postfix distinction
 +	/// StratumHarmonyVisibility makes. That distinction is about whether a
@@ -179,10 +177,11 @@ index f644852..9bb2256 100644
 +	/// Two honest limits, neither of which the fallback direction makes unsafe:
 +	/// this only sees patches applied by the time worldgen starts (a mod that
 +	/// defers PatchAll past that is invisible, same caveat as
-+	/// StratumHarmonyVisibility), and it only inspects the handler methods
-+	/// themselves, not everything they call. Both mean it can miss, never that it
-+	/// wrongly clears. A false positive costs throughput on one pass; a false
-+	/// negative corrupts world generation, so erring toward capping is deliberate.
++	/// StratumHarmonyVisibility), and it only inspects methods declared on the
++	/// handler type and its in-assembly base types, not everything they call. Both
++	/// mean it can miss, never that it wrongly clears. A false positive costs
++	/// throughput on one pass; a false negative corrupts world generation, so
++	/// erring toward capping is deliberate.
 +	///
 +	/// Called once per raised stage from InitWorldgenAndSpawnChunks, right after
 +	/// worldgenHandler is populated, which is the first point every mod has
@@ -192,6 +191,12 @@ index f644852..9bb2256 100644
 +	{
 +		int desiredCap = stratumStageMaxConcurrent[internalStage];
 +		if (desiredCap <= 1) return;
++		if (internalStage == StratumWorldGenStages.Terrain && StratumWorldgenCompat.TerrainRequiresSerialFallback)
++		{
++			FallBackStageToSerial(internalStage, stageName,
++				"the Terrain split stayed in vanilla topology, so its shared generator instances must remain serial");
++			return;
++		}
 +
 +		List<ChunkColumnGenerationDelegate> handlers = internalStage == StratumWorldGenStages.TerrainLate
 +			? worldgenHandler.OnChunkColumnGenTerrainLate
@@ -211,11 +216,11 @@ index f644852..9bb2256 100644
 +				return;
 +			}
 +
-+			string modPatches = DescribeModPatches(method);
-+			if (modPatches != null)
++			string patchedMethod = StratumModCompat.FindPatchedMethodOn(method.DeclaringType);
++			if (patchedMethod != null)
 +			{
 +				FallBackStageToSerial(internalStage, stageName,
-+					"Stratum's own worldgen handler " + DescribeMethod(method) + " is Harmony-patched (" + modPatches + "), "
++					"Stratum's own worldgen handler type includes a mod-patched method " + patchedMethod + ", "
 +					+ "so that mod's code would run inside a generator Stratum audited only in its own form, "
 +					+ "on several columns at once. Stratum cannot verify third-party code is safe under that");
 +				return;
@@ -236,42 +241,6 @@ index f644852..9bb2256 100644
 +			+ "World generation stays correct, it just gives up this pass's speedup. "
 +			+ "If you are the author of that mod and have verified it is safe to run concurrently across "
 +			+ "columns, get in touch so it can be allowlisted.");
-+	}
-+
-+	/// <summary>
-+	/// Stratum: lists every mod-owned Harmony patch on one method, or null when
-+	/// there are none. Stratum applies no Harmony patches of its own (its changes
-+	/// are compiled in, see StratumHarmonyVisibility), so anything found here is
-+	/// third-party by construction.
-+	/// </summary>
-+	private static string DescribeModPatches(MethodBase method)
-+	{
-+		if (method == null) return null;
-+
-+		Patches info = Harmony.GetPatchInfo(method);
-+		if (info == null) return null;
-+
-+		StringBuilder sb = null;
-+		AppendPatchOwners(ref sb, info.Transpilers, "transpiler");
-+		AppendPatchOwners(ref sb, info.Prefixes, "prefix");
-+		AppendPatchOwners(ref sb, info.Postfixes, "postfix");
-+		AppendPatchOwners(ref sb, info.Finalizers, "finalizer");
-+		return sb?.ToString();
-+	}
-+
-+	private static void AppendPatchOwners(ref StringBuilder sb, IReadOnlyCollection<Patch> patches, string kind)
-+	{
-+		if (patches == null) return;
-+
-+		foreach (Patch patch in patches)
-+		{
-+			if (sb == null) sb = new StringBuilder();
-+			else sb.Append(", ");
-+
-+			sb.Append(kind).Append(" from '")
-+				.Append(string.IsNullOrWhiteSpace(patch.owner) ? "(unknown mod)" : patch.owner)
-+				.Append('\'');
-+		}
 +	}
 +
 +	private static string DescribeMethod(MethodBase method)
@@ -360,7 +329,7 @@ index f644852..9bb2256 100644
 +		stratumStageMaxConcurrent[StratumWorldGenStages.Terrain] = Math.Max(1, chunkthread.additionalWorldGenThreadsCount);
 +		stratumStageMaxConcurrent[StratumWorldGenStages.TerrainFeatures] = Math.Max(1, chunkthread.additionalWorldGenThreadsCount);
  	}
- 
+
 +	/// <summary>
 +	/// Returns the system update interval (in ms).
 +	/// When requests exist and 8+ cores are available — minimal interval for maximum throughput.
@@ -374,7 +343,7 @@ index f644852..9bb2256 100644
 -		return chunkthread.additionalWorldGenThreadsCount - 1;
 +		return Math.Max(1, chunkthread.additionalWorldGenThreadsCount - 1); // protection against negative and zero values
  	}
- 
+
 +	/// <summary>
 +	/// Called when the game is ready. Initializes version flags and starts generation threads.
 +	/// </summary>
@@ -907,13 +876,13 @@ index f644852..9bb2256 100644
 +					Volatile.Write(ref request.dispatchClaimed, 0);
 +					SignalDispatcher(); // wake the dispatcher
 +				}
- 			}
- 		}
++			}
++		}
 +
 +		// Release thread-local generation resources
 +		BlockAccessorWorldGen.ThreadDispose();
- 	}
- 
++	}
++
 +
 +	/// <summary>
 +	/// Stratum: Builds a priority list of chunks sorted by proximity to players.
@@ -992,8 +961,8 @@ index f644852..9bb2256 100644
 +				// Closer than the farthest in top-K — replace
 +				stratumTopKHeap.Dequeue();
 +				stratumTopKHeap.Enqueue(r, -distSq);
-+			}
-+		}
+ 			}
+ 		}
 +
 +		// Extract from heap (farthest to nearest) and reverse
 +		while (stratumTopKHeap.Count > 0)
@@ -1014,8 +983,8 @@ index f644852..9bb2256 100644
 +	{
 +		Volatile.Write(ref stratumPriorityListPublished, list);
 +		return list;
-+	}
-+
+ 	}
+
 +
 +
 +	/// <summary>
@@ -1150,12 +1119,14 @@ index f644852..9bb2256 100644
  			if (!tryLoadOrGenerateChunkColumnsInQueue())
  			{
  				break;
-@@ -143,39 +1129,59 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			}
+ 			if (server.Suspended)
+ 			{
  				break;
  			}
  		}
  	}
- 
+
 +
 +
 +
@@ -1212,7 +1183,7 @@ index f644852..9bb2256 100644
  				ServerChunk serverChunk = (ServerChunk)server.WorldMap.GetChunk(x, i, z);
  				if (serverChunk != null)
  				{
-@@ -183,11 +1189,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					Entity[] entities = serverChunk.Entities;
  					for (int j = 0; j < entities.Length; j++)
  					{
  						Entity entity = entities[j];
@@ -1225,7 +1196,11 @@ index f644852..9bb2256 100644
  						{
  							if (j >= serverChunk.EntitiesCount)
  							{
-@@ -211,19 +1217,23 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 								break;
+ 							}
+@@ -209,23 +1184,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					Y = i,
+ 					Z = z
  				});
  			}
  			list2.Add(item);
@@ -1250,12 +1225,16 @@ index f644852..9bb2256 100644
  		{
  			ChunkPos item2 = server.WorldMap.MapRegionPosFromIndex2D(result2);
  			if (hashSet == null)
-@@ -237,28 +1247,46 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			{
+ 				hashSet = new HashSet<ChunkPos>();
+@@ -235,162 +1214,300 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		}
+ 		if (hashSet != null && hashSet.Count > 0)
  		{
  			chunkthread.gameDatabase.DeleteMapRegions(hashSet);
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Moves requests from the main queue (server.requestedChunkColumns)
 +	/// to the generation queue (chunkthread.requestedChunkColumns) with capacity limiting.
@@ -1292,7 +1271,7 @@ index f644852..9bb2256 100644
 +		}
 +		// Stratum end
  	}
- 
+
 +	/// <summary>
 +	/// Simple load of a chunk column from the database (without generation).
 +	/// Returns true on successful load.
@@ -1302,7 +1281,8 @@ index f644852..9bb2256 100644
  		ServerMapChunk orCreateMapChunk = chunkthread.loadsavechunks.GetOrCreateMapChunk(request);
  		if (orCreateMapChunk == null)
  		{
-@@ -267,94 +1295,203 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			return false;
+ 		}
  		ServerChunk[] array = chunkthread.loadsavechunks.TryLoadChunkColumn(request);
  		if (array == null)
  		{
@@ -1325,7 +1305,7 @@ index f644852..9bb2256 100644
  		});
  		return true;
  	}
- 
+
 +	/// <summary>
 +	/// Attempts to load or generate chunks from the queue.
 +	/// Uses the priority list (Stratum) or FIFO as a fallback.
@@ -1452,7 +1432,7 @@ index f644852..9bb2256 100644
  		}
  		return false;
  	}
- 
+
 +
 +
 +	/// <summary>
@@ -1486,7 +1466,7 @@ index f644852..9bb2256 100644
  		}
  		return num;
  	}
- 
+
 +	/// <summary>
 +	/// Loads or generates a chunk column on the chunk thread.
 +	/// Handles loading from DB, generation, finalization (Done), and stage transitions.
@@ -1512,7 +1492,9 @@ index f644852..9bb2256 100644
  				chunkRequest.Chunks = TryLoadChunkColumn(chunkRequest);
  				if (chunkRequest.Chunks != null)
  				{
-@@ -364,31 +1501,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					for (int i = 0; i < chunkRequest.Chunks.Length; i++)
+ 					{
+ 						ServerChunk obj = chunkRequest.Chunks[i];
  						obj.serverMapChunk = orCreateMapChunk;
  						obj.MarkFresh();
  					}
@@ -1555,7 +1537,11 @@ index f644852..9bb2256 100644
  				ServerEventAPI eventapi = server.api.eventapi;
  				ServerMapChunk mapChunk = orCreateMapChunk;
  				int chunkX = chunkRequest.chunkX;
-@@ -404,117 +1552,105 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				int chunkZ = chunkRequest.chunkZ;
+ 				IWorldChunk[] chunks = chunkRequest.Chunks;
+@@ -402,121 +1519,109 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				if (server.Config.RepairMode)
+ 				{
  					ServerMain.Logger.Error("Repair mode is enabled so will delete the entire chunk column.");
  					GenerateNewChunkColumn(orCreateMapChunk, chunkRequest);
  					return false;
@@ -1596,7 +1582,7 @@ index f644852..9bb2256 100644
  		}
  		return num;
  	}
- 
+
 -	public int GenerateChunkColumns_OnSeparateThread(int stageStart, int stageEnd)
 -	{
 -		ChunkColumnLoadRequest chunkColumnLoadRequest = null;
@@ -1636,7 +1622,7 @@ index f644852..9bb2256 100644
 -		}
 -		return 0;
 -	}
- 
+
 +
 +
 +	/// <summary>
@@ -1651,7 +1637,7 @@ index f644852..9bb2256 100644
  		}
  		return true;
  	}
- 
+
 +	/// <summary>
 +	/// Finalizes chunk column loading on the main thread.
 +	/// Registers chunks, loads entities, initializes BlockEntities, triggers events.
@@ -1703,7 +1689,11 @@ index f644852..9bb2256 100644
  				try
  				{
  					serverChunk.Unpack();
-@@ -529,10 +1665,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				}
+ 				catch (Exception ex)
+@@ -527,14 +1632,16 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 						ServerMain.Logger.Error("Repair mode is enabled so will delete the entire chunk column.");
+ 						server.api.worldapi.DeleteChunkColumn(chunkRequest.chunkX, chunkRequest.chunkZ);
  						ServerMain.FrameProfiler.Leave();
  						return;
  					}
@@ -1716,7 +1706,11 @@ index f644852..9bb2256 100644
  			{
  				for (int j = 0; j < serverChunk.Entities.Length; j++)
  				{
-@@ -548,10 +1686,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					Entity entity = serverChunk.Entities[j];
+ 					if (entity == null)
+@@ -546,14 +1653,15 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					}
+ 					else
  					{
  						if (server.LoadEntity(entity, num2))
  						{
@@ -1728,7 +1722,11 @@ index f644852..9bb2256 100644
  						{
  							string text = "-";
  							try
-@@ -564,14 +1703,18 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 							{
+ 								text = entity.WatchedAttributes.GetTreeAttribute("nametag")?.GetString("name") ?? "-";
+@@ -562,57 +1670,81 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 							{
+ 							}
  							ServerMain.Logger.Log(EnumLogType.Worldgen, "In " + server.WorldName + ", villager " + text + " removed at " + entity.Pos.AsBlockPos?.ToString() + " due to an exception on loading");
  						}
  					}
@@ -1747,7 +1745,8 @@ index f644852..9bb2256 100644
  			{
  				BlockEntity value = blockEntity.Value;
  				if (value == null)
-@@ -580,13 +1723,23 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				{
+ 					continue;
  				}
  				try
  				{
@@ -1773,7 +1772,7 @@ index f644852..9bb2256 100644
  					ServerMain.FrameProfiler.Leave();
  				}
  				catch (Exception ex3)
-@@ -594,23 +1747,33 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				{
  					ServerMain.Logger.Notification("Exception thrown when trying to initialize a block entity @{0}: {1}", value.Pos, ex3);
  					value.UnregisterAllTickListeners();
  				}
@@ -1798,7 +1797,7 @@ index f644852..9bb2256 100644
  		ServerMain.FrameProfiler.Mark("MTT-ChunkLoaded-Pack");
  		ServerMain.FrameProfiler.Leave();
  	}
- 
+
 +	/// <summary>
 +	/// Updates neighbour loaded flags for the given MapChunk.
 +	/// </summary>
@@ -1807,12 +1806,16 @@ index f644852..9bb2256 100644
  		mapChunk.NeighboursLoaded = default(SmallBoolArray);
  		mapChunk.SelfLoaded = true;
  		for (int i = 0; i < Cardinal.ALL.Length; i++)
-@@ -623,20 +1786,26 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		{
+ 			Cardinal cardinal = Cardinal.ALL[i];
+@@ -621,24 +1753,30 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			{
+ 				mapChunk.NeighboursLoaded[i] = serverMapChunk.SelfLoaded;
  				serverMapChunk.NeighboursLoaded[cardinal.Opposite.Index] = true;
  			}
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Resets neighbour loaded flags when a chunk is deleted.
 +	/// Iterates 8 neighbouring positions and clears the corresponding flags.
@@ -1834,12 +1837,16 @@ index f644852..9bb2256 100644
  			serverMapChunk.NeighboursLoaded[4] = false;
  		}
  		if (serverMapChunk2 != null)
-@@ -667,12 +1836,17 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		{
+ 			serverMapChunk2.NeighboursLoaded[5] = false;
+@@ -665,38 +1803,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		}
+ 		if (serverMapChunk8 != null)
  		{
  			serverMapChunk8.NeighboursLoaded[3] = false;
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Executes deferred block updates for a chunk and its neighbours
 +	/// if all neighbours are loaded and generation is complete.
@@ -1852,7 +1859,9 @@ index f644852..9bb2256 100644
  			for (int j = -1; j <= 1; j++)
  			{
  				bool flag = false;
-@@ -682,19 +1856,24 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				if (server.loadedMapChunks.TryGetValue(server.WorldMap.MapChunkIndex2D(chunkRequest.chunkX + j, chunkRequest.chunkZ + i), out var value) && value.CurrentIncompletePass == EnumWorldGenPass.Done && value.ScheduledBlockUpdates.Count > 0 && areAllChunkNeighboursLoaded(value, chunkRequest.chunkX + j, chunkRequest.chunkZ + i))
+ 				{
+ 					flag = true;
  				}
  				if (!flag)
  				{
@@ -1868,7 +1877,7 @@ index f644852..9bb2256 100644
  			}
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Checks whether all 8 neighbours of a chunk are loaded (generation complete).
 +	/// </summary>
@@ -1877,12 +1886,16 @@ index f644852..9bb2256 100644
  		int num = 0;
  		for (int i = -1; i <= 1; i++)
  		{
-@@ -707,60 +1886,78 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			for (int j = -1; j <= 1; j++)
+ 			{
+@@ -705,79 +1853,99 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					num++;
+ 				}
  			}
  		}
  		return num == 8;
  	}
- 
+
 +	/// <summary>
 +	/// Gets or creates a map region, ensuring neighbouring regions are loaded.
 +	/// On first neighbour load, triggers OnMapRegionNeighborsLoaded callbacks.
@@ -1917,7 +1930,7 @@ index f644852..9bb2256 100644
  		}
  		return orCreateMapRegion;
  	}
- 
+
 +	/// <summary>
 +	/// Gets or creates a map region without storing it in the global registry.
 +	/// Updates outdated generation version if necessary, preserving existing data.
@@ -1957,7 +1970,9 @@ index f644852..9bb2256 100644
  				dictionary = value.ModData;
  				dictionary2 = value.OreMaps;
  				intDataMap2D = value.GeologicProvinceMap;
-@@ -770,12 +1967,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				array = value.RockStrata;
+ 			}
+ 			else
  			{
  				flag = false;
  				value.loadedTotalMs = server.ElapsedMilliseconds;
@@ -1972,12 +1987,16 @@ index f644852..9bb2256 100644
  			if (list != null)
  			{
  				value.GeneratedStructures = list;
-@@ -798,35 +1997,48 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			}
+ 			if (dictionary != null)
+@@ -796,118 +1964,158 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			{
+ 				value.RockStrata = array;
  			}
  		}
  		return value;
  	}
- 
+
 +	/// <summary>
 +	/// Gets or creates a map region with storage in the global registry.
 +	/// Triggers the MapRegionLoaded event on the main thread.
@@ -1998,7 +2017,7 @@ index f644852..9bb2256 100644
  		});
  		return mapRegion;
  	}
- 
+
 +	/// <summary>
 +	/// Creates a new map region, invoking all region generation callbacks.
 +	/// </summary>
@@ -2011,7 +2030,7 @@ index f644852..9bb2256 100644
  		}
  		return serverMapRegion;
  	}
- 
+
 +	/// <summary>
 +	/// Restores generated structures from chunk generation parameters.
 +	/// Stratum: uses HashSet for O(N+M) instead of O(N*M) nested scanning.
@@ -2021,7 +2040,9 @@ index f644852..9bb2256 100644
  		byte[] array = chunkGenParams?.GetBytes("GeneratedStructures");
  		if (array == null)
  		{
-@@ -836,44 +2048,60 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			return;
+ 		}
+ 		Dictionary<long, List<GeneratedStructure>> dictionary = SerializerUtil.Deserialize<Dictionary<long, List<GeneratedStructure>>>(array);
  		long key = server.api.WorldManager.MapRegionIndex2D(regionX, regionZ);
  		if (!dictionary.TryGetValue(key, out var value) || value == null)
  		{
@@ -2033,7 +2054,7 @@ index f644852..9bb2256 100644
 +		List<GeneratedStructure> generatedStructure = [.. value.Where(structure => !existingStarts.Contains(structure.Location.Start))];
  		mapRegion.AddGeneratedStructures(generatedStructure);
  	}
- 
+
 +	/// <summary>
 +	/// Gets or creates a MapChunk for the request. Searches memory first,
 +	/// then the database, creates a new one if necessary.
@@ -2073,7 +2094,7 @@ index f644852..9bb2256 100644
  		server.loadedMapChunks[key] = value;
  		return value;
  	}
- 
+
 +	/// <summary>
 +	/// Quickly gets a MapChunk from memory or the database without creating a new one.
 +	/// </summary>
@@ -2083,12 +2104,12 @@ index f644852..9bb2256 100644
  		long key = server.WorldMap.MapChunkIndex2D(chunkX, chunkZ);
  		server.loadedMapChunks.TryGetValue(key, out var value);
  		if (value != null)
-@@ -881,31 +2109,42 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		{
  			return value;
  		}
  		return TryLoadMapChunk(chunkX, chunkZ);
  	}
- 
+
 +	/// <summary>
 +	/// Creates a new MapChunk, invoking all MapChunk generation callbacks.
 +	/// </summary>
@@ -2101,7 +2122,7 @@ index f644852..9bb2256 100644
  		}
  		return serverMapChunk;
  	}
- 
+
 +	/// <summary>
 +	/// Creates a new chunk column for generation.
 +	/// Prepares border smoothing data if necessary.
@@ -2126,7 +2147,11 @@ index f644852..9bb2256 100644
  			for (int j = 0; j < Cardinal.ALL.Length; j++)
  			{
  				Cardinal cardinal = Cardinal.ALL[j];
-@@ -918,47 +2157,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				ServerMapChunk serverMapChunk = PeekMapChunk(chunkRequest.chunkX + cardinal.Normali.X, chunkRequest.chunkZ + cardinal.Normali.Z);
+ 				if (serverMapChunk != null && serverMapChunk.CurrentIncompletePass >= EnumWorldGenPass.Done && serverMapChunk.WorldGenVersion != 3)
+@@ -916,83 +2124,153 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					{
+ 						chunkRequest.NeighbourTerrainHeight = new ushort[8][];
  					}
  					chunkRequest.NeighbourTerrainHeight[j] = serverMapChunk.WorldGenTerrainHeightMap;
  				}
@@ -2143,7 +2168,7 @@ index f644852..9bb2256 100644
 +		// Set the initial generation stage
  		chunkRequest.CurrentIncompletePass = EnumWorldGenPass.Terrain;
  	}
- 
+
 +	/// <summary>
 +	/// Attempts to load a chunk column from the database.
 +	/// Supports parallel loading via StratumChunkReadPool.
@@ -2254,7 +2279,8 @@ index f644852..9bb2256 100644
  			foreach (ServerChunk serverChunk in array)
  			{
  				if (serverChunk != null)
-@@ -967,10 +2270,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				{
+ 					serverChunk.Unpack();
  					serverChunk.MarkModified();
  					serverChunk.TryPackAndCommit();
  				}
@@ -2267,12 +2293,13 @@ index f644852..9bb2256 100644
  			ServerMain.Logger.Error("Loaded some but not all chunks of a column? Discarding whole column.");
  			return null;
  		}
-@@ -979,18 +2284,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		if (num != chunkMapSizeY)
+ 		{
  			return null;
  		}
  		return array;
  	}
- 
+
 +	/// <summary>
 +	/// Attempts to load a MapChunk from the database. Returns null if absent or on error.
 +	/// </summary>
@@ -2290,12 +2317,16 @@ index f644852..9bb2256 100644
  					serverMapChunk.YMax = (ushort)(server.SaveGameData.MapSizeY - 1);
  				}
  				return serverMapChunk;
-@@ -1011,10 +2320,13 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			}
+ 			catch (Exception ex)
+@@ -1009,14 +2287,17 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				ServerMain.Logger.Error("Failed deserializing a map chunk, we are in repair mode, so will initialize empty one. Exception: {0}", ex);
+ 				return null;
  			}
  		}
  		return null;
  	}
- 
+
 +	/// <summary>
 +	/// Attempts to load a map region from the database. Returns null if absent or on error.
 +	/// </summary>
@@ -2304,12 +2335,16 @@ index f644852..9bb2256 100644
  		byte[] mapRegion = chunkthread.gameDatabase.GetMapRegion(regionX, regionZ);
  		try
  		{
-@@ -1035,14 +2347,33 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			if (mapRegion != null)
+ 			{
+@@ -1033,18 +2314,37 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			}
+ 			ServerMain.Logger.Error("Failed deserializing a map region. Not in repair mode, will exit.");
  			throw;
  		}
  		return null;
  	}
- 
+
 +	/// <summary>
 +	/// Initializes world generation and loads spawn chunks.
 +	/// For old worlds, searches for a suitable spawn point; for new ones, loads the map center.
@@ -2338,7 +2373,11 @@ index f644852..9bb2256 100644
  			storyChunkSpawnEvents = new string[15]
  			{
  				Lang.Get("...the carved mountains"),
-@@ -1060,23 +2391,27 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				Lang.Get("...the rolling hills"),
+ 				Lang.Get("...the vertical cliffs"),
+@@ -1058,27 +2358,31 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				Lang.Get("...the roaming creatures"),
+ 				Lang.Get("with their offspring..."),
  				Lang.Get("...a misty sunrise"),
  				Lang.Get("...dew drops on a blade of grass"),
  				Lang.Get("...a soft breeze")
@@ -2366,7 +2405,11 @@ index f644852..9bb2256 100644
  					double value = random.NextDouble() * 6.2831854820251465;
  					double num7 = num6 * GameMath.Sin(value);
  					double num8 = num6 * GameMath.Cos(value);
-@@ -1096,10 +2431,11 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					num = (int)num7;
+ 					num2 = (int)num8;
+@@ -1094,114 +2398,139 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				if (i + 1 < num3)
+ 				{
  					server.api.Logger.Notification("Trying another spawn location ({0}/{1})...", i + 2, num3);
  				}
  			}
@@ -2378,7 +2421,7 @@ index f644852..9bb2256 100644
  				if (!server.blockAccessor.GetBlock(blockPos).SideSolid[BlockFacing.UP.Index])
  				{
  					server.blockAccessor.SetBlock(server.blockAccessor.GetBlock(new AssetLocation("planks-oak-we")).Id, blockPos);
-@@ -1107,13 +2443,16 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				}
  				blockPos.Y++;
  			}
  		}
@@ -2395,12 +2438,14 @@ index f644852..9bb2256 100644
  			x = blockPos.X,
  			y = blockPos.Y,
  			z = blockPos.Z
-@@ -1123,10 +2462,14 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		};
+ 		if (blockPos.Y < 0)
+ 		{
  			server.mapMiddleSpawnPos.y = null;
  		}
  		server.api.Logger.VerboseDebug("Done spawn chunk");
  	}
- 
+
 +	/// <summary>
 +	/// Adjusts the spawn position: searches for a safe spot (not liquid, no solid block above,
 +	/// not blocked by a land claim). Up to 60 attempts with random offset.
@@ -2410,7 +2455,10 @@ index f644852..9bb2256 100644
  		int num = 60;
  		int num2 = 0;
  		int num3 = 0;
-@@ -1137,36 +2480,47 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		int num4 = 0;
+ 		int num5 = 0;
+ 		int num6 = 0;
+ 		while (num-- > 0)
  		{
  			num4 = GameMath.Clamp(num2 + pos.X, 0, server.WorldMap.MapSizeX - 1);
  			num6 = GameMath.Clamp(num3 + pos.Z, 0, server.WorldMap.MapSizeZ - 1);
@@ -2437,7 +2485,7 @@ index f644852..9bb2256 100644
  		}
  		return false;
  	}
- 
+
 +	/// <summary>
 +	/// Generates a chunk area in "peek" mode without saving.
 +	/// Used for preview purposes (e.g., cartography).
@@ -2459,7 +2507,7 @@ index f644852..9bb2256 100644
  		{
  			for (int k = -num2; k <= num2; k++)
  			{
-@@ -1174,18 +2528,22 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				if (server.WorldMap.IsValidChunkPos(x + j, 0, y + k))
  				{
  					long index2d = server.WorldMap.MapChunkIndex2D(x + j, y + k);
  					int regionX = (x + j) / MagicNum.ChunkRegionSizeInChunks;
@@ -2483,7 +2531,10 @@ index f644852..9bb2256 100644
  					};
  					chunkColumnLoadRequest.MapChunk = mapChunk;
  					GenerateNewChunkColumn(mapChunk, chunkColumnLoadRequest);
-@@ -1196,10 +2554,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					chunkColumnLoadRequest.Unpack();
+ 					array[j + num2, k + num2] = chunkColumnLoadRequest;
+ 					lock (chunkthread.peekingChunkColumns)
+ 					{
  						chunkthread.peekingChunkColumns.Enqueue(chunkColumnLoadRequest);
  					}
  				}
@@ -2496,7 +2547,11 @@ index f644852..9bb2256 100644
  		{
  			num4 = num - i;
  			for (int l = -num4; l <= num4; l++)
-@@ -1212,10 +2572,12 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			{
+ 				for (int m = -num4; m <= num4; m++)
+@@ -1210,14 +2539,16 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					{
+ 						ChunkColumnLoadRequest chunkRequest = array[l + num2, m + num2];
  						runGenerators(chunkRequest, i);
  					}
  				}
@@ -2509,7 +2564,11 @@ index f644852..9bb2256 100644
  		{
  			for (int n = -num2; n <= num2; n++)
  			{
-@@ -1232,61 +2594,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				for (int num5 = -num2; num5 <= num2; num5++)
+ 				{
+@@ -1230,65 +2561,115 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 						Vec2i key = new Vec2i(x + n, y + num5);
+ 						IServerChunk[] chunks = chunkColumnLoadRequest2.Chunks;
  						dictionary2[key] = chunks;
  					}
  				}
@@ -2530,7 +2589,7 @@ index f644852..9bb2256 100644
  			ServerMain.FrameProfiler.Mark("MTT-PeekChunk");
  		});
  	}
- 
+
 +	/// <summary>
 +	/// Blocking load/generation of a rectangular chunk area.
 +	/// Throttles request submission to avoid queue overflow.
@@ -2623,7 +2682,11 @@ index f644852..9bb2256 100644
  				millisecondsSinceStart = server.totalUnpausedTime.ElapsedMilliseconds;
  				float num4 = 100f * ((float)server.loadedChunks.Count / (float)server.WorldMap.ChunkMapSizeY - (float)num) / (float)num2;
  				ServerMain.Logger.Event(num4.ToString("0.#") + "% ({0} in queue)", chunkthread.requestedChunkColumns.Count);
-@@ -1298,37 +2710,84 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				if (storyEventPrints < storyChunkSpawnEvents.Length)
+ 				{
+@@ -1296,41 +2677,88 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				}
+ 				else
  				{
  					ServerMain.Logger.StoryEvent("...");
  				}
@@ -2711,12 +2774,16 @@ index f644852..9bb2256 100644
  				foreach (ChunkColumnLoadRequest requestedChunkColumn3 in chunkthread.requestedChunkColumns)
  				{
  					if (requestedChunkColumn3 != null)
-@@ -1340,16 +2799,25 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					{
+ 						string text = ((requestedChunkColumn3.chunkX >= chunkX1 && requestedChunkColumn3.chunkX <= chunkX2 && requestedChunkColumn3.chunkZ >= chunkZ1 && requestedChunkColumn3.chunkZ <= chunkZ2) ? " (in original req)" : "");
+@@ -1338,55 +2766,94 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					}
+ 				}
  				throw new Exception("Somehow worldgen has become stuck in an endless loop, please report this as a bug!  Additional data in the server-main log");
  			}
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Executes one generation stage for a chunk (PopulateChunk).
 +	/// Invokes generators for the current pass, marks chunks as modified,
@@ -2737,7 +2804,9 @@ index f644852..9bb2256 100644
  				if (chunkRequest.CurrentIncompletePass == EnumWorldGenPass.Terrain)
  				{
  					ushort sunLight = (ushort)server.sunBrightness;
-@@ -1359,32 +2827,62 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					for (int i = 0; i < chunkRequest.Chunks.Length; i++)
+ 					{
+ 						chunkRequest.Chunks[i].Lighting.ClearWithSunlight(sunLight);
  					}
  				}
  			}
@@ -2783,7 +2852,7 @@ index f644852..9bb2256 100644
  			chunkRequest.generatingLock.ReleaseWriteLock();
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Runs all registered generators for the specified pass.
 +	/// On error at Terrain stage or below — aborts generation.
@@ -2802,7 +2871,11 @@ index f644852..9bb2256 100644
  			return;
  		}
  		for (int i = 0; i < list.Count; i++)
-@@ -1396,89 +2894,119 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		{
+ 			try
+@@ -1394,93 +2861,123 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				list[i](chunkRequest);
+ 			}
  			catch (Exception ex)
  			{
  				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
@@ -2814,7 +2887,7 @@ index f644852..9bb2256 100644
  			}
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Checks that chunk neighbours are sufficiently generated for the current stage.
 +	/// For stages up to and including Terrain2, no check is required.
@@ -2883,7 +2956,7 @@ index f644852..9bb2256 100644
 +		if (!result) Interlocked.Increment(ref stratumGateBlockedCounts[currentIncompletePass_AsInt]);
  		return result;
  	}
- 
+
 -	private EnumWorldGenPass getLoadedOrQueuedChunkPass(long index2d)
 -	{
 -		server.loadedMapChunks.TryGetValue(index2d, out var value);
@@ -2893,7 +2966,7 @@ index f644852..9bb2256 100644
 -		}
 -		return EnumWorldGenPass.Done;
 -	}
- 
+
 +
 +	/// <summary>
 +	/// Checks if there is space in the request queue. On overflow:
@@ -2939,12 +3012,16 @@ index f644852..9bb2256 100644
  			chunkthread.requestedChunkColumns.Enqueue(curRequest);
  			return true;
  		}
-@@ -1490,13 +3018,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 		finally
+ 		{
+@@ -1488,121 +2985,204 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 			if (chunkthread.additionalWorldGenThreadsCount > 0)
+ 			{
  				ServerMain.Logger.VerboseDebug("Un-pausing all worldgen threads.");
  			}
  		}
  	}
- 
+
 +	/// <summary>
 +	/// Fully clears the generation queue, saving incomplete chunks beforehand.
 +	/// </summary>
@@ -2959,12 +3036,13 @@ index f644852..9bb2256 100644
  			if (requestedChunkColumn != null && !requestedChunkColumn.Disposed)
  			{
  				server.loadedMapChunks.Remove(requestedChunkColumn.mapIndex2d);
-@@ -1505,104 +3039,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 				server.ChunkColumnRequested.Remove(requestedChunkColumn.mapIndex2d);
+ 			}
  		}
  		chunkthread.requestedChunkColumns.Clear();
  		ServerMain.Logger.VerboseDebug("Incomplete chunks stored and wiped.");
  	}
- 
+
 -	private Thread CreateAdditionalWorldGenThread(int stageStart, int stageEnd, int threadnum)
 +
 +	/// <summary>
@@ -2980,7 +3058,7 @@ index f644852..9bb2256 100644
  		thread.Start();
  		return thread;
  	}
- 
+
 -	public void GeneratorThreadLoop(int stageStart, int stageEnd)
 +
 +
@@ -3026,7 +3104,7 @@ index f644852..9bb2256 100644
 +		readyTasksQueue.CompleteAdding(); // Stratum: Close the channel for workers
  		BlockAccessorWorldGen.ThreadDispose();
  	}
- 
+
 -	public override void OnSeperateThreadShutDown()
 +	/// <summary>
 +	/// Resource disposal. Duplicates shutdown logic to guarantee correct shutdown.
@@ -3045,7 +3123,7 @@ index f644852..9bb2256 100644
 +
  		BlockAccessorWorldGen.ThreadDispose();
  	}
- 
+
 -	public override void Dispose()
 +	/// <summary>
 +	/// Retires the current pause epoch: bumps the epoch bits and zeroes the
@@ -3064,7 +3142,7 @@ index f644852..9bb2256 100644
 +			}
 +		}
  	}
- 
+
 +	/// <summary>
 +	/// Pauses all worldgen threads. Waits until all workers acknowledge the pause.
 +	/// Returns false on timeout (cancels the request to prevent deadlock).
@@ -3106,7 +3184,7 @@ index f644852..9bb2256 100644
  		}
  		return true;
  	}
- 
+
 +	/// <summary>
 +	/// Resumes all worldgen threads and wakes the dispatcher.
 +	/// </summary>
@@ -3116,7 +3194,7 @@ index f644852..9bb2256 100644
  		pauseAllWorldgenThreads = 0;
 +		SignalDispatcher(); // Stratum: wake the dispatcher — time to work
  	}
- 
+
 +	/// <summary>
 +	/// Called by a worker to acknowledge the pause.
 +	/// Registers the acknowledgement against the current epoch and waits for
@@ -3178,6 +3256,4 @@ index f644852..9bb2256 100644
 +			}
 +		}
  	}
--}
-+}
-\ No newline at end of file
+ }

@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
-index 5f759f1..b5956e7 100644
+index 5f759f1..1628cd9 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
-@@ -1,7 +1,8 @@
+@@ -1,9 +1,10 @@
  using System;
  using System.Collections;
 +using System.Collections.Concurrent;
@@ -11,31 +11,32 @@ index 5f759f1..b5956e7 100644
  using System.Threading;
  using System.Threading.Tasks;
  using Vintagestory.API.Common;
-@@ -27,26 +28,34 @@ namespace Vintagestory.ServerMods
- 
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Datastructures;
+@@ -26,14 +27,20 @@ namespace Vintagestory.ServerMods
+         const double maxDistortionAmount = (55 + 40 + 30 + 10) * SimplexNoiseOctave.MAX_VALUE_2D_WARP;
+
          int maxThreads;
- 
+
          LandformsWorldProperty landforms;
          float[][] terrainYThresholds;
--        Dictionary<int, LerpedWeightedIndex2DMap> LandformMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(10);
-+        // Stratum: ConcurrentDictionary since Terrain can now run concurrently for
-+        // distant columns, same reasoning and same fix as GenRockStrata's province map.
-+        ConcurrentDictionary<int, LerpedWeightedIndex2DMap> LandformMapByRegion = new ConcurrentDictionary<int, LerpedWeightedIndex2DMap>();
-+        // Stratum: guards the lazy landforms/terrainYThresholds init below, a genuine
-+        // (if low-severity) race even at concurrency cap 1 vs other worldgen threads
-+        // touching NoiseLandforms.landforms at the same time; closed while this file
-+        // was already open for the concurrency work.
-+        readonly object landformsInitLock = new object();
+         Dictionary<int, LerpedWeightedIndex2DMap> LandformMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(10);
++
++        // Stratum: preserve the vanilla cache field while concurrent columns share its maps safely.
++        ConcurrentDictionary<int, LerpedWeightedIndex2DMap> stratumLandformMapsByRegion = new ConcurrentDictionary<int, LerpedWeightedIndex2DMap>();
++
++        // Stratum: protect the lazy shared landform setup when Terrain runs concurrently.
++        readonly object stratumLandformsInitLock = new object();
          int regionMapSize;
          float noiseScale;
          int terrainGenOctaves = 9;
- 
+
          NewNormalizedSimplexFractalNoise terrainNoise;
          SimplexNoise distort2dx;
          SimplexNoise distort2dz;
-         NormalizedSimplexNoise geoUpheavalNoise;
--        WeightedTaper[] taperMap;
- 
+@@ -41,33 +48,90 @@ namespace Vintagestory.ServerMods
+         WeightedTaper[] taperMap;
+
          struct ThreadLocalTempData
          {
              public double[] LerpedAmplitudes;
@@ -45,40 +46,26 @@ index 5f759f1..b5956e7 100644
 +            public bool[] LocalLayerFullyEmpty;   // Stratum: Thread-local buffer to avoid false sharing
          }
          ThreadLocal<ThreadLocalTempData> tempDataThreadLocal;
- 
+
          struct WeightedTaper
          {
-@@ -57,14 +66,65 @@ namespace Vintagestory.ServerMods
+             public float TerrainYPos;
+             public float Weight;
+         }
+
          struct ColumnResult
          {
              public BitArray ColumnBlockSolidities;
              public int WaterBlockID;
          }
--        ColumnResult[] columnResults;
--        bool[] layerFullySolid;     // We can't use BitArrays for these because code which writes to them is heavily multi-threaded; but anyhow they are only mapSizeY x 4 bytes
--        bool[] layerFullyEmpty;
--        int[] borderIndicesByCardinal;
 +
-+        // Stratum start: taperMap, columnResults, layerFullySolid and layerFullyEmpty
-+        // used to be plain instance fields, reused across every column processed by
-+        // this GenTerra instance. That is safe with one column in flight at a time
-+        // (which is all Terrain has ever allowed), but generate()'s own internal
-+        // Parallel.For already fans ONE column out across up to maxThreads workers,
-+        // writing into these arrays by chunkIndex2d — so the unit of isolation these
-+        // four buffers need is "the column being generated right now", not "the
-+        // calling thread". ThreadLocal, the fix used everywhere else this session,
-+        // gives per-thread storage; a single column's internal Parallel.For already
-+        // spreads across many threads, and two DIFFERENT columns' Parallel.For calls
-+        // can each land on the same physical thread at different moments, so
-+        // ThreadLocal here would not keep two concurrent columns' data apart.
-+        //
-+        // Instead, ColumnBuffers bundles the four arrays and OnChunkColumnGen rents
-+        // one per column from a pool, uses it for that column's full
-+        // OnChunkColumnGen + generate() call, and returns it when done. The pool
-+        // starts with one instance (matching today's steady state) and grows on
-+        // demand under a TryTake miss rather than blocking, so it self-sizes to
-+        // whatever concurrency actually happens regardless of the stage's configured
-+        // cap, and never risks a stall if that cap is retuned later.
+         ColumnResult[] columnResults;
+         bool[] layerFullySolid;     // We can't use BitArrays for these because code which writes to them is heavily multi-threaded; but anyhow they are only mapSizeY x 4 bytes
+         bool[] layerFullyEmpty;
+         int[] borderIndicesByCardinal;
+
++        // Stratum start: each concurrent Terrain column rents its own vanilla-shaped buffers.
++        // The fields remain mod-visible mirrors while Stratum carries the rented owner locally.
 +        class ColumnBuffers
 +        {
 +            public WeightedTaper[] TaperMap;
@@ -87,6 +74,15 @@ index 5f759f1..b5956e7 100644
 +            public bool[] LayerFullyEmpty;
 +        }
 +        ConcurrentBag<ColumnBuffers> columnBufferPool;
++
++        // Stratum: keep the original generate signature while selecting this call's pooled buffers.
++        struct StratumColumnBufferFrame
++        {
++            public GenTerra StratumOwner;
++            public ColumnBuffers StratumBuffers;
++        }
++
++        [ThreadStatic] private static Stack<StratumColumnBufferFrame> stratumColumnBufferFrames;
 +
 +        ColumnBuffers NewColumnBuffers()
 +        {
@@ -112,14 +108,33 @@ index 5f759f1..b5956e7 100644
 +        {
 +            columnBufferPool.Add(buf);
 +        }
++
++        void stratumPublishColumnBuffers(ColumnBuffers buf)
++        {
++            taperMap = buf.TaperMap;
++            columnResults = buf.ColumnResults;
++            layerFullySolid = buf.LayerFullySolid;
++            layerFullyEmpty = buf.LayerFullyEmpty;
++        }
 +        // Stratum end
- 
++
          public override bool ShouldLoad(EnumAppSide side)
          {
              return side == EnumAppSide.Server;
          }
-@@ -99,11 +159,31 @@ namespace Vintagestory.ServerMods
- 
+
+         public override double ExecuteOrder()
+         {
+@@ -92,20 +156,41 @@ namespace Vintagestory.ServerMods
+             api.Event.ChunkColumnGeneration(OnChunkColumnGen, EnumWorldGenPass.Terrain, "standard");
+         }
+
+         public void initWorldGen()
+         {
+             LoadGlobalConfig(api);
+             LandformMapByRegion.Clear();
++            stratumLandformMapsByRegion.Clear(); // Stratum: clear the concurrent owner with its vanilla view
+
              /*
               *  For info in 1.19 there are 7 running server threads: the main server ticking thread, chunkdbthread, ServerConsole, Relight, CompressChunks, ai-pathfinding, CheckLeafDecay.  There may also be multi-threaded worldgen adding 1-3 more active threads.  Typically 4 threads (ticking, chunkdbthread, ai-pathfinding and at least 1 worldgen thread) will be almost constantly active if there is worldgen demand
                  On a client, meanwhile, there will be at least the main rendering loop and the chunktesselator active.
@@ -147,12 +162,16 @@ index 5f759f1..b5956e7 100644
 +            // nothing while it stays.
 +            maxThreads = reservedThreadsBudget;
              if (api.Server.ReducedServerThreads && maxThreads > 1) maxThreads = 2;
- 
+
              regionMapSize = (int)Math.Ceiling((double)api.WorldManager.MapSizeX / api.WorldManager.RegionSize);
              noiseScale = Math.Max(1, api.WorldManager.MapSizeY / 256f);
              terrainGenOctaves = TerraGenConfig.GetTerrainOctaveCount(api.WorldManager.MapSizeY);
-@@ -136,23 +216,16 @@ namespace Vintagestory.ServerMods
- 
+
+             terrainNoise = NewNormalizedSimplexFractalNoise.FromDefaultOctaves(
+@@ -134,21 +219,22 @@ namespace Vintagestory.ServerMods
+                 api.World.Seed + 9876 + 1
+             );
+
              tempDataThreadLocal = new ThreadLocal<ThreadLocalTempData>(() => new ThreadLocalTempData
              {
                  LerpedAmplitudes = new double[terrainGenOctaves],
@@ -167,23 +186,23 @@ index 5f759f1..b5956e7 100644
 -            layerFullySolid = new bool[api.WorldManager.MapSizeY];
 -            taperMap = new WeightedTaper[chunksize * chunksize];
 -            for (int i = 0; i < chunksize * chunksize; i++) columnResults[i].ColumnBlockSolidities = new BitArray(api.WorldManager.MapSizeY);
--
--            borderIndicesByCardinal = new int[8];
--            borderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
--            borderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
--            borderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
--            borderIndicesByCardinal[Cardinal.NorthWest] = (chunksize - 1) * chunksize + chunksize - 1;
 +            columnBufferPool = new ConcurrentBag<ColumnBuffers>();
-+            columnBufferPool.Add(NewColumnBuffers()); // matches today's steady-state allocation for the common case of one column at a time
- 
-             landforms = null;  // Reset this, useful when /wgen regen command reloads all the generators because landforms gets reloaded from file there
++            ColumnBuffers initialBuffers = NewColumnBuffers();
++            columnBufferPool.Add(initialBuffers); // Stratum: match vanilla's steady-state allocation
++            stratumPublishColumnBuffers(initialBuffers);
+
+             borderIndicesByCardinal = new int[8];
+             borderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
+             borderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
+             borderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
+             borderIndicesByCardinal[Cardinal.NorthWest] = (chunksize - 1) * chunksize + chunksize - 1;
+
+@@ -166,122 +252,187 @@ namespace Vintagestory.ServerMods
          }
- 
-         private double[] scaleAdjustedFreqs(double[] vs, float horizontalScale)
-@@ -168,117 +241,149 @@ namespace Vintagestory.ServerMods
- 
- 
- 
+
+
+
+
          private void OnChunkColumnGen(IChunkColumnGenerateRequest request)
          {
 -            if (request.RequiresChunkBorderSmoothing && !PreventSmoothing(request.ChunkX, request.ChunkZ))
@@ -192,13 +211,29 @@ index 5f759f1..b5956e7 100644
 +            // ColumnResults/LayerFullySolid/LayerFullyEmpty) share the same instance for
 +            // this one column, and no other concurrently-running column's call can see it.
 +            ColumnBuffers buf = RentColumnBuffers();
++            Stack<StratumColumnBufferFrame> frames = stratumColumnBufferFrames ??= new Stack<StratumColumnBufferFrame>();
++            StratumColumnBufferFrame frame = new StratumColumnBufferFrame { StratumOwner = this, StratumBuffers = buf };
++            frames.Push(frame);
++            stratumPublishColumnBuffers(buf);
 +            try
              {
 -                var neibHeightMaps = request.NeighbourTerrainHeight;
 -
 -                // Ignore diagonals if direct adjacent faces are available, otherwise the corners get weighted too strongly
 -                if (neibHeightMaps[Cardinal.North] != null)
--                {
++                int[] currentBorderIndicesByCardinal = new int[8]; // Stratum: call-local, cheap enough not to pool
++                borderIndicesByCardinal = currentBorderIndicesByCardinal; // Stratum: keep the vanilla field current for mod code
++                // Diagonal corner indices never depend on dx/dz, so they used to be set
++                // once in initWorldGen(); now that this array is call-local they get set
++                // fresh here instead, once per column rather than once per generator
++                // lifetime.
++                currentBorderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
++                currentBorderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
++                currentBorderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
++                currentBorderIndicesByCardinal[Cardinal.NorthWest] = (chunksize - 1) * chunksize + chunksize - 1;
++
++                if (request.RequiresChunkBorderSmoothing && !PreventSmoothing(request.ChunkX, request.ChunkZ))
+                 {
 -                    neibHeightMaps[Cardinal.NorthEast] = null;
 -                    neibHeightMaps[Cardinal.NorthWest] = null;
 -                }
@@ -213,35 +248,21 @@ index 5f759f1..b5956e7 100644
 -                    neibHeightMaps[Cardinal.SouthEast] = null;
 -                }
 -                if (neibHeightMaps[Cardinal.West] != null)
-+                int[] borderIndicesByCardinal = new int[8]; // Stratum: call-local, cheap enough not to pool
-+                // Diagonal corner indices never depend on dx/dz, so they used to be set
-+                // once in initWorldGen(); now that this array is call-local they get set
-+                // fresh here instead, once per column rather than once per generator
-+                // lifetime.
-+                borderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
-+                borderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
-+                borderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
-+                borderIndicesByCardinal[Cardinal.NorthWest] = (chunksize - 1) * chunksize + chunksize - 1;
-+
-+                if (request.RequiresChunkBorderSmoothing && !PreventSmoothing(request.ChunkX, request.ChunkZ))
-                 {
+-                {
 -                    neibHeightMaps[Cardinal.SouthWest] = null;
 -                    neibHeightMaps[Cardinal.NorthWest] = null;
 -                }
--
++                    var neibHeightMaps = request.NeighbourTerrainHeight;
+
 -                for (int dx = 0; dx < chunksize; dx++)
 -                {
 -                    borderIndicesByCardinal[Cardinal.North] = (chunksize - 1) * chunksize + dx;
 -                    borderIndicesByCardinal[Cardinal.South] = 0 + dx;
-+                    var neibHeightMaps = request.NeighbourTerrainHeight;
- 
+-
 -                    for (int dz = 0; dz < chunksize; dz++)
 +                    // Ignore diagonals if direct adjacent faces are available, otherwise the corners get weighted too strongly
 +                    if (neibHeightMaps[Cardinal.North] != null)
-                     {
--                        double sumWeight = 0;
--                        double ypos = 0;
--                        float maxWeight = 0;
++                    {
 +                        neibHeightMaps[Cardinal.NorthEast] = null;
 +                        neibHeightMaps[Cardinal.NorthWest] = null;
 +                    }
@@ -251,7 +272,10 @@ index 5f759f1..b5956e7 100644
 +                        neibHeightMaps[Cardinal.SouthEast] = null;
 +                    }
 +                    if (neibHeightMaps[Cardinal.South] != null)
-+                    {
+                     {
+-                        double sumWeight = 0;
+-                        double ypos = 0;
+-                        float maxWeight = 0;
 +                        neibHeightMaps[Cardinal.SouthWest] = null;
 +                        neibHeightMaps[Cardinal.SouthEast] = null;
 +                    }
@@ -260,14 +284,14 @@ index 5f759f1..b5956e7 100644
 +                        neibHeightMaps[Cardinal.SouthWest] = null;
 +                        neibHeightMaps[Cardinal.NorthWest] = null;
 +                    }
- 
+
 -                        borderIndicesByCardinal[Cardinal.East] = dz * chunksize + 0;
 -                        borderIndicesByCardinal[Cardinal.West] = dz * chunksize + chunksize - 1;
 +                    for (int dx = 0; dx < chunksize; dx++)
 +                    {
-+                        borderIndicesByCardinal[Cardinal.North] = (chunksize - 1) * chunksize + dx;
-+                        borderIndicesByCardinal[Cardinal.South] = 0 + dx;
- 
++                        currentBorderIndicesByCardinal[Cardinal.North] = (chunksize - 1) * chunksize + dx;
++                        currentBorderIndicesByCardinal[Cardinal.South] = 0 + dx;
+
 -                        for (int i = 0; i < Cardinal.ALL.Length; i++)
 +                        for (int dz = 0; dz < chunksize; dz++)
                          {
@@ -276,11 +300,11 @@ index 5f759f1..b5956e7 100644
 +                            double sumWeight = 0;
 +                            double ypos = 0;
 +                            float maxWeight = 0;
- 
+
 -                            float distToEdge=0;
-+                            borderIndicesByCardinal[Cardinal.East] = dz * chunksize + 0;
-+                            borderIndicesByCardinal[Cardinal.West] = dz * chunksize + chunksize - 1;
- 
++                            currentBorderIndicesByCardinal[Cardinal.East] = dz * chunksize + 0;
++                            currentBorderIndicesByCardinal[Cardinal.West] = dz * chunksize + chunksize - 1;
+
 -                            switch (i)
 +                            for (int i = 0; i < Cardinal.ALL.Length; i++)
                              {
@@ -343,13 +367,13 @@ index 5f759f1..b5956e7 100644
 +
 +                                float baseWeight = Math.Max(0, 1 - distToEdge);
 +                                float cardinalWeight = baseWeight * baseWeight;
-+                                var neibYPos = neibMap[borderIndicesByCardinal[i]] + 0.5f;
++                                var neibYPos = neibMap[currentBorderIndicesByCardinal[i]] + 0.5f;
 +
 +                                ypos += neibYPos * Math.Max(0.0001, cardinalWeight);
 +                                sumWeight += cardinalWeight;
 +                                maxWeight = Math.Max(maxWeight, cardinalWeight);
                              }
- 
+
 -                            float baseWeight = Math.Max(0, 1 - distToEdge);
 -                            float cardinalWeight = baseWeight * baseWeight;
 -                            var neibYPos = neibMap[borderIndicesByCardinal[i]] + 0.5f;
@@ -361,7 +385,7 @@ index 5f759f1..b5956e7 100644
                          }
 +                    }
 +                }
- 
+
 -                        taperMap[dz * chunksize + dx] = new WeightedTaper() { TerrainYPos = (float)(ypos / Math.Max(0.0001, sumWeight)), Weight = maxWeight };
 +                if (landforms == null)    // This only needs to be done once, but cannot be done during initWorldGen() because NoiseLandforms.landforms is sometimes not yet setup at that point (depends on random order of ModSystems registering to events)
 +                {
@@ -369,7 +393,7 @@ index 5f759f1..b5956e7 100644
 +                    // commit (both racing threads would compute the same result from the
 +                    // same static NoiseLandforms.landforms), closed properly while this
 +                    // file was already open for the concurrency work.
-+                    lock (landformsInitLock)
++                    lock (stratumLandformsInitLock)
 +                    {
 +                        if (landforms == null)
 +                        {
@@ -380,45 +404,77 @@ index 5f759f1..b5956e7 100644
                      }
                  }
 -            }
- 
+
 -            if (landforms == null)    // This only needs to be done once, but cannot be done during initWorldGen() because NoiseLandforms.landforms is sometimes not yet setup at that point (depends on random order of ModSystems registering to events)
-+                generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing, buf);
++                stratumPublishColumnBuffers(buf);
++                borderIndicesByCardinal = currentBorderIndicesByCardinal;
++                try
++                {
++                    generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
++                }
++                finally
++                {
++                    // Stratum: a same-thread nested call may have published another frame.
++                    stratumPublishColumnBuffers(buf);
++                    borderIndicesByCardinal = currentBorderIndicesByCardinal;
++                }
 +            }
 +            finally
              {
 -                landforms = NoiseLandforms.landforms;
 -                terrainYThresholds = new float[landforms.LandFormsByIndex.Length][];
 -                for (int i = 0; i < landforms.LandFormsByIndex.Length; i++) terrainYThresholds[i] = landforms.LandFormsByIndex[i].TerrainYThresholds;
++                frames.Pop();
 +                ReturnColumnBuffers(buf);
              }
 -
 -            generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
          }
- 
+
          private bool PreventSmoothing(int chunkX, int chunkZ)
          {
              BoolRef result = new BoolRef();
              api.Event.IsTerrainHeightSmoothingPrevented(chunkX, chunkZ, result);
              return result.GetValue();
          }
- 
--        private void generate(IServerChunk[] chunks, int chunkX, int chunkZ, bool requiresChunkBorderSmoothing)
-+        private void generate(IServerChunk[] chunks, int chunkX, int chunkZ, bool requiresChunkBorderSmoothing, ColumnBuffers buf)
+
+         private void generate(IServerChunk[] chunks, int chunkX, int chunkZ, bool requiresChunkBorderSmoothing)
          {
++            ColumnBuffers buf;
++            if (stratumColumnBufferFrames?.Count > 0 && stratumColumnBufferFrames.Peek().StratumOwner == this)
++            {
++                buf = stratumColumnBufferFrames.Peek().StratumBuffers;
++            }
++            else
++            {
++                // Stratum: reverse patches and reflection can call the vanilla method outside the registered handler.
++                buf = new ColumnBuffers
++                {
++                    TaperMap = this.taperMap,
++                    ColumnResults = this.columnResults,
++                    LayerFullySolid = this.layerFullySolid,
++                    LayerFullyEmpty = this.layerFullyEmpty
++                };
++            }
              IMapChunk mapchunk = chunks[0].MapChunk;
              const int chunksize = GlobalConstants.ChunkSize;
- 
+
              int upheavalMapUpLeft = 0;
-@@ -356,121 +461,161 @@ namespace Vintagestory.ServerMods
+             int upheavalMapUpRight = 0;
+             int upheavalMapBotLeft = 0;
+             int upheavalMapBotRight = 0;
+@@ -354,125 +505,165 @@ namespace Vintagestory.ServerMods
+             double geoUpheavalAmplitude = 255;
+
              //int cblockId = api.World.GetBlock(new AssetLocation("creativeblock-35")).Id;
- 
+
              const float chunkBlockDelta = 1.0f / chunksize;
              float chunkPixelBlockStep = chunkPixelSize * chunkBlockDelta;
              double verticalNoiseRelativeFrequency = 0.5 / TerraGenConfig.terrainNoiseVerticalScale;
 -            for (int y = 0; y < layerFullySolid.Length; y++) layerFullySolid[y] = true;   // Fill with true; later if any block in the layer is non-solid we will set it to false
 -            for (int y = 0; y < layerFullyEmpty.Length; y++) layerFullyEmpty[y] = true;   // Fill with true; later if any block in the layer is non-solid we will set it to false
 -            layerFullyEmpty[mapsizeY - 1] = false;  // The top block is always empty (air), leaving space for grass, snowlayer etc.
--
+
 -            Parallel.For(0, chunksize * chunksize, new ParallelOptions() { MaxDegreeOfParallelism = maxThreads }, chunkIndex2d => {
 -                int lX = chunkIndex2d % chunksize;
 -                int lZ = chunkIndex2d / chunksize;
@@ -441,7 +497,7 @@ index 5f759f1..b5956e7 100644
 -                VectorXZ dist = NewDistortionNoise(worldX, worldZ);
 -                VectorXZ distTerrain = ApplyIsotropicDistortionThreshold(dist * terrainDistortionMultiplier, terrainDistortionThreshold,
 -                    terrainDistortionMultiplier * maxDistortionAmount);
- 
+-
 -                // Get Y distortion from oceanicity and upheaval
 -                float upHeavalStrength = GameMath.BiLerp(upheavalMapUpLeft, upheavalMapUpRight, upheavalMapBotLeft, upheavalMapBotRight, lX * chunkBlockDelta, lZ * chunkBlockDelta);
 -                float oceanicity = GameMath.BiLerp(oceanUpLeft, oceanUpRight, oceanBotLeft, oceanBotRight, lX * chunkBlockDelta, lZ * chunkBlockDelta) * oceanicityFac;
@@ -460,10 +516,10 @@ index 5f759f1..b5956e7 100644
 +            Array.Fill(layerFullySolid, true);  // Fill with true; later if any block in the layer is non-solid we will set it to false
 +            Array.Fill(layerFullyEmpty, true);  // Fill with true; later if any block in the layer is non-solid we will set it to false
 +            layerFullyEmpty[mapsizeY - 1] = false;  // The top block is always empty (air), leaving space for grass, snowlayer etc.
- 
+
 -                float distY = oceanicity + ComputeOceanAndUpheavalDistY(upHeavalStrength, worldX, worldZ, distGeo);
 +            object mergeLock = new object(); // to block threads
- 
+
 -                columnResults[chunkIndex2d].WaterBlockID = oceanicity > 1 ? gcfg.saltWaterBlockId : gcfg.waterBlockId;
 +            Parallel.For(0, chunksize * chunksize, new ParallelOptions() { MaxDegreeOfParallelism = maxThreads },
 +                // localInit: Initialize Thread-Local buffers once per thread, without allocations
@@ -482,18 +538,18 @@ index 5f759f1..b5956e7 100644
 +                    int lZ = chunkIndex2d / chunksize;
 +                    int worldX = chunkX * chunksize + lX;
 +                    int worldZ = chunkZ * chunksize + lZ;
- 
+
 -                // Prepare the noise for the entire column.
 -                NewNormalizedSimplexFractalNoise.ColumnNoise columnNoise = terrainNoise.ForColumn(verticalNoiseRelativeFrequency, lerpedAmps, lerpedTh, worldX + distTerrain.X, worldZ + distTerrain.Z);
 -                double noiseBoundMin = columnNoise.BoundMin;
 -                double noiseBoundMax = columnNoise.BoundMax;
 +                    float lxChunkBlockDelta = lX * chunkBlockDelta;
 +                    float lzChunkBlockDelta = lZ * chunkBlockDelta;
- 
+
 -                WeightedTaper wtaper = taperMap[chunkIndex2d];
 +                    BitArray columnBlockSolidities = columnResults[chunkIndex2d].ColumnBlockSolidities;
 +                    columnBlockSolidities.SetAll(false);
- 
+
 -                float distortedPosYSlide = distY - (int)Math.Floor(distY);    // This value will be unchanged throughout the posY loop
 -                for (int posY = 1; posY <= mapsizeYm2; posY++)
 -                {
@@ -501,7 +557,7 @@ index 5f759f1..b5956e7 100644
 -                    StartSampleDisplacedYThreshold(posY + distY, mapsizeYm2, out int distortedPosYBase);
 +                    double[] lerpedAmps = data.LerpedAmplitudes;
 +                    double[] lerpedTh = data.LerpedThresholds;
- 
+
 -                    // Value starts as the landform Y threshold.
 -                    double threshold = 0;
 -                    for (int i = 0; i < columnLandformIndexedWeights.Length; i++)
@@ -517,14 +573,14 @@ index 5f759f1..b5956e7 100644
 +                        lerpedAmps[i] = GameMath.BiLerp(octNoiseX0[i], octNoiseX1[i], octNoiseX2[i], octNoiseX3[i], lxChunkBlockDelta, lzChunkBlockDelta);
 +                        lerpedTh[i] = GameMath.BiLerp(octThX0[i], octThX1[i], octThX2[i], octThX3[i], lxChunkBlockDelta, lzChunkBlockDelta);
                      }
- 
+
 -                    // Geo Upheaval modifier for threshold
 -                    ComputeGeoUpheavalTaper(posY, distY, taperThreshold, geoUpheavalAmplitude, mapsizeY, ref threshold);
 +                    // Create that directional compression effect.
 +                    VectorXZ dist = NewDistortionNoise(worldX, worldZ);
 +                    VectorXZ distTerrain = ApplyIsotropicDistortionThreshold(dist * terrainDistortionMultiplier, terrainDistortionThreshold,
 +                        terrainDistortionMultiplier * maxDistortionAmount);
- 
+
 -                    if (requiresChunkBorderSmoothing)
 -                    {
 -                        double th = posY > wtaper.TerrainYPos ? 1 : -1;
@@ -532,21 +588,21 @@ index 5f759f1..b5956e7 100644
 +                    float upHeavalStrength = GameMath.BiLerp(upheavalMapUpLeft, upheavalMapUpRight, upheavalMapBotLeft, upheavalMapBotRight, lxChunkBlockDelta, lzChunkBlockDelta);
 +                    float oceanicity = GameMath.BiLerp(oceanUpLeft, oceanUpRight, oceanBotLeft, oceanBotRight, lxChunkBlockDelta, lzChunkBlockDelta) * oceanicityFac;
 +                    VectorXZ distGeo = ApplyIsotropicDistortionThreshold(dist * geoDistortionMultiplier, geoDistortionThreshold, geoDistortionMultiplier * maxDistortionAmount);
- 
+
 -                        var ydiff = Math.Abs(posY - wtaper.TerrainYPos);
 -                        var noise = ydiff > 10 ? 0 : distort2dx.Noise(-(chunkX * chunksize + lX) / 10.0, posY / 10.0, -(chunkZ * chunksize + lZ) / 10.0) / Math.Max(1, ydiff / 2.0);
 +                    float distY = oceanicity + ComputeOceanAndUpheavalDistY(upHeavalStrength, worldX, worldZ, distGeo);
- 
+
 -                        noise *= GameMath.Clamp(2*(1 - wtaper.Weight), 0, 1) * 0.1;
 +                    columnResults[chunkIndex2d].WaterBlockID = oceanicity > 1 ? gcfg.saltWaterBlockId : gcfg.waterBlockId;
- 
+
 -                        threshold = GameMath.Lerp(threshold, th + noise, wtaper.Weight);
 -                    }
 +                    // Prepare the noise for the entire column.
 +                    NewNormalizedSimplexFractalNoise.ColumnNoise columnNoise = terrainNoise.ForColumn(verticalNoiseRelativeFrequency, lerpedAmps, lerpedTh, worldX + distTerrain.X, worldZ + distTerrain.Z);
 +                    double noiseBoundMin = columnNoise.BoundMin;
 +                    double noiseBoundMax = columnNoise.BoundMax;
- 
+
 -                    // Often we don't need to calculate the noise.
 -                    if (threshold <= noiseBoundMin)
 -                    {
@@ -557,7 +613,7 @@ index 5f759f1..b5956e7 100644
 -                    {
 -                        layerFullySolid[posY] = false;  // No terrain block  (thread safe even when this is parallel)
 +                    WeightedTaper wtaper = taperMap[chunkIndex2d];
- 
+
 -                        //We can now exit the loop early, because empirical testing shows that once the threshold has exceeded the max noise bound, it never returns to a negative noise value at any higher y value in the same blocks column.  This represents air well above the "interesting" part of the terrain.  Tested for all world heights in the range 256-1536, tested with arches, overhangs etc.
 -                        for (int yAbove = posY + 1; yAbove <= mapsizeYm2; yAbove++) layerFullySolid[yAbove] = false;
 -                        break;
@@ -571,10 +627,7 @@ index 5f759f1..b5956e7 100644
 -                        noiseSign = columnNoise.NoiseSign(posY, noiseSign);
 +                        // Setup a lerp between threshold values, so that distortY can be applied continuously there.
 +                        StartSampleDisplacedYThreshold(posY + distY, mapsizeYm2, out int distortedPosYBase);
- 
--                        // If it ever comes up to change the noise formula to one that's less trivial to layer-skip-optimize,
--                        // Replace the above-two lines with the one below.
--                        //noiseSign = columnNoise.Noise(posY) - threshold;
++
 +                        // Value starts as the landform Y threshold.
 +                        double threshold = 0;
 +                        for (int i = 0; i < columnLandformIndexedWeights.Length; i++)
@@ -585,7 +638,10 @@ index 5f759f1..b5956e7 100644
 +                            // Underflow and overflow of distortedPosY result in linear extrapolation.
 +                            threshold += weight * ContinueSampleDisplacedYThreshold(distortedPosYBase, distortedPosYSlide, terrainYThresholds[i]);
 +                        }
-+
+
+-                        // If it ever comes up to change the noise formula to one that's less trivial to layer-skip-optimize,
+-                        // Replace the above-two lines with the one below.
+-                        //noiseSign = columnNoise.Noise(posY) - threshold;
 +                        // Geo Upheaval modifier for threshold
 +                        ComputeGeoUpheavalTaper(posY, distY, taperThreshold, geoUpheavalAmplitude, mapsizeY, ref threshold);
 +                        // Create that directional compression effect.
@@ -597,23 +653,23 @@ index 5f759f1..b5956e7 100644
 +                            noise *= GameMath.Clamp(2 * (1 - wtaper.Weight), 0, 1) * 0.1;
 +                            threshold = GameMath.Lerp(threshold, th + noise, wtaper.Weight);
 +                        }
- 
+
 -                        if (noiseSign > 0)  // solid
 +                        // Often we don't need to calculate the noise.
 +                        if (threshold <= noiseBoundMin)
++                        {
++                            columnBlockSolidities[posY] = true; // Yes terrain block
++                            data.LocalLayerFullyEmpty[posY] = false; // Without False Sharing
++                        }
++                        else if (!(threshold < noiseBoundMax))  // Second case also catches NaN if it were to ever happen.
                          {
 -                            columnBlockSolidities[posY] = true;    // Yes terrain block
 -                            layerFullyEmpty[posY] = false;          //   (thread safe even when this is parallel)
-+                            columnBlockSolidities[posY] = true; // Yes terrain block
-+                            data.LocalLayerFullyEmpty[posY] = false; // Without False Sharing
-                         }
-+                        else if (!(threshold < noiseBoundMax))  // Second case also catches NaN if it were to ever happen.
-+                        {
 +                            data.LocalLayerFullySolid[posY] = false; // No terrain block. Without False Sharing
 +                            //We can now exit the loop early, because empirical testing shows that once the threshold has exceeded the max noise bound, it never returns to a negative noise value at any higher y value in the same blocks column.  This represents air well above the "interesting" part of the terrain.  Tested for all world heights in the range 256-1536, tested with arches, overhangs etc.
 +                            for (int yAbove = posY + 1; yAbove <= mapsizeYm2; yAbove++) data.LocalLayerFullySolid[yAbove] = false;
 +                            break;
-+                        }
+                         }
 +                        // But sometimes we do.
                          else
                          {
@@ -651,37 +707,53 @@ index 5f759f1..b5956e7 100644
 +            );
 +
 +            // Stratum end
- 
+
              IChunkBlocks chunkBlockData = chunks[0].Data;
- 
+
              // First set all the fully solid layers in bulk, as much as possible
              chunkBlockData.SetBlockBulk(0, chunksize, chunksize, gcfg.mantleBlockId);
-@@ -566,20 +711,21 @@ namespace Vintagestory.ServerMods
+             int yBase = 1;
+             for (; yBase < mapsizeY - 1; yBase++)
+@@ -564,22 +755,36 @@ namespace Vintagestory.ServerMods
+
+             chunks[0].MapChunk.YMax = ymax;
          }
- 
- 
+
+
          LerpedWeightedIndex2DMap GetOrLoadLerpedLandformMap(IMapChunk mapchunk, int regionX, int regionZ)
          {
-+            int index2d = regionZ * regionMapSize + regionX;
-+
-             // 1. Load?
+-            // 1. Load?
 -            LandformMapByRegion.TryGetValue(regionZ * regionMapSize + regionX, out LerpedWeightedIndex2DMap map);
 -            if (map != null) return map;
-+            if (LandformMapByRegion.TryGetValue(index2d, out LerpedWeightedIndex2DMap map)) return map;
- 
--            IntDataMap2D lmap = mapchunk.MapRegion.LandformMap;
-             // 2. Create
++            int index2d = regionZ * regionMapSize + regionX;
++
++            // Stratum: the concurrent owner is the lock-free hot path for parallel Terrain columns.
++            if (stratumLandformMapsByRegion.TryGetValue(index2d, out LerpedWeightedIndex2DMap map)) return map;
++
++            // Stratum: honor maps a mod placed into the exact vanilla field before generation.
++            lock (LandformMapByRegion)
++            {
++                if (LandformMapByRegion.TryGetValue(index2d, out map))
++                {
++                    stratumLandformMapsByRegion.TryAdd(index2d, map);
++                    return map;
++                }
++            }
+
+             IntDataMap2D lmap = mapchunk.MapRegion.LandformMap;
+-            // 2. Create
 -            map = LandformMapByRegion[regionZ * regionMapSize + regionX]
 -                = new LerpedWeightedIndex2DMap(lmap.Data, lmap.Size, TerraGenConfig.landFormSmoothingRadius, lmap.TopLeftPadding, lmap.BottomRightPadding);
--
--            return map;
-+            // Stratum: GetOrAdd instead of a plain indexer write, so two threads racing
-+            // on the same not-yet-cached region under Terrain concurrency settle on one
-+            // shared instance instead of one silently overwriting the other's.
-+            IntDataMap2D lmap = mapchunk.MapRegion.LandformMap;
-+            return LandformMapByRegion.GetOrAdd(index2d, _ => new LerpedWeightedIndex2DMap(lmap.Data, lmap.Size, TerraGenConfig.landFormSmoothingRadius, lmap.TopLeftPadding, lmap.BottomRightPadding));
++            map = stratumLandformMapsByRegion.GetOrAdd(index2d, _ => new LerpedWeightedIndex2DMap(lmap.Data, lmap.Size, TerraGenConfig.landFormSmoothingRadius, lmap.TopLeftPadding, lmap.BottomRightPadding));
++
++            lock (LandformMapByRegion)
++            {
++                LandformMapByRegion[index2d] = map;
++            }
+
+             return map;
          }
- 
- 
+
+
          private void GetInterpolatedOctaves(float[] indices, out double[] amps, out double[] thresholds)
          {

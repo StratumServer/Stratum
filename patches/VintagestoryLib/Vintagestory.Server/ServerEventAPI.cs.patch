@@ -8,9 +8,9 @@ index fba8acc..c9c311a 100644
  	public ServerEventAPI(ServerMain server)
  		: base(server)
  	{
-+		// Stratum: mod assemblies reference VintagestoryAPI, not VintagestoryLib, so the late
-+		// Terrain sub-stage is reached through this hook. StratumWorldgenCompat picks the shape.
++		// Stratum: route API registrations into the server's compatibility-aware Terrain split.
 +		StratumTerrainSplit.RegisterLate = (handler, worldType) => StratumWorldgenCompat.RegisterTerrainLate(server, handler, worldType);
++		StratumTerrainSplit.RegisterLateOptimized = (vanillaHandler, optimizedHandler, worldType) => StratumWorldgenCompat.RegisterTerrainLate(server, vanillaHandler, optimizedHandler, worldType);
  	}
  
  	public void Trigger<T>(Delegate[] delegates, string eventName, Action<T> onDele, Action onException = null) where T : Delegate
