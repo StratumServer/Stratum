@@ -1,10 +1,8 @@
 diff --git a/VintagestoryApi/Server/PathfinderTask.cs b/VintagestoryApi/Server/PathfinderTask.cs
-index cc21075..5c84f72 100644
+index cc21075..6051161 100644
 --- a/VintagestoryApi/Server/PathfinderTask.cs
 +++ b/VintagestoryApi/Server/PathfinderTask.cs
-@@ -16,22 +16,27 @@ namespace Vintagestory.API.Server
-         public int searchDepth;
-         public int mhdistanceTolerance = 0;
+@@ -18,10 +18,20 @@ namespace Vintagestory.API.Server
          public List<Vec3d> waypoints;
          public EnumAICreatureType CreatureType;
          public float modeMinFleeDistance;
@@ -15,19 +13,22 @@ index cc21075..5c84f72 100644
  
          public bool Finished;
  
--        public PathfinderTask(BlockPos startBlockPos, BlockPos targetBlockPos, float modeMinFleeDistance, int maxFallHeight, float stepHeight, Cuboidf collisionBox, int searchDepth, int mhdistanceTolerance = 0, EnumAICreatureType creatureType = EnumAICreatureType.Default)
-+        public PathfinderTask(BlockPos startBlockPos, BlockPos targetBlockPos, float modeMinFleeDistance, int maxFallHeight, float stepHeight, Cuboidf collisionBox, int searchDepth, int mhdistanceTolerance = 0, EnumAICreatureType creatureType = EnumAICreatureType.Default, long sourceEntityId = 0)
++        // Stratum start: preserve the vanilla constructor signature for compiled mods.
+         public PathfinderTask(BlockPos startBlockPos, BlockPos targetBlockPos, float modeMinFleeDistance, int maxFallHeight, float stepHeight, Cuboidf collisionBox, int searchDepth, int mhdistanceTolerance = 0, EnumAICreatureType creatureType = EnumAICreatureType.Default)
++            : this(startBlockPos, targetBlockPos, modeMinFleeDistance, maxFallHeight, stepHeight, collisionBox, searchDepth, mhdistanceTolerance, creatureType, 0)
++        {
++        }
++
++        public PathfinderTask(BlockPos startBlockPos, BlockPos targetBlockPos, float modeMinFleeDistance, int maxFallHeight, float stepHeight, Cuboidf collisionBox, int searchDepth, int mhdistanceTolerance, EnumAICreatureType creatureType, long sourceEntityId)
          {
              this.startBlockPos = startBlockPos;
              this.targetBlockPos = targetBlockPos;
-             this.maxFallHeight = maxFallHeight;
-             this.stepHeight = stepHeight;
-             this.collisionBox = collisionBox;
-             this.searchDepth = searchDepth;
+@@ -32,6 +42,8 @@ namespace Vintagestory.API.Server
              this.mhdistanceTolerance = mhdistanceTolerance;
              this.modeMinFleeDistance = modeMinFleeDistance;
              this.CreatureType = creatureType;
 +            this.SourceEntityId = sourceEntityId;
          }
++        // Stratum end
      }
  }

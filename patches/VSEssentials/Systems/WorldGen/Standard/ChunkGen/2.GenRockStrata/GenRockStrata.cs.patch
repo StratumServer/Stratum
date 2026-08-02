@@ -1,249 +1,165 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
-index cb9eefa..cb95600 100644
+index cb9eefa..3a5476e 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
-@@ -1,7 +1,9 @@
+@@ -1,8 +1,9 @@
  using System;
 +using System.Collections.Concurrent;
  using System.Collections.Generic;
-+using System.Threading;
  using Vintagestory.API.Common;
  using Vintagestory.API.Datastructures;
  using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
  using Vintagestory.ServerMods.NoObf;
-@@ -24,11 +26,14 @@ namespace Vintagestory.ServerMods
+
+@@ -24,14 +25,20 @@ namespace Vintagestory.ServerMods
          internal SimplexNoise distort2dx;
          internal SimplexNoise distort2dz;
          internal MapLayerCustomPerlin[] strataNoises;
- 
+
          int regionMapSize;
--        Dictionary<int, LerpedWeightedIndex2DMap> ProvinceMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(10);
-+        // Stratum: ConcurrentDictionary since TerrainLate can now run concurrently for
-+        // distant columns (see StratumWorldGenStages), and two columns from different,
-+        // not-yet-cached regions could otherwise race on the same bucket at once.
-+        ConcurrentDictionary<int, LerpedWeightedIndex2DMap> ProvinceMapByRegion = new ConcurrentDictionary<int, LerpedWeightedIndex2DMap>();
- 
+         Dictionary<int, LerpedWeightedIndex2DMap> ProvinceMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(10);
+
++        // Stratum: each worldgen thread gets a complete generator so vanilla fields stay intact.
++        StratumWorkerInstances<GenRockStrataNew> stratumWorkers;
++
++        // Stratum: workers keep vanilla dictionaries while sharing the expensive cached maps.
++        ConcurrentDictionary<int, LerpedWeightedIndex2DMap> stratumProvinceMapsByRegion = new ConcurrentDictionary<int, LerpedWeightedIndex2DMap>();
++
          public override bool ShouldLoad(EnumAppSide side)
          {
              return side == EnumAppSide.Server;
          }
-@@ -46,11 +51,11 @@ namespace Vintagestory.ServerMods
+
+         public override double ExecuteOrder()
+         {
+@@ -42,17 +49,18 @@ namespace Vintagestory.ServerMods
+         {
+             this.api = api;
+         }
+
          public override void StartServerSide(ICoreServerAPI api)
          {
              this.api = api;
- 
++            stratumWorkers = new StratumWorkerInstances<GenRockStrataNew>(StratumCreateWorker); // Stratum: isolate mutable fields without changing their shape
+
              api.Event.InitWorldGenerator(initWorldGen, "standard");
 -            api.Event.ChunkColumnGeneration(GenChunkColumn, EnumWorldGenPass.Terrain, "standard");
-+            StratumTerrainSplit.Register(api, GenChunkColumn, "standard"); // Stratum: late half of the split Terrain pass
- 
++            StratumTerrainSplit.Register(api, GenChunkColumn, StratumGenChunkColumn, "standard"); // Stratum: expose vanilla topology until the worker path is safe
+
              api.Event.MapRegionGeneration(OnMapRegionGen, "standard");
          }
- 
- 
-@@ -134,24 +139,54 @@ namespace Vintagestory.ServerMods
-         }
- 
- 
-         // Cheap ugly code for better performance :<
-         #region
-+        // Stratum start: TerrainLate can now run concurrently for distant columns
-+        // (see StratumWorldGenStages). preLoad/genBlockColumn always run back-to-back
-+        // on the same worker thread for a given column (no internal Parallel.For
-+        // here, unlike GenTerra), so per-thread scratch is sufficient. ThreadLocal
-+        // instead of [ThreadStatic] because this class has a second instance used by
-+        // ProPickWorkSpace for prospecting-pick probing (see that file), and a
-+        // [ThreadStatic] static field would be shared between both instances on
-+        // whatever thread happens to run them, not scoped to this instance.
-+        class ThreadLocalScratch
-+        {
-+            public float[] rockGroupMaxThickness = new float[4];
-+            public int[] rockGroupCurrentThickness = new int[4];
-+            public float[] indicesBuf; // resized lazily once province count is known
-+
-+            public IMapChunk mapChunk;
-+            public ushort[] heightMap;
-+            public int rdx;
-+            public int rdz;
-+
-+            public LerpedWeightedIndex2DMap map;
-+            public float lerpMapInv;
-+            public float chunkInRegionX;
-+            public float chunkInRegionZ;
-+
-+            public GeologicProvinces provinces;
-+        }
-+        readonly ThreadLocal<ThreadLocalScratch> scratchThreadLocal = new ThreadLocal<ThreadLocalScratch>(() => new ThreadLocalScratch());
-+
-+        // Stratum start: compatibility shims for third-party Harmony patches that
-+        // inject or reflect on these fields (e.g. Rock Strata Variety). Values are
-+        // written from the per-thread scratch at method entry, valid only within
-+        // that call's scope on the current thread. Fixes #201.
-         float[] rockGroupMaxThickness = new float[4];
-         int[] rockGroupCurrentThickness = new int[4];
--
-         IMapChunk mapChunk;
-         ushort[] heightMap;
-         int rdx;
-         int rdz;
--
+
+
+         public void initWorldGen()
+         {
+@@ -146,16 +154,59 @@ namespace Vintagestory.ServerMods
+
          LerpedWeightedIndex2DMap map;
          float lerpMapInv;
          float chunkInRegionX;
          float chunkInRegionZ;
--
--        GeologicProvinces provinces = NoiseGeoProvince.provinces;
-+        GeologicProvinces provinces;
-+        // Stratum end
+
+         GeologicProvinces provinces = NoiseGeoProvince.provinces;
++
++        // Stratum: reuse province weights to avoid one allocation per block column.
++        float[] stratumIndicesBuf;
          #endregion
- 
+
++        private void StratumGenChunkColumn(IChunkColumnGenerateRequest request)
++        {
++            stratumWorkers.Current.GenChunkColumn(request);
++        }
++
++        private GenRockStrataNew StratumCreateWorker()
++        {
++            GenRockStrataNew worker = new GenRockStrataNew();
++            worker.StratumCopyStateFrom(this);
++            return worker;
++        }
++
++        // Stratum: copy configured state and give mutable fields to one worldgen thread.
++        private void StratumCopyStateFrom(GenRockStrataNew source)
++        {
++            api = source.api;
++            LoadGlobalConfig(api);
++            regionSize = source.regionSize;
++            regionChunkSize = source.regionChunkSize;
++            rockBlockId = source.rockBlockId;
++            strata = source.strata;
++            distort2dx = source.distort2dx;
++            distort2dz = source.distort2dz;
++            strataNoises = source.strataNoises;
++            regionMapSize = source.regionMapSize;
++            ProvinceMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(source.ProvinceMapByRegion);
++            stratumProvinceMapsByRegion = source.stratumProvinceMapsByRegion;
++            rockGroupMaxThickness = (float[])source.rockGroupMaxThickness.Clone();
++            rockGroupCurrentThickness = (int[])source.rockGroupCurrentThickness.Clone();
++            mapChunk = source.mapChunk;
++            heightMap = source.heightMap;
++            rdx = source.rdx;
++            rdz = source.rdz;
++            map = source.map;
++            lerpMapInv = source.lerpMapInv;
++            chunkInRegionX = source.chunkInRegionX;
++            chunkInRegionZ = source.chunkInRegionZ;
++            provinces = source.provinces;
++        }
++
          internal void GenChunkColumn(IChunkColumnGenerateRequest request)
          {
              var chunks = request.Chunks;
-@@ -169,42 +204,71 @@ namespace Vintagestory.ServerMods
-             }
-         }
- 
-         public void preLoad(IServerChunk[] chunks, int chunkX, int chunkZ)
-         {
--            mapChunk = chunks[0].MapChunk;
--            heightMap = mapChunk.WorldGenTerrainHeightMap;
--            rdx = chunkX % regionChunkSize;
--            rdz = chunkZ % regionChunkSize;
--
--            map = GetOrLoadLerpedProvinceMap(chunks[0].MapChunk, chunkX, chunkZ);
--            lerpMapInv = 1f / TerraGenConfig.geoProvMapScale;
--            chunkInRegionX = (chunkX % regionChunkSize) * lerpMapInv * chunksize;
--            chunkInRegionZ = (chunkZ % regionChunkSize) * lerpMapInv * chunksize;
--
--            provinces = NoiseGeoProvince.provinces;
-+            var s = scratchThreadLocal.Value; // Stratum: per-thread scratch, see the field declaration
-+            s.mapChunk = chunks[0].MapChunk;
-+            s.heightMap = s.mapChunk.WorldGenTerrainHeightMap;
-+            s.rdx = chunkX % regionChunkSize;
-+            s.rdz = chunkZ % regionChunkSize;
-+
-+            s.map = GetOrLoadLerpedProvinceMap(chunks[0].MapChunk, chunkX, chunkZ);
-+            s.lerpMapInv = 1f / TerraGenConfig.geoProvMapScale;
-+            s.chunkInRegionX = (chunkX % regionChunkSize) * s.lerpMapInv * chunksize;
-+            s.chunkInRegionZ = (chunkZ % regionChunkSize) * s.lerpMapInv * chunksize;
-+
-+            s.provinces = NoiseGeoProvince.provinces;
-+
-+            // Stratum: populate compat shim fields for third-party Harmony patches (#201)
-+            mapChunk = s.mapChunk;
-+            heightMap = s.heightMap;
-+            rdx = s.rdx;
-+            rdz = s.rdz;
-+            map = s.map;
-+            lerpMapInv = s.lerpMapInv;
-+            chunkInRegionX = s.chunkInRegionX;
-+            chunkInRegionZ = s.chunkInRegionZ;
-+            provinces = s.provinces;
-         }
- 
-         public void genBlockColumn(IServerChunk[] chunks, int chunkX, int chunkZ, int lx, int lz)
-         {
--            int surfaceY = heightMap[lz * chunksize + lx];
-+            var s = scratchThreadLocal.Value; // Stratum: per-thread scratch, see the field declaration
-+            int surfaceY = s.heightMap[lz * chunksize + lx];
+             int chunkX = request.ChunkX;
+             int chunkZ = request.ChunkZ;
+
+             preLoad(chunks, chunkX, chunkZ);
+@@ -190,23 +241,29 @@ namespace Vintagestory.ServerMods
              int ylower = 1;
              int yupper = surfaceY;
              int rockBlockId = this.rockBlockId;
- 
-+            float[] rockGroupMaxThickness = s.rockGroupMaxThickness;
-+            int[] rockGroupCurrentThickness = s.rockGroupCurrentThickness;
+
              rockGroupMaxThickness[0] = rockGroupMaxThickness[1] = rockGroupMaxThickness[2] = rockGroupMaxThickness[3] = 0;
              rockGroupCurrentThickness[0] = rockGroupCurrentThickness[1] = rockGroupCurrentThickness[2] = rockGroupCurrentThickness[3] = 0;
- 
+
 -            float[] indices = new float[provinces.Variants.Length];
--            map.WeightsAt(
--                chunkInRegionX + lx * lerpMapInv,
--                chunkInRegionZ + lz * lerpMapInv,
++            // Stratum: keep the measured allocation reduction while each worker owns its buffer.
++            if (stratumIndicesBuf == null || stratumIndicesBuf.Length != provinces.Variants.Length)
++            {
++                stratumIndicesBuf = new float[provinces.Variants.Length];
++            }
++
+             map.WeightsAt(
+                 chunkInRegionX + lx * lerpMapInv,
+                 chunkInRegionZ + lz * lerpMapInv,
 -                indices
-+            // Stratum start:
-+            // use a buffer to reduce allocations
-+            // Just in case, check the dimensions
-+            //
-+            // Tested on the generation of 10200 chunk columns:
-+            // - method execution time: reduced from 16152 ms to 14678 ms;
-+            // - GC memory allocations: reduced from 646 MB to 90 MB.
-+
-+            GeologicProvinces provinces = s.provinces;
-+            if (s.indicesBuf == null || s.indicesBuf.Length != provinces.Variants.Length)
-+                s.indicesBuf = new float[provinces.Variants.Length];
-+            float[] indicesBuf = s.indicesBuf;
-+
-+            s.map.WeightsAt(
-+                s.chunkInRegionX + lx * s.lerpMapInv,
-+                s.chunkInRegionZ + lz * s.lerpMapInv,
-+                indicesBuf
++                stratumIndicesBuf
              );
 -            for (int i = 0; i < indices.Length; i++)
 +
-+            for (int i = 0; i < indicesBuf.Length; i++)
++            for (int i = 0; i < stratumIndicesBuf.Length; i++)
              {
 -                float w = indices[i];
-+                float w = indicesBuf[i];
-+                // Stratum end
++                float w = stratumIndicesBuf[i];
                  if (w == 0) continue;
- 
+
                  GeologicProvinceRockStrata[] localstrata = provinces.Variants[i].RockStrataIndexed;
- 
+
                  rockGroupMaxThickness[0] += localstrata[0].ScaledMaxThickness * w;
-@@ -227,24 +291,24 @@ namespace Vintagestory.ServerMods
-             while (ylower <= yupper)
-             {
-                 if (--strataThickness <= 0f)
-                 {
-                     rockStrataId++;
--                    if (rockStrataId >= strata.Variants.Length || rockStrataId >= mapChunk.MapRegion.RockStrata.Length)
-+                    if (rockStrataId >= strata.Variants.Length || rockStrataId >= s.mapChunk.MapRegion.RockStrata.Length)
-                     {
-                         break;
-                     }
-                     stratum = strata.Variants[rockStrataId];
--                    rockMap = mapChunk.MapRegion.RockStrata[rockStrataId];
-+                    rockMap = s.mapChunk.MapRegion.RockStrata[rockStrataId];
-                     step = (float)rockMap.InnerSize / regionChunkSize;
- 
-                     grp = (int)stratum.RockGroup;
- 
-                     float allowedThickness = rockGroupMaxThickness[grp] * thicknessDistort - rockGroupCurrentThickness[grp];
- 
--                    var nx = rdx * step + step * (float)(lx + distx) / chunksize;
--                    var nz = rdz * step + step * (float)(lz + distz) / chunksize;
-+                    var nx = s.rdx * step + step * (float)(lx + distx) / chunksize;
-+                    var nz = s.rdz * step + step * (float)(lz + distz) / chunksize;
- 
-                     // 1.20 fix, only clamp the values, to prevent chunk borders
-                     // In 1.21 we ought to simply use normalized noise * rockmapsize
-                     nx = Math.Max(nx, -1.499f);
-                     nz = Math.Max(nz, -1.499f);
-@@ -312,21 +376,23 @@ namespace Vintagestory.ServerMods
- 
-         LerpedWeightedIndex2DMap GetOrLoadLerpedProvinceMap(IMapChunk mapchunk, int chunkX, int chunkZ)
-         {
-             int index2d = chunkZ / regionChunkSize * regionMapSize + chunkX / regionChunkSize;
- 
--            ProvinceMapByRegion.TryGetValue(index2d, out LerpedWeightedIndex2DMap map);
--            if (map != null) return map;
-+            if (ProvinceMapByRegion.TryGetValue(index2d, out LerpedWeightedIndex2DMap map)) return map;
- 
+                 rockGroupMaxThickness[1] += localstrata[1].ScaledMaxThickness * w;
+                 rockGroupMaxThickness[2] += localstrata[2].ScaledMaxThickness * w;
+@@ -320,13 +377,14 @@ namespace Vintagestory.ServerMods
              return CreateLerpedProvinceMap(mapchunk.MapRegion.GeologicProvinceMap, chunkX / regionChunkSize, chunkZ / regionChunkSize);
          }
- 
+
          LerpedWeightedIndex2DMap CreateLerpedProvinceMap(IntDataMap2D geoMap, int regionX, int regionZ)
          {
              int index2d = regionZ * regionMapSize + regionX;
- 
+
 -            return ProvinceMapByRegion[index2d] = new LerpedWeightedIndex2DMap(geoMap.Data, geoMap.Size, TerraGenConfig.geoProvSmoothingRadius, geoMap.TopLeftPadding, geoMap.BottomRightPadding);
-+            // Stratum: GetOrAdd instead of a plain indexer write, so two threads racing
-+            // on the same not-yet-cached region under TerrainLate concurrency settle on
-+            // one shared instance instead of one silently overwriting the other's.
-+            return ProvinceMapByRegion.GetOrAdd(index2d, _ => new LerpedWeightedIndex2DMap(geoMap.Data, geoMap.Size, TerraGenConfig.geoProvSmoothingRadius, geoMap.TopLeftPadding, geoMap.BottomRightPadding));
++            // Stratum: keep one expensive map across workers while preserving their vanilla cache field.
++            return ProvinceMapByRegion[index2d] = stratumProvinceMapsByRegion.GetOrAdd(index2d, _ => new LerpedWeightedIndex2DMap(geoMap.Data, geoMap.Size, TerraGenConfig.geoProvSmoothingRadius, geoMap.TopLeftPadding, geoMap.BottomRightPadding));
          }
- 
- 
+
+
      }
  }

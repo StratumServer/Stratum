@@ -61,6 +61,28 @@ internal static class StratumModCompat
 		return null;
 	}
 
+	// First mod-patched method declared on this type or one of its base types.
+	// Worker wrappers use this so patches on the vanilla handler still disable unsafe concurrency.
+	public static string FindPatchedMethodOn(Type type)
+	{
+		if (type == null) return null;
+
+		for (Type current = type; current?.Assembly == type.Assembly; current = current.BaseType)
+		{
+			MethodInfo[] methods = current.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+			foreach (MethodInfo method in methods)
+			{
+				string patches = DescribeModPatches(method);
+				if (patches != null)
+				{
+					return current.Name + "." + method.Name + " (" + patches + ")";
+				}
+			}
+		}
+
+		return null;
+	}
+
 	// Every mod-owned Harmony patch on one method, or null when there are none. Stratum compiles
 	// its own changes in and applies no Harmony patches, so anything here is third-party.
 	public static string DescribeModPatches(MethodBase method)
