@@ -133,6 +133,10 @@ internal class StratumUpdateCheckerConfig
 
 	public bool CheckOnStartup { get; set; } = true;
 
+	public int CheckIntervalHours { get; set; } = 12;
+
+	public bool NotifyStaffInGame { get; set; } = true;
+
 	public string LatestReleaseUrl { get; set; } = "https://api.github.com/repos/StratumServer/Stratum/releases/latest";
 
 	public int TimeoutSeconds { get; set; } = 5;
@@ -142,6 +146,7 @@ internal class StratumUpdateCheckerConfig
 		LatestReleaseUrl = string.IsNullOrWhiteSpace(LatestReleaseUrl)
 			? "https://api.github.com/repos/StratumServer/Stratum/releases/latest"
 			: LatestReleaseUrl.Trim();
+		CheckIntervalHours = Math.Clamp(CheckIntervalHours, 1, 168);
 		TimeoutSeconds = Math.Min(30, Math.Max(1, TimeoutSeconds));
 	}
 }
