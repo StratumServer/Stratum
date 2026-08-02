@@ -277,7 +277,20 @@ if [[ -z "$server_archive" ]]; then
   server_archive="$(download_server_archive "$zip_cache_dir")"
 fi
 
-if [[ ! -d "$vanilla_dir" ]]; then
+missing_server_dll=0
+for entry in "${lib_projects[@]}"; do
+  IFS=':' read -r _ _ dll <<<"$entry"
+  if [[ ! -d "$vanilla_dir" ]] || [[ -z "$(find "$vanilla_dir" -type f -name "$dll" -print -quit)" ]]; then
+    missing_server_dll=1
+    break
+  fi
+done
+
+if [[ "$missing_server_dll" == "1" ]]; then
+  if [[ -d "$vanilla_dir" ]]; then
+    echo "Vanilla cache is incomplete, extracting it again"
+    rm -rf "$vanilla_dir"
+  fi
   if [[ ! -f "$server_archive" ]]; then
     echo "Server archive not found: $server_archive" >&2
     exit 1
@@ -294,8 +307,8 @@ for entry in "${lib_projects[@]}"; do
   IFS=':' read -r project work_rel dll <<<"$entry"
   dll_path="$(find "$vanilla_dir" -type f -name "$dll" -print -quit)"
   if [[ -z "$dll_path" ]]; then
-    echo "Skipping $dll, not found in archive" >&2
-    continue
+    echo "$dll was not found after extracting $server_archive" >&2
+    exit 1
   fi
 
   out="$baseline_dir/$project"

@@ -139,7 +139,14 @@ try {
         }
     }
 
-    if (-not (Test-Path $vanillaDir)) {
+    $missingServerDlls = @($libMap.Keys | Where-Object {
+        -not (Get-ChildItem -Path $vanillaDir -Recurse -Filter $_ -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+    })
+    if ($missingServerDlls.Count -gt 0) {
+        if (Test-Path $vanillaDir) {
+            Write-Host "Vanilla cache is incomplete, extracting it again"
+            Remove-Item -Recurse -Force $vanillaDir
+        }
         if (-not (Test-Path $ServerZip)) { throw "Server archive not found: $ServerZip" }
         Write-Host "Extracting $ServerZip"
         New-Item -ItemType Directory -Force -Path $vanillaDir | Out-Null
@@ -204,7 +211,7 @@ try {
         $proj = $libMap[$dll].Project
         $workRel = $libMap[$dll].Work
         $dllPath = Get-ChildItem -Path $vanillaDir -Recurse -Filter $dll | Select-Object -First 1
-        if (-not $dllPath) { Write-Warning "Skipping $dll, not found in zip"; continue }
+        if (-not $dllPath) { throw "$dll was not found after extracting $ServerZip" }
 
         $out = Join-Path $baselineDir $proj
         if (-not (Test-Path $out) -or $Refresh) {
