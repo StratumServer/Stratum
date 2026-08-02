@@ -99,7 +99,7 @@ internal static class StratumServerStats
 			reportInFlight = true;
 		}
 
-		// Touch server.Clients on the tick thread, posting happens on a worker
+		// Snapshot player state on the tick thread, posting happens on a worker.
 		StatsPayload payload = BuildPayload(server, config);
 		string url = config.ReportUrl;
 		int timeoutSeconds = config.TimeoutSeconds;
@@ -127,12 +127,13 @@ internal static class StratumServerStats
 
 	private static StatsPayload BuildPayload(ServerMain server, StratumServerStatsConfig config)
 	{
-		int players = 0;
+		int apiOnlinePlayers = server.AllOnlinePlayers.Length;
+		int admittedClients = 0;
 		foreach (ConnectedClient client in server.Clients.Values)
 		{
 			if (client.State.IsAdmitted())
 			{
-				players++;
+				admittedClients++;
 			}
 		}
 
@@ -141,7 +142,12 @@ internal static class StratumServerStats
 			ServerId = config.ServerId,
 			StratumVersion = StratumInfo.Version,
 			GameVersion = StratumInfo.BaseGameVersion,
-			Players = players,
+			Players = apiOnlinePlayers,
+			PlayerCounts = new PlayerCountsPayload
+			{
+				ApiOnline = apiOnlinePlayers,
+				AdmittedClients = admittedClients
+			},
 			MaxPlayers = server.Config?.MaxClients ?? 0,
 			Os = GetOs(),
 			ReportedAtUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture)
@@ -178,10 +184,19 @@ internal static class StratumServerStats
 
 		[JsonProperty("players")] public int Players { get; set; }
 
+		[JsonProperty("playerCounts")] public PlayerCountsPayload PlayerCounts { get; set; }
+
 		[JsonProperty("maxPlayers")] public int MaxPlayers { get; set; }
 
 		[JsonProperty("os")] public string Os { get; set; }
 
 		[JsonProperty("reportedAtUtc")] public string ReportedAtUtc { get; set; }
+	}
+
+	private sealed class PlayerCountsPayload
+	{
+		[JsonProperty("apiOnline")] public int ApiOnline { get; set; }
+
+		[JsonProperty("admittedClients")] public int AdmittedClients { get; set; }
 	}
 }
