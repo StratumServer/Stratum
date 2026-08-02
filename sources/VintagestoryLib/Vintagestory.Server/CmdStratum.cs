@@ -168,7 +168,7 @@ internal class CmdStratum
 		output.Append(StratumCommandText.Row("Client mod policy", "enabled=" + (config.ClientModPolicy.Enabled ? "on" : "off") + ", strictWhitelist=" + (config.ClientModPolicy.StrictWhitelist ? "on" : "off") + ", allowExtras=" + config.ClientModPolicy.AllowModIds.Count));
 		output.Append(StratumCommandText.Row("Hardening", "packets=" + (config.Hardening.PacketMonitoring ? "on" : "off") + ", blockbreak=" + (config.Hardening.BlockBreakGuards ? "on" : "off") + ", inventory=" + (config.Hardening.InventoryGuards ? "on" : "off") + ", entities=" + (config.Hardening.EntityGuards ? "on" : "off")));
 		output.Append(StratumCommandText.Row("Commands", "playerQoL=" + (config.Commands.Enabled ? "on" : "off") + ", tpaTimeout=" + config.Commands.TeleportRequests.TimeoutSeconds + "s, defaultHomes=" + config.Commands.Homes.DefaultMaxHomes + ", near=" + config.Commands.NearDefaultRadiusBlocks + "/" + config.Commands.NearMaxRadiusBlocks));
-		output.Append(StratumCommandText.Row("Chat", "rolePrefixes=" + (config.Chat.Enabled && config.Chat.RolePrefixesEnabled ? "on" : "off") + ", urlLinks=" + (config.Chat.Enabled && config.Chat.LinkifyUrls ? "on" : "off") + ", configuredRoles=" + config.Chat.RolePrefixes.Count));
+		output.Append(StratumCommandText.Row("Chat", "rolePrefixes=" + (config.Chat.Enabled && config.Appearance.RolePrefixes.Enabled ? "on" : "off") + ", urlLinks=" + (config.Chat.Enabled && config.Chat.LinkifyUrls ? "on" : "off") + ", configuredRoles=" + config.Appearance.RolePrefixes.Roles.Count));
 		return TextCommandResult.Success(output.ToString());
 	}
 
@@ -445,15 +445,16 @@ internal class CmdStratum
 	{
 		StratumRuntime.Config.EnsurePopulated();
 		StratumChatConfig chat = StratumRuntime.Config.Chat;
+		StratumRolePrefixesConfig rolePrefixes = StratumRuntime.Config.Appearance.RolePrefixes;
 		StringBuilder output = new StringBuilder(StratumCommandText.Title("Stratum Chat"));
 		output.Append(StratumCommandText.Row("Enabled", chat.Enabled ? "true" : "false"));
-		output.Append(StratumCommandText.Row("Role prefixes", chat.RolePrefixesEnabled ? "true" : "false"));
+		output.Append(StratumCommandText.Row("Role prefixes", rolePrefixes.Enabled ? "true" : "false"));
 		output.Append(StratumCommandText.Row("URL links", chat.LinkifyUrls ? "true" : "false"));
-		output.Append(StratumCommandText.Row("Prefix format", chat.PrefixFormat));
+		output.Append(StratumCommandText.Row("Prefix format", rolePrefixes.Format));
 
-		foreach (KeyValuePair<string, StratumChatRolePrefixConfig> entry in chat.RolePrefixes.OrderBy(entry => entry.Key))
+		foreach (KeyValuePair<string, StratumRolePrefixConfig> entry in rolePrefixes.Roles.OrderBy(entry => entry.Key))
 		{
-			output.Append(StratumCommandText.Bullet(entry.Key, chat.PrefixFormat.Replace("{tag}", entry.Value.Tag) + " " + entry.Value.Color + (entry.Value.Enabled ? "" : " disabled")));
+			output.Append(StratumCommandText.Bullet(entry.Key, rolePrefixes.Format.Replace("{tag}", entry.Value.Tag) + " " + entry.Value.Color + (entry.Value.Enabled ? "" : " disabled")));
 		}
 
 		return TextCommandResult.Success(output.ToString());

@@ -1,5 +1,6 @@
 # Keep patch files as LF so `git apply` always sees what extract-patches.ps1 wrote.
-patches/**/*.patch text eol=lf
+# Unified diff context markers put one required space before tab-indented source.
+patches/**/*.patch text eol=lf whitespace=-space-before-tab
 *.ps1 text eol=crlf
 *.cs text eol=lf
 *.csproj text eol=lf

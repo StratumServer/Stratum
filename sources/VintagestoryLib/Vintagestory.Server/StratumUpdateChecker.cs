@@ -1,16 +1,24 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Vintagestory.API.Common;
+using Vintagestory.API.Config;
+using Vintagestory.API.Server;
 
 namespace Vintagestory.Server;
 
 internal static class StratumUpdateChecker
 {
 	private static readonly object StateLock = new object();
+	private static readonly HttpClient Http = new HttpClient();
+	private static readonly Dictionary<string, string> NotifiedVersionByPlayerUid = new Dictionary<string, string>(StringComparer.Ordinal);
 
 	private static StratumUpdateCheckResult lastResult = StratumUpdateCheckResult.NotChecked();
+	private static bool checkInFlight;
+	private static long nextCheckMs = long.MaxValue;
 
 	public static StratumUpdateCheckResult LastResult
 	{
@@ -23,27 +31,47 @@ internal static class StratumUpdateChecker
 		}
 	}
 
-	public static void CheckOnStartup()
+	public static void Start(ServerMain server)
 	{
 		StratumUpdateCheckerConfig config = StratumRuntime.Config.UpdateChecker;
-		if (config == null || !config.Enabled || !config.CheckOnStartup)
+		server.EventManager.OnPlayerJoin += OnPlayerJoin;
+		server.EventManager.OnPlayerDisconnect += OnPlayerDisconnect;
+		lock (StateLock)
+		{
+			NotifiedVersionByPlayerUid.Clear();
+			checkInFlight = false;
+			nextCheckMs = server.ElapsedMilliseconds + GetCheckIntervalMs(config);
+		}
+
+		if (config == null || !config.Enabled)
 		{
 			SetLast(StratumUpdateCheckResult.Disabled());
 			return;
 		}
 
-		Task.Run(async () =>
+		if (config.CheckOnStartup)
 		{
-			StratumUpdateCheckResult result = await CheckAsync(CancellationToken.None);
-			if (result.State == StratumUpdateCheckState.NewerAvailable)
+			BeginCheck(server);
+		}
+	}
+
+	public static void Tick(ServerMain server)
+	{
+		StratumUpdateCheckerConfig config = StratumRuntime.Config.UpdateChecker;
+		if (config == null || !config.Enabled || server == null)
+		{
+			return;
+		}
+
+		lock (StateLock)
+		{
+			if (checkInFlight || server.ElapsedMilliseconds < nextCheckMs)
 			{
-				StratumRuntime.LogWarning("update available: " + result.LatestVersion + " (running " + result.CurrentVersion + "). " + result.ReleaseUrl);
+				return;
 			}
-			else if (result.State == StratumUpdateCheckState.Failed)
-			{
-				StratumRuntime.LogWarning("update check failed: " + result.Message);
-			}
-		});
+		}
+
+		BeginCheck(server);
 	}
 
 	public static async Task<StratumUpdateCheckResult> CheckAsync(CancellationToken cancellationToken)
@@ -63,9 +91,9 @@ internal static class StratumUpdateChecker
 			using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			timeout.CancelAfter(TimeSpan.FromSeconds(config.TimeoutSeconds));
 
-			using HttpClient http = new HttpClient();
-			http.DefaultRequestHeaders.UserAgent.ParseAdd("StratumServer/" + StratumInfo.Version);
-			using HttpResponseMessage response = await http.GetAsync(config.LatestReleaseUrl, timeout.Token);
+			using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, config.LatestReleaseUrl);
+			request.Headers.UserAgent.ParseAdd("StratumServer/" + StratumInfo.Version);
+			using HttpResponseMessage response = await Http.SendAsync(request, timeout.Token);
 			response.EnsureSuccessStatusCode();
 
 			string body = await response.Content.ReadAsStringAsync(timeout.Token);
@@ -119,6 +147,133 @@ internal static class StratumUpdateChecker
 			StratumUpdateCheckState.Failed => "Update check failed: " + result.Message,
 			_ => "Update check has not run yet."
 		};
+	}
+
+	private static void BeginCheck(ServerMain server)
+	{
+		StratumUpdateCheckerConfig config = StratumRuntime.Config.UpdateChecker;
+		lock (StateLock)
+		{
+			if (checkInFlight)
+			{
+				return;
+			}
+
+			checkInFlight = true;
+			nextCheckMs = server.ElapsedMilliseconds + GetCheckIntervalMs(config);
+		}
+
+		Task.Run(async () =>
+		{
+			try
+			{
+				StratumUpdateCheckResult result = await CheckAsync(CancellationToken.None);
+				if (result.State == StratumUpdateCheckState.NewerAvailable)
+				{
+					LogUpdateAvailable(result, config.CheckIntervalHours);
+					server.EnqueueMainThreadTask(() => NotifyOnlineStaff(server, result));
+				}
+				else if (result.State == StratumUpdateCheckState.Failed)
+				{
+					StratumRuntime.LogWarning("update check failed: " + result.Message);
+				}
+			}
+			finally
+			{
+				lock (StateLock)
+				{
+					checkInFlight = false;
+				}
+			}
+		});
+	}
+
+	private static void LogUpdateAvailable(StratumUpdateCheckResult result, int intervalHours)
+	{
+		StratumRuntime.LogWarning("UPDATE AVAILABLE: running " + result.CurrentVersion + ", latest " + result.LatestVersion + ".");
+		StratumRuntime.LogWarning("Download: " + result.ReleaseUrl);
+		StratumRuntime.LogWarning("Run /stratum version for details. This reminder repeats every " + intervalHours + " hours.");
+	}
+
+	private static void NotifyOnlineStaff(ServerMain server, StratumUpdateCheckResult result)
+	{
+		foreach (IPlayer player in server.AllOnlinePlayers)
+		{
+			if (player is IServerPlayer serverPlayer)
+			{
+				NotifyStaff(serverPlayer, result);
+			}
+		}
+	}
+
+	private static void OnPlayerJoin(IServerPlayer player)
+	{
+		NotifyStaff(player, LastResult);
+	}
+
+	private static void OnPlayerDisconnect(IServerPlayer player)
+	{
+		string playerKey = GetPlayerKey(player);
+		if (playerKey == null)
+		{
+			return;
+		}
+
+		lock (StateLock)
+		{
+			NotifiedVersionByPlayerUid.Remove(playerKey);
+		}
+	}
+
+	private static void NotifyStaff(IServerPlayer player, StratumUpdateCheckResult result)
+	{
+		StratumUpdateCheckerConfig config = StratumRuntime.Config.UpdateChecker;
+		if (player == null || result.State != StratumUpdateCheckState.NewerAvailable)
+		{
+			return;
+		}
+
+		if (config == null || !config.Enabled || !config.NotifyStaffInGame || !player.HasPrivilege(Privilege.controlserver))
+		{
+			return;
+		}
+
+		string playerKey = GetPlayerKey(player);
+		if (playerKey == null)
+		{
+			return;
+		}
+
+		lock (StateLock)
+		{
+			if (NotifiedVersionByPlayerUid.TryGetValue(playerKey, out string notifiedVersion) && notifiedVersion == result.LatestVersion)
+			{
+				return;
+			}
+			NotifiedVersionByPlayerUid[playerKey] = result.LatestVersion;
+		}
+
+		string message = StratumCommandText.Warning("Stratum update available")
+			+ StratumCommandText.Row("Running", result.CurrentVersion)
+			+ StratumCommandText.Row("Latest", result.LatestVersion)
+			+ StratumCommandText.Row("Download", result.ReleaseUrl)
+			+ "\n" + StratumCommandText.Empty("Run /stratum version for details.");
+		player.SendMessage(GlobalConstants.GeneralChatGroup, message, EnumChatType.Notification);
+	}
+
+	private static string GetPlayerKey(IServerPlayer player)
+	{
+		if (!string.IsNullOrWhiteSpace(player?.PlayerUID))
+		{
+			return player.PlayerUID;
+		}
+
+		return string.IsNullOrWhiteSpace(player?.PlayerName) ? null : player.PlayerName;
+	}
+
+	private static long GetCheckIntervalMs(StratumUpdateCheckerConfig config)
+	{
+		return (long)Math.Clamp(config?.CheckIntervalHours ?? 12, 1, 168) * 60L * 60L * 1000L;
 	}
 
 	private static void SetLast(StratumUpdateCheckResult result)

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-index 642722c..2e8f0ad 100644
+index 642722c..9b46a7c 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 @@ -34,15 +34,30 @@ internal class ServerSystemUnloadChunks : ServerSystem
@@ -103,7 +103,7 @@ index 642722c..2e8f0ad 100644
  		{
  			if (server.forceLoadedChunkColumns.Contains(mapChunkUnloadCandidate))
  			{
-@@ -354,122 +377,185 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -354,132 +377,225 @@ internal class ServerSystemUnloadChunks : ServerSystem
  			chunk.Dispose();
  		}
  		return flag;
@@ -138,6 +138,15 @@ index 642722c..2e8f0ad 100644
 +                {
 +                    continue;
 +                }
++                // Stratum: this loop, not the map chunk scan below, is what makes a finished
++                // column disappear from a generator's reach: it drops the request and the
++                // loaded map chunk together, so GetGeneratingChunk and the loaded chunks
++                // fallback both stop answering for it. Skip the ones a neighbour is
++                // generating against right now.
++                if (chunkthread.StratumIsColumnPinned(item.mapIndex2d))
++                {
++                    continue;
++                }
 +                for (int i = 0; i < item.Chunks.Length; i++)
 +                {
 +                    if (Environment.TickCount - item.Chunks[i].lastReadOrWrite < timeToLive)
@@ -162,6 +171,18 @@ index 642722c..2e8f0ad 100644
 +            FastMemoryStream ms = reusableStream ?? (reusableStream = new FastMemoryStream());
 +            foreach (ChunkColumnLoadRequest item2 in list)
 +            {
++                // Stratum: commit to the drop before touching anything, then look at the
++                // pin once more. A pin taken between the scan above and this point wins:
++                // the flag comes back down and the column stays. A pin taken after this
++                // point loses, and the neighbour gate refuses that claim because it reads
++                // the same flag. One of the two always happens, so no claim can be granted
++                // over a column this pass is in the middle of removing.
++                System.Threading.Interlocked.Exchange(ref item2.stratumDropping, 1);
++                if (chunkthread.StratumIsColumnPinned(item2.mapIndex2d))
++                {
++                    System.Threading.Volatile.Write(ref item2.stratumDropping, 0);
++                    continue;
++                }
 +                item2.generatingLock.AcquireReadLock();
 +                try
 +                {
@@ -198,9 +219,11 @@ index 642722c..2e8f0ad 100644
 +                }
 +                if (!chunkthread.requestedChunkColumns.Remove(item2.mapIndex2d))
 +                {
++                    System.Threading.Volatile.Write(ref item2.stratumDropping, 0); // Stratum: never leave a live request flagged
 +                    throw new Exception("Chunkrequest no longer in queue? Race condition?");
 +                }
 +                server.ChunkColumnRequested.Remove(item2.mapIndex2d);
++                System.Threading.Volatile.Write(ref item2.stratumDropping, 0); // Stratum: out of the queue, the flag has no further job
 +                num++;
 +            }
 +            if (list2.Count > 0)
@@ -379,7 +402,24 @@ index 642722c..2e8f0ad 100644
  			long key = server.WorldMap.MapChunkIndex2D(vec2i.X, vec2i.Y);
  			server.loadedMapChunks.TryGetValue(key, out value);
  			value?.MarkFresh();
-@@ -497,14 +583,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
+ 		}
+ 		lock (mapChunkIndicesLock)
+ 		{
+ 			foreach (long mapChunkIndex in mapChunkIndices)
+ 			{
++				// Stratum: skip columns a neighbour is generating against. The neighbour gate
++				// checks residency once, at claim time, and unloading one of those columns
++				// mid stage leaves the generator reading a chunk nothing can resolve.
++				if (chunkthread.StratumIsColumnPinned(mapChunkIndex))
++				{
++					continue;
++				}
+ 				if (!server.forceLoadedChunkColumns.Contains(mapChunkIndex) && server.loadedMapChunks.TryGetValue(mapChunkIndex, out value) && value.CurrentIncompletePass == EnumWorldGenPass.Done)
+ 				{
+ 					if (value.IsOld())
+ 					{
+ 						mapChunkUnloadCandidates.Add(mapChunkIndex);
+@@ -497,14 +613,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
  	{
  		if (server.unloadedChunks.IsEmpty)
  		{
@@ -398,7 +438,7 @@ index 642722c..2e8f0ad 100644
  			list2.Clear();
  			foreach (long item in list)
  			{
-@@ -545,12 +633,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -545,12 +663,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		}
  	}
  

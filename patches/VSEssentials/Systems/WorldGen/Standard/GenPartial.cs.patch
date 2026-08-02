@@ -1,57 +1,27 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
-index 58aa710..43ec0ad 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
-@@ -1,5 +1,6 @@
-+using System.Threading;
- using Vintagestory.API.MathTools;
- using Vintagestory.API.Server;
- 
- #nullable disable
- 
-@@ -11,11 +12,21 @@ namespace Vintagestory.ServerMods
-         protected int worldheight;
-         public int airBlockId = 0;
- 
-         protected abstract int chunkRange { get; }
- 
--        protected LCGRandom chunkRand;
-+        // Stratum: ThreadLocal instance field, not a plain LCGRandom field. GenChunkColumn
-+        // reseeds chunkRand per (chunkX+dx, chunkZ+dz) right before each GeneratePartial
-+        // call, which only stays correct if one column's reseed-then-use sequence can't
-+        // interleave with another's; a plain shared field breaks that the moment a stage
-+        // runs more than one column at a time (see GenCaves, the current TerrainLate
-+        // occupant that reaches this class). ThreadLocal, not [ThreadStatic] static,
-+        // because GenPartial has more than one live subclass instance (GenCaves,
-+        // GenDeposits, GenHugePatches), and a static field would be shared by all of
-+        // them on whatever thread happens to run them.
-+        protected ThreadLocal<LCGRandom> chunkRandThreadLocal;
-+        protected LCGRandom chunkRand => chunkRandThreadLocal.Value;
- 
-         public override void StartServerSide(ICoreServerAPI api)
-         {
-             this.api = api;
- 
-@@ -25,19 +36,21 @@ namespace Vintagestory.ServerMods
-         public virtual void initWorldGen()
-         {
-             LoadGlobalConfig(api);
- 
-             worldheight = api.WorldManager.MapSizeY;
--            chunkRand = new LCGRandom(api.WorldManager.Seed);
-+            int seed = api.WorldManager.Seed;
-+            chunkRandThreadLocal = new ThreadLocal<LCGRandom>(() => new LCGRandom(seed));
+@@ -30,6 +30,23 @@
+             chunkRand = new LCGRandom(api.WorldManager.Seed);
          }
  
++        // Stratum: makes a worker copy for one worldgen thread.
++        // Shared state is copied by reference, per-column scratch is made fresh.
++        // Does not call initWorldGen, so a mod's patch on that still runs once.
++        protected virtual void StratumCopyStateFrom(GenPartial source)
++        {
++            api = source.api;
++
++            // Sets gcfg and the structure provider, both plain lookups of shared objects.
++            // The provider field is private to ModStdWorldGen, so copying gcfg alone would leave
++            // it null and GetIntersectingStructure would quietly stop seeing story structures.
++            LoadGlobalConfig(api);
++
++            worldheight = source.worldheight;
++            airBlockId = source.airBlockId;
++            chunkRand = new LCGRandom(api.WorldManager.Seed);
++        }
++
  
          protected virtual void GenChunkColumn(IChunkColumnGenerateRequest request)
          {
-             var chunks = request.Chunks;
-             int chunkX = request.ChunkX;
-             int chunkZ = request.ChunkZ;
-+            LCGRandom chunkRand = this.chunkRand;
- 
-             for (int dx = -chunkRange; dx <= chunkRange; dx++)
-             {
-                 for (int dz = -chunkRange; dz <= chunkRange; dz++)
-                 {

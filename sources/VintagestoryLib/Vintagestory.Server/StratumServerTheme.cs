@@ -146,7 +146,7 @@ internal static class StratumServerTheme
 	{
 		StratumConfig config = StratumRuntime.Config;
 		config.EnsurePopulated();
-		return config.Theme;
+		return config.Appearance.Theme;
 	}
 
 	private static StratumDisconnectMessage Disconnect(string title, string detail, string action = null, string publicMessage = null)

@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-index ee7d12d..64084f2 100644
+index ee7d12d..a7b02bd 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-@@ -12,10 +12,12 @@ namespace Vintagestory.Server;
+@@ -12,10 +12,23 @@ namespace Vintagestory.Server;
  
  public class ChunkServerThread : ServerThread, IChunkProvider
  {
@@ -10,12 +10,23 @@ index ee7d12d..64084f2 100644
  
 +	internal StratumChunkReadPool stratumReadPool;
 +
++	// Stratum: columns held against unloading while a neighbour of theirs runs a
++	// neighbour gated worldgen stage. EnsureMinimumWorldgenPassAt only passes a
++	// neighbour that is resident, either as a live request or as a loaded map chunk at
++	// pass Done, so the gate does establish residency. It establishes it once, at claim
++	// time, and nothing holds it for the length of the stage: the column can unload
++	// while the generator is still reading across the boundary, and then
++	// GetGeneratingChunk and the loaded chunks fallback both answer null. The count is
++	// per column because neighbourhoods overlap, so two columns generating side by side
++	// pin their shared neighbours twice and each releases its own.
++	internal readonly System.Collections.Concurrent.ConcurrentDictionary<long, int> stratumPinnedColumns = new System.Collections.Concurrent.ConcurrentDictionary<long, int>();
++
  	internal ConcurrentIndexedFifoQueue<ChunkColumnLoadRequest> requestedChunkColumns;
  
  	internal IndexedFifoQueue<ChunkColumnLoadRequest> peekingChunkColumns;
  
  	internal Dictionary<long, ServerMapRegion> peekingMapRegions = new Dictionary<long, ServerMapRegion>(8);
-@@ -39,13 +41,13 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -39,13 +52,13 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	public ILogger Logger => ServerMain.Logger;
  
  	public ChunkServerThread(ServerMain server, string threadname, CancellationToken cancellationToken)
@@ -32,7 +43,7 @@ index ee7d12d..64084f2 100644
  		}
  		if (additionalWorldGenThreadsCount < 0)
  		{
-@@ -101,15 +103,21 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -101,15 +114,21 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  		return peekingChunkColumns.GetByIndex(index);
  	}
  
@@ -56,7 +67,7 @@ index ee7d12d..64084f2 100644
  	}
  
  	internal ServerMapChunk GetMapChunk(long index2d)
-@@ -143,19 +151,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -143,19 +162,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	IWorldChunk IChunkProvider.GetUnpackedChunkFast(int chunkX, int chunkY, int chunkZ, bool notRecentlyAccessed)
  	{
  		ServerChunk generatingChunk = GetGeneratingChunk(chunkX, chunkY, chunkZ);
@@ -78,7 +89,7 @@ index ee7d12d..64084f2 100644
  		});
  	}
  
-@@ -186,38 +194,50 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -186,38 +205,125 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  			requestedChunkColumns.EnqueueWithoutAddingToIndex(chunkRequest);
  		}
  		return !orAdd.Disposed;
@@ -110,10 +121,83 @@ index ee7d12d..64084f2 100644
 -		}
 -		return true;
 -	}
--
--	public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
++    /// <summary>
++    /// Stratum: holds the 3x3 neighbourhood of a column against unloading. Taken before the
++    /// neighbour gate runs, released when the stage finishes or the gate refuses. Pins the
++    /// column itself too, since it is the one whose own chunks the generator writes.
++    /// </summary>
++    internal void StratumPinNeighbourhood(int chunkX, int chunkZ)
++    {
++        int minX = Math.Max(chunkX - 1, 0);
++        int maxX = Math.Min(chunkX + 1, server.WorldMap.ChunkMapSizeX - 1);
++        int minZ = Math.Max(chunkZ - 1, 0);
++        int maxZ = Math.Min(chunkZ + 1, server.WorldMap.ChunkMapSizeZ - 1);
++        for (int x = minX; x <= maxX; x++)
++        {
++            for (int z = minZ; z <= maxZ; z++)
++            {
++                stratumPinnedColumns.AddOrUpdate(server.WorldMap.MapChunkIndex2D(x, z), 1, static (key, count) => count + 1);
++            }
++        }
++    }
++
++    /// <summary>
++    /// Stratum: releases what StratumPinNeighbourhood took. Must run on every path that
++    /// releases the stage claim, which is why it sits next to the stratumStageActiveCount
++    /// decrements rather than anywhere else.
++    /// </summary>
++    internal void StratumUnpinNeighbourhood(int chunkX, int chunkZ)
++    {
++        int minX = Math.Max(chunkX - 1, 0);
++        int maxX = Math.Min(chunkX + 1, server.WorldMap.ChunkMapSizeX - 1);
++        int minZ = Math.Max(chunkZ - 1, 0);
++        int maxZ = Math.Min(chunkZ + 1, server.WorldMap.ChunkMapSizeZ - 1);
++        for (int x = minX; x <= maxX; x++)
++        {
++            for (int z = minZ; z <= maxZ; z++)
++            {
++                long index2d = server.WorldMap.MapChunkIndex2D(x, z);
++                while (true)
++                {
++                    if (!stratumPinnedColumns.TryGetValue(index2d, out int count))
++                    {
++                        break;
++                    }
++                    if (count <= 1)
++                    {
++                        if (((System.Collections.Generic.ICollection<System.Collections.Generic.KeyValuePair<long, int>>)stratumPinnedColumns).Remove(new System.Collections.Generic.KeyValuePair<long, int>(index2d, count)))
++                        {
++                            break;
++                        }
++                        continue;
++                    }
++                    if (stratumPinnedColumns.TryUpdate(index2d, count - 1, count))
++                    {
++                        break;
++                    }
++                }
++            }
++        }
++    }
++
++    /// <summary>
++    /// Stratum: true while any column generating nearby needs this one to stay resident.
++    /// </summary>
++    internal bool StratumIsColumnPinned(long index2d)
++    {
++        return stratumPinnedColumns.ContainsKey(index2d);
++    }
++
 +    internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
 +    {
++        // Stratum: a column the unload pass has committed to dropping is absent as far
++        // as this gate is concerned, even while its map chunk is still in the registry.
++        // Deciding to drop and finishing the drop are not one step, and granting a claim
++        // in between is what let a generator read a column that vanished under it.
++        if (requestedChunkColumns.elementsByIndex.TryGetValue(index2d, out var dropCheck) && Volatile.Read(ref dropCheck.stratumDropping) != 0)
++        {
++            return false;
++        }
 +        server.loadedMapChunks.TryGetValue(index2d, out var value);
 +        if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
 +        {
@@ -150,7 +234,8 @@ index ee7d12d..64084f2 100644
 +        // Stratum end
 +        return true;
 +    }
-+
+ 
+-	public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
 +    public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
  	{
  		return ((long)chunkY * (long)server.WorldMap.index3dMulZ + chunkZ) * server.WorldMap.index3dMulX + chunkX;

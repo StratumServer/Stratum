@@ -102,7 +102,7 @@ internal class ServerSystemStratum : ServerSystem
 		StratumRuntime.InitAdaptiveRadius(server);
 		StratumPlayerPrivacy.Initialize(server);
 		StratumMetricsPublisher.Start();
-		StratumUpdateChecker.CheckOnStartup();
+		StratumUpdateChecker.Start(server);
 		StratumServerStats.Start(server);
 		StratumHarmonyVisibility.LogPatchedMethods(server);
 		if (StratumRuntime.Config.Backup.Enabled)
@@ -171,6 +171,7 @@ internal class ServerSystemStratum : ServerSystem
 		if (server.RunPhase == EnumServerRunPhase.RunGame)
 		{
 			StratumMetricsPublisher.Publish(server);
+			StratumUpdateChecker.Tick(server);
 			StratumServerStats.Tick(server);
 		}
 	}

@@ -236,7 +236,7 @@ index 455b85f..426a460 100644
  		server.SaveGameData.WillSave(reusableStream);
  		server.SaveGameData.UpdateLandClaims(server.WorldMap.All);
  		chunkthread.gameDatabase.StoreSaveGame(server.SaveGameData, reusableStream);
-@@ -151,14 +352,37 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+@@ -153,18 +354,41 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
  				ServerMain.Logger.Event("Failed upgrading old savegame, giving up, sorry.");
  				throw new InvalidDataException("Failed upgrading savegame {0}", innerException);
  			}
@@ -244,6 +244,10 @@ index 455b85f..426a460 100644
  		chunkthread.gameDatabase.UpgradeToWriteAccess();
 +		TryStartStratumChunkReadPool();
  		server.ModEventManager.OnWorldgenStartup += OnWorldgenStartup;
+ 		if (!string.IsNullOrWhiteSpace(server.progArgs.RestoreLogsFolder))
+ 		{
+ 			server.ModEventManager.RegisterOnServerRunPhase(EnumServerRunPhase.RunGame, OnRestoreFromBuildLog);
+ 		}
  		LoadSaveGame();
  	}
  

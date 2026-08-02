@@ -10,7 +10,7 @@ internal sealed class StratumItemCleanup
 {
 	private readonly ServerMain server;
 	private static StratumItemCleanupConfig Cfg => StratumRuntime.Config?.Performance?.ItemCleanup;
-	private static StratumThemeConfig Theme => StratumRuntime.Config?.Theme;
+	private static StratumThemeConfig Theme => StratumRuntime.Config?.Appearance?.Theme;
 
 	private static int CleanupIntervalMs => (Cfg?.IntervalSeconds ?? 60) * 1000;
 

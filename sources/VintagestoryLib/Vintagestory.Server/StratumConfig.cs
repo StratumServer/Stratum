@@ -8,7 +8,7 @@ namespace Vintagestory.Server;
 
 internal class StratumConfig
 {
-	public int ConfigVersion { get; set; } = 2;
+	public int ConfigVersion { get; set; } = StratumConfigMigration.CurrentVersion;
 
 	public StratumDiagnosticsConfig Diagnostics { get; set; } = new StratumDiagnosticsConfig();
 
@@ -28,11 +28,15 @@ internal class StratumConfig
 
 	public StratumPerformanceConfig Performance { get; set; } = new StratumPerformanceConfig();
 
+	public StratumWorldgenConfig Worldgen { get; set; } = new StratumWorldgenConfig();
+
 	public StratumCommandsConfig Commands { get; set; } = new StratumCommandsConfig();
 
 	public StratumChatConfig Chat { get; set; } = new StratumChatConfig();
 
-	public StratumThemeConfig Theme { get; set; } = new StratumThemeConfig();
+	public StratumAppearanceConfig Appearance { get; set; } = new StratumAppearanceConfig();
+
+	public StratumServerInfoConfig ServerInfo { get; set; } = new StratumServerInfoConfig();
 
 	public StratumCrowdSpawnConfig CrowdSpawn { get; set; } = new StratumCrowdSpawnConfig();
 
@@ -41,8 +45,6 @@ internal class StratumConfig
 	public StratumLoginProtectionConfig LoginProtection { get; set; } = new StratumLoginProtectionConfig();
 
 	public StratumPlayerPrivacyConfig PlayerPrivacy { get; set; } = new StratumPlayerPrivacyConfig();
-
-	public StratumNametagsConfig Nametags { get; set; } = new StratumNametagsConfig();
 
 	public StratumBackupConfig Backup { get; set; } = new StratumBackupConfig();
 
@@ -61,14 +63,15 @@ internal class StratumConfig
 		Anticheat ??= new StratumAnticheatConfig();
 		ClientModPolicy ??= new StratumClientModPolicyConfig();
 		Performance ??= new StratumPerformanceConfig();
+		Worldgen ??= new StratumWorldgenConfig();
 		Commands ??= new StratumCommandsConfig();
 		Chat ??= new StratumChatConfig();
-		Theme ??= new StratumThemeConfig();
+		Appearance ??= new StratumAppearanceConfig();
+		ServerInfo ??= new StratumServerInfoConfig();
 		CrowdSpawn ??= new StratumCrowdSpawnConfig();
 		LoadTesting ??= new StratumLoadTestingConfig();
 		LoginProtection ??= new StratumLoginProtectionConfig();
 		PlayerPrivacy ??= new StratumPlayerPrivacyConfig();
-		Nametags ??= new StratumNametagsConfig();
 		Backup ??= new StratumBackupConfig();
 		Announcements ??= new StratumAnnouncementsConfig();
 		ServerStats ??= new StratumServerStatsConfig();
@@ -80,35 +83,16 @@ internal class StratumConfig
 		Performance.EnsurePopulated();
 		Commands.EnsurePopulated();
 		Chat.EnsurePopulated();
-		Theme.EnsurePopulated();
+		Appearance.EnsurePopulated();
+		ServerInfo.EnsurePopulated();
 		CrowdSpawn.EnsureSane();
 		LoadTesting.EnsureSane();
 		LoginProtection.EnsureSane();
 		PlayerPrivacy.EnsurePopulated();
-		Nametags.EnsurePopulated();
 		Backup.EnsureSane();
 		Announcements.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
-		MigrateLegacyDefaults();
-	}
-
-	// Bumps known-bad legacy defaults to the new recommended values when an older config is
-	// loaded. Only overrides values that match the *exact* old default so a server owner who
-	// chose a custom value keeps it.
-	private void MigrateLegacyDefaults()
-	{
-		if (ConfigVersion < 2)
-		{
-			StratumPhysicsConfig phys = Performance?.Physics;
-			if (phys != null)
-			{
-				if (phys.ParallelThreshold == 256) phys.ParallelThreshold = 32;
-				// MaxThreadsOverride==0 is now interpreted by PhysicsManager as "auto", no JSON
-				// change needed for thread count.
-			}
-			ConfigVersion = 2;
-		}
 	}
 
 	public static StratumConfig CreateDefault()
@@ -149,6 +133,10 @@ internal class StratumUpdateCheckerConfig
 
 	public bool CheckOnStartup { get; set; } = true;
 
+	public int CheckIntervalHours { get; set; } = 12;
+
+	public bool NotifyStaffInGame { get; set; } = true;
+
 	public string LatestReleaseUrl { get; set; } = "https://api.github.com/repos/StratumServer/Stratum/releases/latest";
 
 	public int TimeoutSeconds { get; set; } = 5;
@@ -158,6 +146,7 @@ internal class StratumUpdateCheckerConfig
 		LatestReleaseUrl = string.IsNullOrWhiteSpace(LatestReleaseUrl)
 			? "https://api.github.com/repos/StratumServer/Stratum/releases/latest"
 			: LatestReleaseUrl.Trim();
+		CheckIntervalHours = Math.Clamp(CheckIntervalHours, 1, 168);
 		TimeoutSeconds = Math.Min(30, Math.Max(1, TimeoutSeconds));
 	}
 }
@@ -315,120 +304,6 @@ internal class StratumPlayerPrivacyConfig
 	}
 }
 
-/// <summary>
-/// Server-only nametag customization. Reuses <see cref="StratumChatConfig.RolePrefixes"/>
-/// to decorate player nametags above their head with the same tag (e.g. "[Admin]") used in
-/// chat, and optionally injects one of the stock VS entitlement codes to colour the tag via
-/// the vanilla client's <c>playerColorByEntitlement</c> renderer path. No client mod required.
-/// <para>
-/// Limitations (vanilla client renders the tag): only a single colour, no second line / rank
-/// row, no background/border tweaks. Anything beyond a coloured name with a prefix needs a
-/// companion client mod.
-/// </para>
-/// </summary>
-internal class StratumNametagsConfig
-{
-	public bool Enabled { get; set; }
-
-	/// <summary>Prepend the role's chat tag (from <c>Chat.RolePrefixes</c>) to the player's nametag, e.g. "[Admin] Alice".</summary>
-	public bool ApplyChatPrefix { get; set; } = true;
-
-	/// <summary>Format applied to the tag before it is prepended. {tag} = chat-tag text. Default mirrors chat.</summary>
-	public string PrefixFormat { get; set; } = "[{tag}] ";
-
-	/// <summary>
-	/// Maps Stratum role code \u2192 vanilla entitlement code (must be one of
-	/// <c>playerColorByEntitlement</c>: vsteam, glintteam, vscontributor, vssupporter,
-	/// staff, bughunter, chiselmaster). If a role already grants a real entitlement we leave
-	/// it alone. Empty string or unknown code = no colour injection.
-	/// </summary>
-	public Dictionary<string, string> EntitlementColorByRole { get; set; } = CreateDefaultEntitlementMap();
-
-	/// <summary>If true, only apply the colour injection when the player has no real entitlement of their own.</summary>
-	public bool OnlyInjectIfNoExistingEntitlement { get; set; } = true;
-
-	public void EnsurePopulated()
-	{
-		PrefixFormat ??= "[{tag}] ";
-		if (EntitlementColorByRole == null || EntitlementColorByRole.Count == 0)
-		{
-			EntitlementColorByRole = CreateDefaultEntitlementMap();
-		}
-	}
-
-	private static Dictionary<string, string> CreateDefaultEntitlementMap()
-	{
-		return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-		{
-			["admin"] = "vsteam",
-			["sumod"] = "glintteam",
-			["crmod"] = "glintteam"
-		};
-	}
-}
-
-internal class StratumThemeConfig
-{
-	public bool Enabled { get; set; } = true;
-
-	public bool StyleDisconnectScreens { get; set; } = true;
-
-	public bool StyleJoinLeaveMessages { get; set; } = true;
-
-	public bool StyleWelcomeMessages { get; set; } = true;
-
-	public string BrandName { get; set; } = "Stratum";
-
-	public string AccentColor { get; set; } = "#8bd5ff";
-
-	public string GoodColor { get; set; } = "#9bd77e";
-
-	public string WarnColor { get; set; } = "#e6c15f";
-
-	public string BadColor { get; set; } = "#e47d68";
-
-	public string MutedColor { get; set; } = "#9aa8b5";
-
-	public string LabelColor { get; set; } = "#c9d6e2";
-
-	public void EnsurePopulated()
-	{
-		BrandName ??= "Stratum";
-		AccentColor = NormalizeHexColor(AccentColor, "#8bd5ff");
-		GoodColor = NormalizeHexColor(GoodColor, "#9bd77e");
-		WarnColor = NormalizeHexColor(WarnColor, "#e6c15f");
-		BadColor = NormalizeHexColor(BadColor, "#e47d68");
-		MutedColor = NormalizeHexColor(MutedColor, "#9aa8b5");
-		LabelColor = NormalizeHexColor(LabelColor, "#c9d6e2");
-	}
-
-	private static string NormalizeHexColor(string color, string fallback)
-	{
-		if (string.IsNullOrWhiteSpace(color))
-		{
-			return fallback;
-		}
-
-		string value = color.Trim();
-		if (value.Length == 7 && value[0] == '#')
-		{
-			for (int index = 1; index < value.Length; index++)
-			{
-				char c = value[index];
-				bool isHex = c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F';
-				if (!isHex)
-				{
-					return fallback;
-				}
-			}
-
-			return value;
-		}
-
-		return fallback;
-	}
-}
-
 internal class StratumDiagnosticsConfig
 {
 	public bool LogStartupSummary { get; set; } = true;
@@ -437,10 +312,22 @@ internal class StratumDiagnosticsConfig
 
 	public bool LogPreflightWarnings { get; set; } = true;
 
-	// Logs every mod-owned Harmony patch at startup (grouped by mod, split by prefix/postfix/
-	// transpiler/finalizer). Visibility only, does not cross-reference against Stratum's own
-	// source-patched methods -- see StratumHarmonyVisibility.
-	public bool LogModHarmonyPatches { get; set; } = false;
+	// Logs every mod-owned Harmony patch at startup, grouped by mod. Visibility only, it does
+	// not cross-reference Stratum's own source-patched methods -- see StratumHarmonyVisibility.
+	// On by default because a mod patch landing on something Stratum reshaped usually goes
+	// missing silently rather than erroring, and this log is what makes it traceable.
+	public bool LogModHarmonyPatches { get; set; } = true;
+}
+
+internal class StratumWorldgenConfig
+{
+	// Runs the Terrain pass as two sub-stages so two threads can share it.
+	// Off gives the stock single-stage pass. See StratumWorldgenCompat.
+	public bool SplitTerrainPass { get; set; } = true;
+
+	// Drops back to the vanilla single-stage pass when a mod registers a handler there or
+	// patches a generator inside it. Leave on unless you have checked this server's mods.
+	public bool AutoDisableSplitForMods { get; set; } = true;
 }
 
 internal class StratumHardeningConfig
@@ -617,8 +504,6 @@ internal class StratumPerformanceConfig
 
 	public StratumTimingsConfig Timings { get; set; } = new StratumTimingsConfig();
 
-	public StratumChatConfig Chat { get; set; } = new StratumChatConfig();
-
 	public StratumPathfindingConfig Pathfinding { get; set; } = new StratumPathfindingConfig();
 
 	public StratumRegionTickingConfig RegionTicking { get; set; } = new StratumRegionTickingConfig();
@@ -655,7 +540,6 @@ internal class StratumPerformanceConfig
 		ChunkIo ??= new StratumChunkIoConfig();
 		ChunkPriority ??= new StratumChunkPriorityConfig();
 		Timings ??= new StratumTimingsConfig();
-		Chat ??= new StratumChatConfig();
 		Pathfinding ??= new StratumPathfindingConfig();
 		RegionTicking ??= new StratumRegionTickingConfig();
 		BodyTemperature ??= new StratumBodyTemperatureConfig();
@@ -679,7 +563,6 @@ internal class StratumPerformanceConfig
 		ChunkIo.EnsureSane();
 		ChunkPriority.EnsureSane();
 		Timings.EnsureSane();
-		Chat.EnsurePopulated();
 		Pathfinding.EnsureSane();
 		RegionTicking.EnsureSane();
 		BodyTemperature.EnsureSane();
@@ -1355,8 +1238,8 @@ internal class StratumEntityTickingConfig
 	public List<string> ExcludedModDomains { get; set; } = new List<string> { "vsvillage" };
 
 	// Paper-style hard despawn: creatures that have been beyond HardDespawnDistanceBlocks
-	// from every player for HardDespawnGracePeriodSeconds get unloaded. Off by default —
-	// enable only on long-running worlds where stray mobs accumulate in old chunks.
+	// from every player for HardDespawnGracePeriodSeconds get unloaded. Off by default.
+	// Enable only on long-running worlds where stray mobs accumulate in old chunks.
 	public bool HardDespawnEnabled { get; set; } = false;
 
 	public int HardDespawnDistanceBlocks { get; set; } = 128;
@@ -1518,7 +1401,7 @@ internal class StratumChunkIoConfig
 // Reorders the next slice of pending chunk-column load requests by distance to the closest
 // online player (optionally forward-predicted along motion). The underlying request queue is
 // still consumed via the standard requeue/dispose flow, this only changes which request the
-// chunk thread picks up *first* on each tick — useful when many players are spreading load
+// chunk thread picks up *first* on each tick. Useful when many players are spreading load
 // across the world simultaneously and FIFO would otherwise round-robin them slowly.
 // sampling now correctly takes into account the entire queue via bounded max-heap, and not just its head
 internal class StratumChunkPriorityConfig
@@ -1902,114 +1785,6 @@ internal class StratumHomesConfig
 		SetHome.EnsurePopulated("stratum.sethome");
 		DeleteHome.EnsurePopulated("stratum.delhome");
 		DefaultMaxHomes = Math.Max(0, DefaultMaxHomes);
-	}
-}
-
-internal class StratumChatConfig
-{
-	public bool Enabled { get; set; } = true;
-
-	public bool RolePrefixesEnabled { get; set; } = true;
-
-	public bool LinkifyUrls { get; set; } = true;
-
-	// Stratum start: connection message toggles
-	public bool ShowJoinMessages { get; set; } = true;
-
-	public bool ShowLeaveMessages { get; set; } = true;
-
-	public bool ShowDisconnectMessages { get; set; } = true;
-	// Stratum end
-
-	// Minimum milliseconds between consecutive non-command chat lines from the same client.
-	// Messages sent faster than this are silently dropped server-side.
-	public int MinIntervalMs { get; set; } = 750;
-
-	// If true, drop duplicate messages from the same client within DuplicateWindowMs.
-	public bool DropDuplicates { get; set; } = true;
-
-	public int DuplicateWindowMs { get; set; } = 3000;
-
-	// Slash-commands are never throttled (commands typically have their own gates).
-	public bool ExemptCommands { get; set; } = true;
-
-	public string PrefixFormat { get; set; } = "[{tag}]";
-
-	public string RulesText { get; set; } = "Rules: be respectful, no griefing, no cheating, no harassment, and do not abuse exploits.";
-
-	public string DiscordUrl { get; set; } = "";
-
-	public string WebsiteUrl { get; set; } = "";
-
-	public string MotdText { get; set; } = "Welcome to this Stratum server.";
-
-	public Dictionary<string, StratumChatRolePrefixConfig> RolePrefixes { get; set; } = CreateDefaultRolePrefixes();
-
-	public void EnsurePopulated()
-	{
-		PrefixFormat ??= "[{tag}]";
-		RulesText ??= "Rules: be respectful, no griefing, no cheating, no harassment, and do not abuse exploits.";
-		DiscordUrl ??= "";
-		WebsiteUrl ??= "";
-		MotdText ??= "Welcome to this Stratum server.";
-		MinIntervalMs = Math.Max(0, MinIntervalMs);
-		DuplicateWindowMs = Math.Max(0, DuplicateWindowMs);
-		if (RolePrefixes == null || RolePrefixes.Count == 0)
-		{
-			RolePrefixes = CreateDefaultRolePrefixes();
-		}
-
-		foreach (StratumChatRolePrefixConfig prefix in RolePrefixes.Values)
-		{
-			prefix.EnsurePopulated();
-		}
-	}
-
-	private static Dictionary<string, StratumChatRolePrefixConfig> CreateDefaultRolePrefixes()
-	{
-		return new Dictionary<string, StratumChatRolePrefixConfig>(StringComparer.OrdinalIgnoreCase)
-		{
-			["admin"] = new StratumChatRolePrefixConfig
-			{
-				Tag = "Admin",
-				Color = "#ff5f57",
-				Bold = true,
-				Priority = 100
-			},
-			["sumod"] = new StratumChatRolePrefixConfig
-			{
-				Tag = "Mod",
-				Color = "#4cc9f0",
-				Bold = true,
-				Priority = 50
-			},
-			["crmod"] = new StratumChatRolePrefixConfig
-			{
-				Tag = "Mod",
-				Color = "#4cc9f0",
-				Bold = true,
-				Priority = 50
-			}
-		};
-	}
-}
-
-internal class StratumChatRolePrefixConfig
-{
-	public bool Enabled { get; set; } = true;
-
-	public string Tag { get; set; } = "Staff";
-
-	public string Color { get; set; } = "#ffffff";
-
-	public bool Bold { get; set; } = true;
-
-	public int Priority { get; set; }
-
-	public void EnsurePopulated()
-	{
-		Tag ??= "Staff";
-		Color ??= "#ffffff";
 	}
 }
 

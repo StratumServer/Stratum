@@ -11,7 +11,7 @@ Builds a clean working tree by laying down:
   3. Stratum patches and sources over those baselines.
 
 Options:
-  --version VERSION        Vintage Story server version to download. Default: 1.22.5
+  --version VERSION        Vintage Story server version to download. Default: 1.22.6
   --server-archive PATH    Existing vs_server_*.zip or .tar.gz archive to use.
   --client-lib-dir PATH    Optional full client Lib/ folder for client-only deps.
   --refresh               Force re-extract, re-decompile, and re-clone.
@@ -19,7 +19,7 @@ Options:
 EOF
 }
 
-version="1.22.5"
+version="1.22.6"
 server_archive=""
 client_lib_dir="${VS_CLIENT_LIB_DIR:-}"
 refresh=0
@@ -277,7 +277,20 @@ if [[ -z "$server_archive" ]]; then
   server_archive="$(download_server_archive "$zip_cache_dir")"
 fi
 
-if [[ ! -d "$vanilla_dir" ]]; then
+missing_server_dll=0
+for entry in "${lib_projects[@]}"; do
+  IFS=':' read -r _ _ dll <<<"$entry"
+  if [[ ! -d "$vanilla_dir" ]] || [[ -z "$(find "$vanilla_dir" -type f -name "$dll" -print -quit)" ]]; then
+    missing_server_dll=1
+    break
+  fi
+done
+
+if [[ "$missing_server_dll" == "1" ]]; then
+  if [[ -d "$vanilla_dir" ]]; then
+    echo "Vanilla cache is incomplete, extracting it again"
+    rm -rf "$vanilla_dir"
+  fi
   if [[ ! -f "$server_archive" ]]; then
     echo "Server archive not found: $server_archive" >&2
     exit 1
@@ -294,8 +307,8 @@ for entry in "${lib_projects[@]}"; do
   IFS=':' read -r project work_rel dll <<<"$entry"
   dll_path="$(find "$vanilla_dir" -type f -name "$dll" -print -quit)"
   if [[ -z "$dll_path" ]]; then
-    echo "Skipping $dll, not found in archive" >&2
-    continue
+    echo "$dll was not found after extracting $server_archive" >&2
+    exit 1
   fi
 
   out="$baseline_dir/$project"

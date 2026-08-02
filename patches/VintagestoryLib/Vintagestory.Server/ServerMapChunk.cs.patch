@@ -1,8 +1,36 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
-index 672877b..c112949 100644
+index 672877b..af91e6a 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
-@@ -63,24 +63,30 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -36,10 +36,27 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+ 	public List<BlockPos> ScheduledBlockUpdates = new List<BlockPos>();
+ 
+ 	[ProtoMember(9)]
+ 	public HashSet<BlockPos> NewBlockEntities = new HashSet<BlockPos>();
+ 
++	// Stratum: NewBlockEntities is a plain HashSet mutated from worldgen threads
++	// (BlockAccessorWorldGen adds on SpawnBlockEntity and removes when a block with a
++	// block entity is overwritten), read and drained on the chunk thread when a chunk
++	// finishes loading, and enumerated again by ToBytes on the save path. Structures
++	// routinely cross chunk boundaries, so once more than one column generates a
++	// structure-placing pass at a time, two worldgen threads can add into the SAME map
++	// chunk's set concurrently and corrupt it: observed as
++	// "Operations that change non-concurrent collections must have exclusive access"
++	// from HashSet.AddIfNotPresent during BlockSchematic.PlaceEntitiesAndBlockEntities.
++	//
++	// Guarded with a lock rather than swapped for a concurrent set on purpose. The field
++	// is [ProtoMember(9)] and is written by FastSerializer, so changing its type changes
++	// the on-disk and wire shape; and the chunk-thread drain is a compound
++	// check-then-remove that a concurrent collection would not make atomic anyway. Not a
++	// ProtoMember itself, so it is never serialized.
++	internal readonly object stratumNewBlockEntitiesLock = new object();
++
+ 	[ProtoMember(10)]
+ 	public ushort YMax;
+ 
+ 	[ProtoMember(15)]
+ 	public ConcurrentDictionary<Vec2iStruct, float> snowAccumOld;
+@@ -63,24 +80,30 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  
  	public SmallBoolArray NeighboursLoaded;
  
@@ -36,7 +64,7 @@ index 672877b..c112949 100644
  	[ProtoMember(12)]
  	public ushort[] SedimentaryThicknessMap { get; set; }
  
-@@ -148,11 +154,14 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -148,11 +171,14 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  	}
  
  	public static ServerMapChunk FromBytes(byte[] serializedChunk)
@@ -52,7 +80,7 @@ index 672877b..c112949 100644
  		}
  		if (serverMapChunk.TopRockIdMapOld != null)
  		{
-@@ -282,12 +291,12 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -282,15 +308,20 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  	public byte[] FastSerialize(FastMemoryStream ms)
  	{
  		ms.Reset();
@@ -64,6 +92,15 @@ index 672877b..c112949 100644
 +        FastSerializer.Write(ms, 6, TopRockIdMapOld);
  		FastSerializer.Write(ms, 7, WorldGenTerrainHeightMap);
  		FastSerializer.Write(ms, 8, ScheduledBlockUpdates);
- 		FastSerializer.Write(ms, 9, NewBlockEntities);
+-		FastSerializer.Write(ms, 9, NewBlockEntities);
++		// Stratum: the save path enumerates this set while worldgen threads may still be
++		// adding to it, see the field's own comment.
++		lock (stratumNewBlockEntitiesLock)
++		{
++			FastSerializer.Write(ms, 9, NewBlockEntities);
++		}
  		FastSerializer.Write(ms, 10, YMax);
  		FastSerializer.Write(ms, 11, CaveHeightDistort);
+ 		FastSerializer.Write(ms, 12, SedimentaryThicknessMap);
+ 		FastSerializer.Write(ms, 13, TopRockIdMap);
+ 		FastSerializer.Write(ms, 15, snowAccumOld);

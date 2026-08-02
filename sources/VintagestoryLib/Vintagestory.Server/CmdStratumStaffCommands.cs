@@ -659,22 +659,22 @@ internal class CmdStratumStaffCommands
 
 	private TextCommandResult HandleRules(TextCommandCallingArgs args)
 	{
-		return HandleInfoCommand(args, "rules", StratumRuntime.Config.Chat.RulesText, "No rules have been configured.");
+		return HandleInfoCommand(args, "rules", StratumRuntime.Config.ServerInfo.Rules, "No rules have been configured.");
 	}
 
 	private TextCommandResult HandleDiscord(TextCommandCallingArgs args)
 	{
-		return HandleInfoCommand(args, "discord", StratumRuntime.Config.Chat.DiscordUrl, "No Discord link has been configured.");
+		return HandleInfoCommand(args, "discord", StratumRuntime.Config.ServerInfo.DiscordUrl, "No Discord link has been configured.");
 	}
 
 	private TextCommandResult HandleWebsite(TextCommandCallingArgs args)
 	{
-		return HandleInfoCommand(args, "website", StratumRuntime.Config.Chat.WebsiteUrl, "No website link has been configured.");
+		return HandleInfoCommand(args, "website", StratumRuntime.Config.ServerInfo.WebsiteUrl, "No website link has been configured.");
 	}
 
 	private TextCommandResult HandleMotd(TextCommandCallingArgs args)
 	{
-		return HandleInfoCommand(args, "motd", StratumRuntime.Config.Chat.MotdText, "No message of the day has been configured.");
+		return HandleInfoCommand(args, "motd", StratumRuntime.Config.ServerInfo.Motd, "No message of the day has been configured.");
 	}
 
 	private TextCommandResult HandleInfoCommand(TextCommandCallingArgs args, string command, string value, string fallback)

@@ -1,0 +1,137 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
+index 79c481d..02503c7 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
+@@ -14,14 +14,45 @@ namespace Vintagestory.ServerMods
+     {
+         ICoreServerAPI api;
+         IWorldGenBlockAccessor blockAccessor;
+
+         HashSet<int> chunkVisitedNodes = new HashSet<int>();
+         List<int> solidNodes = new List<int>(40);
+
++        // Stratum: isolate scratch collections while the stock handler processes columns concurrently.
++        [ThreadStatic] private static HashSet<int> stratumChunkVisitedNodes;
++        [ThreadStatic] private static List<int> stratumSolidNodes;
++        [ThreadStatic] private static QueueOfInt stratumBfsQueue;
++        [ThreadStatic] private static int[] stratumCurrentVisited;
++        [ThreadStatic] private static int stratumIteration;
++        [ThreadStatic] private static GenTerraPostProcess stratumStateOwner;
++        [ThreadStatic] private static GenTerraPostProcess stratumActiveOwner;
++        [ThreadStatic] private static int stratumActiveDepth;
++
++        // Stratum: clear active TLS state on every handler exit without allocating on the hot path.
++        private readonly struct StratumPostProcessCallScope : IDisposable
++        {
++            private readonly GenTerraPostProcess previousOwner;
++            private readonly int previousDepth;
++
++            public StratumPostProcessCallScope(GenTerraPostProcess owner)
++            {
++                previousOwner = stratumActiveOwner;
++                previousDepth = stratumActiveDepth;
++                stratumActiveOwner = owner;
++                stratumActiveDepth = previousDepth + 1;
++            }
++
++            public void Dispose()
++            {
++                stratumActiveOwner = previousOwner;
++                stratumActiveDepth = previousDepth;
++            }
++        }
++
+         public override bool ShouldLoad(EnumAppSide side)
+         {
+             return side == EnumAppSide.Server;
+         }
+
+
+         public override double ExecuteOrder()
+@@ -54,14 +85,27 @@ namespace Vintagestory.ServerMods
+             blockAccessor.BeginColumn();
+             int seaLevel = TerraGenConfig.seaLevel - 1;
+             const int chunksize = GlobalConstants.ChunkSize;
+             const int chunksizeSquared = chunksize * chunksize;
+             int chunkY = seaLevel / chunksize;
+             int yMax = chunks[0].MapChunk.YMax;
+             int cyMax = Math.Min(yMax / chunksize + 1, api.World.BlockAccessor.MapSizeY / chunksize);
++            if (stratumStateOwner != this)
++            {
++                stratumStateOwner = this;
++                stratumChunkVisitedNodes = new HashSet<int>();
++                stratumSolidNodes = new List<int>(40);
++                stratumBfsQueue = new QueueOfInt();
++                stratumCurrentVisited = new int[ARRAYSIZE * ARRAYSIZE * ARRAYSIZE];
++                stratumIteration = 0;
++            }
++
++            using StratumPostProcessCallScope stratumCallScope = new StratumPostProcessCallScope(this);
++            HashSet<int> chunkVisitedNodes = stratumChunkVisitedNodes;
++            this.chunkVisitedNodes = chunkVisitedNodes; // Stratum: publish the active set through the vanilla field.
+             chunkVisitedNodes.Clear();
+
+             for (int cy = chunkY; cy < cyMax; cy++)
+             {
+                 IChunkBlocks chunkdata = chunks[cy].Data;
+
+                 int yStart = cy == 0 ? 1 : 0;  // Prevents attempts to get a blockbelow with y == -1 - impossible unless seaLeavel is set to 0
+@@ -114,22 +158,33 @@ namespace Vintagestory.ServerMods
+         int iteration = 0;
+
+         /// <summary>
+         /// Very similar to RoomRegistry room search code: we will search for contiguous islands of blocks, surrounded by air on all sides
+         /// </summary>
+         private void deletePotentialFloatingBlocks(int X, int Y, int Z)
+         {
++            bool useStratumState = stratumActiveOwner == this && stratumActiveDepth > 0 && stratumStateOwner == this;
++            List<int> solidNodes = useStratumState ? stratumSolidNodes : this.solidNodes;
++            QueueOfInt bfsQueue = useStratumState ? stratumBfsQueue : this.bfsQueue;
++            int[] currentVisited = useStratumState ? stratumCurrentVisited : this.currentVisited;
++            if (useStratumState)
++            {
++                this.solidNodes = solidNodes;
++                this.bfsQueue = bfsQueue;
++            }
++
+             int halfSize = (ARRAYSIZE - 1) / 2;
+             solidNodes.Clear();
+             bfsQueue.Clear();
+             int compressedPos = halfSize << 12 | halfSize << 6 | halfSize;
+             bfsQueue.Enqueue(compressedPos);
+             solidNodes.Add(compressedPos);
+
+-            int iteration = ++this.iteration;
++            int iteration = useStratumState ? ++stratumIteration : ++this.iteration;
++            if (useStratumState) this.iteration = iteration; // Stratum: publish the current counter through the vanilla field.
+             int visitedIndex = (halfSize * ARRAYSIZE + halfSize) * ARRAYSIZE + halfSize; // Center node
+             currentVisited[visitedIndex] = iteration;
+
+             int baseX = X - halfSize;
+             int baseY = Y - halfSize;
+             int baseZ = Z - halfSize;
+             BlockPos npos = new BlockPos(Dimensions.NormalWorld);
+@@ -223,15 +278,22 @@ namespace Vintagestory.ServerMods
+             const int chunkMask = ~(chunksize - 1);
+             if (((nposX ^ origX) & chunkMask) != 0) return;
+             if (((nposZ ^ origZ) & chunkMask) != 0) return;
+             if (((nposY ^ origY) & chunkMask) != 0) return;
+
+             const int inChunkMask = chunksize - 1;
+             int index3d = ((nposY & inChunkMask) * chunksize + (nposZ & inChunkMask)) * chunksize + (nposX & inChunkMask);
+-            chunkVisitedNodes.Add(index3d);
++            if (stratumActiveOwner == this && stratumActiveDepth > 0 && stratumStateOwner == this)
++            {
++                stratumChunkVisitedNodes.Add(index3d);
++            }
++            else
++            {
++                chunkVisitedNodes.Add(index3d);
++            }
+         }
+
+         //struct VisitNode : IEquatable<VisitNode>
+         //{
+         //    public int X, Y, Z;
+
+         //    public VisitNode(int x, int y, int z)

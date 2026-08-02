@@ -9,7 +9,7 @@ Builds a clean working tree by laying down:
 Then applies every patch in patches/ on top.
 
 .PARAMETER Version
-Vintage Story server version to download when -ServerZip is not provided. Defaults to 1.22.5.
+Vintage Story server version to download when -ServerZip is not provided. Defaults to 1.22.6.
 
 .PARAMETER ServerZip
 Path to an already-downloaded official server archive. If omitted, the script resolves
@@ -20,13 +20,13 @@ Force re-extract, re-decompile, and re-clone even if cached output already exist
 
 .EXAMPLE
 .\scripts\bootstrap.ps1
-.\scripts\bootstrap.ps1 -Version 1.22.5
+.\scripts\bootstrap.ps1 -Version 1.22.6
 .\scripts\bootstrap.ps1 -Refresh
 #>
 
 [CmdletBinding()]
 param(
-    [string]$Version = '1.22.5',
+    [string]$Version = '1.22.6',
     [string]$ServerZip,
     [switch]$Refresh
 )
@@ -139,7 +139,14 @@ try {
         }
     }
 
-    if (-not (Test-Path $vanillaDir)) {
+    $missingServerDlls = @($libMap.Keys | Where-Object {
+        -not (Get-ChildItem -Path $vanillaDir -Recurse -Filter $_ -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+    })
+    if ($missingServerDlls.Count -gt 0) {
+        if (Test-Path $vanillaDir) {
+            Write-Host "Vanilla cache is incomplete, extracting it again"
+            Remove-Item -Recurse -Force $vanillaDir
+        }
         if (-not (Test-Path $ServerZip)) { throw "Server archive not found: $ServerZip" }
         Write-Host "Extracting $ServerZip"
         New-Item -ItemType Directory -Force -Path $vanillaDir | Out-Null
@@ -204,7 +211,7 @@ try {
         $proj = $libMap[$dll].Project
         $workRel = $libMap[$dll].Work
         $dllPath = Get-ChildItem -Path $vanillaDir -Recurse -Filter $dll | Select-Object -First 1
-        if (-not $dllPath) { Write-Warning "Skipping $dll, not found in zip"; continue }
+        if (-not $dllPath) { throw "$dll was not found after extracting $ServerZip" }
 
         $out = Join-Path $baselineDir $proj
         if (-not (Test-Path $out) -or $Refresh) {

@@ -1,0 +1,47 @@
+diff --git a/VSEssentials/Systems/WorldGen/Standard/ModStdWorldGen.cs b/VSEssentials/Systems/WorldGen/Standard/ModStdWorldGen.cs
+index 1bd4340..3d6d3f6 100644
+--- a/VSEssentials/Systems/WorldGen/Standard/ModStdWorldGen.cs
++++ b/VSEssentials/Systems/WorldGen/Standard/ModStdWorldGen.cs
+@@ -44,6 +44,8 @@ namespace Vintagestory.ServerMods
+ 
+         public void TriggerRegenFinalized(int chunkX, int chunkZ) => OnRegenFinalized?.Invoke(chunkX, chunkZ);
+         protected IStructureProvider[] providers;
++        // Stratum: Keep mod structure-provider callbacks under their vanilla serial execution assumption.
++        private readonly object stratumProvidersLock = new();
+         public override bool ShouldLoad(EnumAppSide forSide) => true;
+ 
+ 
+@@ -54,7 +56,10 @@ namespace Vintagestory.ServerMods
+ 
+         public void RegisterProvider(IStructureProvider provider)
+         {
+-            providers = providers.Append(provider);
++            lock (stratumProvidersLock)
++            {
++                providers = providers.Append(provider);
++            }
+         }
+ 
+         /// <summary>
+@@ -68,13 +73,16 @@ namespace Vintagestory.ServerMods
+         /// <returns></returns>
+         public IStructureLocation GetIntersectingStructure(int x, int z, int category)
+         {
+-            for (int i = 0; i < providers.Length; i++)
++            lock (stratumProvidersLock)
+             {
+-                var structure = providers[i].GetBlockingStructureAt(x, z, category);
+-                if (structure != null) return structure;
+-            }
++                for (int i = 0; i < providers.Length; i++)
++                {
++                    var structure = providers[i].GetBlockingStructureAt(x, z, category);
++                    if (structure != null) return structure;
++                }
+ 
+-            return null;
++                return null;
++            }
+         }
+ 
+     }

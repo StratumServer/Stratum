@@ -40,7 +40,7 @@ internal sealed class StratumNametags
 		server.EventManager.OnPlayerDisconnect += OnPlayerDisconnect;
 	}
 
-	private StratumNametagsConfig Cfg => StratumRuntime.Config?.Nametags;
+	private StratumNametagsConfig Cfg => StratumRuntime.Config?.Appearance?.Nametags;
 
 	/// <summary>
 	/// Called by <c>CmdPlayer.ChangeRole</c> after a role swap so the prefix + colour are
@@ -59,9 +59,9 @@ internal sealed class StratumNametags
 		if (player?.Role == null) return false;
 
 		StratumConfig root = StratumRuntime.Config;
-		StratumChatRolePrefixConfig prefix = FindRolePrefix(root?.Chat?.RolePrefixes, player.Role.Code);
+		StratumRolePrefixConfig prefix = FindRolePrefix(root?.Appearance?.RolePrefixes?.Roles, player.Role.Code);
 
-		if (cfg.ApplyChatPrefix)
+		if (cfg.ApplyRolePrefix)
 		{
 			ApplyNametagPrefix(player, prefix, cfg.PrefixFormat);
 		}
@@ -82,7 +82,7 @@ internal sealed class StratumNametags
 		injectedByUid.Remove(player.PlayerUID);
 	}
 
-	private void ApplyNametagPrefix(IServerPlayer player, StratumChatRolePrefixConfig prefix, string format)
+	private void ApplyNametagPrefix(IServerPlayer player, StratumRolePrefixConfig prefix, string format)
 	{
 		EntityPlayer entity = player.Entity;
 		if (entity == null) return;
@@ -151,7 +151,7 @@ internal sealed class StratumNametags
 		StratumRuntime.LogInfo("nametag: injected entitlement '" + entCode + "' for " + player.PlayerName + " (role " + player.Role.Code + ")");
 	}
 
-	private static StratumChatRolePrefixConfig FindRolePrefix(Dictionary<string, StratumChatRolePrefixConfig> prefixes, string roleCode)
+	private static StratumRolePrefixConfig FindRolePrefix(Dictionary<string, StratumRolePrefixConfig> prefixes, string roleCode)
 	{
 		if (prefixes == null || string.IsNullOrWhiteSpace(roleCode)) return null;
 		return prefixes

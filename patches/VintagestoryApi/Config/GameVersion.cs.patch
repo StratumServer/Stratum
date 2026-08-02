@@ -9,7 +9,7 @@ index a7911ea..0a193fd 100644
          /// Assembly Info Version number in the format: major.minor.revision-[rc/pre.subrevision]
          /// </summary>
 -        public const string OverallVersion = OverallMajorMinor + ".2";
-+        public const string OverallVersion = OverallMajorMinor + ".5"; // Stratum: upstream vsapi repo is still at 1.22.2, but the shipped game is 1.22.5
++        public const string OverallVersion = OverallMajorMinor + ".6"; // Stratum: upstream vsapi repo is still at 1.22.2, the shipped game is 1.22.6
  
          /// <summary>
          /// Whether this is a stable or unstable version

@@ -1,0 +1,16 @@
+diff --git a/VintagestoryApi/Server/API/IServerAPI.cs b/VintagestoryApi/Server/API/IServerAPI.cs
+index 1f91e56..eaf8ac2 100644
+--- a/VintagestoryApi/Server/API/IServerAPI.cs
++++ b/VintagestoryApi/Server/API/IServerAPI.cs
+@@ -84,10 +84,11 @@ namespace Vintagestory.API.Server
+         /// </summary>
+         bool ReducedServerThreads { get; }
+ 
+ 
+ 
++
+         long TotalReceivedBytes { get; }
+         long TotalSentBytes { get; }
+ 
+         /// <summary>
+         /// Returns the number of seconds the server has been running since last restart
