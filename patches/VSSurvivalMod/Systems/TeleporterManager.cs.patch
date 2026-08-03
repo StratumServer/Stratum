@@ -1,35 +1,38 @@
 diff --git a/VSSurvivalMod/Systems/TeleporterManager.cs b/VSSurvivalMod/Systems/TeleporterManager.cs
-index b99bc2c..bcdc2a0 100644
+index c571afb..0487bf4 100644
 --- a/VSSurvivalMod/Systems/TeleporterManager.cs
 +++ b/VSSurvivalMod/Systems/TeleporterManager.cs
-@@ -37,11 +37,15 @@ namespace Vintagestory.GameContent
-     }
- 
+@@ -39,7 +39,12 @@ namespace Vintagestory.GameContent
  
      public class TeleporterManager : ModSystem
      {
-+        const double StratumMaxTeleporterConfigDistanceSq = 12 * 12;
-+        const int StratumMaxTeleporterNameLength = 64;
++        // Stratum: Limit teleporter configuration to a nearby, authorized server-side edit session.
++        const double stratumMaxTeleporterConfigDistanceSq = 12 * 12;
++        const int stratumMaxTeleporterNameLength = 64;
 +
          Dictionary<BlockPos, TeleporterLocation> Locations = new Dictionary<BlockPos, TeleporterLocation>();
 +        Dictionary<string, BlockPos> stratumOpenConfigSourcesByPlayerUid = new Dictionary<string, BlockPos>();
          ICoreServerAPI sapi;
          IServerNetworkChannel serverChannel;
  
-         // Client values
-         List<BlockPos> targetPositionsOrdered = new List<BlockPos>();
-@@ -141,19 +145,114 @@ namespace Vintagestory.GameContent
-             return TextCommandResult.Success((bet.tpLocationIsOffset ? "Relative " : "") + "Target position set.");
-         }
+@@ -142,21 +147,112 @@ namespace Vintagestory.GameContent
  
          private void OnSetLocationReceived(IServerPlayer fromPlayer, TeleporterLocation networkMessage)
          {
++            if (networkMessage == null) return;
++
+             if (fromPlayer.WorldData.CurrentGameMode != EnumGameMode.Creative) {
+                 sapi.World.Logger.Audit("Player {0} tried to set teleporter parameters for {1} ({2}) while not being in creative mode!", fromPlayer, networkMessage.SourcePos, networkMessage.SourceName);
+                 return;
+             }
+ 
+-            // Rennorb 26.06.2026 correctness explain: Do we not need to update the dictionary key here?
 -            Locations[networkMessage.SourcePos].SourcePos = networkMessage.SourcePos;
 -            Locations[networkMessage.SourcePos].TargetPos = networkMessage.TargetPos;
 -            Locations[networkMessage.SourcePos].SourceName = networkMessage.SourceName;
 -            Locations[networkMessage.SourcePos].TargetName = networkMessage.TargetName;
 +            // Stratum: Do not trust client supplied source positions for teleporter editing.
-+            if (networkMessage == null || !TryGetOpenEditableTeleporterSource(fromPlayer, out BlockPos sourcePos, true))
++            if (!tryGetOpenEditableTeleporterSource(fromPlayer, out BlockPos sourcePos, true))
 +            {
 +                return;
 +            }
@@ -38,7 +41,8 @@ index b99bc2c..bcdc2a0 100644
 +            {
 +                return;
 +            }
-+
+ 
+-            BlockEntityTeleporter be = sapi.World.BlockAccessor.GetBlockEntity(networkMessage.SourcePos) as BlockEntityTeleporter;
 +            TeleporterLocation targetLocation = null;
 +            if (networkMessage.TargetPos != null && !Locations.TryGetValue(networkMessage.TargetPos, out targetLocation))
 +            {
@@ -46,19 +50,18 @@ index b99bc2c..bcdc2a0 100644
 +            }
 +
 +            location.SourcePos = sourcePos.Copy();
-+            location.SourceName = SanitizeTeleporterName(networkMessage.SourceName, location.SourceName);
++            location.SourceName = sanitizeTeleporterName(networkMessage.SourceName, location.SourceName);
 +            location.TargetPos = targetLocation?.SourcePos.Copy();
 +            location.TargetName = targetLocation?.SourceName ?? "";
- 
--            BlockEntityTeleporter be = sapi.World.BlockAccessor.GetBlockEntity(networkMessage.SourcePos) as BlockEntityTeleporter;
++
 +            BlockEntityTeleporter be = sapi.World.BlockAccessor.GetBlockEntity(sourcePos) as BlockEntityTeleporter;
              if (be != null) be.MarkDirty();
          }
  
-+        private bool TryGetOpenEditableTeleporterSource(IServerPlayer player, out BlockPos sourcePos, bool consumeSession = false)
++        private bool tryGetOpenEditableTeleporterSource(IServerPlayer player, out BlockPos sourcePos, bool consumeSession = false)
 +        {
 +            sourcePos = null;
-+            if (player == null || player.Entity == null || player.PlayerUID == null)
++            if (player?.PlayerUID == null || player.Entity == null)
 +            {
 +                return false;
 +            }
@@ -73,7 +76,7 @@ index b99bc2c..bcdc2a0 100644
 +                stratumOpenConfigSourcesByPlayerUid.Remove(player.PlayerUID);
 +            }
 +
-+            if (!IsEditableTeleporter(player, openedSource))
++            if (!isEditableTeleporter(player, openedSource))
 +            {
 +                return false;
 +            }
@@ -82,14 +85,9 @@ index b99bc2c..bcdc2a0 100644
 +            return true;
 +        }
 +
-+        private bool IsEditableTeleporter(IServerPlayer player, BlockPos sourcePos)
++        private bool isEditableTeleporter(IServerPlayer player, BlockPos sourcePos)
 +        {
-+            if (player == null || player.Entity == null || sourcePos == null)
-+            {
-+                return false;
-+            }
-+
-+            if (player.WorldData.CurrentGameMode != EnumGameMode.Creative)
++            if (player?.Entity == null || sourcePos == null)
 +            {
 +                return false;
 +            }
@@ -101,7 +99,7 @@ index b99bc2c..bcdc2a0 100644
 +            }
 +
 +            BlockEntityTeleporter be = sapi.World.BlockAccessor.GetBlockEntity(sourcePos) as BlockEntityTeleporter;
-+            if (be == null || !(sapi.World.BlockAccessor.GetBlock(sourcePos) is BlockTeleporter))
++            if (be == null || sapi.World.BlockAccessor.GetBlock(sourcePos) is not BlockTeleporter)
 +            {
 +                return false;
 +            }
@@ -114,10 +112,10 @@ index b99bc2c..bcdc2a0 100644
 +            double dx = player.Entity.Pos.X - (sourcePos.X + 0.5);
 +            double dy = player.Entity.Pos.Y - (sourcePos.InternalY + 0.5);
 +            double dz = player.Entity.Pos.Z - (sourcePos.Z + 0.5);
-+            return dx * dx + dy * dy + dz * dz <= StratumMaxTeleporterConfigDistanceSq;
++            return dx * dx + dy * dy + dz * dz <= stratumMaxTeleporterConfigDistanceSq;
 +        }
 +
-+        private static string SanitizeTeleporterName(string name, string fallback)
++        private static string sanitizeTeleporterName(string name, string fallback)
 +        {
 +            string cleanName = name?.Trim();
 +            if (string.IsNullOrEmpty(cleanName))
@@ -125,9 +123,9 @@ index b99bc2c..bcdc2a0 100644
 +                return string.IsNullOrEmpty(fallback) ? "Location" : fallback;
 +            }
 +
-+            if (cleanName.Length > StratumMaxTeleporterNameLength)
++            if (cleanName.Length > stratumMaxTeleporterNameLength)
 +            {
-+                cleanName = cleanName.Substring(0, StratumMaxTeleporterNameLength);
++                cleanName = cleanName.Substring(0, stratumMaxTeleporterNameLength);
 +            }
 +
 +            return cleanName;
@@ -136,11 +134,7 @@ index b99bc2c..bcdc2a0 100644
          private void OnSaveGame()
          {
              sapi.WorldManager.SaveGame.StoreData("tpLocations", SerializerUtil.Serialize(Locations));
-         }
- 
-@@ -261,13 +360,29 @@ namespace Vintagestory.GameContent
-         }
- 
+@@ -268,9 +364,25 @@ namespace Vintagestory.GameContent
          private void OnConfigEventServer(string eventName, ref EnumHandling handling, IAttribute data)
          {
              ITreeAttribute tree = data as ITreeAttribute;
@@ -151,13 +145,13 @@ index b99bc2c..bcdc2a0 100644
 +            }
  
              IServerPlayer player = sapi.World.PlayerByUid(tree.GetString("playerUid")) as IServerPlayer;
-+            if (player == null)
++            if (player?.PlayerUID == null || player.WorldData.CurrentGameMode != EnumGameMode.Creative)
 +            {
 +                return;
 +            }
 +
 +            BlockPos sourcePos = new BlockPos(tree.GetInt("posX"), tree.GetInt("posY"), tree.GetInt("posZ"));
-+            if (!IsEditableTeleporter(player, sourcePos))
++            if (!isEditableTeleporter(player, sourcePos))
 +            {
 +                return;
 +            }
@@ -167,5 +161,3 @@ index b99bc2c..bcdc2a0 100644
  
              serverChannel.SendPacket(new TpLocations()
              {
-                 ForLocation = forLoc,
-                 Locations = Locations

@@ -1,10 +1,8 @@
 diff --git a/VSSurvivalMod/Entity/Behavior/BehaviorWritingSurface.cs b/VSSurvivalMod/Entity/Behavior/BehaviorWritingSurface.cs
-index bc8e648..3d7abca 100644
+index 3c769ef..03714cb 100644
 --- a/VSSurvivalMod/Entity/Behavior/BehaviorWritingSurface.cs
 +++ b/VSSurvivalMod/Entity/Behavior/BehaviorWritingSurface.cs
-@@ -93,10 +93,11 @@ namespace Vintagestory.GameContent
-         protected float DefaultFontSize;
-         protected string SurfaceName = "leftplaque";
+@@ -95,6 +95,7 @@ namespace Vintagestory.GameContent
  
          int tempColor;
          ItemStack tempStack;
@@ -12,51 +10,56 @@ index bc8e648..3d7abca 100644
  
  
          public float FontSize
-         {
-             get { return entity.WatchedAttributes.GetFloat(SurfaceName + "_fontSize", DefaultFontSize); }
-@@ -185,37 +186,71 @@ namespace Vintagestory.GameContent
-         {
-             base.OnReceivedClientPacket(player, packetid, data, ref handled);
-             
-             if (packetid == (int)WritingSurfacePackets.Open)
-             {
+@@ -194,11 +195,22 @@ namespace Vintagestory.GameContent
+                     return;
+                 }
+ 
 -                loadPigment(player.Entity);
-+                // Stratum: bind writes to the player that opened this server-side edit session.
-+                if (!CanEditWritingSurface(player) || !loadPigment(player.Entity))
++                // Stratum: Bind the consumed pigment and later write to the player who opened this edit session.
++                if (!loadPigment(player.Entity))
 +                {
-+                    handled = EnumHandling.PreventSubsequent;
 +                    return;
 +                }
 +
 +                stratumEditingPlayerUid = player.PlayerUID;
-+                handled = EnumHandling.PreventSubsequent;
              }
  
              if (packetid == (int)WritingSurfacePackets.Cancel)
              {
-+                if (!IsActiveWritingSurfaceEditor(player))
++                if (!isActiveWritingSurfaceEditor(player))
 +                {
-+                    handled = EnumHandling.PreventSubsequent;
 +                    return;
 +                }
 +
+                 var perms = new Entity.CachedAccessPerms(this.entity, player);
+                 if(!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.Use, false, "entity behavior writing surface")) // No range check here, we might have gotten moved away.
+                 {
+@@ -208,10 +220,16 @@ namespace Vintagestory.GameContent
+ 
                  player.Entity.TryGiveItemStack(tempStack);
                  tempStack = null;
 +                stratumEditingPlayerUid = null;
-+                handled = EnumHandling.PreventSubsequent;
              }
  
              if (packetid == (int)WritingSurfacePackets.Save)
              {
-+                if (!IsActiveWritingSurfaceEditor(player))
++                if (!isActiveWritingSurfaceEditor(player))
 +                {
-+                    handled = EnumHandling.PreventSubsequent;
 +                    return;
 +                }
 +
-                 // 85% chance to get back the item
-                 if (entity.World.Rand.NextDouble() < 0.85)
+                 var perms = new Entity.CachedAccessPerms(this.entity, player);
+                 if(!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.Use, true, "entity behavior writing surface"))
                  {
+@@ -224,6 +242,7 @@ namespace Vintagestory.GameContent
+                     // Don't forget to give the chalk item back:
+                     player.InventoryManager.TryGiveItemstack(tempStack);
+                     tempStack = null;
++                    stratumEditingPlayerUid = null;
+ 
+                     return;
+                 }
+@@ -234,6 +253,7 @@ namespace Vintagestory.GameContent
                      player.Entity.TryGiveItemStack(tempStack);
                  }
                  tempStack = null;
@@ -64,26 +67,15 @@ index bc8e648..3d7abca 100644
  
                  var pkg = SerializerUtil.Deserialize<TextDataPacket>(data);
                  this.Text = pkg.Text;
-                 this.FontSize = pkg.FontSize;
- 
-                 entity.MarkShapeModified();
-                 Color = tempColor;
-+                handled = EnumHandling.PreventSubsequent;
+@@ -244,6 +264,11 @@ namespace Vintagestory.GameContent
              }
          }
  
-+        private bool IsActiveWritingSurfaceEditor(IServerPlayer player)
++        private bool isActiveWritingSurfaceEditor(IServerPlayer player)
 +        {
-+            return player?.PlayerUID != null && player.PlayerUID == stratumEditingPlayerUid && CanEditWritingSurface(player);
++            return player?.PlayerUID != null && player.PlayerUID == stratumEditingPlayerUid;
 +        }
 +
-+        private bool CanEditWritingSurface(IServerPlayer player)
-+        {
-+            return player?.Entity != null && player.Entity.Pos.SquareDistanceTo(entity.Pos) <= 16;
-+        }
-+
-         private bool loadPigment(EntityAgent eagent)
+         public override void OnReceivedServerPacket(int packetId, byte[] data, ref EnumHandling handled)
          {
-             ItemSlot hotbarSlot = eagent.RightHandItemSlot;
-             if (hotbarSlot?.Itemstack?.ItemAttributes?["pigment"]?["color"].Exists == true)
-             {
+             switch (packetId)

@@ -1,76 +1,56 @@
 diff --git a/VSSurvivalMod/Systems/Trading/EntityTradingHumanoid.cs b/VSSurvivalMod/Systems/Trading/EntityTradingHumanoid.cs
-index ea704aa..e363278 100644
 --- a/VSSurvivalMod/Systems/Trading/EntityTradingHumanoid.cs
 +++ b/VSSurvivalMod/Systems/Trading/EntityTradingHumanoid.cs
-@@ -15,10 +15,11 @@ using Vintagestory.API.Util;
- 
- namespace Vintagestory.GameContent
- {
-     public class EntityTradingHumanoid : EntityDressedHumanoid {
-         public const int PlayerStoppedInteracting = 1212;
-+        private const double StratumTradePacketRangeSq = 25;
- 
-         public InventoryTrader Inventory;
-         public TradeProperties TradeProps;
-         public List<EntityPlayer> interactingWithPlayer = new List<EntityPlayer>();
-         protected GuiDialog dlg;
-@@ -358,15 +359,26 @@ namespace Vintagestory.GameContent
-         {
-             base.OnReceivedClientPacket(player, packetid, data);
+@@ -360,6 +360,13 @@
  
              if (packetid < 1000)
              {
-+                // Stratum: trade inventory packets require the server-side trade session to be open.
-+                if (!IsTradingWith(player) || !Inventory.HasOpened(player))
++                // Stratum: inventory mutations require the dialogue-started trade session to remain open.
++                if (!stratumHasOpenTradeSession(player))
 +                {
++                    Inventory.InvNetworkUtil.SendInventoryRollback(player, packetid, data);
 +                    return;
 +                }
 +
-                 Inventory.InvNetworkUtil.HandleClientPacket(player, packetid, data);
-                 return;
+                 var perms = new Entity.CachedAccessPerms(this, player);
+                 if(!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.None, true, "trader"))
+                 {
+@@ -372,6 +379,11 @@
              }
              if (packetid == 1000)
              {
-+                if (!IsTradingWith(player) || !Inventory.HasOpened(player))
++                if (!stratumHasOpenTradeSession(player))
 +                {
 +                    return;
 +                }
 +
-                 EnumTransactionResult result = Inventory.TryBuySell(player);
-                 if (result == EnumTransactionResult.Success)
+                 var perms = new Entity.CachedAccessPerms(this, player);
+                 if(!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.None, true, "trader"))
                  {
-                     (Api as ICoreServerAPI).WorldManager.GetChunk(Pos.AsBlockPos)?.MarkModified();
- 
-@@ -378,10 +390,15 @@ namespace Vintagestory.GameContent
-                     (Api as ICoreServerAPI).Network.BroadcastEntityPacket(EntityId, 1234, tree.ToBytes());
-                 }
+@@ -394,6 +406,11 @@
              }
              if (packetid == 1001)
              {
-+                if (!IsTradingWith(player))
++                if (!stratumIsTradingWith(player))
 +                {
 +                    return;
 +                }
 +
-                 player.InventoryManager.OpenInventory(Inventory);
-             }
- 
-             if (packetid == PlayerStoppedInteracting)
-             {
-@@ -391,10 +408,25 @@ namespace Vintagestory.GameContent
-                     WatchedAttributes.RemoveAttribute("tradingPlayerUID");
-                 }
+                 var perms = new Entity.CachedAccessPerms(this, player);
+                 if(!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.None, true, "trader"))
+                 {
+@@ -416,6 +433,21 @@
              }
          }
  
-+        private bool IsTradingWith(IServerPlayer player)
++        private bool stratumHasOpenTradeSession(IServerPlayer player)
++        {
++            return stratumIsTradingWith(player) && Inventory.HasOpened(player);
++        }
++
++        private bool stratumIsTradingWith(IServerPlayer player)
 +        {
 +            if (player?.Entity == null)
-+            {
-+                return false;
-+            }
-+
-+            if (player.Entity.Pos.SquareDistanceTo(Pos) > StratumTradePacketRangeSq)
 +            {
 +                return false;
 +            }
@@ -81,5 +61,3 @@ index ea704aa..e363278 100644
          public override void OnReceivedServerPacket(int packetid, byte[] data)
          {
              base.OnReceivedServerPacket(packetid, data);
- 
-             if (packetid == PlayerStoppedInteracting)
