@@ -163,8 +163,10 @@ internal class CmdStratumStaffCommands
 		if (StratumCommandRegistration.ShouldRegister(commands.Vanish, "/vanish", "Commands.Vanish"))
 		{
 			server.api.commandapi.Create("vanish")
-				.WithDescription("Toggle staff vanish")
-				.WithArgs(parsers.OptionalWordRange("mode", "on", "off", "toggle"))
+				.WithDescription("Toggle staff vanish, or /vanish hideothers to hide other vanished staff from yourself")
+				.WithArgs(
+					parsers.OptionalWordRange("mode", "on", "off", "toggle", "hideothers", "status"),
+					parsers.OptionalWordRange("state", "on", "off", "toggle"))
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleVanish);
 		}
@@ -409,7 +411,12 @@ internal class CmdStratumStaffCommands
 		var nearby = server.Clients.Values
 			.Where(client => client.State.IsAdmitted() && client.Player?.Entity?.Pos != null && client.Player.PlayerUID != player.PlayerUID)
 			.Where(client => client.Player.Entity.Pos.Dimension == pos.Dimension)
-			.Where(client => !StratumStaffCommandState.IsVanished(client.Player.PlayerUID) || StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish))
+			// Stratum #213: mirror the entity-visibility rule exactly, including the
+			// per-viewer "hide other vanished" preference, so /near never lists someone
+			// the caller cannot see.
+			.Where(client => !StratumStaffCommandState.IsVanished(client.Player.PlayerUID)
+				|| (StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish)
+					&& !StratumStaffCommandState.HidesOtherVanished(player.PlayerUID)))
 			.Select(client => new
 			{
 				client.Player.PlayerName,
@@ -834,6 +841,22 @@ internal class CmdStratumStaffCommands
 		}
 
 		string mode = args[0] as string;
+
+		// Stratum #213: /vanish hideothers [on|off|toggle] is a per-viewer preference and
+		// does not touch the caller's own vanish state. Must be handled before the toggle
+		// fallthrough below, which treats any unrecognised mode word as "toggle vanish".
+		if (string.Equals(mode, "hideothers", StringComparison.OrdinalIgnoreCase))
+		{
+			return HandleVanishHideOthers(player, args[1] as string);
+		}
+
+		if (string.Equals(mode, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			return TextCommandResult.Success(StratumCommandText.Title("Vanish")
+				+ StratumCommandText.Row("Vanished", StratumStaffCommandState.IsVanished(player.PlayerUID) ? "yes" : "no")
+				+ StratumCommandText.Row("Hide other vanished", StratumStaffCommandState.HidesOtherVanished(player.PlayerUID) ? "on" : "off"));
+		}
+
 		bool enable = string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase) || (!string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase) && !StratumStaffCommandState.IsVanished(player.PlayerUID));
 		StratumStaffCommandState.SetVanished(player, enable);
 		if (enable)
@@ -846,6 +869,32 @@ internal class CmdStratumStaffCommands
 		StratumStaffCommandState.RevealPlayerToOthers(server, player);
 		lastVanishIndicatorMsByUid.Remove(player.PlayerUID);
 		return TextCommandResult.Success(StratumCommandText.Confirm("Vanish disabled"));
+	}
+
+	private TextCommandResult HandleVanishHideOthers(IServerPlayer player, string state)
+	{
+		bool current = StratumStaffCommandState.HidesOtherVanished(player.PlayerUID);
+		bool target;
+		if (string.Equals(state, "on", StringComparison.OrdinalIgnoreCase))
+		{
+			target = true;
+		}
+		else if (string.Equals(state, "off", StringComparison.OrdinalIgnoreCase))
+		{
+			target = false;
+		}
+		else
+		{
+			target = !current;
+		}
+
+		StratumStaffCommandState.SetHidesOtherVanished(player.PlayerUID, target);
+		StratumStaffCommandState.RefreshVanishedVisibilityForViewer(server, player);
+		StratumRuntime.LogAudit("vanish hideothers=" + (target ? "on" : "off") + " actor=" + EscapeLog(player.PlayerName));
+
+		return TextCommandResult.Success(StratumCommandText.Confirm(target
+			? "Other vanished staff are now hidden from you"
+			: "Other vanished staff are now visible to you"));
 	}
 
 	private TextCommandResult HandlePvp(TextCommandCallingArgs args)

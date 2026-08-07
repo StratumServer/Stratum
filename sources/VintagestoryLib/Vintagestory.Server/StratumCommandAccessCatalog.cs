@@ -47,7 +47,7 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("chatcontrol", "/slowmode", commands.ChatControl, "Use /slowmode, /lockchat, /chatclear, and /chattoggle");
 		yield return new StratumCommandAccessEntry("staffbroadcast", "/staffbroadcast", commands.StaffBroadcast, "Use /staffbroadcast");
 		yield return new StratumCommandAccessEntry("info", "/rules", commands.InfoCommands, "Use /rules, /discord, /website, and /motd");
-		yield return new StratumCommandAccessEntry("vanish", "/vanish", commands.Vanish, "Use /vanish");
+		yield return new StratumCommandAccessEntry("vanish", "/vanish", commands.Vanish, "Use /vanish and /vanish hideothers");
 		yield return new StratumCommandAccessEntry("pvp", "/pvp", commands.Pvp, "Use /pvp");
 		yield return new StratumCommandAccessEntry("freeze", "/freeze", commands.Freeze, "Use /freeze");
 		yield return new StratumCommandAccessEntry("jail", "/jail", commands.Jail, "Use /setjail, /jail, /unjail, and /jailstatus");
