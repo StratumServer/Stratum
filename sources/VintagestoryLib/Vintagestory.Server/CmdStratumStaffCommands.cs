@@ -112,6 +112,13 @@ internal class CmdStratumStaffCommands
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleLockChat);
 
+			server.api.commandapi.Create("chattoggle")
+				.WithAlias("togglechat")
+				.WithDescription("Enable or disable global or group player chat")
+				.WithArgs(parsers.OptionalWordRange("channel", "global", "group", "all", "status"), parsers.OptionalWordRange("mode", "on", "off", "toggle", "status"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleChatToggle);
+
 			server.api.commandapi.Create("chatclear")
 				.WithAlias("clearchat")
 				.WithDescription("Clear visible chat history for online players")
@@ -609,6 +616,114 @@ internal class CmdStratumStaffCommands
 		server.SendMessageToGeneral("<font color=\"#9bd77e\"><strong>Chat has been unlocked.</strong></font>", EnumChatType.Notification);
 		StratumRuntime.LogAudit("lockchat off actor=" + args.Caller.GetName(), true);
 		return TextCommandResult.Success(StratumCommandText.Confirm("Chat unlocked"));
+	}
+
+	private TextCommandResult HandleChatToggle(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.ChatControl, "chattoggle", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		StratumChatConfig chat = StratumRuntime.Config.Chat;
+		string channel = args[0] as string;
+		string mode = args[1] as string;
+
+		if (string.IsNullOrWhiteSpace(channel) || string.Equals(channel, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			StringBuilder status = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+			status.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+			status.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+			return TextCommandResult.Success(status.ToString());
+		}
+
+		bool touchGlobal = string.Equals(channel, "global", StringComparison.OrdinalIgnoreCase) || string.Equals(channel, "all", StringComparison.OrdinalIgnoreCase);
+		bool touchGroups = string.Equals(channel, "group", StringComparison.OrdinalIgnoreCase) || string.Equals(channel, "all", StringComparison.OrdinalIgnoreCase);
+
+		if (string.Equals(mode, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			StringBuilder channelStatus = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+			if (touchGlobal)
+			{
+				channelStatus.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+			}
+
+			if (touchGroups)
+			{
+				channelStatus.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+			}
+
+			return TextCommandResult.Success(channelStatus.ToString());
+		}
+
+		// "toggle" and an omitted mode both flip; resolve per channel so /chattoggle all toggle
+		// does not desynchronise two channels that started in different states.
+		bool globalTarget = ResolveChatToggleTarget(mode, chat.Global.Enabled);
+		bool groupsTarget = ResolveChatToggleTarget(mode, chat.Groups.Enabled);
+
+		if (touchGlobal)
+		{
+			chat.Global.Enabled = globalTarget;
+		}
+
+		if (touchGroups)
+		{
+			chat.Groups.Enabled = groupsTarget;
+		}
+
+		try
+		{
+			StratumRuntime.SaveConfig();
+		}
+		catch (Exception ex)
+		{
+			return TextCommandResult.Error(StratumCommandText.Warning("Applied in memory but failed to write config") + ": " + ex.Message);
+		}
+
+		string actor = args.Caller.GetName();
+		StringBuilder result = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+		if (touchGlobal)
+		{
+			AnnounceChatChannelChange("Global chat", globalTarget);
+			StratumRuntime.LogAudit("chattoggle global=" + (globalTarget ? "on" : "off") + " actor=" + actor, true);
+			result.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+		}
+
+		if (touchGroups)
+		{
+			AnnounceChatChannelChange("Group chat", groupsTarget);
+			StratumRuntime.LogAudit("chattoggle group=" + (groupsTarget ? "on" : "off") + " actor=" + actor, true);
+			result.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+		}
+
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private static bool ResolveChatToggleTarget(string mode, bool current)
+	{
+		if (string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		if (string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		return !current;
+	}
+
+	private static string DescribeChatChannel(StratumChatChannelConfig channel)
+	{
+		return (channel.Enabled ? "enabled" : "disabled") + ", staffBypass=" + (channel.AllowStaffBypass ? "on" : "off");
+	}
+
+	private void AnnounceChatChannelChange(string label, bool enabled)
+	{
+		string colour = enabled ? "#9bd77e" : "#e47d68";
+		string verb = enabled ? " has been enabled." : " has been disabled by staff.";
+		server.SendMessageToGeneral("<font color=\"" + colour + "\"><strong>" + label + verb + "</strong></font>", EnumChatType.Notification);
 	}
 
 	private TextCommandResult HandleClearChat(TextCommandCallingArgs args)
@@ -1328,6 +1443,21 @@ internal class CmdStratumStaffCommands
 			}
 
 			stratumMuteExpiryByUid.Remove(player.PlayerUID);
+		}
+		// Stratum end
+
+		// Stratum start: runtime per-channel chat toggles (issue #218)
+		StratumChatChannelConfig chatChannel = StratumRuntime.Config.Chat?.ChannelFor(channelId);
+		if (chatChannel != null && !chatChannel.Enabled)
+		{
+			bool staffExempt = chatChannel.AllowStaffBypass
+				&& StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.ChatControl);
+			if (!staffExempt)
+			{
+				consumed.value = true;
+				player.SendMessage(channelId, chatChannel.DisabledMessage, EnumChatType.CommandError);
+				return;
+			}
 		}
 		// Stratum end
 
