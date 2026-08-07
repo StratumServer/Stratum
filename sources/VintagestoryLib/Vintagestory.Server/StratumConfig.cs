@@ -528,6 +528,8 @@ internal class StratumPerformanceConfig
 
 	public StratumItemCleanupConfig ItemCleanup { get; set; } = new StratumItemCleanupConfig();
 
+	public StratumRestartConfig Restart { get; set; } = new StratumRestartConfig();
+
 	public StratumNetworkConfig Network { get; set; } = new StratumNetworkConfig();
 
 	public void EnsurePopulated()
@@ -554,6 +556,7 @@ internal class StratumPerformanceConfig
 		Join ??= new StratumJoinConfig();
 		AdaptiveRadius ??= new StratumAdaptiveRadiusConfig();
 		ItemCleanup ??= new StratumItemCleanupConfig();
+		Restart ??= new StratumRestartConfig();
 		Network ??= new StratumNetworkConfig();
 		ChunkSending.EnsureSane();
 		ChunkGeneration.EnsureSane();
@@ -577,6 +580,7 @@ internal class StratumPerformanceConfig
 		Join.EnsureSane();
 		AdaptiveRadius.EnsureSane();
 		ItemCleanup.EnsureSane();
+		Restart.EnsureSane();
 		Network.EnsureSane();
 	}
 }
@@ -671,6 +675,26 @@ internal class StratumItemCleanupConfig
 		CleanupWarningTimeOffsets ??= [];
 
 		CleanupWarningTimeOffsets = CleanupWarningTimeOffsets.Select(n => Math.Clamp(n, 1, IntervalSeconds)).Distinct().ToArray();
+	}
+}
+
+internal class StratumRestartConfig
+{
+	public int[] CountdownAnnouncementsSeconds { get; set; } = [300, 120, 60, 45, 30, 15, 5];
+	public bool ClearGroundItemsBeforeStop { get; set; } = true;
+	public int ClearGroundItemsLeadSeconds { get; set; } = 30;
+	public string CountdownMessage { get; set; } = "Server restarting in {0}.";
+	public string ClearItemsWarningMessage { get; set; } = "PICK UP ALL GROUND ITEMS! They will be cleared in {0} seconds.";
+	public string RestartingNowMessage { get; set; } = "Server restarting now.";
+	public int ExitCode { get; set; } = 0;
+
+	public void EnsureSane()
+	{
+		CountdownAnnouncementsSeconds ??= [300, 120, 60, 45, 30, 15, 5];
+		ClearGroundItemsLeadSeconds = Math.Max(0, ClearGroundItemsLeadSeconds);
+		CountdownMessage ??= "";
+		ClearItemsWarningMessage ??= "";
+		RestartingNowMessage ??= "";
 	}
 }
 
@@ -1564,6 +1588,10 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig ReportManage { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.reports");
 
+	public StratumCommandAccessConfig Restart { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.restart");
+
+	public StratumCommandAccessConfig ClearItems { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
+
 	public int NearDefaultRadiusBlocks { get; set; } = 128;
 
 	public int NearMaxRadiusBlocks { get; set; } = 512;
@@ -1599,6 +1627,8 @@ internal class StratumCommandsConfig
 		Notes ??= StratumCommandAccessConfig.ForPrivilege("stratum.notes");
 		Report ??= StratumCommandAccessConfig.ForPrivilege("stratum.report");
 		ReportManage ??= StratumCommandAccessConfig.ForPrivilege("stratum.reports");
+		Restart ??= StratumCommandAccessConfig.ForPrivilege("stratum.restart");
+		ClearItems ??= StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
 		JailSettings ??= new StratumJailConfig();
 		Spawn.EnsurePopulated("stratum.spawn");
 		SetSpawn.EnsurePopulated("setspawn");
@@ -1623,6 +1653,8 @@ internal class StratumCommandsConfig
 		Notes.EnsurePopulated("stratum.notes");
 		Report.EnsurePopulated("stratum.report");
 		ReportManage.EnsurePopulated("stratum.reports");
+		Restart.EnsurePopulated("stratum.restart");
+		ClearItems.EnsurePopulated("stratum.clearitems");
 		NearDefaultRadiusBlocks = Math.Max(1, NearDefaultRadiusBlocks);
 		NearMaxRadiusBlocks = Math.Max(NearDefaultRadiusBlocks, NearMaxRadiusBlocks);
 		SlowmodeMaxSeconds = Math.Max(0, SlowmodeMaxSeconds);

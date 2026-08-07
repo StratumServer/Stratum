@@ -290,6 +290,24 @@ internal class CmdStratumStaffCommands
 				.HandleWith(HandleReports);
 		}
 
+		if (StratumCommandRegistration.ShouldRegister(commands.Restart, "/restart", "Commands.Restart"))
+		{
+			server.api.commandapi.Create("restart")
+				.WithDescription("Schedule a server restart with countdown warnings")
+				.WithArgs(parsers.Word("minutes or cancel"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleRestart);
+		}
+
+		if (StratumCommandRegistration.ShouldRegister(commands.ClearItems, "/clearitems", "Commands.ClearItems"))
+		{
+			server.api.commandapi.Create("clearitems")
+				.WithDescription("Clear all dropped items on the ground")
+				.WithArgs(parsers.OptionalWordRange("mode", "now"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleClearItems);
+		}
+
 		StratumTargetCommandOverrides.Register(server);
 	}
 
@@ -1917,5 +1935,86 @@ internal class CmdStratumStaffCommands
 		}
 
 		return builder.ToString();
+	}
+
+	private TextCommandResult HandleRestart(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.Restart, "restart", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		if (StratumRuntime.RestartScheduler == null)
+		{
+			return TextCommandResult.Error("Restart scheduler not yet initialized.");
+		}
+
+		string input = args[0] as string;
+		if (string.Equals(input, "cancel", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumRuntime.RestartScheduler.IsRestartScheduled)
+			{
+				return TextCommandResult.Error("No restart is scheduled.");
+			}
+			StratumRuntime.RestartScheduler.Cancel();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml("Scheduled restart cancelled.", StratumRuntime.Config?.Appearance?.Theme?.GoodColor),
+				EnumChatType.Notification);
+			return TextCommandResult.Success("Restart cancelled.");
+		}
+
+		if (!int.TryParse(input, out int minutes) || minutes < 1 || minutes > 60)
+		{
+			return TextCommandResult.Error("Usage: /restart <1-60> or /restart cancel");
+		}
+
+		if (StratumRuntime.RestartScheduler.IsRestartScheduled)
+		{
+			StratumRuntime.RestartScheduler.Cancel();
+		}
+
+		StratumRuntime.RestartScheduler.Schedule(minutes * 60);
+		return TextCommandResult.Success($"Restart scheduled in {minutes} minute(s).");
+	}
+
+	private TextCommandResult HandleClearItems(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.ClearItems, "clearitems", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		if (StratumRuntime.RestartScheduler == null)
+		{
+			return TextCommandResult.Error("Restart scheduler not yet initialized.");
+		}
+
+		string mode = args[0] as string;
+		if (string.Equals(mode, "now", StringComparison.OrdinalIgnoreCase))
+		{
+			int count = StratumRuntime.RestartScheduler.ClearGroundItems();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml($"Cleaned up {count} ground items.", StratumRuntime.Config?.Appearance?.Theme?.AccentColor),
+				EnumChatType.Notification);
+			return TextCommandResult.Success($"Cleared {count} items.");
+		}
+
+		int leadSeconds = StratumRuntime.Config?.Performance?.Restart?.ClearGroundItemsLeadSeconds ?? 30;
+		string warningMsg = string.Format(
+			StratumRuntime.Config?.Performance?.Restart?.ClearItemsWarningMessage ?? "PICK UP ALL GROUND ITEMS! They will be cleared in {0} seconds.",
+			leadSeconds);
+		server.SendMessageToGeneral(
+			StratumChatFormatter.ColorizeVtml(warningMsg, StratumRuntime.Config?.Appearance?.Theme?.WarnColor),
+			EnumChatType.Notification);
+
+		server.RegisterCallback((_) =>
+		{
+			int count = StratumRuntime.RestartScheduler.ClearGroundItems();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml($"Cleaned up {count} ground items.", StratumRuntime.Config?.Appearance?.Theme?.AccentColor),
+				EnumChatType.Notification);
+		}, leadSeconds * 1000);
+
+		return TextCommandResult.Success($"Ground items will be cleared in {leadSeconds} seconds.");
 	}
 }
