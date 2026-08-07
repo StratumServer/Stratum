@@ -1544,6 +1544,11 @@ internal class StratumCommandsConfig
 
 	public int VanishReminderIntervalSeconds { get; set; } = 4;
 
+	// Stratum #213: default for the per-staff-member "hide other vanished staff from me"
+	// preference. Individual staff override it at runtime with /vanish hideothers on|off.
+	// Default false preserves today's behaviour: vanish holders see each other.
+	public bool VanishHideOtherVanishedDefault { get; set; } = false;
+
 	public StratumCommandAccessConfig Freeze { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.freeze");
 
 	public StratumCommandAccessConfig Revive { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.revive");
