@@ -212,6 +212,7 @@ internal class CmdStratum
 		if (loaded)
 		{
 			CmdStratumEssentials.RegisterConfiguredPrivileges(server);
+			StratumCoopCombatSystem.Apply(StratumRuntime.Config.CoopCombat);
 			// Stratum: clear region ticking fallback state on reload (#10)
 			var sim = server.Systems.OfType<ServerSystemEntitySimulation>().FirstOrDefault();
 			sim?.StratumClearFallbackState();

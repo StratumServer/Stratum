@@ -1,5 +1,7 @@
+using System;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.CommandAbbr;
+using Vintagestory.API.Config;
 using Vintagestory.API.Server;
 
 namespace Vintagestory.Server;
@@ -46,8 +48,46 @@ internal sealed class StratumCoopCombatSystem
 		StratumCoopCombatHook.CreatureInvulnerableMs = cfg?.Enabled == true ? cfg.CreatureInvulnerableMs : 500;
 	}
 
+	private bool CheckAccess(TextCommandCallingArgs args, out TextCommandResult failure)
+	{
+		StratumRuntime.Config.EnsurePopulated();
+		failure = null;
+
+		if (!StratumRuntime.Config.Commands.Enabled)
+		{
+			failure = TextCommandResult.Error("Stratum commands are disabled.");
+			return false;
+		}
+
+		StratumCommandAccessConfig access = StratumRuntime.Config.Commands.CoopCombat;
+		if (access == null || !access.Enabled)
+		{
+			failure = TextCommandResult.Error("/pvecombat is disabled.");
+			return false;
+		}
+
+		if (StratumCommandAccessCatalog.CallerHasAccess(args.Caller, server, access))
+		{
+			if (!StratumCommandCooldowns.TryUse(args.Caller, server, "pvecombat", access, out TimeSpan remaining))
+			{
+				failure = TextCommandResult.Error("Wait " + Math.Ceiling(remaining.TotalSeconds).ToString(GlobalConstants.DefaultCultureInfo) + "s before using /pvecombat again.");
+				return false;
+			}
+
+			return true;
+		}
+
+		failure = TextCommandResult.Error("You do not have permission to use /pvecombat.");
+		return false;
+	}
+
 	private TextCommandResult HandleToggle(TextCommandCallingArgs args)
 	{
+		if (!CheckAccess(args, out TextCommandResult failure))
+		{
+			return failure;
+		}
+
 		StratumCoopCombatConfig cfg = Cfg;
 		if (cfg == null)
 		{
