@@ -1,0 +1,22 @@
+diff --git a/VSEssentials/Entities/EntityProjectileBase.cs b/VSEssentials/Entities/EntityProjectileBase.cs
+index 64c42af..0d724ce 100644
+--- a/VSEssentials/Entities/EntityProjectileBase.cs
++++ b/VSEssentials/Entities/EntityProjectileBase.cs
+@@ -263,10 +263,17 @@ namespace Vintagestory.GameContent
+                 DamageTier = DamageTier,
+                 IgnoreInvFrames = IgnoreInvFrames,
+                 KnockbackStrength = Weight * (float)Pos.Motion.Length() * knockbackFactor
+             }, damage);
+ 
++            // Stratum: notify combat log system on confirmed PvP projectile hit
++            if (didDamage && fromPlayer && target is EntityPlayer targetPlayer)
++            {
++                StratumCombatLogHook.OnProjectilePvPHit?.Invoke(
++                    ((EntityPlayer)FiredBy).PlayerUID, targetPlayer.PlayerUID);
++            }
++
+             return didDamage;
+         }
+ 
+         protected virtual void ApplyModifiers(ref float damage, Entity target)
+         {
