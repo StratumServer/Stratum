@@ -51,19 +51,26 @@ internal static class StratumWildernessSystem
 
 		server.LocateRandomPosition(center, config.MaxRadiusBlocks, config.MaxAttempts, candidate =>
 		{
-			double dx = candidate.X - center.X;
-			double dz = candidate.Z - center.Z;
-			if (dx * dx + dz * dz < minRadiusSq)
-			{
-				return false;
-			}
-
 			// Resolves candidate's Y to the world-gen surface height and rejects liquid /
 			// non-solid-ground spots (small random walk within the local chunk if needed).
 			// forPlayer: null so a claim that only grants this player access still counts as
 			// "claimed" for wilderness purposes -- the issue asks to avoid claimed land, not
 			// land this player merely has permission to stand on.
+			//
+			// Must run before the MinRadiusBlocks check below: this mutates candidate's X/Z
+			// (up to a small random walk per retry, most likely to trigger right at the edge
+			// of the claimed spawn sprawl MinRadiusBlocks exists to route players past), and
+			// the mutated position is what actually gets used as the teleport target. Checking
+			// the radius on the pre-adjustment position let candidates walk back inside the
+			// minimum radius during this step and silently defeat the guarantee.
 			if (!ServerSystemSupplyChunks.AdjustForSaveSpawnSpot(server, candidate, null, rand))
+			{
+				return false;
+			}
+
+			double dx = candidate.X - center.X;
+			double dz = candidate.Z - center.Z;
+			if (dx * dx + dz * dz < minRadiusSq)
 			{
 				return false;
 			}
