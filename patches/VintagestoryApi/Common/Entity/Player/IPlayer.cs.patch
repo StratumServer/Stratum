@@ -1,0 +1,32 @@
+diff --git a/VintagestoryApi/Common/Entity/Player/IPlayer.cs b/VintagestoryApi/Common/Entity/Player/IPlayer.cs
+--- a/VintagestoryApi/Common/Entity/Player/IPlayer.cs
++++ b/VintagestoryApi/Common/Entity/Player/IPlayer.cs
+@@ -1,6 +1,9 @@
+ using System.Collections.Generic;
++// Stratum: Vintage Story 1.22.6's range checks use these API types.
++using Vintagestory.API.Common.Entities;
++using Vintagestory.API.MathTools;
+ 
+ #nullable disable
+ 
+ namespace Vintagestory.API.Common
+ {
+@@ -101,10 +104,18 @@ namespace Vintagestory.API.Common
+         /// </summary>
+         /// <param name = "privilegeCode">The privilege to check</param>
+         /// <returns>true if the player has the given privilege, false otherwise</returns>
+         bool HasPrivilege(string privilegeCode);
+ 
++        // Stratum: Match the range methods implemented by the shipped player types.
++        /// <param name="slack">Extra distance allowed by the range check.</param>
++        [System.Obsolete("This signature will change in 1.23. Avoid it for now.")]
++        internal bool IsInInteractionRangeOf(BlockPos blockPos, float slack = 0.25f);
++
++        /// <param name="slack">Extra distance allowed by the range check.</param>
++        bool IsInInteractionRangeOf(Entity entity, float slack = 0.25f);
++
+ 
+ 
+         /*/// <summary>
+         /// Sends a redirection request to the specified client. The target server has to be public!
+         /// </summary>
