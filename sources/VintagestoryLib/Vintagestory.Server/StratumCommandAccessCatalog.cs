@@ -32,6 +32,7 @@ internal static class StratumCommandAccessCatalog
 	{
 		yield return new StratumCommandAccessEntry("spawn", "/spawn", commands.Spawn, "Use /spawn");
 		yield return new StratumCommandAccessEntry("setspawn", "/setspawn", commands.SetSpawn, "Use /setspawn");
+		yield return new StratumCommandAccessEntry("wilderness", "/wilderness", commands.Wilderness, "Use /wilderness");
 		yield return new StratumCommandAccessEntry("tpa", "/tpa", commands.TeleportRequests.Request, "Use /tpa, /tpaccept, /tpdeny, and /tpacancel");
 		yield return new StratumCommandAccessEntry("tpahere", "/tpahere", commands.TeleportRequests.Here, "Use /tpahere");
 		yield return new StratumCommandAccessEntry("home", "/home", commands.Homes.Home, "Use /home and /homes");
