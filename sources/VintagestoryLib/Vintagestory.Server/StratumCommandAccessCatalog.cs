@@ -45,6 +45,7 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("reply", "/reply", commands.Message, "Use /reply");
 		yield return new StratumCommandAccessEntry("staffchat", "/staffchat", commands.StaffChat, "Use /staffchat");
 		yield return new StratumCommandAccessEntry("chatcontrol", "/slowmode", commands.ChatControl, "Use /slowmode, /lockchat, and /chatclear");
+		yield return new StratumCommandAccessEntry("coopcombat", "/pvecombat", commands.CoopCombat, "Use /pvecombat");
 		yield return new StratumCommandAccessEntry("staffbroadcast", "/staffbroadcast", commands.StaffBroadcast, "Use /staffbroadcast");
 		yield return new StratumCommandAccessEntry("info", "/rules", commands.InfoCommands, "Use /rules, /discord, /website, and /motd");
 		yield return new StratumCommandAccessEntry("vanish", "/vanish", commands.Vanish, "Use /vanish");

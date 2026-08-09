@@ -52,6 +52,8 @@ internal class StratumConfig
 
 	public StratumCombatLogConfig CombatLog { get; set; } = new StratumCombatLogConfig();
 
+	public StratumCoopCombatConfig CoopCombat { get; set; } = new StratumCoopCombatConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
 	public void EnsurePopulated()
@@ -77,6 +79,7 @@ internal class StratumConfig
 		Backup ??= new StratumBackupConfig();
 		Announcements ??= new StratumAnnouncementsConfig();
 		CombatLog ??= new StratumCombatLogConfig();
+		CoopCombat ??= new StratumCoopCombatConfig();
 		ServerStats ??= new StratumServerStatsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
@@ -95,6 +98,7 @@ internal class StratumConfig
 		Backup.EnsureSane();
 		Announcements.EnsureSane();
 		CombatLog.EnsureSane();
+		CoopCombat.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
 	}
@@ -1537,6 +1541,8 @@ internal class StratumCommandsConfig
 	public StratumCommandAccessConfig StaffChat { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.staffchat");
 
 	public StratumCommandAccessConfig ChatControl { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.chatcontrol");
+
+	public StratumCommandAccessConfig CoopCombat { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
 
 	public StratumCommandAccessConfig StaffBroadcast { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 
