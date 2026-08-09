@@ -303,7 +303,7 @@ internal class CmdStratumStaffCommands
 		{
 			server.api.commandapi.Create("clearitems")
 				.WithDescription("Clear all dropped items on the ground")
-				.WithArgs(parsers.OptionalWordRange("mode", "now"))
+				.WithArgs(parsers.OptionalWordRange("mode", "now", "cancel"))
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleClearItems);
 		}
@@ -1999,21 +1999,20 @@ internal class CmdStratumStaffCommands
 			return TextCommandResult.Success($"Cleared {count} items.");
 		}
 
-		int leadSeconds = StratumRuntime.Config?.Performance?.Restart?.ClearGroundItemsLeadSeconds ?? 30;
-		string warningMsg = string.Format(
-			StratumRuntime.Config?.Performance?.Restart?.ClearItemsWarningMessage ?? "PICK UP ALL GROUND ITEMS! They will be cleared in {0} seconds.",
-			leadSeconds);
-		server.SendMessageToGeneral(
-			StratumChatFormatter.ColorizeVtml(warningMsg, StratumRuntime.Config?.Appearance?.Theme?.WarnColor),
-			EnumChatType.Notification);
-
-		server.RegisterCallback((_) =>
+		if (string.Equals(mode, "cancel", StringComparison.OrdinalIgnoreCase))
 		{
-			int count = StratumRuntime.RestartScheduler.ClearGroundItems();
-			server.SendMessageToGeneral(
-				StratumChatFormatter.ColorizeVtml($"Cleaned up {count} ground items.", StratumRuntime.Config?.Appearance?.Theme?.AccentColor),
-				EnumChatType.Notification);
-		}, leadSeconds * 1000);
+			if (!StratumRuntime.RestartScheduler.CancelClearItemsWarning())
+			{
+				return TextCommandResult.Error("No ground item clear is scheduled.");
+			}
+			return TextCommandResult.Success("Ground item clear cancelled.");
+		}
+
+		int leadSeconds = StratumRuntime.Config?.Performance?.Restart?.ClearGroundItemsLeadSeconds ?? 30;
+		if (!StratumRuntime.RestartScheduler.ScheduleClearItemsWarning(leadSeconds))
+		{
+			return TextCommandResult.Error("A ground item clear is already scheduled. Use /clearitems cancel first.");
+		}
 
 		return TextCommandResult.Success($"Ground items will be cleared in {leadSeconds} seconds.");
 	}

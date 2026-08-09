@@ -11,11 +11,13 @@ internal sealed class StratumRestartScheduler
 	private readonly ServerMain server;
 	private readonly List<long> pendingCallbackIds = new List<long>();
 	private bool restartInProgress;
+	private long? clearItemsCallbackId;
 
 	private static StratumRestartConfig Cfg => StratumRuntime.Config?.Performance?.Restart;
 	private static StratumThemeConfig Theme => StratumRuntime.Config?.Appearance?.Theme;
 
 	public bool IsRestartScheduled => restartInProgress;
+	public bool IsClearItemsScheduled => clearItemsCallbackId.HasValue;
 
 	public StratumRestartScheduler(ServerMain server)
 	{
@@ -44,9 +46,11 @@ internal sealed class StratumRestartScheduler
 
 		BroadcastCountdown(totalSeconds);
 
-		if (clearLeadSeconds > 0 && clearLeadSeconds < totalSeconds)
+		if (clearLeadSeconds > 0)
 		{
-			int clearDelayMs = (totalSeconds - clearLeadSeconds) * 1000;
+			// Clamp to 0: if the configured lead time doesn't fit before totalSeconds,
+			// warn immediately rather than skipping the warning and clearing silently.
+			int clearDelayMs = Math.Max(0, (totalSeconds - clearLeadSeconds) * 1000);
 			long id = server.RegisterCallback((_) => BroadcastClearWarning(clearLeadSeconds), clearDelayMs);
 			pendingCallbackIds.Add(id);
 		}
@@ -70,32 +74,65 @@ internal sealed class StratumRestartScheduler
 		restartInProgress = false;
 	}
 
+	/// <summary>
+	/// Sweeps every ground item regardless of age (minimum age 0): unlike the
+	/// periodic StratumItemCleanup pass, this only runs after its own warning
+	/// (from /clearitems or the restart countdown), so nothing abandoned-vs-fresh
+	/// distinction applies, everything on the ground is fair game.
+	/// </summary>
 	public int ClearGroundItems()
 	{
-		Entity[] entities = server.LoadedEntities
-			.Where(e => e.Value is EntityItem item && (item.OnGround || item.FeetInLiquid))
-			.Select(e => e.Value)
-			.ToArray();
+		return StratumItemCleanup.RemoveGroundEntities(server, 0);
+	}
 
-		foreach (Entity entity in entities)
+	/// <summary>
+	/// Warns global chat, then clears ground items after leadSeconds. Tracked so a
+	/// pending /clearitems warning can be cancelled instead of always firing.
+	/// </summary>
+	public bool ScheduleClearItemsWarning(int leadSeconds)
+	{
+		if (clearItemsCallbackId.HasValue)
 		{
-			entity.Die(EnumDespawnReason.Expire);
+			return false;
 		}
 
-		return entities.Length;
+		BroadcastClearWarning(leadSeconds);
+
+		clearItemsCallbackId = server.RegisterCallback((_) =>
+		{
+			clearItemsCallbackId = null;
+			int count = ClearGroundItems();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml($"Cleaned up {count} ground items.", Theme?.AccentColor),
+				EnumChatType.Notification);
+		}, leadSeconds * 1000);
+
+		return true;
+	}
+
+	public bool CancelClearItemsWarning()
+	{
+		if (!clearItemsCallbackId.HasValue)
+		{
+			return false;
+		}
+
+		server.UnregisterCallback(clearItemsCallbackId.Value);
+		clearItemsCallbackId = null;
+		return true;
 	}
 
 	private void BroadcastCountdown(int secondsRemaining)
 	{
 		string message = string.Format(Cfg?.CountdownMessage ?? "Server restarting in {0}.", FormatTime(secondsRemaining));
-		server.SendMessageToGeneral(ColorizeVtml(message, Theme?.WarnColor), EnumChatType.Notification);
+		server.SendMessageToGeneral(StratumChatFormatter.ColorizeVtml(message, Theme?.WarnColor), EnumChatType.Notification);
 		StratumRuntime.LogInfo($"Restart countdown: {secondsRemaining}s remaining");
 	}
 
 	private void BroadcastClearWarning(int secondsUntilClear)
 	{
 		string message = string.Format(Cfg?.ClearItemsWarningMessage ?? "PICK UP ALL GROUND ITEMS! They will be cleared in {0} seconds.", secondsUntilClear);
-		server.SendMessageToGeneral(ColorizeVtml(message, Theme?.WarnColor), EnumChatType.Notification);
+		server.SendMessageToGeneral(StratumChatFormatter.ColorizeVtml(message, Theme?.WarnColor), EnumChatType.Notification);
 	}
 
 	private void ExecuteStop()
@@ -105,12 +142,20 @@ internal sealed class StratumRestartScheduler
 
 		if (Cfg?.ClearGroundItemsBeforeStop == true)
 		{
-			int count = ClearGroundItems();
-			StratumRuntime.LogInfo($"Pre-restart cleanup removed {count} ground items");
+			// Never let a cleanup failure prevent the restart itself from happening.
+			try
+			{
+				int count = ClearGroundItems();
+				StratumRuntime.LogInfo($"Pre-restart cleanup removed {count} ground items");
+			}
+			catch (Exception ex)
+			{
+				StratumRuntime.LogError("Error clearing ground items before restart: " + ex);
+			}
 		}
 
 		string nowMessage = Cfg?.RestartingNowMessage ?? "Server restarting now.";
-		server.SendMessageToGeneral(ColorizeVtml(nowMessage, Theme?.WarnColor), EnumChatType.Notification);
+		server.SendMessageToGeneral(StratumChatFormatter.ColorizeVtml(nowMessage, Theme?.WarnColor), EnumChatType.Notification);
 
 		int exitCode = Cfg?.ExitCode ?? 0;
 		server.ExitCode = exitCode;
@@ -130,14 +175,5 @@ internal sealed class StratumRestartScheduler
 			return $"{minutes}m {seconds}s";
 		}
 		return totalSeconds == 1 ? "1 second" : $"{totalSeconds} seconds";
-	}
-
-	private static string ColorizeVtml(string message, string color)
-	{
-		if (string.IsNullOrWhiteSpace(color))
-		{
-			return message;
-		}
-		return $"<font color='{color}'>{message}</font>";
 	}
 }
