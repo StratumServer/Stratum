@@ -25,6 +25,7 @@ internal class ServerSystemStratum : ServerSystem
 	public override void OnBeginConfiguration()
 	{
 		bool loaded = StratumRuntime.LoadOrCreateConfig(server, out string message);
+		StratumRuntime.RestartScheduler = new StratumRestartScheduler(server);
 		if (StratumRuntime.Config.Diagnostics.LogStartupSummary)
 		{
 			LogStartupSummary(loaded, message);

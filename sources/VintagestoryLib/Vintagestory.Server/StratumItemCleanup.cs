@@ -21,16 +21,6 @@ internal sealed class StratumItemCleanup
 		RegisterCallbacks();
 	}
 
-	private static string ColorizeVtml(string message, string color)
-	{
-		if (string.IsNullOrWhiteSpace(color))
-		{
-			return message;
-		}
-
-		return $"<font color='{color}'>{message}</font>";
-	}
-
 	private void RegisterCallbacks()
 	{
 		var pendingEntities = GetItemEntities();
@@ -59,14 +49,14 @@ internal sealed class StratumItemCleanup
 	private void DoCleanupWarning(int seconds)
 	{
 		StratumRuntime.LogInfo($"Cleaning up ground items in {seconds} seconds");
-		server.SendMessageToGeneral(ColorizeVtml(string.Format(Cfg.CleanupWarningMessage, seconds), Theme?.WarnColor), EnumChatType.Notification);
+		server.SendMessageToGeneral(StratumChatFormatter.ColorizeVtml(string.Format(Cfg.CleanupWarningMessage, seconds), Theme?.WarnColor), EnumChatType.Notification);
 	}
 
 	private void DoCleanup(float dt)
 	{
 		if (!string.IsNullOrEmpty(Cfg.CleanupStartingMessage))
 		{
-			server.SendMessageToGeneral(ColorizeVtml(Cfg.CleanupStartingMessage, Theme?.AccentColor), EnumChatType.Notification);
+			server.SendMessageToGeneral(StratumChatFormatter.ColorizeVtml(Cfg.CleanupStartingMessage, Theme?.AccentColor), EnumChatType.Notification);
 		}
 		StratumRuntime.LogInfo($"Cleaning up ground items...");
 
@@ -81,7 +71,7 @@ internal sealed class StratumItemCleanup
 
             if (!string.IsNullOrEmpty(Cfg.CleanupDoneMessage))
             {
-                server.SendMessageToGeneral(ColorizeVtml(string.Format(Cfg.CleanupDoneMessage, count), Theme?.GoodColor), EnumChatType.Notification);
+                server.SendMessageToGeneral(StratumChatFormatter.ColorizeVtml(string.Format(Cfg.CleanupDoneMessage, count), Theme?.GoodColor), EnumChatType.Notification);
             }
             StratumRuntime.LogInfo($"Cleaned up {count} ground items in {s.ElapsedMilliseconds} ms");
         }
@@ -97,17 +87,32 @@ internal sealed class StratumItemCleanup
 
 	private Entity[] GetItemEntities()
 	{
-		// If the item is on the ground and has been around for longer than the minimum age, remove it
-		return server.LoadedEntities.Where(e => e.Value is EntityItem item
-			&& (item.OnGround || item.FeetInLiquid)
-			&& server.ElapsedMilliseconds - item.itemSpawnedMilliseconds > (Cfg?.MinimumEntityAgeSeconds ?? 1) * 1000)
-			.Select(e => e.Value)
-			.ToArray();
+		return GetItemEntities(server, Cfg?.MinimumEntityAgeSeconds ?? 1);
 	}
 
 	private int RemoveGroundEntities()
 	{
-		var entities = GetItemEntities();
+		return RemoveGroundEntities(server, Cfg?.MinimumEntityAgeSeconds ?? 1);
+	}
+
+	/// <summary>
+	/// Shared with StratumRestartScheduler, which sweeps with a minimum age of 0
+	/// (restart/clearitems is an explicit admin action meant to clear everything
+	/// on the ground after its own warning, not just items abandoned a while ago).
+	/// </summary>
+	internal static Entity[] GetItemEntities(ServerMain server, int minimumAgeSeconds)
+	{
+		// If the item is on the ground and has been around for at least the minimum age, remove it
+		return server.LoadedEntities.Where(e => e.Value is EntityItem item
+			&& (item.OnGround || item.FeetInLiquid)
+			&& server.ElapsedMilliseconds - item.itemSpawnedMilliseconds > minimumAgeSeconds * 1000)
+			.Select(e => e.Value)
+			.ToArray();
+	}
+
+	internal static int RemoveGroundEntities(ServerMain server, int minimumAgeSeconds)
+	{
+		var entities = GetItemEntities(server, minimumAgeSeconds);
 		var count = entities.Length;
 
 		foreach (var p in entities)
