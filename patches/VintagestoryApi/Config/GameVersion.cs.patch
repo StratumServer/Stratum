@@ -8,7 +8,7 @@ index c089118..ec973db 100644
          /// <summary>
          /// Assembly Info Version number in the format: major.minor.revision-[rc/pre.subrevision]
          /// </summary>
--        public const string OverallVersion = OverallMajorMinor + ".2";
+-        public const string OverallVersion = OverallMajorMinor + ".5";
 +        public const string OverallVersion = OverallMajorMinor + ".6"; // Stratum: report the shipped version while public API source remains at 1.22.5
  
          /// <summary>
