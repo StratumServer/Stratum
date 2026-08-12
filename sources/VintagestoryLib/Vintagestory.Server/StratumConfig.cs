@@ -1593,6 +1593,7 @@ internal class StratumCommandsConfig
 		Message ??= StratumCommandAccessConfig.ForPrivilege("stratum.msg");
 		StaffChat ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffchat");
 		ChatControl ??= StratumCommandAccessConfig.ForPrivilege("stratum.chatcontrol");
+		CoopCombat ??= StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
 		StaffBroadcast ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 		InfoCommands ??= StratumCommandAccessConfig.ForPrivilege("stratum.info");
 		Vanish ??= StratumCommandAccessConfig.ForPrivilege("stratum.vanish");
@@ -1617,6 +1618,7 @@ internal class StratumCommandsConfig
 		Message.EnsurePopulated("stratum.msg");
 		StaffChat.EnsurePopulated("stratum.staffchat");
 		ChatControl.EnsurePopulated("stratum.chatcontrol");
+		CoopCombat.EnsurePopulated("stratum.coopcombat");
 		StaffBroadcast.EnsurePopulated("stratum.staffbroadcast");
 		InfoCommands.EnsurePopulated("stratum.info");
 		Vanish.EnsurePopulated("stratum.vanish");
