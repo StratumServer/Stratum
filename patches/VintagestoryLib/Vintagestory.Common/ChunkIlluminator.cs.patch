@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-index e2ca303..da7c67d 100644
+index e2ca303..17fc903 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-@@ -1,1110 +1,1641 @@
+@@ -1,1110 +1,1642 @@
  using System;
  using System.Collections.Generic;
 +using System.Runtime.CompilerServices;
@@ -645,6 +645,7 @@ index e2ca303..da7c67d 100644
  			array2[2] = (num - 1) * Math.Max(0, z);
 +
  			int num4 = (chunkX + x) * num;
++			int num11 = (chunkZ + z) * num;   // Z-basis for the neighboring chunk
  			int num5 = 0;
 -			if (x == 0)
 -			{
@@ -699,6 +700,11 @@ index e2ca303..da7c67d 100644
 -						int num12 = lighting2.GetSunlight(index3d) - 1;
 -						tmpPosDimensionAware.Set(num2 + array2[0], num6 * num + array2[1], num3 + array2[2]);
 -						int lightAbsorptionAt = worldChunk2.GetLightAbsorptionAt(index3d, tmpPosDimensionAware, blockTypes);
+-						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num4 + num10);
+-						int lightAbsorptionAt2 = worldChunk.GetLightAbsorptionAt(index3d2, tmpPosDimensionAware, blockTypes);
+-						int num13 = num11 - lightAbsorptionAt2;
+-						int num14 = num12 - lightAbsorptionAt;
+-						if (num14 > num11)
 +
 +						int curLight = lighting2.GetSunlight(index3d);
 +						int nLight = lighting.GetSunlight(index3d2);
@@ -709,11 +715,7 @@ index e2ca303..da7c67d 100644
 +						Block curBlock = blockTypes[worldChunk2.Data[index3d]];
 +						int curBaseAbs = worldChunk2.GetLightAbsorptionAt(index3d, tmpPosDimensionAware, blockTypes);
 +
- 						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num4 + num10);
--						int lightAbsorptionAt2 = worldChunk.GetLightAbsorptionAt(index3d2, tmpPosDimensionAware, blockTypes);
--						int num13 = num11 - lightAbsorptionAt2;
--						int num14 = num12 - lightAbsorptionAt;
--						if (num14 > num11)
++						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num11 + num10);
 +						Block nBlock = blockTypes[worldChunk.Data[index3d2]];
 +						int nBaseAbs = worldChunk.GetLightAbsorptionAt(index3d2, tmpPosDimensionAware, blockTypes);
 +
@@ -722,7 +724,7 @@ index e2ca303..da7c67d 100644
 +						tmpPos2.dimension = dimension;
 +						int absCurToN = GetEffectiveAbsorption(curBlock, curBaseAbs, dir, curLight, tmpPos2);
 +						int lightArrivingAtN = curLight - absCurToN - 1;
-+						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num4 + num10);
++						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num11 + num10);
 +						int absNFromCur = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, lightArrivingAtN,
 +							tmpPosDimensionAware);
 +						int finalLightToN = lightArrivingAtN;
@@ -740,7 +742,7 @@ index e2ca303..da7c67d 100644
 -							lighting.SetSunlight(index3d2, num14);
 -							stack2.Push(new BlockPos(num2 + num9, num6 * num + array2[1], num3 + num10, dimension));
 +							lighting.SetSunlight(index3d2, finalLightToN);
-+							stack2.Push(new FastBlockPos(num4 + num9, num6 * num + array2[1], num4 + num10, dimension));
++							stack2.Push(new FastBlockPos(num4 + num9, num6 * num + array2[1], num11 + num10, dimension));
  							b |= blockFacing.Flag;
  						}
 -						else if (num13 > num12)
@@ -1126,9 +1128,7 @@ index e2ca303..da7c67d 100644
  		{
 -			IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / chunkSize, posY / chunkSize, posZ / chunkSize, notRecentlyAccessed: true);
 -			if (unpackedChunkFast == null)
-+			// Extinguish sunlight ONLY in chunks from startChunkY down to 0
-+			for (int cy = startChunkY; cy >= 0; cy--)
- 			{
+-			{
 -				return fastSetOfLongs;
 -			}
 -			int index3d = (posY % chunkSize * chunkSize + posZ % chunkSize) * chunkSize + posX % chunkSize;
@@ -1136,7 +1136,9 @@ index e2ca303..da7c67d 100644
 -			unpackedChunkFast.Lighting.SetSunlight_Buffered(index3d, 0);
 -			QueueOfInt queueOfInt2 = new QueueOfInt();
 -			for (int i = 0; i < 6; i++)
--			{
++			// Extinguish sunlight ONLY in chunks from startChunkY down to 0
++			for (int cy = startChunkY; cy >= 0; cy--)
+ 			{
 -				Vec3i vec3i = BlockFacing.ALLNORMALI[i];
 -				int num2 = posX + vec3i.X;
 -				int num3 = posY + vec3i.Y;
@@ -1627,7 +1629,8 @@ index e2ca303..da7c67d 100644
 +		int baseZ = posZ - LIGHT_GRID_HALF;
 +
 +		for (int i = 0; i < touchedCells.Count; i++)
-+		{
+ 		{
+-			CollectLightValuesForLightSource(nearbyLightSource.posX, nearbyLightSource.posY, nearbyLightSource.posZ, posX, posY, posZ, range);
 +			int idx = touchedCells[i];
 +			ref var cell = ref lightGrid[idx];
 +
@@ -1637,7 +1640,8 @@ index e2ca303..da7c67d 100644
 +			// Pass cell by reference
 +			RecalcBlockLightAtPos(wx, wy, wz, ref cell);
 +			touchedChunks.Add(chunkProvider.ChunkIndex3D(wx / num, wy / num, wz / num));
-+		}
+ 		}
+-		foreach (KeyValuePair<Vec3i, LightSourcesAtBlock> visitedNode in VisitedNodes)
 +
 +	}
 +
@@ -1692,7 +1696,8 @@ index e2ca303..da7c67d 100644
 +		// 1. Initialization: place all light sources in their starting positions
 +		for (int srcIdx = 0; srcIdx < nearbyCount; srcIdx++)
  		{
--			CollectLightValuesForLightSource(nearbyLightSource.posX, nearbyLightSource.posY, nearbyLightSource.posZ, posX, posY, posZ, range);
+-			RecalcBlockLightAtPos(visitedNode.Key, visitedNode.Value);
+-			touchedChunks.Add(chunkProvider.ChunkIndex3D(visitedNode.Key.X / num, visitedNode.Key.Y / num, visitedNode.Key.Z / num));
 +			byte h = nearbyH[srcIdx], s = nearbyS[srcIdx], b = nearbyB[srcIdx];
 +			if (b <= 0) continue;
 +
@@ -1725,16 +1730,13 @@ index e2ca303..da7c67d 100644
 +			}
 +
 +			buckets[b].Add((idx, srcIdx));
- 		}
--		foreach (KeyValuePair<Vec3i, LightSourcesAtBlock> visitedNode in VisitedNodes)
++		}
 +
 +		IWorldChunk chunk;
 +
 +		// 2. BFS traversal from the brightest (31) to the dimmest (1)
 +		for (int level = 31; level >= 1; level--)
- 		{
--			RecalcBlockLightAtPos(visitedNode.Key, visitedNode.Value);
--			touchedChunks.Add(chunkProvider.ChunkIndex3D(visitedNode.Key.X / num, visitedNode.Key.Y / num, visitedNode.Key.Z / num));
++		{
 +			var bucket = buckets[level];
 +
 +			for (int bi = 0; bi < bucket.Count; bi++)
