@@ -1,0 +1,34 @@
+diff --git a/VSEssentials/Entity/Behavior/BehaviorHealth.cs b/VSEssentials/Entity/Behavior/BehaviorHealth.cs
+index c961b3a..ee4c4cb 100644
+--- a/VSEssentials/Entity/Behavior/BehaviorHealth.cs
++++ b/VSEssentials/Entity/Behavior/BehaviorHealth.cs
+@@ -8,10 +8,11 @@ using Vintagestory.API.Client;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Datastructures;
+ using Vintagestory.API.MathTools;
++using Vintagestory.API.Server; // Stratum: cooperative PvE combat toggle hook
+ using Vintagestory.API.Util;
+ 
+ namespace Vintagestory.GameContent;
+ 
+ public interface ICanHealCreature
+@@ -235,11 +236,16 @@ public class EntityBehaviorHealth : EntityBehavior
+                 entity.Attributes.SetInt("dmgkb", 1);
+             }
+ 
+             if (damage > 0.05)
+             {
+-                entity.SetActivityRunning("invulnerable", 500);
++                // Stratum: cooperative PvE combat toggle shortens (or removes) this window for
++                // non-player entities only, so several players can land hits on the same
++                // creature inside the window that used to block every attacker but the first.
++                // Players keep the vanilla 500ms always, this never touches PvP or self-hits.
++                int invulnerableMs = entity is EntityPlayer ? 500 : StratumCoopCombatHook.CreatureInvulnerableMs;
++                entity.SetActivityRunning("invulnerable", invulnerableMs);
+                 // Gets already called on the server directly
+                 if (entity.World.Side == EnumAppSide.Client)
+                 {
+                     entity.OnHurt(null, entity.WatchedAttributes.GetFloat("onHurt", 0));
+                 }
