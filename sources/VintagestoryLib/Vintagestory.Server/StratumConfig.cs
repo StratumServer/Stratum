@@ -52,6 +52,8 @@ internal class StratumConfig
 
 	public StratumCombatLogConfig CombatLog { get; set; } = new StratumCombatLogConfig();
 
+	public StratumCoopCombatConfig CoopCombat { get; set; } = new StratumCoopCombatConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
 	public void EnsurePopulated()
@@ -77,6 +79,7 @@ internal class StratumConfig
 		Backup ??= new StratumBackupConfig();
 		Announcements ??= new StratumAnnouncementsConfig();
 		CombatLog ??= new StratumCombatLogConfig();
+		CoopCombat ??= new StratumCoopCombatConfig();
 		ServerStats ??= new StratumServerStatsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
@@ -95,6 +98,7 @@ internal class StratumConfig
 		Backup.EnsureSane();
 		Announcements.EnsureSane();
 		CombatLog.EnsureSane();
+		CoopCombat.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
 	}
@@ -528,6 +532,8 @@ internal class StratumPerformanceConfig
 
 	public StratumItemCleanupConfig ItemCleanup { get; set; } = new StratumItemCleanupConfig();
 
+	public StratumRestartConfig Restart { get; set; } = new StratumRestartConfig();
+
 	public StratumNetworkConfig Network { get; set; } = new StratumNetworkConfig();
 
 	public void EnsurePopulated()
@@ -554,6 +560,7 @@ internal class StratumPerformanceConfig
 		Join ??= new StratumJoinConfig();
 		AdaptiveRadius ??= new StratumAdaptiveRadiusConfig();
 		ItemCleanup ??= new StratumItemCleanupConfig();
+		Restart ??= new StratumRestartConfig();
 		Network ??= new StratumNetworkConfig();
 		ChunkSending.EnsureSane();
 		ChunkGeneration.EnsureSane();
@@ -577,6 +584,7 @@ internal class StratumPerformanceConfig
 		Join.EnsureSane();
 		AdaptiveRadius.EnsureSane();
 		ItemCleanup.EnsureSane();
+		Restart.EnsureSane();
 		Network.EnsureSane();
 	}
 }
@@ -671,6 +679,26 @@ internal class StratumItemCleanupConfig
 		CleanupWarningTimeOffsets ??= [];
 
 		CleanupWarningTimeOffsets = CleanupWarningTimeOffsets.Select(n => Math.Clamp(n, 1, IntervalSeconds)).Distinct().ToArray();
+	}
+}
+
+internal class StratumRestartConfig
+{
+	public int[] CountdownAnnouncementsSeconds { get; set; } = [300, 120, 60, 45, 30, 15, 5];
+	public bool ClearGroundItemsBeforeStop { get; set; } = true;
+	public int ClearGroundItemsLeadSeconds { get; set; } = 30;
+	public string CountdownMessage { get; set; } = "Server restarting in {0}.";
+	public string ClearItemsWarningMessage { get; set; } = "PICK UP ALL GROUND ITEMS! They will be cleared in {0} seconds.";
+	public string RestartingNowMessage { get; set; } = "Server restarting now.";
+	public int ExitCode { get; set; } = 0;
+
+	public void EnsureSane()
+	{
+		CountdownAnnouncementsSeconds ??= [300, 120, 60, 45, 30, 15, 5];
+		ClearGroundItemsLeadSeconds = Math.Max(0, ClearGroundItemsLeadSeconds);
+		CountdownMessage ??= "";
+		ClearItemsWarningMessage ??= "";
+		RestartingNowMessage ??= "";
 	}
 }
 
@@ -1520,6 +1548,10 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig SetSpawn { get; set; } = StratumCommandAccessConfig.ForPrivilege("setspawn");
 
+	public StratumCommandAccessConfig Wilderness { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.wilderness");
+
+	public StratumWildernessConfig WildernessSettings { get; set; } = new StratumWildernessConfig();
+
 	public StratumTeleportRequestsConfig TeleportRequests { get; set; } = new StratumTeleportRequestsConfig();
 
 	public StratumHomesConfig Homes { get; set; } = new StratumHomesConfig();
@@ -1538,6 +1570,8 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig ChatControl { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.chatcontrol");
 
+	public StratumCommandAccessConfig CoopCombat { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
+
 	public StratumCommandAccessConfig StaffBroadcast { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 
 	public StratumCommandAccessConfig InfoCommands { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.info");
@@ -1547,6 +1581,11 @@ internal class StratumCommandsConfig
 	public StratumCommandAccessConfig Pvp { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.pvp");
 
 	public int VanishReminderIntervalSeconds { get; set; } = 4;
+
+	// Stratum #213: default for the per-staff-member "hide other vanished staff from me"
+	// preference. Individual staff override it at runtime with /vanish hideothers on|off.
+	// Default false preserves today's behaviour: vanish holders see each other.
+	public bool VanishHideOtherVanishedDefault { get; set; } = false;
 
 	public StratumCommandAccessConfig Freeze { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.freeze");
 
@@ -1564,6 +1603,10 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig ReportManage { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.reports");
 
+	public StratumCommandAccessConfig Restart { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.restart");
+
+	public StratumCommandAccessConfig ClearItems { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
+
 	public int NearDefaultRadiusBlocks { get; set; } = 128;
 
 	public int NearMaxRadiusBlocks { get; set; } = 512;
@@ -1578,6 +1621,8 @@ internal class StratumCommandsConfig
 	{
 		Spawn ??= StratumCommandAccessConfig.ForPrivilege("stratum.spawn");
 		SetSpawn ??= StratumCommandAccessConfig.ForPrivilege("setspawn");
+		Wilderness ??= StratumCommandAccessConfig.ForPrivilege("stratum.wilderness");
+		WildernessSettings ??= new StratumWildernessConfig();
 		TeleportRequests ??= new StratumTeleportRequestsConfig();
 		Homes ??= new StratumHomesConfig();
 		Seen ??= StratumCommandAccessConfig.ForPrivilege("stratum.seen");
@@ -1587,6 +1632,7 @@ internal class StratumCommandsConfig
 		Message ??= StratumCommandAccessConfig.ForPrivilege("stratum.msg");
 		StaffChat ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffchat");
 		ChatControl ??= StratumCommandAccessConfig.ForPrivilege("stratum.chatcontrol");
+		CoopCombat ??= StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
 		StaffBroadcast ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 		InfoCommands ??= StratumCommandAccessConfig.ForPrivilege("stratum.info");
 		Vanish ??= StratumCommandAccessConfig.ForPrivilege("stratum.vanish");
@@ -1599,9 +1645,13 @@ internal class StratumCommandsConfig
 		Notes ??= StratumCommandAccessConfig.ForPrivilege("stratum.notes");
 		Report ??= StratumCommandAccessConfig.ForPrivilege("stratum.report");
 		ReportManage ??= StratumCommandAccessConfig.ForPrivilege("stratum.reports");
+		Restart ??= StratumCommandAccessConfig.ForPrivilege("stratum.restart");
+		ClearItems ??= StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
 		JailSettings ??= new StratumJailConfig();
 		Spawn.EnsurePopulated("stratum.spawn");
 		SetSpawn.EnsurePopulated("setspawn");
+		Wilderness.EnsurePopulated("stratum.wilderness");
+		WildernessSettings.EnsureSane();
 		TeleportRequests.EnsurePopulated();
 		Homes.EnsurePopulated();
 		Seen.EnsurePopulated("stratum.seen");
@@ -1611,6 +1661,7 @@ internal class StratumCommandsConfig
 		Message.EnsurePopulated("stratum.msg");
 		StaffChat.EnsurePopulated("stratum.staffchat");
 		ChatControl.EnsurePopulated("stratum.chatcontrol");
+		CoopCombat.EnsurePopulated("stratum.coopcombat");
 		StaffBroadcast.EnsurePopulated("stratum.staffbroadcast");
 		InfoCommands.EnsurePopulated("stratum.info");
 		Vanish.EnsurePopulated("stratum.vanish");
@@ -1623,6 +1674,8 @@ internal class StratumCommandsConfig
 		Notes.EnsurePopulated("stratum.notes");
 		Report.EnsurePopulated("stratum.report");
 		ReportManage.EnsurePopulated("stratum.reports");
+		Restart.EnsurePopulated("stratum.restart");
+		ClearItems.EnsurePopulated("stratum.clearitems");
 		NearDefaultRadiusBlocks = Math.Max(1, NearDefaultRadiusBlocks);
 		NearMaxRadiusBlocks = Math.Max(NearDefaultRadiusBlocks, NearMaxRadiusBlocks);
 		SlowmodeMaxSeconds = Math.Max(0, SlowmodeMaxSeconds);
@@ -1715,6 +1768,35 @@ internal class StratumCommandAccessConfig
 	{
 		Privilege ??= defaultPrivilege;
 		CooldownSeconds = Math.Max(0, CooldownSeconds);
+	}
+}
+
+// /wilderness: teleports a player to a random unclaimed spot within a radius band of spawn, so
+// players on large, heavily-claimed servers can find open land without walking for hours. The
+// actual teleport is routed through StratumTeleportWarmups (see StratumWildernessSystem), so it
+// inherits the same warmup/cancel-on-move/cancel-on-damage UX as /home, /spawn, and /tpa.
+internal class StratumWildernessConfig
+{
+	// Candidates closer than this to spawn are rejected (keeps players out of the immediate
+	// spawn/city sprawl the issue is trying to route them around).
+	public int MinRadiusBlocks { get; set; } = 1000;
+
+	// Candidates are sampled uniformly within [MinRadiusBlocks, MaxRadiusBlocks] of spawn.
+	// Matches the issue's "configurable X radius (1000/5000/10000)" request as a band rather
+	// than a single fixed distance, so a server can push players out past its claimed belt
+	// without teleporting them into the middle of it.
+	public int MaxRadiusBlocks { get; set; } = 5000;
+
+	// Bounded retry budget for the whole search (claim rejections + failed ground checks both
+	// consume an attempt). If exhausted without finding a valid spot, the player is told to try
+	// again rather than being teleported into a claim or into an unsafe position.
+	public int MaxAttempts { get; set; } = 40;
+
+	public void EnsureSane()
+	{
+		MinRadiusBlocks = Math.Max(0, MinRadiusBlocks);
+		MaxRadiusBlocks = Math.Max(MinRadiusBlocks + 1, MaxRadiusBlocks);
+		MaxAttempts = Math.Max(1, Math.Min(200, MaxAttempts));
 	}
 }
 

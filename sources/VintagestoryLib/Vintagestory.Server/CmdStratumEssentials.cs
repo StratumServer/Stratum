@@ -52,6 +52,14 @@ internal class CmdStratumEssentials
 				.HandleWith(HandleSetSpawn);
 		}
 
+		if (StratumCommandRegistration.ShouldRegister(commands.Wilderness, "/wilderness", "Commands.Wilderness"))
+		{
+			server.api.commandapi.Create("wilderness")
+				.WithDescription("Teleport to a random unclaimed spot near spawn")
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleWilderness);
+		}
+
 		if (StratumCommandRegistration.ShouldRegister(commands.TeleportRequests.Request, "/tpa commands", "Commands.TeleportRequests.Request"))
 		{
 			server.api.commandapi.Create("tpa")
@@ -202,6 +210,22 @@ internal class CmdStratumEssentials
 
 		StratumRuntime.LogInfo($"spawn set by {player.PlayerName} at {pos.X}, {pos.Y}, {pos.Z}");
 		return TextCommandResult.Success(StratumCommandText.Confirm("Spawn set", "to " + pos.X + ", " + pos.Y + ", " + pos.Z + "."));
+	}
+
+	private TextCommandResult HandleWilderness(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.Wilderness, "wilderness", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		IServerPlayer player = GetPlayer(args);
+		if (player == null)
+		{
+			return TextCommandResult.Error("Only players can use /wilderness.");
+		}
+
+		return StratumWildernessSystem.Request(server, player);
 	}
 
 	private TextCommandResult HandleTpa(TextCommandCallingArgs args)

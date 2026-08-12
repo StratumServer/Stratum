@@ -32,6 +32,7 @@ internal static class StratumCommandAccessCatalog
 	{
 		yield return new StratumCommandAccessEntry("spawn", "/spawn", commands.Spawn, "Use /spawn");
 		yield return new StratumCommandAccessEntry("setspawn", "/setspawn", commands.SetSpawn, "Use /setspawn");
+		yield return new StratumCommandAccessEntry("wilderness", "/wilderness", commands.Wilderness, "Use /wilderness");
 		yield return new StratumCommandAccessEntry("tpa", "/tpa", commands.TeleportRequests.Request, "Use /tpa, /tpaccept, /tpdeny, and /tpacancel");
 		yield return new StratumCommandAccessEntry("tpahere", "/tpahere", commands.TeleportRequests.Here, "Use /tpahere");
 		yield return new StratumCommandAccessEntry("home", "/home", commands.Homes.Home, "Use /home and /homes");
@@ -44,10 +45,11 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("msg", "/msg", commands.Message, "Use /msg and /reply");
 		yield return new StratumCommandAccessEntry("reply", "/reply", commands.Message, "Use /reply");
 		yield return new StratumCommandAccessEntry("staffchat", "/staffchat", commands.StaffChat, "Use /staffchat");
-		yield return new StratumCommandAccessEntry("chatcontrol", "/slowmode", commands.ChatControl, "Use /slowmode, /lockchat, and /chatclear");
+		yield return new StratumCommandAccessEntry("chatcontrol", "/slowmode", commands.ChatControl, "Use /slowmode, /lockchat, /chatclear, and /chattoggle");
+		yield return new StratumCommandAccessEntry("coopcombat", "/pvecombat", commands.CoopCombat, "Use /pvecombat");
 		yield return new StratumCommandAccessEntry("staffbroadcast", "/staffbroadcast", commands.StaffBroadcast, "Use /staffbroadcast");
 		yield return new StratumCommandAccessEntry("info", "/rules", commands.InfoCommands, "Use /rules, /discord, /website, and /motd");
-		yield return new StratumCommandAccessEntry("vanish", "/vanish", commands.Vanish, "Use /vanish");
+		yield return new StratumCommandAccessEntry("vanish", "/vanish", commands.Vanish, "Use /vanish and /vanish hideothers");
 		yield return new StratumCommandAccessEntry("pvp", "/pvp", commands.Pvp, "Use /pvp");
 		yield return new StratumCommandAccessEntry("freeze", "/freeze", commands.Freeze, "Use /freeze");
 		yield return new StratumCommandAccessEntry("jail", "/jail", commands.Jail, "Use /setjail, /jail, /unjail, and /jailstatus");

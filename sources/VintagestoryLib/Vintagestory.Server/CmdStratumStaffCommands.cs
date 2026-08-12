@@ -112,6 +112,13 @@ internal class CmdStratumStaffCommands
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleLockChat);
 
+			server.api.commandapi.Create("chattoggle")
+				.WithAlias("togglechat")
+				.WithDescription("Enable or disable global or group player chat")
+				.WithArgs(parsers.OptionalWordRange("channel", "global", "group", "all", "status"), parsers.OptionalWordRange("mode", "on", "off", "toggle", "status"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleChatToggle);
+
 			server.api.commandapi.Create("chatclear")
 				.WithAlias("clearchat")
 				.WithDescription("Clear visible chat history for online players")
@@ -156,8 +163,10 @@ internal class CmdStratumStaffCommands
 		if (StratumCommandRegistration.ShouldRegister(commands.Vanish, "/vanish", "Commands.Vanish"))
 		{
 			server.api.commandapi.Create("vanish")
-				.WithDescription("Toggle staff vanish")
-				.WithArgs(parsers.OptionalWordRange("mode", "on", "off", "toggle"))
+				.WithDescription("Toggle staff vanish, or /vanish hideothers to hide other vanished staff from yourself")
+				.WithArgs(
+					parsers.OptionalWordRange("mode", "on", "off", "toggle", "hideothers", "status"),
+					parsers.OptionalWordRange("state", "on", "off", "toggle"))
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleVanish);
 		}
@@ -290,6 +299,24 @@ internal class CmdStratumStaffCommands
 				.HandleWith(HandleReports);
 		}
 
+		if (StratumCommandRegistration.ShouldRegister(commands.Restart, "/restart", "Commands.Restart"))
+		{
+			server.api.commandapi.Create("restart")
+				.WithDescription("Schedule a server restart with countdown warnings")
+				.WithArgs(parsers.Word("minutes or cancel"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleRestart);
+		}
+
+		if (StratumCommandRegistration.ShouldRegister(commands.ClearItems, "/clearitems", "Commands.ClearItems"))
+		{
+			server.api.commandapi.Create("clearitems")
+				.WithDescription("Clear all dropped items on the ground")
+				.WithArgs(parsers.OptionalWordRange("mode", "now", "cancel"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleClearItems);
+		}
+
 		StratumTargetCommandOverrides.Register(server);
 	}
 
@@ -384,7 +411,12 @@ internal class CmdStratumStaffCommands
 		var nearby = server.Clients.Values
 			.Where(client => client.State.IsAdmitted() && client.Player?.Entity?.Pos != null && client.Player.PlayerUID != player.PlayerUID)
 			.Where(client => client.Player.Entity.Pos.Dimension == pos.Dimension)
-			.Where(client => !StratumStaffCommandState.IsVanished(client.Player.PlayerUID) || StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish))
+			// Stratum #213: mirror the entity-visibility rule exactly, including the
+			// per-viewer "hide other vanished" preference, so /near never lists someone
+			// the caller cannot see.
+			.Where(client => !StratumStaffCommandState.IsVanished(client.Player.PlayerUID)
+				|| (StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish)
+					&& !StratumStaffCommandState.HidesOtherVanished(player.PlayerUID)))
 			.Select(client => new
 			{
 				client.Player.PlayerName,
@@ -611,6 +643,114 @@ internal class CmdStratumStaffCommands
 		return TextCommandResult.Success(StratumCommandText.Confirm("Chat unlocked"));
 	}
 
+	private TextCommandResult HandleChatToggle(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.ChatControl, "chattoggle", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		StratumChatConfig chat = StratumRuntime.Config.Chat;
+		string channel = args[0] as string;
+		string mode = args[1] as string;
+
+		if (string.IsNullOrWhiteSpace(channel) || string.Equals(channel, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			StringBuilder status = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+			status.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+			status.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+			return TextCommandResult.Success(status.ToString());
+		}
+
+		bool touchGlobal = string.Equals(channel, "global", StringComparison.OrdinalIgnoreCase) || string.Equals(channel, "all", StringComparison.OrdinalIgnoreCase);
+		bool touchGroups = string.Equals(channel, "group", StringComparison.OrdinalIgnoreCase) || string.Equals(channel, "all", StringComparison.OrdinalIgnoreCase);
+
+		if (string.Equals(mode, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			StringBuilder channelStatus = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+			if (touchGlobal)
+			{
+				channelStatus.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+			}
+
+			if (touchGroups)
+			{
+				channelStatus.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+			}
+
+			return TextCommandResult.Success(channelStatus.ToString());
+		}
+
+		// "toggle" and an omitted mode both flip; resolve per channel so /chattoggle all toggle
+		// does not desynchronise two channels that started in different states.
+		bool globalTarget = ResolveChatToggleTarget(mode, chat.Global.Enabled);
+		bool groupsTarget = ResolveChatToggleTarget(mode, chat.Groups.Enabled);
+
+		if (touchGlobal)
+		{
+			chat.Global.Enabled = globalTarget;
+		}
+
+		if (touchGroups)
+		{
+			chat.Groups.Enabled = groupsTarget;
+		}
+
+		try
+		{
+			StratumRuntime.SaveConfig();
+		}
+		catch (Exception ex)
+		{
+			return TextCommandResult.Error(StratumCommandText.Warning("Applied in memory but failed to write config") + ": " + ex.Message);
+		}
+
+		string actor = args.Caller.GetName();
+		StringBuilder result = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+		if (touchGlobal)
+		{
+			AnnounceChatChannelChange("Global chat", globalTarget);
+			StratumRuntime.LogAudit("chattoggle global=" + (globalTarget ? "on" : "off") + " actor=" + actor, true);
+			result.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+		}
+
+		if (touchGroups)
+		{
+			AnnounceChatChannelChange("Group chat", groupsTarget);
+			StratumRuntime.LogAudit("chattoggle group=" + (groupsTarget ? "on" : "off") + " actor=" + actor, true);
+			result.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+		}
+
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private static bool ResolveChatToggleTarget(string mode, bool current)
+	{
+		if (string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		if (string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		return !current;
+	}
+
+	private static string DescribeChatChannel(StratumChatChannelConfig channel)
+	{
+		return (channel.Enabled ? "enabled" : "disabled") + ", staffBypass=" + (channel.AllowStaffBypass ? "on" : "off");
+	}
+
+	private void AnnounceChatChannelChange(string label, bool enabled)
+	{
+		string colour = enabled ? "#9bd77e" : "#e47d68";
+		string verb = enabled ? " has been enabled." : " has been disabled by staff.";
+		server.SendMessageToGeneral("<font color=\"" + colour + "\"><strong>" + label + verb + "</strong></font>", EnumChatType.Notification);
+	}
+
 	private TextCommandResult HandleClearChat(TextCommandCallingArgs args)
 	{
 		if (!CheckAccess(args, StratumRuntime.Config.Commands.ChatControl, "chatclear", out TextCommandResult failure))
@@ -701,6 +841,22 @@ internal class CmdStratumStaffCommands
 		}
 
 		string mode = args[0] as string;
+
+		// Stratum #213: /vanish hideothers [on|off|toggle] is a per-viewer preference and
+		// does not touch the caller's own vanish state. Must be handled before the toggle
+		// fallthrough below, which treats any unrecognised mode word as "toggle vanish".
+		if (string.Equals(mode, "hideothers", StringComparison.OrdinalIgnoreCase))
+		{
+			return HandleVanishHideOthers(player, args[1] as string);
+		}
+
+		if (string.Equals(mode, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			return TextCommandResult.Success(StratumCommandText.Title("Vanish")
+				+ StratumCommandText.Row("Vanished", StratumStaffCommandState.IsVanished(player.PlayerUID) ? "yes" : "no")
+				+ StratumCommandText.Row("Hide other vanished", StratumStaffCommandState.HidesOtherVanished(player.PlayerUID) ? "on" : "off"));
+		}
+
 		bool enable = string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase) || (!string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase) && !StratumStaffCommandState.IsVanished(player.PlayerUID));
 		StratumStaffCommandState.SetVanished(player, enable);
 		if (enable)
@@ -713,6 +869,32 @@ internal class CmdStratumStaffCommands
 		StratumStaffCommandState.RevealPlayerToOthers(server, player);
 		lastVanishIndicatorMsByUid.Remove(player.PlayerUID);
 		return TextCommandResult.Success(StratumCommandText.Confirm("Vanish disabled"));
+	}
+
+	private TextCommandResult HandleVanishHideOthers(IServerPlayer player, string state)
+	{
+		bool current = StratumStaffCommandState.HidesOtherVanished(player.PlayerUID);
+		bool target;
+		if (string.Equals(state, "on", StringComparison.OrdinalIgnoreCase))
+		{
+			target = true;
+		}
+		else if (string.Equals(state, "off", StringComparison.OrdinalIgnoreCase))
+		{
+			target = false;
+		}
+		else
+		{
+			target = !current;
+		}
+
+		StratumStaffCommandState.SetHidesOtherVanished(player.PlayerUID, target);
+		StratumStaffCommandState.RefreshVanishedVisibilityForViewer(server, player);
+		StratumRuntime.LogAudit("vanish hideothers=" + (target ? "on" : "off") + " actor=" + EscapeLog(player.PlayerName));
+
+		return TextCommandResult.Success(StratumCommandText.Confirm(target
+			? "Other vanished staff are now hidden from you"
+			: "Other vanished staff are now visible to you"));
 	}
 
 	private TextCommandResult HandlePvp(TextCommandCallingArgs args)
@@ -1331,6 +1513,21 @@ internal class CmdStratumStaffCommands
 		}
 		// Stratum end
 
+		// Stratum start: runtime per-channel chat toggles (issue #218)
+		StratumChatChannelConfig chatChannel = StratumRuntime.Config.Chat?.ChannelFor(channelId);
+		if (chatChannel != null && !chatChannel.Enabled)
+		{
+			bool staffExempt = chatChannel.AllowStaffBypass
+				&& StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.ChatControl);
+			if (!staffExempt)
+			{
+				consumed.value = true;
+				player.SendMessage(channelId, chatChannel.DisabledMessage, EnumChatType.CommandError);
+				return;
+			}
+		}
+		// Stratum end
+
 		if (StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.ChatControl))
 		{
 			return;
@@ -1917,5 +2114,85 @@ internal class CmdStratumStaffCommands
 		}
 
 		return builder.ToString();
+	}
+
+	private TextCommandResult HandleRestart(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.Restart, "restart", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		if (StratumRuntime.RestartScheduler == null)
+		{
+			return TextCommandResult.Error("Restart scheduler not yet initialized.");
+		}
+
+		string input = args[0] as string;
+		if (string.Equals(input, "cancel", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumRuntime.RestartScheduler.IsRestartScheduled)
+			{
+				return TextCommandResult.Error("No restart is scheduled.");
+			}
+			StratumRuntime.RestartScheduler.Cancel();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml("Scheduled restart cancelled.", StratumRuntime.Config?.Appearance?.Theme?.GoodColor),
+				EnumChatType.Notification);
+			return TextCommandResult.Success("Restart cancelled.");
+		}
+
+		if (!int.TryParse(input, out int minutes) || minutes < 1 || minutes > 60)
+		{
+			return TextCommandResult.Error("Usage: /restart <1-60> or /restart cancel");
+		}
+
+		if (StratumRuntime.RestartScheduler.IsRestartScheduled)
+		{
+			StratumRuntime.RestartScheduler.Cancel();
+		}
+
+		StratumRuntime.RestartScheduler.Schedule(minutes * 60);
+		return TextCommandResult.Success($"Restart scheduled in {minutes} minute(s).");
+	}
+
+	private TextCommandResult HandleClearItems(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.ClearItems, "clearitems", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		if (StratumRuntime.RestartScheduler == null)
+		{
+			return TextCommandResult.Error("Restart scheduler not yet initialized.");
+		}
+
+		string mode = args[0] as string;
+		if (string.Equals(mode, "now", StringComparison.OrdinalIgnoreCase))
+		{
+			int count = StratumRuntime.RestartScheduler.ClearGroundItems();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml($"Cleaned up {count} ground items.", StratumRuntime.Config?.Appearance?.Theme?.AccentColor),
+				EnumChatType.Notification);
+			return TextCommandResult.Success($"Cleared {count} items.");
+		}
+
+		if (string.Equals(mode, "cancel", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumRuntime.RestartScheduler.CancelClearItemsWarning())
+			{
+				return TextCommandResult.Error("No ground item clear is scheduled.");
+			}
+			return TextCommandResult.Success("Ground item clear cancelled.");
+		}
+
+		int leadSeconds = StratumRuntime.Config?.Performance?.Restart?.ClearGroundItemsLeadSeconds ?? 30;
+		if (!StratumRuntime.RestartScheduler.ScheduleClearItemsWarning(leadSeconds))
+		{
+			return TextCommandResult.Error("A ground item clear is already scheduled. Use /clearitems cancel first.");
+		}
+
+		return TextCommandResult.Success($"Ground items will be cleared in {leadSeconds} seconds.");
 	}
 }

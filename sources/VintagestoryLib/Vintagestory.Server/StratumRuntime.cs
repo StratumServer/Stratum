@@ -31,6 +31,9 @@ internal static class StratumRuntime
 	public static StratumPregenManager Pregen { get; } = new StratumPregenManager();
 
 	public static StratumAdaptiveRadiusController AdaptiveRadius { get; private set; }
+
+	public static StratumRestartScheduler RestartScheduler { get; internal set; }
+
 	public static string ConfigPath { get; private set; } = "stratum.json";
 
 	public static string CommandsConfigPath { get; private set; } = "stratum-commands.json";

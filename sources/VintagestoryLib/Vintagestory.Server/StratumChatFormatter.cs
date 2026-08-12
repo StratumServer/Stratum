@@ -231,4 +231,13 @@ internal static class StratumChatFormatter
 
 		return builder.ToString();
 	}
+
+	public static string ColorizeVtml(string message, string color)
+	{
+		if (string.IsNullOrWhiteSpace(color))
+		{
+			return message;
+		}
+		return $"<font color='{color}'>{message}</font>";
+	}
 }
