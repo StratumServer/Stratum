@@ -1544,6 +1544,10 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig SetSpawn { get; set; } = StratumCommandAccessConfig.ForPrivilege("setspawn");
 
+	public StratumCommandAccessConfig Wilderness { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.wilderness");
+
+	public StratumWildernessConfig WildernessSettings { get; set; } = new StratumWildernessConfig();
+
 	public StratumTeleportRequestsConfig TeleportRequests { get; set; } = new StratumTeleportRequestsConfig();
 
 	public StratumHomesConfig Homes { get; set; } = new StratumHomesConfig();
@@ -1611,6 +1615,8 @@ internal class StratumCommandsConfig
 	{
 		Spawn ??= StratumCommandAccessConfig.ForPrivilege("stratum.spawn");
 		SetSpawn ??= StratumCommandAccessConfig.ForPrivilege("setspawn");
+		Wilderness ??= StratumCommandAccessConfig.ForPrivilege("stratum.wilderness");
+		WildernessSettings ??= new StratumWildernessConfig();
 		TeleportRequests ??= new StratumTeleportRequestsConfig();
 		Homes ??= new StratumHomesConfig();
 		Seen ??= StratumCommandAccessConfig.ForPrivilege("stratum.seen");
@@ -1637,6 +1643,8 @@ internal class StratumCommandsConfig
 		JailSettings ??= new StratumJailConfig();
 		Spawn.EnsurePopulated("stratum.spawn");
 		SetSpawn.EnsurePopulated("setspawn");
+		Wilderness.EnsurePopulated("stratum.wilderness");
+		WildernessSettings.EnsureSane();
 		TeleportRequests.EnsurePopulated();
 		Homes.EnsurePopulated();
 		Seen.EnsurePopulated("stratum.seen");
@@ -1752,6 +1760,35 @@ internal class StratumCommandAccessConfig
 	{
 		Privilege ??= defaultPrivilege;
 		CooldownSeconds = Math.Max(0, CooldownSeconds);
+	}
+}
+
+// /wilderness: teleports a player to a random unclaimed spot within a radius band of spawn, so
+// players on large, heavily-claimed servers can find open land without walking for hours. The
+// actual teleport is routed through StratumTeleportWarmups (see StratumWildernessSystem), so it
+// inherits the same warmup/cancel-on-move/cancel-on-damage UX as /home, /spawn, and /tpa.
+internal class StratumWildernessConfig
+{
+	// Candidates closer than this to spawn are rejected (keeps players out of the immediate
+	// spawn/city sprawl the issue is trying to route them around).
+	public int MinRadiusBlocks { get; set; } = 1000;
+
+	// Candidates are sampled uniformly within [MinRadiusBlocks, MaxRadiusBlocks] of spawn.
+	// Matches the issue's "configurable X radius (1000/5000/10000)" request as a band rather
+	// than a single fixed distance, so a server can push players out past its claimed belt
+	// without teleporting them into the middle of it.
+	public int MaxRadiusBlocks { get; set; } = 5000;
+
+	// Bounded retry budget for the whole search (claim rejections + failed ground checks both
+	// consume an attempt). If exhausted without finding a valid spot, the player is told to try
+	// again rather than being teleported into a claim or into an unsafe position.
+	public int MaxAttempts { get; set; } = 40;
+
+	public void EnsureSane()
+	{
+		MinRadiusBlocks = Math.Max(0, MinRadiusBlocks);
+		MaxRadiusBlocks = Math.Max(MinRadiusBlocks + 1, MaxRadiusBlocks);
+		MaxAttempts = Math.Max(1, Math.Min(200, MaxAttempts));
 	}
 }
 
