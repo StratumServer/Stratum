@@ -53,9 +53,19 @@ internal static class StratumWildernessSystem
 		{
 			// Resolves candidate's Y to the world-gen surface height and rejects liquid /
 			// non-solid-ground spots (small random walk within the local chunk if needed).
-			// forPlayer: null so a claim that only grants this player access still counts as
-			// "claimed" for wilderness purposes -- the issue asks to avoid claimed land, not
-			// land this player merely has permission to stand on.
+			//
+			// forPlayer: player, not null. WorldMap.GetBlockingLandClaimant(null, ...) has a
+			// fallback for the null-player case: any position inside a map region that has EVER
+			// held a claim (its LandClaimByRegion dictionary entry is never deleted, only
+			// emptied, once created) is treated as blocked by a sentinel ServerLandClaim, even
+			// once that claim is gone and even for the parts of the region no claim ever
+			// covered. On a server with any land claims at all, that can make this search reject
+			// every candidate in whole regions of genuinely open land, up to exhausting
+			// MaxAttempts on every call. Passing the real player restores normal per-player
+			// access checking (matching vanilla's own SpawnPlayerRandomlyAround, which always
+			// passes the joining player, never null) without weakening the "avoid claimed land
+			// even if I have access to it" guarantee: the explicit ownership-based
+			// World.Claims.Get check below already enforces that independently of this call.
 			//
 			// Must run before the MinRadiusBlocks check below: this mutates candidate's X/Z
 			// (up to a small random walk per retry, most likely to trigger right at the edge
@@ -63,7 +73,7 @@ internal static class StratumWildernessSystem
 			// the mutated position is what actually gets used as the teleport target. Checking
 			// the radius on the pre-adjustment position let candidates walk back inside the
 			// minimum radius during this step and silently defeat the guarantee.
-			if (!ServerSystemSupplyChunks.AdjustForSaveSpawnSpot(server, candidate, null, rand))
+			if (!ServerSystemSupplyChunks.AdjustForSaveSpawnSpot(server, candidate, player, rand))
 			{
 				return false;
 			}
