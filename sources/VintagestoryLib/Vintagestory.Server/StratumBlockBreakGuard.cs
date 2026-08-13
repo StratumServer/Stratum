@@ -56,6 +56,12 @@ internal sealed class StratumBlockBreakGuard
 			return;
 		}
 
+		if (block.EntityClass != null && IsMicroblockEntity(server.WorldMap.GetBlockEntity(selection.Position)))
+		{
+			ClearBreak(player.ClientId);
+			return;
+		}
+
 		StratumBlockBreakGuardsConfig config = StratumRuntime.Config.BlockBreakGuards;
 		ItemSlot activeSlot = player.inventoryMgr.ActiveHotbarSlot;
 		float resistance = Math.Max(0f, block.GetResistance(server.BlockAccessor, selection.Position));
@@ -108,6 +114,11 @@ internal sealed class StratumBlockBreakGuard
 		if (CheckMultiBreak(server, client, player, requestedSelection.Position, requestedSelection.HitPosition, now, out disconnectReason))
 		{
 			return false;
+		}
+
+		if (block.EntityClass != null && IsMicroblockEntity(server.WorldMap.GetBlockEntity(requestedSelection.Position)))
+		{
+			return true;
 		}
 
 		ItemSlot activeSlot = player.inventoryMgr.ActiveHotbarSlot;
@@ -353,13 +364,26 @@ internal sealed class StratumBlockBreakGuard
 		return pos == null ? "none" : pos.ToString();
 	}
 
+	private static bool IsMicroblockEntity(BlockEntity blockEntity)
+	{
+		for (Type type = blockEntity?.GetType(); type != null; type = type.BaseType)
+		{
+			if (type.FullName == "Vintagestory.GameContent.BlockEntityMicroBlock")
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private sealed class ClientBreakState
 	{
 		private readonly Dictionary<BreakKey, RememberedBreak> rememberedBreaks = new Dictionary<BreakKey, RememberedBreak>();
 		private readonly List<RecentBreak> recentBreaks = new List<RecentBreak>();
 		private BlockPos position;
 		private int blockId;
-		private long lastViolationLogMs = long.MinValue;
+		private long lastViolationLogMs = -2000;
 
 		public long MultiBreakCooldownUntilMs { get; set; }
 
