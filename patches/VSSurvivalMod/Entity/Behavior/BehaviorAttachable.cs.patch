@@ -1,58 +1,99 @@
 diff --git a/VSSurvivalMod/Entity/Behavior/BehaviorAttachable.cs b/VSSurvivalMod/Entity/Behavior/BehaviorAttachable.cs
-index ca7d5e3..80e7513 100644
+index ca7d5e3..69e50ea 100644
 --- a/VSSurvivalMod/Entity/Behavior/BehaviorAttachable.cs
 +++ b/VSSurvivalMod/Entity/Behavior/BehaviorAttachable.cs
-@@ -374,19 +374,21 @@ namespace Vintagestory.GameContent
+@@ -301,12 +301,13 @@ namespace Vintagestory.GameContent
+         public override void OnInteract(EntityAgent byEntity, ItemSlot itemslot, Vec3d hitPosition, EnumInteractMode mode, ref EnumHandling handled)
+         {
+             int seleBox = (byEntity as EntityPlayer).EntitySelection?.SelectionBoxIndex ?? -1;
+             if (seleBox <= 0) return;
+
+-            var index = GetSlotIndexFromSelectionBoxIndex(seleBox - 1);
+-            var slot = index >= 0 ? inv[index] : null;
++            // Stratum: reject stale selection boxes before indexing attachments.
++			var index = GetSlotIndexFromSelectionBoxIndex(seleBox - 1);
++			var slot = index >= 0 && index < inv.Count ? inv[index] : null;
+             if (slot == null) return;
+             handled = EnumHandling.PreventSubsequent;
+
+             var controls = byEntity.MountedOn?.Controls ?? byEntity.Controls;
+             var attachKey = UseShiftAttach ? controls.ShiftKey : controls.CtrlKey;
+@@ -374,20 +375,24 @@ namespace Vintagestory.GameContent
          }
- 
+
          private bool TryRemoveAttachment(EntityAgent byEntity, int selectionBoxIndex)
          {
              int slotIndex = GetSlotIndexFromSelectionBoxIndex(selectionBoxIndex);
 +            if (slotIndex < 0) return false;
              ItemSlot slot = inv[slotIndex];
- 
+
              if (slot.Empty) return false;
- 
+
              // Don't allow removal of seats where somebody sits on
-             var ebh = entity.GetBehavior<EntityBehaviorSeatable>();
-             if (ebh != null)
-             {
-                 var bhs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
-+                if (bhs?.selectionBoxes == null || selectionBoxIndex < 0 || selectionBoxIndex >= bhs.selectionBoxes.Length) return false;
-                 var apap = bhs.selectionBoxes[selectionBoxIndex];
+-            var ebh = entity.GetBehavior<EntityBehaviorSeatable>();
+-            if (ebh != null)
+-            {
+-                var bhs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
+-                var apap = bhs.selectionBoxes[selectionBoxIndex];
++            // Stratum: stop invalid attachment indices before seat lookup.
++			var ebh = entity.GetBehavior<EntityBehaviorSeatable>();
++			if (ebh != null)
++			{
++				var bhs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
++				var selectionBoxes = bhs?.selectionBoxes;
++				if (selectionBoxes == null || (uint)selectionBoxIndex >= (uint)selectionBoxes.Length) return false;
++				var apap = selectionBoxes[selectionBoxIndex];
                  string apname = apap.AttachPoint.Code;
                  var seat = ebh.Seats.FirstOrDefault((seat) => seat.Config.APName == apname || seat.Config.SelectionBox == apname);
                  if (seat?.Passenger != null)
                  {
-@@ -432,10 +434,11 @@ namespace Vintagestory.GameContent
+                     (entity.World.Api as ICoreClientAPI)?.TriggerIngameError(this, "requiredisembark", Lang.Get("Passenger must disembark first before being able to remove this seat"));
+@@ -432,10 +437,11 @@ namespace Vintagestory.GameContent
          {
              var iatta = IAttachableToEntity.FromCollectible(itemslot.Itemstack.Collectible);
              if (iatta == null || !iatta.IsAttachable(entity, itemslot.Itemstack)) return false;
- 
+
              int slotIndex = GetSlotIndexFromSelectionBoxIndex(selectionBoxIndex);
 +            if (slotIndex < 0) return false;
              ItemSlot targetSlot = inv[slotIndex];
              string code = iatta.GetCategoryCode(itemslot.Itemstack);
              WearableSlotConfig slotConfig = wearableSlots[slotIndex];
- 
+
              var ebhs = entity.GetBehavior<EntityBehaviorSeatable>();
-@@ -535,13 +538,12 @@ namespace Vintagestory.GameContent
-         public int GetSlotIndexFromSelectionBoxIndex(int boxIndex)
-         {
-             if (boxIndex < 0) return -1;
- 
-             var selectionBehavior = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
--            ArgumentNullException.ThrowIfNull(selectionBehavior);
-+            if (selectionBehavior?.selectionBoxes == null || boxIndex >= selectionBehavior.selectionBoxes.Length) return -1;
- 
--            // Allow throwing if the index is out of bounds, since that shouldn't be happening
-             string apCode = selectionBehavior.selectionBoxes[boxIndex].AttachPoint.Code;
- 
-             return wearableSlots.IndexOf(elem => elem.AttachmentPointCode == apCode);
+@@ -530,21 +536,23 @@ namespace Vintagestory.GameContent
+             var index = GetSlotIndexFromSelectionBoxIndex(boxIndex);
+             if (index == -1) return null;
+             return inv[index];
          }
- 
-@@ -590,11 +592,13 @@ namespace Vintagestory.GameContent
- 
+
+-        public int GetSlotIndexFromSelectionBoxIndex(int boxIndex)
+-        {
+-            if (boxIndex < 0) return -1;
++		public int GetSlotIndexFromSelectionBoxIndex(int boxIndex)
++		{
++			if (boxIndex < 0) return -1;
+
+-            var selectionBehavior = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
+-            ArgumentNullException.ThrowIfNull(selectionBehavior);
++            // Stratum: bound selection-box and inventory indices before lookup.
++			var selectionBehavior = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
++			var selectionBoxes = selectionBehavior?.selectionBoxes;
++			if (selectionBoxes == null || (uint)boxIndex >= (uint)selectionBoxes.Length) return -1;
+
+-            // Allow throwing if the index is out of bounds, since that shouldn't be happening
+-            string apCode = selectionBehavior.selectionBoxes[boxIndex].AttachPoint.Code;
++			string apCode = selectionBoxes[boxIndex].AttachPoint.Code;
+
+-            return wearableSlots.IndexOf(elem => elem.AttachmentPointCode == apCode);
++			int slotIndex = wearableSlots.IndexOf(elem => elem.AttachmentPointCode == apCode);
++			return slotIndex >= 0 && slotIndex < inv.Count ? slotIndex : -1;
+         }
+
+         public ItemSlot GetSlotConfigFromAPName(string apCode)
+         {
+             var seleBoxes = entity.GetBehavior<EntityBehaviorSelectionBoxes>().selectionBoxes;
+@@ -590,11 +598,13 @@ namespace Vintagestory.GameContent
+
          public override WorldInteraction[] GetInteractionHelp(IClientWorldAccessor world, EntitySelection es, IClientPlayer player, ref EnumHandling handled)
          {
              if (es.SelectionBoxIndex > 0)
@@ -62,23 +103,24 @@ index ca7d5e3..80e7513 100644
 +                if (slot == null) return base.GetInteractionHelp(world, es, player, ref handled);
 +                return AttachableInteractionHelp.GetOrCreateInteractionHelp(world.Api, this, wearableSlots, es.SelectionBoxIndex - 1, slot);
              }
- 
+
              return base.GetInteractionHelp(world, es, player, ref handled);
          }
- 
-@@ -608,11 +612,14 @@ namespace Vintagestory.GameContent
+
+@@ -608,11 +618,15 @@ namespace Vintagestory.GameContent
              if (capi.World.Player.CurrentEntitySelection == null) return null;
- 
+
              var selebox = capi.World.Player.CurrentEntitySelection.SelectionBoxIndex - 1;
              if (selebox < 0) return null;
- 
+
 -            return entity.GetBehavior<EntityBehaviorSelectionBoxes>().GetCenterPosOfBox(selebox)?.Add(0, 0.5, 0);
-+            var selectionBoxes = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
-+            if (selectionBoxes?.selectionBoxes == null || selebox >= selectionBoxes.selectionBoxes.Length) return null;
++			var selectionBoxes = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
++			var selectionBoxArray = selectionBoxes?.selectionBoxes;
++			if (selectionBoxArray == null || (uint)selebox >= (uint)selectionBoxArray.Length) return null;
 +
 +            return selectionBoxes.GetCenterPosOfBox(selebox)?.Add(0, 0.5, 0);
          }
- 
+
          public override void OnEntityDeath(DamageSource damageSourceForDeath)
          {
              int i = 0;

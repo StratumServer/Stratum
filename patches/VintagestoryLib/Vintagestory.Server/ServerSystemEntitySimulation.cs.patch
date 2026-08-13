@@ -1,13 +1,14 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..51c993b 100644
+index ea1d5c0..627fe32 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-@@ -1,8 +1,12 @@
+@@ -1,8 +1,13 @@
  using System;
 +using System.Collections.Concurrent;
  using System.Collections.Generic;
 -using System.Linq;
 +using System.Diagnostics;
++using System.Reflection;
 +using System.Text;
 +using System.Threading;
 +using System.Threading.Tasks;
@@ -16,12 +17,12 @@ index ea1d5c0..51c993b 100644
  using Vintagestory.API.Common.Entities;
  using Vintagestory.API.Config;
  using Vintagestory.API.Datastructures;
-@@ -22,13 +26,152 @@ public class ServerSystemEntitySimulation : ServerSystem
- 
+@@ -22,13 +27,152 @@ public class ServerSystemEntitySimulation : ServerSystem
+
  	private Dictionary<string, List<string>> deathMessagesCache;
- 
+
  	private int skippedDespawnTicks;
- 
+
 +	private ConcurrentDictionary<long, StratumEntityTickState> stratumEntityTickStates = new ConcurrentDictionary<long, StratumEntityTickState>();
 +	private int stratumTicksSinceTickStateReconcile; // Stratum: periodic orphan eviction
 +
@@ -169,10 +170,10 @@ index ea1d5c0..51c993b 100644
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
  		server.PacketHandlers[17] = HandleEntityInteraction;
-@@ -43,26 +186,33 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -43,26 +187,33 @@ public class ServerSystemEntitySimulation : ServerSystem
  		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
  	}
- 
+
  	private void EventManager_OnPlayerChat(IServerPlayer byPlayer, int channelId, ref string message, ref string data, BoolRef consumed)
  	{
 +		string messageBody = StratumChatFormatter.FormatMessageBody(message);
@@ -202,13 +203,13 @@ index ea1d5c0..51c993b 100644
 -		message = $"<strong>{byPlayer.PlayerName}:</strong> {message}";
 +		message = $"<strong>{byPlayer.PlayerName}:</strong> {messageBody}";
  	}
- 
+
  	private void EventManager_OnGameWorldBeingSaved()
  	{
  		if (server.RunPhase != EnumServerRunPhase.Shutdown)
-@@ -77,66 +227,257 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -77,66 +228,257 @@ public class ServerSystemEntitySimulation : ServerSystem
  	}
- 
+
  	public override void OnBeginModsAndConfigReady()
  	{
  		server.EventManager.OnPlayerRespawn += OnPlayerRespawn;
@@ -220,7 +221,7 @@ index ea1d5c0..51c993b 100644
 +			ServerMain.Logger.Warning("[Stratum] Region ticking is ENABLED (experimental). Not all entity behaviors are thread-safe. Monitor with /stratum regions.");
 +		}
  	}
- 
+
  	public override void OnPlayerJoin(ServerPlayer player)
  	{
 +		// Stratum: reconnect only player animators. Mob/global server animators remain deferred
@@ -228,7 +229,7 @@ index ea1d5c0..51c993b 100644
 +		StratumEnsurePlayerAnimator(player?.Entity);
  		physicsManager.ForceClientUpdateTick(player.client);
  	}
- 
+
 +	private void StratumLoadPlayerEntityShapes()
 +	{
 +		List<EntityProperties> playerTypes = new List<EntityProperties>(1);
@@ -327,12 +328,12 @@ index ea1d5c0..51c993b 100644
  		physicsManager.ForceClientUpdateTick(player.client);
 +		stratumSelectionState.Remove(player.client.Id);
  	}
- 
+
  	private void OnPlayerLeaveChunk(ClientStatistics clientStats)
  	{
  		physicsManager.ForceClientUpdateTick(clientStats.client);
  	}
- 
+
  	public override void OnServerTick(float dt)
  	{
 +		long stratumSelectionTimingStart = StratumRuntime.Timings.GetTimestamp();
@@ -429,7 +430,7 @@ index ea1d5c0..51c993b 100644
  		TickEntities(dt);
  		SendPlayerEntityDeaths();
  	}
- 
+
 +	// Stratum: per-client raytrace throttle state.
 +	private sealed class StratumSelectionState
 +	{
@@ -484,10 +485,10 @@ index ea1d5c0..51c993b 100644
  		SendEntityDespawns();
  		int count = server.DelayedSpawnQueue.Count;
  		if (count <= 0)
-@@ -185,19 +526,150 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -185,19 +527,150 @@ public class ServerSystemEntitySimulation : ServerSystem
  		}
  	}
- 
+
  	private void TickEntities(float dt)
  	{
 -		List<KeyValuePair<Entity, EntityDespawnData>> list = new List<KeyValuePair<Entity, EntityDespawnData>>();
@@ -638,7 +639,7 @@ index ea1d5c0..51c993b 100644
  				{
  					if (value is EntityPlayer entityPlayer)
  					{
-@@ -209,12 +681,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -209,12 +682,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
  						ServerMain.Logger.Error(e);
  					}
@@ -656,7 +657,7 @@ index ea1d5c0..51c993b 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +699,857 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +700,857 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -1474,7 +1475,7 @@ index ea1d5c0..51c993b 100644
 +		}
 +		return false;
  	}
- 
+
  	private void HandleEntityInteraction(Packet_Client packet, ConnectedClient client)
  	{
  		ServerPlayer player = client.Player;
@@ -1518,7 +1519,68 @@ index ea1d5c0..51c993b 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -384,11 +1691,20 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -257,10 +1565,16 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !player.IsInInteractionRangeOf(entity))
+ 		{
+ 			ServerMain.Logger.Audit("{0} tried to interact with an entity out of range.", player.PlayerName);
+ 			return;
+ 		}
++		// Stratum: reject invalid selection box indices before dispatching to mod behaviors.
++		if (p.MouseButton != 0 && !StratumHasValidSelectionBox(entity, p.SelectionBoxIndex))
++		{
++			ServerMain.Logger.Debug("HandleEntityInteraction from " + client.PlayerName + " rejected: invalid selection box " + p.SelectionBoxIndex + " for entity " + p.EntityId + "!");
++			return;
++		}
+ 		if (p.EntityId != player.CurrentEntitySelection?.Entity?.EntityId)
+ 		{
+ 			player.Entity.EntitySelection = new EntitySelection
+ 			{
+ 				Entity = entity,
+@@ -279,10 +1593,43 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 		{
+ 			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
+ 		}
+ 	}
+
++	private static bool StratumHasValidSelectionBox(Entity entity, int selectionBoxIndex)
++	{
++		if (selectionBoxIndex == 0)
++		{
++			return true;
++		}
++
++		if (selectionBoxIndex < 0)
++		{
++			return false;
++		}
++
++		EntityBehavior selectionBehavior = entity.GetBehavior("selectionboxes");
++		if (selectionBehavior == null)
++		{
++			return true;
++		}
++
++		FieldInfo selectionBoxesField = selectionBehavior.GetType().GetField("selectionBoxes", BindingFlags.Instance | BindingFlags.Public);
++		if (selectionBoxesField == null)
++		{
++			return true;
++		}
++
++		if (selectionBoxesField.GetValue(selectionBehavior) is not Array selectionBoxes)
++		{
++			return false;
++		}
++
++		int selectionBoxIndexZeroBased = selectionBoxIndex - 1;
++		return (uint)selectionBoxIndexZeroBased < (uint)selectionBoxes.Length;
++	}
++
+ 	private void HandleSpecialKey(Packet_Client packet, ConnectedClient client)
+ 	{
+ 		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
+ 		if (num < 0 || num > client.WorldData.Deaths)
+ 		{
+@@ -384,11 +1731,20 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1540,7 +1602,7 @@ index ea1d5c0..51c993b 100644
  			return;
  		}
  		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
-@@ -422,10 +1738,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1778,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));
@@ -1548,7 +1610,7 @@ index ea1d5c0..51c993b 100644
  		}
 +		list.Clear();
  	}
- 
+
  	private string GetDeathMessage(ConnectedClient client, DamageSource src)
  	{
  		if (src == null)
