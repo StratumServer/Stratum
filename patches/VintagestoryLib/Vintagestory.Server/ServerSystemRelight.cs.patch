@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs
-index 82aaf34..6529b4f 100644
+index 82aaf34..0784b09 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemRelight.cs
 @@ -8,10 +8,12 @@ namespace Vintagestory.Server;
@@ -15,7 +15,19 @@ index 82aaf34..6529b4f 100644
  	{
  	}
  
-@@ -61,11 +63,12 @@ public class ServerSystemRelight : ServerSystem
+@@ -51,21 +53,24 @@ public class ServerSystemRelight : ServerSystem
+ 				{
+ 					break;
+ 				}
+ 			}
+ 		}
++
++		chunkIlluminator.FlushPendingSunLightUpdates(); // Stratum: sun light updates are flushed here
+ 	}
+ 
+ 	public void ProcessLightingTask(UpdateLightingTask task, BlockPos pos)
+ 	{
+ 		int num = 0;
  		int num2 = 0;
  		bool flag = false;
  		int x = task.pos.X;
