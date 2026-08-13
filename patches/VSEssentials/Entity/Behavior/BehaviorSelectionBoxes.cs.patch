@@ -1,0 +1,58 @@
+diff --git a/VSEssentials/Entity/Behavior/BehaviorSelectionBoxes.cs b/VSEssentials/Entity/Behavior/BehaviorSelectionBoxes.cs
+index 75cb94b..32a4977 100644
+--- a/VSEssentials/Entity/Behavior/BehaviorSelectionBoxes.cs
++++ b/VSEssentials/Entity/Behavior/BehaviorSelectionBoxes.cs
+@@ -282,14 +282,16 @@ namespace Vintagestory.GameContent
+             }
+
+             return foundIndex;
+         }
+
+-        public Vec3d GetCenterPosOfBox(int selectionBoxIndex)
+-        {
+-            if (selectionBoxIndex >= selectionBoxes.Length) return null;
+-            var apap = selectionBoxes[selectionBoxIndex];
++		public Vec3d GetCenterPosOfBox(int selectionBoxIndex)
++		{
++            // Stratum: reject selection-box indices outside the resolved array.
++			AttachmentPointAndPose[] selectionBoxArray = selectionBoxes;
++			if (selectionBoxArray == null || (uint)selectionBoxIndex >= (uint)selectionBoxArray.Length) return null;
++			var apap = selectionBoxArray[selectionBoxIndex];
+             mvmat.Identity();
+             applyBoxTransform(mvmat, apap);
+
+             var pe = apap.AttachPoint.ParentElement;
+             Vec4d centerPos = new Vec4d((pe.To[0] - pe.From[0]) / 2/16, (pe.To[1] - pe.From[1]) / 2/16, (pe.To[2] - pe.From[2]) / 2/16, 1);
+@@ -355,21 +357,21 @@ namespace Vintagestory.GameContent
+             return false;
+         }
+
+
+
+-        public bool IsAPCode(EntitySelection es, string apcode)
+-        {
+-            var ebs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
+-            if (ebs != null)
+-            {
+-                int seleBox = es?.SelectionBoxIndex - 1 ?? -1;
+-                var seleBoxes = ebs.selectionBoxes;
+-                if (seleBox > 0 && seleBoxes.Length >= seleBox)
+-                {
+-                    string apCode = seleBoxes[seleBox].AttachPoint.Code;
+-                    return apCode == apcode;
++		public bool IsAPCode(EntitySelection es, string apcode)
++		{
++			var ebs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
++			var selectionBoxArray = ebs?.selectionBoxes;
++			if (selectionBoxArray != null)
++			{
++				int seleBox = es?.SelectionBoxIndex - 1 ?? -1;
++				if ((uint)seleBox < (uint)selectionBoxArray.Length)
++				{
++					string apCode = selectionBoxArray[seleBox].AttachPoint.Code;
++					return apCode == apcode;
+                 }
+             }
+
+             return false;
+         }
