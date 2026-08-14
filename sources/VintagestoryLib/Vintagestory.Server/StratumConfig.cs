@@ -1591,6 +1591,8 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig Revive { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.revive");
 
+	public StratumCommandAccessConfig Lives { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.lives");
+
 	public StratumCommandAccessConfig Jail { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.jail");
 
 	public StratumCommandAccessConfig Warn { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.warn");
@@ -1639,6 +1641,7 @@ internal class StratumCommandsConfig
 		Pvp ??= StratumCommandAccessConfig.ForPrivilege("stratum.pvp");
 		Freeze ??= StratumCommandAccessConfig.ForPrivilege("stratum.freeze");
 		Revive ??= StratumCommandAccessConfig.ForPrivilege("stratum.revive");
+		Lives ??= StratumCommandAccessConfig.ForPrivilege("stratum.lives");
 		Jail ??= StratumCommandAccessConfig.ForPrivilege("stratum.jail");
 		Warn ??= StratumCommandAccessConfig.ForPrivilege("stratum.warn");
 		Mute ??= StratumCommandAccessConfig.ForPrivilege("stratum.mute");
@@ -1668,6 +1671,7 @@ internal class StratumCommandsConfig
 		Pvp.EnsurePopulated("stratum.pvp");
 		Freeze.EnsurePopulated("stratum.freeze");
 		Revive.EnsurePopulated("stratum.revive");
+		Lives.EnsurePopulated("stratum.lives");
 		Jail.EnsurePopulated("stratum.jail");
 		Warn.EnsurePopulated("stratum.warn");
 		Mute.EnsurePopulated("stratum.mute");

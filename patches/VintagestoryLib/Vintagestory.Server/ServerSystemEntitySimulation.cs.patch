@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..627fe32 100644
+index ea1d5c0..42aa2eb 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -1536,7 +1536,7 @@ index ea1d5c0..627fe32 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,10 +1593,43 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1593,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1577,10 +1577,15 @@ index ea1d5c0..627fe32 100644
 +
  	private void HandleSpecialKey(Packet_Client packet, ConnectedClient client)
  	{
- 		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
- 		if (num < 0 || num > client.WorldData.Deaths)
+-		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
+-		if (num < 0 || num > client.WorldData.Deaths)
++		if (StratumLivesStore.CanRespawn(server, client)) // Stratum: apply bonus lives to respawn requests
  		{
-@@ -384,11 +1731,20 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 			ServerMain.Logger.VerboseDebug("Received respawn request from {0}", client.PlayerName);
+ 			server.EventManager.TriggerPlayerRespawn(client.Player);
+ 		}
+ 		else
+@@ -384,16 +1730,24 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1601,8 +1606,30 @@ index ea1d5c0..627fe32 100644
  		{
  			return;
  		}
- 		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
-@@ -422,10 +1778,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+-		int num = server.SaveGameData?.WorldConfiguration.GetString("playerlives", "-1").ToInt(-1) ?? (-1);
+ 		foreach (ConnectedClient item in list)
+ 		{
+ 			item.Entityplayer.DeadNotify = false;
+ 			item.WorldData.Deaths++;
+ 			server.EventManager.TriggerPlayerDeath(item.Player, item.Entityplayer.DeathReason);
+@@ -401,11 +1755,15 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 			{
+ 				Id = 45,
+ 				PlayerDeath = new Packet_PlayerDeath
+ 				{
+ 					ClientId = item.Id,
+-					LivesLeft = ((num < 0) ? (-1) : Math.Max(0, num - item.WorldData.Deaths))
++					LivesLeft = StratumLivesStore.GetLivesLeft(server, item.ServerData, item.WorldData) // Stratum: include bonus lives in death packets
+ 				}
+ 			});
++			if (StratumLivesStore.ShouldAutoRespawn(server, item)) // Stratum: auto-respawn players with bonus lives
++			{
++				server.EventManager.TriggerPlayerRespawn(item.Player);
++			}
+ 			DamageSource deathReason = item.Entityplayer.DeathReason;
+ 			bool num2 = !server.api.World.Config.GetBool("disableDeathMessages");
+ 			string text = "";
+@@ -422,10 +1776,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

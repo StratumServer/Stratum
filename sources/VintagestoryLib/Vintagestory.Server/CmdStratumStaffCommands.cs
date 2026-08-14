@@ -198,6 +198,18 @@ internal class CmdStratumStaffCommands
 				.HandleWith(HandleRevive);
 		}
 
+		if (StratumCommandRegistration.ShouldRegister(commands.Lives, "/lives", "Commands.Lives"))
+		{
+			server.api.commandapi.Create("lives")
+				.WithDescription("Manage player lives and show the lives leaderboard")
+				.WithArgs(
+					parsers.OptionalWordRange("action", "list", "leaderboard", "check", "give", "take", "set"),
+					parsers.OptionalWord("player or group:<id>"),
+					parsers.OptionalInt("amount", 1))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleLives);
+		}
+
 		if (StratumCommandRegistration.ShouldRegister(commands.Jail, "/jail commands", "Commands.Jail"))
 		{
 			server.api.commandapi.Create("setjail")
@@ -980,6 +992,281 @@ internal class CmdStratumStaffCommands
 		Send(target.Player, StratumCommandText.Confirm("You have been revived by staff."), EnumChatType.Notification);
 		StratumRuntime.LogAudit("revive target=" + target.PlayerName + " actor=" + actorName, true);
 		return TextCommandResult.Success(StratumCommandText.Confirm("Revived", StratumCommandText.Escape(target.PlayerName) + " in place."));
+	}
+
+	private TextCommandResult HandleLives(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.Lives, "lives", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		string action = args[0] as string;
+		if (string.IsNullOrWhiteSpace(action) || string.Equals(action, "list", StringComparison.OrdinalIgnoreCase))
+		{
+			return FormatLivesList(leaderboard: false);
+		}
+
+		if (string.Equals(action, "leaderboard", StringComparison.OrdinalIgnoreCase))
+		{
+			return FormatLivesList(leaderboard: true);
+		}
+
+		string token = args[1] as string;
+		if (string.IsNullOrWhiteSpace(token))
+		{
+			return TextCommandResult.Error("Usage: /lives check <player> or /lives <give|take|set> <player|group:<id>> [amount]");
+		}
+
+		if (LooksLikeLivesTeam(token))
+		{
+			return TextCommandResult.Error("Team targets are not supported. Use a player or group:<id>.");
+		}
+
+		if (string.Equals(action, "check", StringComparison.OrdinalIgnoreCase))
+		{
+			return RunLivesTargets(token, DescribeLives);
+		}
+
+		if (!string.Equals(action, "give", StringComparison.OrdinalIgnoreCase) &&
+			!string.Equals(action, "take", StringComparison.OrdinalIgnoreCase) &&
+			!string.Equals(action, "set", StringComparison.OrdinalIgnoreCase))
+		{
+			return TextCommandResult.Error("Usage: /lives [list|leaderboard|check|give|take|set] <player|group:<id>> [amount]");
+		}
+
+		int amount = (int)args[2];
+		if (amount < 0 || (amount == 0 && !string.Equals(action, "set", StringComparison.OrdinalIgnoreCase)))
+		{
+			return TextCommandResult.Error("Amount must be positive. Use zero only with /lives set.");
+		}
+
+		string actorName = args.Caller.GetName();
+		System.Func<ServerPlayerData, ConnectedClient, TextCommandResult> apply = (targetData, onlineTarget) => AdjustLives(targetData, onlineTarget, action, amount, actorName);
+		if (LooksLikeLivesGroup(token))
+		{
+			return RunForLivesGroupTargets(token, apply);
+		}
+
+		return RunForKnownTargets(token, apply);
+	}
+
+	private TextCommandResult RunLivesTargets(string token, System.Func<ServerPlayerData, ConnectedClient, TextCommandResult> perTarget)
+	{
+		if (LooksLikeLivesGroup(token))
+		{
+			return RunForLivesGroupTargets(token, perTarget);
+		}
+
+		return RunForKnownTargets(token, perTarget);
+	}
+
+	private TextCommandResult RunForLivesGroupTargets(string token, System.Func<ServerPlayerData, ConnectedClient, TextCommandResult> perTarget)
+	{
+		if (!TryResolveLivesGroup(token, out PlayerGroup group))
+		{
+			return TextCommandResult.Error("No player group found for '" + token + "'. Use group:<id> or group:<name>.");
+		}
+
+		List<(ServerPlayerData data, ConnectedClient client)> targets = new List<(ServerPlayerData, ConnectedClient)>();
+		foreach (ServerPlayerData playerData in server.PlayerDataManager.PlayerDataByUid.Values)
+		{
+			if (playerData?.PlayerGroupMemberShips == null || !playerData.PlayerGroupMemberShips.TryGetValue(group.Uid, out PlayerGroupMembership membership) || membership.Level == EnumPlayerGroupMemberShip.None)
+			{
+				continue;
+			}
+
+			targets.Add((playerData, FindOnlineClientByUid(playerData.PlayerUID)));
+		}
+
+		if (targets.Count == 0)
+		{
+			return TextCommandResult.Error("Player group '" + group.Name + "' has no known members.");
+		}
+
+		if (targets.Count == 1)
+		{
+			return perTarget(targets[0].data, targets[0].client);
+		}
+
+		int success = 0;
+		List<string> failures = new List<string>();
+		foreach ((ServerPlayerData data, ConnectedClient client) target in targets)
+		{
+			TextCommandResult result;
+			try
+			{
+				result = perTarget(target.data, target.client);
+			}
+			catch (Exception exception)
+			{
+				failures.Add(target.data.LastKnownPlayername + " (" + exception.GetType().Name + ")");
+				continue;
+			}
+
+			if (result != null && result.Status == EnumCommandStatus.Success)
+			{
+				success++;
+			}
+			else
+			{
+				failures.Add(target.data.LastKnownPlayername);
+			}
+		}
+
+		string message = StratumCommandText.Confirm("Applied", success + "/" + targets.Count + " players in " + group.Name);
+		if (failures.Count > 0)
+		{
+			message += " " + StratumCommandText.Warning("skipped: " + string.Join(", ", failures));
+		}
+		return TextCommandResult.Success(message);
+	}
+
+	private TextCommandResult AdjustLives(ServerPlayerData targetData, ConnectedClient onlineTarget, string action, int amount, string actorName)
+	{
+		int bonusLives;
+		if (string.Equals(action, "set", StringComparison.OrdinalIgnoreCase))
+		{
+			bonusLives = StratumLivesStore.SetBonus(server, targetData, amount);
+		}
+		else
+		{
+			int delta = string.Equals(action, "take", StringComparison.OrdinalIgnoreCase) ? -amount : amount;
+			bonusLives = StratumLivesStore.AddBonus(server, targetData, delta);
+		}
+
+		int livesLeft = StratumLivesStore.GetLivesLeft(server, targetData, StratumLivesStore.GetWorldData(server, targetData));
+		string targetName = targetData.LastKnownPlayername ?? targetData.PlayerUID;
+		bool revived = false;
+		if ((string.Equals(action, "give", StringComparison.OrdinalIgnoreCase) || string.Equals(action, "set", StringComparison.OrdinalIgnoreCase)) &&
+			livesLeft > 0 && onlineTarget?.Player?.Entity is EntityPlayer targetEntity && !targetEntity.Alive)
+		{
+			targetEntity.Revive();
+			revived = true;
+			Send(onlineTarget.Player, StratumCommandText.Confirm("You have been revived.", "A life was granted."), EnumChatType.Notification);
+		}
+
+		StratumRuntime.LogAudit("lives action=" + action + " target=" + targetName + " amount=" + amount + " actor=" + actorName, true);
+		StringBuilder result = new StringBuilder(StratumCommandText.Confirm("Lives updated", targetName));
+		result.Append(StratumCommandText.Row("Bonus", bonusLives.ToString(GlobalConstants.DefaultCultureInfo)));
+		result.Append(StratumCommandText.Row("Remaining", FormatLivesLeft(livesLeft)));
+		if (revived)
+		{
+			result.Append(StratumCommandText.Row("Status", "revived"));
+		}
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private TextCommandResult DescribeLives(ServerPlayerData targetData, ConnectedClient onlineTarget)
+	{
+		ServerWorldPlayerData worldData = StratumLivesStore.GetWorldData(server, targetData);
+		int deaths = Math.Max(0, worldData?.Deaths ?? 0);
+		int bonusLives = StratumLivesStore.GetBonus(targetData);
+		int livesLeft = StratumLivesStore.GetLivesLeft(server, targetData, worldData);
+		string targetName = targetData.LastKnownPlayername ?? targetData.PlayerUID;
+		StringBuilder result = new StringBuilder(StratumCommandText.Title("Lives: " + targetName));
+		result.Append(StratumCommandText.Row("Deaths", deaths.ToString(GlobalConstants.DefaultCultureInfo)));
+		result.Append(StratumCommandText.Row("Bonus", bonusLives.ToString(GlobalConstants.DefaultCultureInfo)));
+		result.Append(StratumCommandText.Row("Remaining", FormatLivesLeft(livesLeft)));
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private TextCommandResult FormatLivesList(bool leaderboard)
+	{
+		List<(ServerPlayerData data, int remaining)> rows = new List<(ServerPlayerData, int)>();
+		foreach (ServerPlayerData playerData in server.PlayerDataManager.PlayerDataByUid.Values)
+		{
+			if (playerData == null)
+			{
+				continue;
+			}
+
+			int remaining = StratumLivesStore.GetLivesLeft(server, playerData, StratumLivesStore.GetWorldData(server, playerData));
+			if (leaderboard)
+			{
+				ConnectedClient onlineTarget = FindOnlineClientByUid(playerData.PlayerUID);
+				if (remaining == 0 || onlineTarget?.Player?.Entity == null || !onlineTarget.Player.Entity.Alive)
+				{
+					continue;
+				}
+			}
+
+			rows.Add((playerData, remaining));
+		}
+
+		rows.Sort((left, right) =>
+		{
+			if (left.remaining < 0) return right.remaining < 0 ? ComparePlayerNames(left.data, right.data) : -1;
+			if (right.remaining < 0) return 1;
+			int remainingComparison = right.remaining.CompareTo(left.remaining);
+			return remainingComparison != 0 ? remainingComparison : ComparePlayerNames(left.data, right.data);
+		});
+
+		if (rows.Count == 0)
+		{
+			return TextCommandResult.Success(StratumCommandText.Empty(leaderboard ? "No living players have lives remaining." : "No player lives recorded."));
+		}
+
+		StringBuilder result = new StringBuilder(StratumCommandText.Title(leaderboard ? "Lives Leaderboard" : "Player Lives"));
+		for (int index = 0; index < rows.Count; index++)
+		{
+			(string name, int remaining) row = (rows[index].data.LastKnownPlayername ?? rows[index].data.PlayerUID, rows[index].remaining);
+			result.Append(StratumCommandText.Bullet((index + 1).ToString(GlobalConstants.DefaultCultureInfo) + ". " + row.name, FormatLivesLeft(row.remaining)));
+		}
+
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private static int ComparePlayerNames(ServerPlayerData left, ServerPlayerData right)
+	{
+		return string.Compare(left.LastKnownPlayername, right.LastKnownPlayername, StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static string FormatLivesLeft(int livesLeft)
+	{
+		return livesLeft < 0 ? "unlimited" : livesLeft.ToString(GlobalConstants.DefaultCultureInfo);
+	}
+
+	private bool LooksLikeLivesGroup(string token)
+	{
+		return token.StartsWith("group:", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private bool LooksLikeLivesTeam(string token)
+	{
+		return token.StartsWith("team:", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private bool TryResolveLivesGroup(string token, out PlayerGroup group)
+	{
+		group = null;
+		if (!LooksLikeLivesGroup(token) || server.PlayerDataManager.PlayerGroupsById == null)
+		{
+			return false;
+		}
+
+		int separator = token.IndexOf(':');
+		string identifier = token.Substring(separator + 1).Trim();
+		if (identifier.Length == 0)
+		{
+			return false;
+		}
+
+		if (int.TryParse(identifier, out int groupId))
+		{
+			return server.PlayerDataManager.PlayerGroupsById.TryGetValue(groupId, out group);
+		}
+
+		foreach (PlayerGroup candidate in server.PlayerDataManager.PlayerGroupsById.Values)
+		{
+			if (string.Equals(candidate.Name, identifier, StringComparison.OrdinalIgnoreCase))
+			{
+				group = candidate;
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private TextCommandResult HandleSetJail(TextCommandCallingArgs args)
