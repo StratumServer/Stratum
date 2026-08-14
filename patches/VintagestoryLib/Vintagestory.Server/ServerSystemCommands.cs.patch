@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
-index 1d4be19..e8394a8 100644
+index 1d4be19..d013ca6 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
-@@ -21,10 +21,19 @@ internal class ServerSystemCommands : ServerSystem
+@@ -21,10 +21,20 @@ internal class ServerSystemCommands : ServerSystem
  		new CmdEntity(server);
  		new CmdGive(server);
  		new CmdDebug(server);
@@ -12,6 +12,7 @@ index 1d4be19..e8394a8 100644
 +		new CmdStratumUtility(server);
 +		new CmdStratumEssentials(server);
 +		new CmdStratumStaffCommands(server);
++		new CmdStratumRoles(server); // Stratum: runtime role editing
 +		new StratumLoginProtection(server);
 +		new StratumCombatLogSystem(server);
 +		new StratumCoopCombatSystem(server); // Stratum: cooperative PvE combat toggle

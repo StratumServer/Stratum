@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs
-index 425b841..d054939 100644
+index 425b841..20aa12e 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadConfig.cs
 @@ -8,10 +8,13 @@ using Vintagestory.Common;
@@ -106,7 +106,7 @@ index 425b841..d054939 100644
 +		}
 +	}
 +
-+	private static void SaveRolesConfig(ServerMain server)
++	internal static void SaveRolesConfig(ServerMain server)
 +	{
 +		ServerRolesConfig rolesConfig = new ServerRolesConfig
 +		{
