@@ -30,6 +30,8 @@ internal class StratumConfig
 
 	public StratumWorldgenConfig Worldgen { get; set; } = new StratumWorldgenConfig();
 
+	public StratumMobSpawningConfig MobSpawning { get; set; } = new StratumMobSpawningConfig();
+
 	public StratumCommandsConfig Commands { get; set; } = new StratumCommandsConfig();
 
 	public StratumChatConfig Chat { get; set; } = new StratumChatConfig();
@@ -68,6 +70,7 @@ internal class StratumConfig
 		ClientModPolicy ??= new StratumClientModPolicyConfig();
 		Performance ??= new StratumPerformanceConfig();
 		Worldgen ??= new StratumWorldgenConfig();
+		MobSpawning ??= new StratumMobSpawningConfig();
 		Commands ??= new StratumCommandsConfig();
 		Chat ??= new StratumChatConfig();
 		Appearance ??= new StratumAppearanceConfig();
@@ -87,6 +90,7 @@ internal class StratumConfig
 		Anticheat.EnsureSane();
 		ClientModPolicy.EnsurePopulated();
 		Performance.EnsurePopulated();
+		MobSpawning.EnsureSane();
 		Commands.EnsurePopulated();
 		Chat.EnsurePopulated();
 		Appearance.EnsurePopulated();
@@ -132,6 +136,24 @@ internal class StratumConfig
 			}
 			return prop;
 		}
+	}
+}
+
+internal class StratumMobSpawningConfig
+{
+	public bool Enabled { get; set; } = true;
+
+	public bool HostileEnabled { get; set; } = true;
+
+	public bool NeutralEnabled { get; set; } = true;
+
+	public bool PassiveEnabled { get; set; } = true;
+
+	public float NaturalSpawnMultiplier { get; set; } = 1f;
+
+	public void EnsureSane()
+	{
+		NaturalSpawnMultiplier = Math.Clamp(NaturalSpawnMultiplier, 0f, 1f);
 	}
 }
 
@@ -1595,6 +1617,8 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig RoleEditing { get; set; } = StratumCommandAccessConfig.ForPrivilege("controlserver");
 
+	public StratumCommandAccessConfig MobSpawning { get; set; } = StratumCommandAccessConfig.ForPrivilege("controlserver");
+
 	public StratumCommandAccessConfig Jail { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.jail");
 
 	public StratumCommandAccessConfig Warn { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.warn");
@@ -1645,6 +1669,7 @@ internal class StratumCommandsConfig
 		Revive ??= StratumCommandAccessConfig.ForPrivilege("stratum.revive");
 		Lives ??= StratumCommandAccessConfig.ForPrivilege("stratum.lives");
 		RoleEditing ??= StratumCommandAccessConfig.ForPrivilege("controlserver");
+		MobSpawning ??= StratumCommandAccessConfig.ForPrivilege("controlserver");
 		Jail ??= StratumCommandAccessConfig.ForPrivilege("stratum.jail");
 		Warn ??= StratumCommandAccessConfig.ForPrivilege("stratum.warn");
 		Mute ??= StratumCommandAccessConfig.ForPrivilege("stratum.mute");
@@ -1676,6 +1701,7 @@ internal class StratumCommandsConfig
 		Revive.EnsurePopulated("stratum.revive");
 		Lives.EnsurePopulated("stratum.lives");
 		RoleEditing.EnsurePopulated("controlserver");
+		MobSpawning.EnsurePopulated("controlserver");
 		Jail.EnsurePopulated("stratum.jail");
 		Warn.EnsurePopulated("stratum.warn");
 		Mute.EnsurePopulated("stratum.mute");

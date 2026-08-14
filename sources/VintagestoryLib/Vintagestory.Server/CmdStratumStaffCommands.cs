@@ -210,6 +210,15 @@ internal class CmdStratumStaffCommands
 				.HandleWith(HandleLives);
 		}
 
+		if (StratumCommandRegistration.ShouldRegister(commands.MobSpawning, "/mobs", "Commands.MobSpawning"))
+		{
+			server.api.commandapi.Create("mobs")
+				.WithDescription("Control natural mob spawning and wipe loaded creatures")
+				.WithArgs(parsers.OptionalWordRange("action", "status", "set", "scale", "wipe"), parsers.OptionalWord("category or multiplier"), parsers.OptionalWord("state or confirm"))
+				.RequiresPrivilege(Privilege.controlserver)
+				.HandleWith(HandleMobSpawning);
+		}
+
 		if (StratumCommandRegistration.ShouldRegister(commands.Jail, "/jail commands", "Commands.Jail"))
 		{
 			server.api.commandapi.Create("setjail")
@@ -749,6 +758,125 @@ internal class CmdStratumStaffCommands
 		}
 
 		return !current;
+	}
+
+	private TextCommandResult HandleMobSpawning(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.MobSpawning, "mobs", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		StratumMobSpawningConfig config = StratumRuntime.Config.MobSpawning;
+		string action = args.Parsers[0].IsMissing ? "status" : args[0] as string;
+		string category = args.Parsers[1].IsMissing ? null : args[1] as string;
+		string value = args.Parsers[2].IsMissing ? null : args[2] as string;
+
+		if (string.Equals(action, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			return TextCommandResult.Success(DescribeMobSpawning(config));
+		}
+
+		if (string.Equals(action, "set", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumMobSpawning.IsKnownCategory(category) || (!string.Equals(value, "on", StringComparison.OrdinalIgnoreCase) && !string.Equals(value, "off", StringComparison.OrdinalIgnoreCase)))
+			{
+				return TextCommandResult.Error("Usage: /mobs set <hostile|neutral|passive|all> <on|off>");
+			}
+
+			bool enabled = string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
+			if (string.Equals(category, "all", StringComparison.OrdinalIgnoreCase))
+			{
+				config.Enabled = enabled;
+				config.HostileEnabled = enabled;
+				config.NeutralEnabled = enabled;
+				config.PassiveEnabled = enabled;
+			}
+			else
+			{
+				config.Enabled = true;
+				SetMobCategory(config, category, enabled);
+			}
+
+			return SaveMobSpawningConfig(config, "set " + category + "=" + (enabled ? "on" : "off"), args.Caller.GetName());
+		}
+
+		if (string.Equals(action, "scale", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!float.TryParse(category, NumberStyles.Float, CultureInfo.InvariantCulture, out float multiplier) || multiplier < 0f || multiplier > 1f)
+			{
+				return TextCommandResult.Error("Usage: /mobs scale <0..1>");
+			}
+
+			config.NaturalSpawnMultiplier = multiplier;
+			return SaveMobSpawningConfig(config, "scale=" + multiplier.ToString(CultureInfo.InvariantCulture), args.Caller.GetName());
+		}
+
+		if (string.Equals(action, "wipe", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumMobSpawning.IsKnownCategory(category))
+			{
+				return TextCommandResult.Error("Usage: /mobs wipe <hostile|neutral|passive|all> confirm");
+			}
+
+			if (!string.Equals(value, "confirm", StringComparison.OrdinalIgnoreCase))
+			{
+				return TextCommandResult.Error("This removes loaded creatures. Repeat the command with the final argument 'confirm'.");
+			}
+
+			int wiped = 0;
+			EntityDespawnData despawnData = new EntityDespawnData { Reason = EnumDespawnReason.Unload };
+			foreach (Entity entity in server.LoadedEntities.Values.ToArray())
+			{
+				if (!StratumMobSpawning.IsCategory(entity, category) || entity.ShouldDespawn)
+				{
+					continue;
+				}
+
+				server.DespawnEntity(entity, despawnData);
+				wiped++;
+			}
+
+			StratumRuntime.LogAudit("mobs wipe=" + category + " count=" + wiped + " actor=" + args.Caller.GetName(), true);
+			return TextCommandResult.Success(StratumCommandText.Confirm("Removed " + wiped + " loaded " + category + " creature" + (wiped == 1 ? "" : "s") + "."));
+		}
+
+		return TextCommandResult.Error("Usage: /mobs status, /mobs set <category> <on|off>, /mobs scale <0..1>, or /mobs wipe <category> confirm");
+	}
+
+	private static string DescribeMobSpawning(StratumMobSpawningConfig config)
+	{
+		StringBuilder result = new StringBuilder(StratumCommandText.Title("Natural Mob Spawning"));
+		result.Append(StratumCommandText.Row("Enabled", config.Enabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Hostile", config.HostileEnabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Neutral", config.NeutralEnabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Passive", config.PassiveEnabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Natural scale", config.NaturalSpawnMultiplier.ToString("0.##", CultureInfo.InvariantCulture)));
+		return result.ToString();
+	}
+
+	private static void SetMobCategory(StratumMobSpawningConfig config, string category, bool enabled)
+	{
+		if (string.Equals(category, "hostile", StringComparison.OrdinalIgnoreCase)) config.HostileEnabled = enabled;
+		if (string.Equals(category, "neutral", StringComparison.OrdinalIgnoreCase)) config.NeutralEnabled = enabled;
+		if (string.Equals(category, "passive", StringComparison.OrdinalIgnoreCase)) config.PassiveEnabled = enabled;
+	}
+
+	private static TextCommandResult SaveMobSpawningConfig(StratumMobSpawningConfig config, string action, string actor)
+	{
+		config.EnsureSane();
+		StratumMobSpawning.Refresh();
+		try
+		{
+			StratumRuntime.SaveConfig();
+		}
+		catch (Exception exception)
+		{
+			return TextCommandResult.Error(StratumCommandText.Warning("Applied in memory but failed to write config") + ": " + exception.Message);
+		}
+
+		StratumRuntime.LogAudit("mobs " + action + " actor=" + actor, true);
+		return TextCommandResult.Success(DescribeMobSpawning(config));
 	}
 
 	private static string DescribeChatChannel(StratumChatChannelConfig channel)
