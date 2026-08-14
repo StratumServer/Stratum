@@ -1,19 +1,19 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs
-index 647310c..0eb2ea3 100644
+index 647310c..540409d 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/93.GenCreatures.cs
 @@ -48,6 +48,9 @@ namespace Vintagestory.ServerMods
          protected int shrubsBotRight;
          protected List<SpawnOppurtunity> spawnPositions = new List<SpawnOppurtunity>();
- 
+
 +        // Stratum: each worldgen thread gets a complete generator so protected fields stay mod-visible.
 +        StratumWorkerInstances<GenCreatures> stratumWorkers;
 +
- 
+
          public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Server;
          public override double ExecuteOrder() => 0.1;
 @@ -58,8 +61,9 @@ namespace Vintagestory.ServerMods
- 
+
              if (TerraGenConfig.DoDecorationPass)
              {
 +                stratumWorkers = new StratumWorkerInstances<GenCreatures>(StratumCreateWorker); // Stratum: isolate per-column state without changing vanilla fields
@@ -26,7 +26,7 @@ index 647310c..0eb2ea3 100644
 @@ -141,6 +145,33 @@ namespace Vintagestory.ServerMods
              loadAnimalMaps();
          }
- 
+
 +        private void StratumOnChunkColumnGen(IChunkColumnGenerateRequest request)
 +        {
 +            stratumWorkers.Current.OnChunkColumnGen(request);
@@ -67,3 +67,14 @@ index 647310c..0eb2ea3 100644
              wgenBlockAccessor.BeginColumn();
              IntDataMap2D climateMap = chunks[0].MapChunk.MapRegion.ClimateMap;
              ushort[] heightMap = chunks[0].MapChunk.WorldGenTerrainHeightMap;
+@@ -220,7 +254,10 @@ namespace Vintagestory.ServerMods
+                 if (tries == 0f) continue;
+
+                 var scRuntime = entitytype.Server.SpawnConditions.Runtime;   // the Group ("hostile"/"neutral"/"passive") is only held in the Runtime spawn conditions
++                float stratumSpawnMultiplier = StratumMobSpawningHook.GetNaturalSpawnMultiplier(scRuntime?.Group); // Stratum: issue #216 natural worldgen control
++                if (stratumSpawnMultiplier <= 0f) continue;
+                 if (scRuntime == null || scRuntime.Group != "hostile") tries *= gcfg.neutralCreatureSpawnMultiplier;
++                tries *= stratumSpawnMultiplier; // Stratum: issue #216 lower natural worldgen volume
+
+                 while (tries-- > rnd.NextDouble())
+                 {

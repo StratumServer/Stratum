@@ -54,6 +54,7 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("freeze", "/freeze", commands.Freeze, "Use /freeze");
 		yield return new StratumCommandAccessEntry("lives", "/lives", commands.Lives, "Use /lives");
 		yield return new StratumCommandAccessEntry("roles", "/roles", commands.RoleEditing, "Edit server roles at runtime");
+		yield return new StratumCommandAccessEntry("mobs", "/mobs", commands.MobSpawning, "Manage natural mob spawning and loaded creature wipes");
 		yield return new StratumCommandAccessEntry("jail", "/jail", commands.Jail, "Use /setjail, /jail, /unjail, and /jailstatus");
 		yield return new StratumCommandAccessEntry("warn", "/warn", commands.Warn, "Use /warn, /warnings, and /delwarn");
 		yield return new StratumCommandAccessEntry("mute", "/mute", commands.Mute, "Use /mute, /unmute, and /mutestatus");
