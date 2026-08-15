@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -13,6 +14,9 @@ namespace StratumServer;
 internal static class VanillaBootstrap
 {
 	private const string VersionManifestUrl = "https://api.vintagestory.at/stable-unstable.json";
+
+	// Anego publishes the aarch64 natives as a standalone overlay; the main manifest is x64-only.
+	private const string Arm64ReleasesUrl = "https://api.github.com/repos/anegostudios/VintagestoryServerArm64/releases?per_page=50";
 
 	internal static void EnsureVanillaAssets(string baseGameVersion, bool refresh)
 	{
@@ -90,6 +94,13 @@ internal static class VanillaBootstrap
 			Console.WriteLine($"Stratum: installed {copied} vanilla file(s) (existing files were preserved)");
 		}
 
+		// Anego ships no linux-arm64 server archive, so the files just laid down are x86-64.
+		// Swap the handful of architecture-specific natives before PatchedFileOverlay runs.
+		if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+		{
+			ApplyArm64NativeOverlay(installDir, cacheDir, baseGameVersion, overwriteExisting);
+		}
+
 		File.WriteAllText(markerPath, expectedMarker);
 	}
 
@@ -134,6 +145,199 @@ internal static class VanillaBootstrap
 		}
 
 		return new ArchiveInfo(fileName, url, md5, isZip);
+	}
+
+	// Replaces the x86-64 natives from the official archive with the aarch64 builds Anego publishes
+	// as a separate overlay release. Only *.so files are taken: everything else in that overlay is
+	// either portable IL or VintagestoryServer host files, and the overlay lags the base game by a
+	// patch release or two, so copying its managed/host files would risk a version mismatch against
+	// Stratum's patched assemblies. The natives are self-contained third-party libraries
+	// (SkiaSharp, e_sqlite3, zstd) whose ABI does not track Vintage Story patch releases.
+	private static void ApplyArm64NativeOverlay(string installDir, string cacheDir, string baseGameVersion, bool overwriteExisting)
+	{
+		string markerPath = Path.Combine(installDir, ".stratum-arm64-natives");
+		if (!overwriteExisting && File.Exists(markerPath))
+		{
+			Console.WriteLine("Stratum: arm64 natives already in place; leaving them untouched");
+			return;
+		}
+
+		Arm64Asset asset = ResolveArm64Asset(baseGameVersion);
+		Console.WriteLine($"Stratum: arm64 node detected; fetching native overlay {asset.Name}");
+
+		string archivePath = Path.Combine(cacheDir, asset.Name);
+		if (File.Exists(archivePath) && !VerifyArm64Digest(archivePath, asset.Digest))
+		{
+			Console.WriteLine($"Stratum: cached {asset.Name} failed checksum; downloading a fresh copy");
+			File.Delete(archivePath);
+		}
+
+		if (!File.Exists(archivePath))
+		{
+			DownloadFile(asset.Url, archivePath);
+			if (!VerifyArm64Digest(archivePath, asset.Digest))
+			{
+				File.Delete(archivePath);
+				throw new InvalidOperationException("Downloaded arm64 native overlay failed SHA256 verification: " + asset.Name);
+			}
+		}
+		else
+		{
+			Console.WriteLine($"Stratum: using cached {archivePath}");
+		}
+
+		string extractDir = Path.Combine(cacheDir, "extract-arm64");
+		if (Directory.Exists(extractDir))
+		{
+			Directory.Delete(extractDir, recursive: true);
+		}
+		Directory.CreateDirectory(extractDir);
+
+		Console.WriteLine($"Stratum: unpacking {asset.Name}");
+		ExtractTarGz(archivePath, extractDir);
+
+		string sourceRoot = FindContentRoot(extractDir);
+		int copied = 0;
+		foreach (string sourcePath in Directory.EnumerateFiles(sourceRoot, "*", SearchOption.AllDirectories))
+		{
+			if (!IsNativeLibrary(sourcePath))
+			{
+				continue;
+			}
+
+			string rel = Path.GetRelativePath(sourceRoot, sourcePath);
+			string destPath = Path.Combine(installDir, rel);
+			string destDir = Path.GetDirectoryName(destPath);
+			if (destDir != null)
+			{
+				Directory.CreateDirectory(destDir);
+			}
+			File.Copy(sourcePath, destPath, overwrite: true);
+			copied++;
+		}
+
+		Directory.Delete(extractDir, recursive: true);
+
+		if (copied == 0)
+		{
+			throw new InvalidOperationException("arm64 native overlay " + asset.Name + " contained no shared libraries; refusing to run against x86-64 natives.");
+		}
+
+		Console.WriteLine($"Stratum: replaced {copied} native librar(ies) with aarch64 builds from {asset.Name}");
+		File.WriteAllText(markerPath, asset.Name);
+	}
+
+	private static bool IsNativeLibrary(string path)
+	{
+		string fileName = Path.GetFileName(path);
+		return fileName.EndsWith(".so", StringComparison.OrdinalIgnoreCase)
+			|| fileName.Contains(".so.", StringComparison.OrdinalIgnoreCase);
+	}
+
+	// Overlay releases are cut per minor version, so a 1.22.6 base resolves the 1.22.x overlay.
+	private static Arm64Asset ResolveArm64Asset(string baseGameVersion)
+	{
+		string preferredPrefix = "vs_server_linux-arm64_" + MajorMinor(baseGameVersion) + ".";
+
+		using HttpClient client = CreateGitHubClient();
+		string json = client.GetStringAsync(Arm64ReleasesUrl).GetAwaiter().GetResult();
+		using JsonDocument document = JsonDocument.Parse(json);
+
+		Arm64Asset preferred = default;
+		Arm64Asset fallback = default;
+
+		foreach (JsonElement release in document.RootElement.EnumerateArray())
+		{
+			if (release.TryGetProperty("draft", out JsonElement draft) && draft.GetBoolean())
+			{
+				continue;
+			}
+			if (!release.TryGetProperty("assets", out JsonElement assets))
+			{
+				continue;
+			}
+
+			foreach (JsonElement assetElement in assets.EnumerateArray())
+			{
+				string name = OptionalString(assetElement, "name");
+				string url = OptionalString(assetElement, "browser_download_url");
+				if (name == null || url == null || !name.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+				if (!name.Contains("linux-arm64", StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+
+				Arm64Asset candidate = new(name, url, OptionalString(assetElement, "digest"));
+				if (fallback.Name == null)
+				{
+					fallback = candidate;
+				}
+				if (preferred.Name == null && name.StartsWith(preferredPrefix, StringComparison.OrdinalIgnoreCase))
+				{
+					preferred = candidate;
+				}
+			}
+		}
+
+		if (preferred.Name != null)
+		{
+			return preferred;
+		}
+		if (fallback.Name != null)
+		{
+			Console.WriteLine($"Stratum: no arm64 overlay published for {MajorMinor(baseGameVersion)}.x; falling back to {fallback.Name}");
+			return fallback;
+		}
+
+		throw new InvalidOperationException("No linux-arm64 overlay asset found at " + Arm64ReleasesUrl + ". Stratum cannot run on arm64 without aarch64 natives.");
+	}
+
+	private static HttpClient CreateGitHubClient()
+	{
+		HttpClient client = new();
+		client.Timeout = TimeSpan.FromSeconds(30);
+		// The GitHub API rejects requests without a User-Agent.
+		client.DefaultRequestHeaders.UserAgent.ParseAdd("StratumServer");
+		client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+
+		// Anonymous callers get 60 requests/hour per IP, which a busy node can exhaust.
+		string token = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+		if (!string.IsNullOrWhiteSpace(token))
+		{
+			client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+		}
+
+		return client;
+	}
+
+	private static string MajorMinor(string version)
+	{
+		string[] parts = version.Split('.');
+		return parts.Length >= 2 ? parts[0] + "." + parts[1] : version;
+	}
+
+	private static bool VerifyArm64Digest(string path, string digest)
+	{
+		if (string.IsNullOrWhiteSpace(digest))
+		{
+			Console.WriteLine("Stratum: arm64 overlay asset publishes no digest; skipping checksum verification");
+			return true;
+		}
+
+		const string Sha256Prefix = "sha256:";
+		if (!digest.StartsWith(Sha256Prefix, StringComparison.OrdinalIgnoreCase))
+		{
+			Console.WriteLine($"Stratum: unrecognised arm64 overlay digest format '{digest}'; skipping checksum verification");
+			return true;
+		}
+
+		using FileStream stream = File.OpenRead(path);
+		using SHA256 sha = SHA256.Create();
+		string actual = Convert.ToHexString(sha.ComputeHash(stream));
+		return string.Equals(actual, digest.Substring(Sha256Prefix.Length), StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static void DownloadFile(string url, string destination)
@@ -243,6 +447,17 @@ internal static class VanillaBootstrap
 		return value;
 	}
 
+	private static string OptionalString(JsonElement element, string propertyName)
+	{
+		if (!element.TryGetProperty(propertyName, out JsonElement property) || property.ValueKind != JsonValueKind.String)
+		{
+			return null;
+		}
+
+		string value = property.GetString();
+		return string.IsNullOrWhiteSpace(value) ? null : value;
+	}
+
 	private static bool VerifyMd5(string path, string expectedMd5)
 	{
 		using FileStream stream = File.OpenRead(path);
@@ -265,5 +480,19 @@ internal static class VanillaBootstrap
 		public string Url { get; }
 		public string Md5 { get; }
 		public bool IsZip { get; }
+	}
+
+	private readonly struct Arm64Asset
+	{
+		public Arm64Asset(string name, string url, string digest)
+		{
+			Name = name;
+			Url = url;
+			Digest = digest;
+		}
+
+		public string Name { get; }
+		public string Url { get; }
+		public string Digest { get; }
 	}
 }

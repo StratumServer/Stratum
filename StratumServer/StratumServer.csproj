@@ -4,7 +4,10 @@
     <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
     <OutputType>Exe</OutputType>
     <TargetFramework>$(FrameworkVersion)</TargetFramework>
-    <PlatformTarget>x64</PlatformTarget>
+    <!-- RID-less builds stay x64. When a RuntimeIdentifier is supplied (pack-release.ps1 publishes
+         per-RID), let the SDK infer the platform from it - an explicit x64 here fails NETSDK1032
+         against -r linux-arm64. -->
+    <PlatformTarget Condition="'$(RuntimeIdentifier)' == ''">x64</PlatformTarget>
     <RootNamespace>StratumServer</RootNamespace>
     <Configurations>Debug;Release;PerfTest</Configurations>
     <EmbedPatchedFiles Condition="'$(EmbedPatchedFiles)' == ''">false</EmbedPatchedFiles>
