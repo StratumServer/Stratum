@@ -1,8 +1,8 @@
 diff --git a/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs b/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
-index 4e4704b..b29c91c 100644
+index 4e4704b..126d2ef 100644
 --- a/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
 +++ b/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
-@@ -86,10 +86,23 @@ namespace Vintagestory.GameContent
+@@ -86,10 +86,24 @@ namespace Vintagestory.GameContent
          // Set up two unmodifiable default values instead of spamming new objects
          private static Cuboidf[] noSelectionBox = Array.Empty<Cuboidf>();
          private static byte[] singleByte255 = new byte[] { 255 };
@@ -18,7 +18,8 @@ index 4e4704b..b29c91c 100644
 +            new ThreadLocal<BoolArray16x16x16>(() => new BoolArray16x16x16());
 +
 +        // Fixed buffer for cuboids (max 16*16*16 = 4096)
-+        private static readonly uint[] CuboidBuffer = new uint[4096];
++        protected static ThreadLocal<uint[]> cuboidBufferTL = new ThreadLocal<uint[]>(() => new uint[4096]);
++        protected static uint[] CuboidBuffer => cuboidBufferTL.Value;
 +        // Stratum end
 +
          // bits 0..3 = xmin
@@ -26,7 +27,7 @@ index 4e4704b..b29c91c 100644
          // bits 8..11 = ymin
          // bits 12..15 = ymax
          // bits 16..19 = zmin
-@@ -472,31 +485,50 @@ namespace Vintagestory.GameContent
+@@ -472,31 +486,51 @@ namespace Vintagestory.GameContent
          #region Voxel math
  
  
@@ -39,6 +40,7 @@ index 4e4704b..b29c91c 100644
 +            voxels = RebuildVoxelsTL.Value;
 +            voxels.Clear();
 +            materials = RebuildMaterialsTL.Value;
++            Array.Clear(materials, 0, 16 * 16 * 16); // clear stale data from previous block entities on this thread
 +
 +
 +            // byte[,,] in .NET is stored contiguously in memory (row-major),
@@ -86,7 +88,7 @@ index 4e4704b..b29c91c 100644
          {
              ConvertToVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
              RebuildCuboidList(Voxels, VoxelMaterial);
-@@ -768,110 +800,113 @@ namespace Vintagestory.GameContent
+@@ -768,110 +802,113 @@ namespace Vintagestory.GameContent
          {
              RebuildCuboidList();
              MarkDirty(true);
@@ -247,7 +249,7 @@ index 4e4704b..b29c91c 100644
              {
                  int preva = GetLightAbsorption();
                  absorbAnyLight = doEmitSideAo;
-@@ -886,15 +921,11 @@ namespace Vintagestory.GameContent
+@@ -886,15 +923,11 @@ namespace Vintagestory.GameContent
              for (int i = 0; i < 6; i++)
              {
                  sidecenterSolid[i] = edgeCenterVoxelsMissing[i] < 5;
@@ -264,7 +266,17 @@ index 4e4704b..b29c91c 100644
              if (BlockIds.Length == 1 && Api.World.GetBlock(BlockIds[0]).RenderPass == EnumChunkRenderPass.Meta)
              {
                  emitSideAo = 0;
-@@ -915,10 +946,11 @@ namespace Vintagestory.GameContent
+@@ -910,15 +943,21 @@ namespace Vintagestory.GameContent
+                 {
+                     bebhmicroblock.RebuildCuboidList(Voxels, VoxelMaterial);
+                 }
+             }
+ 
++            // sync rebuilt cuboids from fixed buffer back to instance list
++            VoxelCuboids = new List<uint>(cuboidCount);
++            for (int i = 0; i < cuboidCount; i++)
++                VoxelCuboids.Add(CuboidBuffer[i]);
++
              if (DisplacesLiquid())
              {
                  Api.World.BlockAccessor.SetBlock(0, Pos, BlockLayersAccess.Fluid);
@@ -276,7 +288,7 @@ index 4e4704b..b29c91c 100644
          {
              prevEmitSideAo ^= emitSideAo;  // This is now the changed bits
              if (prevEmitSideAo == 0) return;  // No change
-@@ -935,81 +967,96 @@ namespace Vintagestory.GameContent
+@@ -935,81 +974,96 @@ namespace Vintagestory.GameContent
              return sideAlmostSolid[0] && sideAlmostSolid[1] && sideAlmostSolid[2] && sideAlmostSolid[3] && sideAlmostSolid[5];
          }
  
@@ -388,7 +400,7 @@ index 4e4704b..b29c91c 100644
  
          public virtual void RegenSelectionBoxes(IWorldAccessor worldForResolve, IPlayer byPlayer)
          {
-@@ -2557,29 +2604,103 @@ namespace Vintagestory.GameContent
+@@ -2557,29 +2611,103 @@ namespace Vintagestory.GameContent
          {
              return GetEncompassingHitbox(VoxelCuboids);
          }
