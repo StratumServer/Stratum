@@ -1,11 +1,11 @@
 {
   "_comment": "Pinned upstream commits for each Anego open-source fork. Bump these when overlaying a new Vintage Story release. Bootstrap clones each repo at the listed ref into .baseline/<name>/ and the working <name>/ folder, then applies patches/<name>/*.patch on top.",
-  "vintageStoryVersion": "1.22.6",
+  "vintageStoryVersion": "1.22.7",
   "forks": [
     {
       "name": "VintagestoryApi",
       "url": "https://github.com/anegostudios/vsapi.git",
-      "ref": "324ccf9e852ffbe3764e3271508f28081123d111"
+      "ref": "63d33f70018c606fb0f70ead900fe90625fbd7b2"
     },
     {
       "name": "Cairo",
@@ -20,12 +20,12 @@
     {
       "name": "VSEssentials",
       "url": "https://github.com/anegostudios/vsessentialsmod.git",
-      "ref": "0cd7da3e4f6e7faba7bcd7f56be4a9a144a1c088"
+      "ref": "06673b67318e002332b6aa8b3d0308f11d2aba99"
     },
     {
       "name": "VSSurvivalMod",
       "url": "https://github.com/anegostudios/vssurvivalmod.git",
-      "ref": "dfaeb44db824a7f37d5b7bf82ba0657633aa0f43"
+      "ref": "849fa8cad9e392368566efc7474e73db6404a145"
     }
   ]
 }

@@ -2088,7 +2088,7 @@ index 707d78e..534b43d 100644
  		}
 +
 +		// Create a new MapChunk
- 		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.6");
+ 		bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.7");
  		orCreateMapRegionEnsureNeighbours = GetOrCreateMapRegionEnsureNeighbours(chunkX, chunkZ, chunkRequest.chunkGenParams, updateEarlierVersion);
  		value = CreateMapChunk(chunkX, chunkZ, orCreateMapRegionEnsureNeighbours);
  		server.loadedMapChunks[key] = value;
@@ -2517,7 +2517,7 @@ index 707d78e..534b43d 100644
 +					// Get/create region (without storing in the global registry)
  					if (!dictionary.TryGetValue(num3, out var value))
  					{
- 						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.6");
+ 						bool updateEarlierVersion = GameVersion.IsLowerVersionThan(server.SaveGameData.CreatedGameVersion, "1.22.7");
  						value = (dictionary[num3] = GetOrCreateMapRegionNoStore(regionX, regionZ, num3, chunkGenParams, updateEarlierVersion));
  						chunkthread.peekingMapRegions.TryAdd(num3, value);
  					}
