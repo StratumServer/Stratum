@@ -1,0 +1,27 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/NoChunkData.cs b/VintagestoryLib/Vintagestory.Common/NoChunkData.cs
+index db9ffef..a72ce6a 100644
+--- a/VintagestoryLib/Vintagestory.Common/NoChunkData.cs
++++ b/VintagestoryLib/Vintagestory.Common/NoChunkData.cs
+@@ -41,10 +41,22 @@ public class NoChunkData : IChunkBlocks
+ 
+ 	public void SetBlockUnsafe(int index3d, int blockId)
+ 	{
+ 	}
+ 
++
++	// Stratum: necessary interface overload
++	public void SetBlocksUnsafe(List<int> indices, List<int> values)
++	{
++	}
++
++	// Stratum: necessary interface overload
++	public void CopyBlocksToUnsafe(int[] blocksOut)
++	{
++
++	}
++
+ 	public void SetBlockAir(int index3d)
+ 	{
+ 	}
+ 
+ 	public int GetBlockId(int index, int layer)

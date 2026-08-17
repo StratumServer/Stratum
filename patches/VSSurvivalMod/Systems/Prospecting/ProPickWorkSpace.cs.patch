@@ -1,0 +1,36 @@
+diff --git a/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs b/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
+index 3fe5096..d75e6dc 100644
+--- a/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
++++ b/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
+@@ -216,10 +216,31 @@ namespace Vintagestory.GameContent
+                 public void SetBlockUnsafe(int index3d, int value)
+                 {
+                     this[index3d] = value;
+                 }
+ 
++                // Stratum: necessary interface overload
++                public void CopyBlocksToUnsafe(int[] blocksOut)
++                {
++                    Array.Copy(blocks, blocksOut, blocks.Length);
++                }
++
++                /// <summary>
++                /// Stratum: bulk variant of SetBlockUnsafe for interface compatibility. DummyChunkData
++                /// is a plain int[] with no locking, so there's no batching benefit here — just applies
++                /// each pair directly, same as calling SetBlockUnsafe in a loop.
++                /// </summary>
++                public void SetBlocksUnsafe(List<int> indices, List<int> values)
++                {
++                    int count = indices.Count;
++                    for (int i = 0; i < count; i++)
++                    {
++                        blocks[indices[i]] = values[i];
++                    }
++                }
++
++
+                 public void SetFluid(int index3d, int value)
+                 {
+ 
+                 }
+ 
