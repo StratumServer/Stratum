@@ -1,0 +1,56 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/ChunkData.cs b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
+index af79143..bb31aff 100644
+--- a/VintagestoryLib/Vintagestory.Common/ChunkData.cs
++++ b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
+@@ -166,10 +166,21 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+ 	public int GetBlockIdUnsafe(int index3d)
+ 	{
+ 		return blocksLayer?.GetUnsafe(index3d) ?? 0;
+ 	}
+ 
++
++	public void CopyBlocksToUnsafe(int[] blocksOut)
++	{
++		if (blocksLayer == null || blocksLayer.palette == null)
++		{
++			Array.Clear(blocksOut, 0, blocksOut.Length);
++			return;
++		}
++		blocksLayer.CopyBlocksToUnsafe(blocksOut);
++	}
++
+ 	public int GetBlockIdUnsafe(int index3d, int layer)
+ 	{
+ 		switch (layer)
+ 		{
+ 		default:
+@@ -246,10 +257,29 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+ 			blocksLayer = new BlockChunkDataLayer(pool);
+ 		}
+ 		blocksLayer.SetUnsafe(index3d, value);
+ 	}
+ 
++	/// <summary>
++	/// Stratum: bulk variant of SetBlockUnsafe. Forwards a buffered batch of
++	/// (index3d, value) pairs to the blocks layer's SetManyUnsafe, taking the
++	/// layer's write lock once for the whole batch instead of once per block.
++	/// </summary>
++	public void SetBlocksUnsafe(List<int> indices, List<int> values)
++	{
++		if (indices.Count == 0)
++		{
++			return;
++		}
++		if (blocksLayer == null)
++		{
++			blocksLayer = new BlockChunkDataLayer(pool);
++		}
++		blocksLayer.SetManyUnsafe(indices, values);
++	}
++
++
+ 	public void SetBlockAir(int index3d)
+ 	{
+ 		blocksLayer?.SetZero(index3d);
+ 	}
+ 

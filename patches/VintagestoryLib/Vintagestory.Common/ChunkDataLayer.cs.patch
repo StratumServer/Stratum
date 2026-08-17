@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
-index 4d0bf91..db14432 100644
+index 4d0bf91..a5169d0 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 @@ -1,9 +1,11 @@
@@ -515,8 +515,8 @@ index 4d0bf91..db14432 100644
 +		int b11 = (Unsafe.Add(ref base11, arrayIndex) >> shift) & 1;
 +		int b12 = (Unsafe.Add(ref base12, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4) | (b5 << 5) | (b6 << 6) | (b7 << 7) | (b8 << 8) | (b9 << 9) | (b10 << 10) | (b11 << 11) | (b12 << 12)];
- 	}
- 
++	}
++
 +	/// <summary>Fast-path read for bit depth of 14. Extracts the fourteen least significant bits from all available planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetFromBits14(int index3d)
@@ -552,8 +552,8 @@ index 4d0bf91..db14432 100644
 +		int b12 = (Unsafe.Add(ref base12, arrayIndex) >> shift) & 1;
 +		int b13 = (Unsafe.Add(ref base13, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4) | (b5 << 5) | (b6 << 6) | (b7 << 7) | (b8 << 8) | (b9 << 9) | (b10 << 10) | (b11 << 11) | (b12 << 12) | (b13 << 13)];
-+	}
-+
+ 	}
+ 
 +	// Stratum end.
 +
 +	/// <summary>Selects the optimal read delegate based on the current palette bit depth.</summary>
@@ -742,12 +742,43 @@ index 4d0bf91..db14432 100644
  		readWriteLock.AcquireReadLock();
  		int[][] array = new int[bitsize][];
  		try
-@@ -215,82 +683,94 @@ public class ChunkDataLayer
+@@ -215,82 +683,125 @@ public class ChunkDataLayer
  		{
  			readWriteLock.ReleaseReadLock();
  		}
  	}
  
++
++	/// <summary>
++	/// Stratum: unsafe bulk-read variant of CopyBlocksTo — decodes every block ID in this
++	/// layer into blocksOut without taking readWriteLock. Only safe where the caller
++	/// already guarantees exclusive single-threaded access to this ChunkDataLayer, the
++	/// same guarantee GetUnsafe/SetUnsafe already rely on.
++	/// </summary>
++	public void CopyBlocksToUnsafe(int[] blocksOut)
++	{
++		if (palette == null)
++		{
++			Array.Clear(blocksOut, 0, blocksOut.Length);
++			return;
++		}
++		int num = bitsize;
++		for (int i = 0; i < blocksOut.Length; i += 32)
++		{
++			int num2 = i / 32;
++			for (int j = 0; j < 32; j++)
++			{
++				int index = 0;
++				for (int k = 0; k < num; k++)
++				{
++					if (((dataBits[k][num2] >> j) & 1) != 0)
++						index |= (1 << k);
++				}
++				blocksOut[i + j] = palette[index];
++			}
++		}
++	}
++
 +	/// <summary>Gets the block value at a 3D index with palette null-check. Returns 0 if the palette is not initialized.</summary>
  	public int GetUnsafe_PaletteCheck(int index3d)
  	{
@@ -884,7 +915,7 @@ index 4d0bf91..db14432 100644
  		{
  			int num;
  			if (palette != null)
-@@ -314,19 +794,19 @@ public class ChunkDataLayer
+@@ -314,19 +825,19 @@ public class ChunkDataLayer
  									break;
  								}
  								num++;
@@ -911,7 +942,7 @@ index 4d0bf91..db14432 100644
  						setBlockIndexCached = num;
  						setBlockValueCached = value;
  					}
-@@ -376,11 +856,21 @@ public class ChunkDataLayer
+@@ -376,11 +887,44 @@ public class ChunkDataLayer
  			return;
  		}
  		throw new IndexOutOfRangeException("Chunk blocks index3d must be between 0 and " + 32767 + ", was " + index3d);
@@ -926,6 +957,29 @@ index 4d0bf91..db14432 100644
 +		}
 +	}
 +
++
++	/// <summary>
++	/// Stratum: bulk write for a whole batch of (index3d, value) pairs. Takes
++	/// stratumWriteLock ONCE for the entire batch instead of once per block —
++	/// meant for callers that buffer many writes for one layer before flushing,
++	/// e.g. GenRockStrataNew accumulating a subchunk's worth of strata blocks.
++	/// Correctness matches calling SetUnsafe once per pair in order: each
++	/// SetUnsafeCore reads/updates setBlockIndexCached/setBlockValueCached and
++	/// the palette exactly as the single-call path does, just without releasing
++	/// the lock between entries.
++	/// </summary>
++	public void SetManyUnsafe(List<int> indices, List<int> values)
++	{
++		lock (stratumWriteLock)
++		{
++			int count = indices.Count;
++			for (int i = 0; i < count; i++)
++			{
++				SetUnsafeCore(indices[i], values[i]);
++			}
++		}
++	}
++
 +	/// <summary>SetUnsafe core. Executes under the held stratumWriteLock.</summary>
 +	private void SetUnsafeCore(int index3d, int value)
  	{
@@ -933,7 +987,7 @@ index 4d0bf91..db14432 100644
  		index3d /= 32;
  		int num2 = ~num;
  		if (value != 0)
-@@ -449,11 +939,21 @@ public class ChunkDataLayer
+@@ -449,11 +993,21 @@ public class ChunkDataLayer
  				dataBits[j][index3d] &= num2;
  			}
  		}
@@ -955,7 +1009,7 @@ index 4d0bf91..db14432 100644
  		{
  			int num = 1 << index3d;
  			index3d /= 32;
-@@ -464,65 +964,64 @@ public class ChunkDataLayer
+@@ -464,65 +1018,64 @@ public class ChunkDataLayer
  				dataBits[i][index3d] &= num2;
  			}
  		}
@@ -1054,7 +1108,7 @@ index 4d0bf91..db14432 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -535,10 +1034,11 @@ public class ChunkDataLayer
+@@ -535,10 +1088,11 @@ public class ChunkDataLayer
  		palette[1] = value;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1066,7 +1120,7 @@ index 4d0bf91..db14432 100644
  		if (bitsize > 6 && CleanUpPalette())
  		{
  			return paletteCount;
-@@ -555,10 +1055,11 @@ public class ChunkDataLayer
+@@ -555,10 +1109,11 @@ public class ChunkDataLayer
  		Get = selectDelegate(bitsize + 1);
  		bitsize++;
  		return num;
@@ -1078,7 +1132,7 @@ index 4d0bf91..db14432 100644
  		if (pool.server == null)
  		{
  			if (bitsize < 14)
-@@ -653,10 +1154,11 @@ public class ChunkDataLayer
+@@ -653,10 +1208,11 @@ public class ChunkDataLayer
  			}
  		}
  		return true;
@@ -1090,7 +1144,7 @@ index 4d0bf91..db14432 100644
  		if (paletteCount == 0)
  		{
  			return 0;
-@@ -668,10 +1170,11 @@ public class ChunkDataLayer
+@@ -668,10 +1224,11 @@ public class ChunkDataLayer
  			num2++;
  		}
  		return num2;
@@ -1102,7 +1156,7 @@ index 4d0bf91..db14432 100644
  		int num = paletteCount - 1;
  		for (int num2 = num / 32; num2 >= 0; num2--)
  		{
-@@ -698,23 +1201,18 @@ public class ChunkDataLayer
+@@ -698,23 +1255,18 @@ public class ChunkDataLayer
  				}
  			}
  		}
@@ -1129,7 +1183,7 @@ index 4d0bf91..db14432 100644
  		Get = GetFromBits0;
  		int num = bitsize;
  		bitsize = 0;
-@@ -731,10 +1229,11 @@ public class ChunkDataLayer
+@@ -731,10 +1283,11 @@ public class ChunkDataLayer
  		}
  		setBlockIndexCached = 0;
  		setBlockValueCached = 0;
@@ -1141,7 +1195,7 @@ index 4d0bf91..db14432 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -746,19 +1245,21 @@ public class ChunkDataLayer
+@@ -746,19 +1299,21 @@ public class ChunkDataLayer
  		paletteCount = 1;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1163,7 +1217,7 @@ index 4d0bf91..db14432 100644
  		int num = 0;
  		readWriteLock.AcquireReadLock();
  		try
-@@ -774,10 +1275,11 @@ public class ChunkDataLayer
+@@ -774,10 +1329,11 @@ public class ChunkDataLayer
  			readWriteLock.ReleaseReadLock();
  		}
  		return Compression.CompressAndCombine(arrayStatic, palette, paletteCount);
@@ -1175,7 +1229,7 @@ index 4d0bf91..db14432 100644
  		int num = 0;
  		lock (palette ?? ((object)readWriteLock))
  		{
-@@ -806,10 +1308,11 @@ public class ChunkDataLayer
+@@ -806,10 +1362,11 @@ public class ChunkDataLayer
  			paletteCompressed = Compression.Compress(palette, paletteCount, chunkdataVersion);
  		}
  		return Compression.Compress(arrayStatic, num, chunkdataVersion);
@@ -1187,7 +1241,7 @@ index 4d0bf91..db14432 100644
  		paletteCount = 0;
  		palette = Compression.DecompressCombined(layerCompressed, ref dataBits, ref paletteCount, pool.NewData);
  		if (palette != null)
-@@ -827,10 +1330,11 @@ public class ChunkDataLayer
+@@ -827,10 +1384,11 @@ public class ChunkDataLayer
  		{
  			bitsize = 0;
  		}
@@ -1199,7 +1253,7 @@ index 4d0bf91..db14432 100644
  		palette = Compression.DecompressToInts(paletteCompressed, ref paletteCount);
  		if (palette != null)
  		{
-@@ -872,10 +1376,11 @@ public class ChunkDataLayer
+@@ -872,10 +1430,11 @@ public class ChunkDataLayer
  			Get = GetFromBits0;
  			bitsize = 0;
  		}
@@ -1211,7 +1265,7 @@ index 4d0bf91..db14432 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -910,39 +1415,29 @@ public class ChunkDataLayer
+@@ -910,39 +1469,29 @@ public class ChunkDataLayer
  		{
  			pool.FreeArrays(this);
  		}
@@ -1239,12 +1293,12 @@ index 4d0bf91..db14432 100644
 -				}
 -				if (array[j + 2] != 0)
 -				{
--					return true;
++				if ((array[j] | array[j + 1] | array[j + 2] | array[j + 3]) != 0)
+ 					return true;
 -				}
 -				if (array[j + 3] != 0)
 -				{
-+				if ((array[j] | array[j + 1] | array[j + 2] | array[j + 3]) != 0)
- 					return true;
+-					return true;
 -				}
  			}
  		}
@@ -1257,7 +1311,7 @@ index 4d0bf91..db14432 100644
  		readWriteLock.AcquireReadLock();
  		try
  		{
-@@ -950,54 +1445,47 @@ public class ChunkDataLayer
+@@ -950,54 +1499,47 @@ public class ChunkDataLayer
  			for (int i = 0; i < blocksOut.Length; i += 32)
  			{
  				int num2 = i / 32;
@@ -1324,7 +1378,7 @@ index 4d0bf91..db14432 100644
  	{
  		int num = -1;
  		for (int i = 0; i < bitsize; i++)
-@@ -1005,10 +1493,11 @@ public class ChunkDataLayer
+@@ -1005,10 +1547,11 @@ public class ChunkDataLayer
  			num &= (((needle & (1 << i)) != 0) ? dataBits[i][intIndex] : (~dataBits[i][intIndex]));
  		}
  		return num;
@@ -1336,7 +1390,7 @@ index 4d0bf91..db14432 100644
  		for (int i = 0; i < paletteCount; i++)
  		{
  			if (palette[i] != id)
-@@ -1025,18 +1514,20 @@ public class ChunkDataLayer
+@@ -1025,18 +1568,20 @@ public class ChunkDataLayer
  			return false;
  		}
  		return false;
@@ -1357,7 +1411,7 @@ index 4d0bf91..db14432 100644
  		int num = ~mask;
  		readWriteLock.AcquireWriteLock();
  		for (int i = 0; i < bitsize; i++)
-@@ -1051,10 +1542,11 @@ public class ChunkDataLayer
+@@ -1051,10 +1596,11 @@ public class ChunkDataLayer
  			}
  		}
  		readWriteLock.ReleaseWriteLock();
@@ -1369,7 +1423,7 @@ index 4d0bf91..db14432 100644
  		int num = paletteCount - 1;
  		readWriteLock.AcquireWriteLock();
  		int num2 = bitsize;
-@@ -1088,10 +1580,11 @@ public class ChunkDataLayer
+@@ -1088,10 +1634,11 @@ public class ChunkDataLayer
  		palette[deletePosition] = palette[num];
  		paletteCount--;
  		readWriteLock.ReleaseWriteLock();
@@ -1381,7 +1435,7 @@ index 4d0bf91..db14432 100644
  		int[] array = palette;
  		if (array == null)
  		{
-@@ -1104,6 +1597,6 @@ public class ChunkDataLayer
+@@ -1104,6 +1651,6 @@ public class ChunkDataLayer
  			{
  				array[i] = 0;
  			}

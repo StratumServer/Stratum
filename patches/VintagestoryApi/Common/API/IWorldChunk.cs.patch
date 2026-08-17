@@ -1,0 +1,47 @@
+diff --git a/VintagestoryApi/Common/API/IWorldChunk.cs b/VintagestoryApi/Common/API/IWorldChunk.cs
+index 1016d62..fccf531 100644
+--- a/VintagestoryApi/Common/API/IWorldChunk.cs
++++ b/VintagestoryApi/Common/API/IWorldChunk.cs
+@@ -32,10 +32,23 @@ namespace Vintagestory.API.Common
+         /// Not threadsafe, used only in cases where we know that the chunk already has a palette (e.g. in worldgen when replacing rock with other blocks)
+         /// </summary>
+         /// <param name="index3d"></param>
+         /// <param name="value"></param>
+         void SetBlockUnsafe(int index3d, int value);
++
++        /// <summary>
++        /// Bulk variant of <see cref="SetBlockUnsafe"/>. Not threadsafe for the same reasons.
++        /// Applies every (index3d, value) pair in indices/values (up to count entries) while
++        /// taking the underlying layer's write lock only once for the whole batch, instead of
++        /// once per block. Useful for worldgen code that already buffers many block writes for
++        /// one chunk before flushing (e.g. rock strata generation), to cut lock-acquisition
++        /// overhead and contention with other worldgen threads writing to the same chunk.
++        /// </summary>
++        /// <param name="indices">Buffered index3d values.</param>
++        /// <param name="values">Buffered block ids, parallel to indices.</param>
++        void SetBlocksUnsafe(List<int> indices, List<int> values);
++
+         void SetBlockAir(int index3d);
+         /// <summary>
+         /// Used to place blocks into the fluid layer instead of the solid blocks layer; calling code must do this
+         /// </summary>
+         /// <param name="index3d"></param>
+@@ -48,10 +61,18 @@ namespace Vintagestory.API.Common
+         /// Like get (i.e. this[]) but not threadsafe - only for use where setting and getting is guaranteed to be all on the same thread (e.g. during worldgen)
+         /// </summary>
+         /// <param name="index3d"></param>
+         int GetBlockIdUnsafe(int index3d);
+ 
++        /// <summary>
++        /// Not threadsafe, used only where a single thread has exclusive access to this chunk
++        /// (e.g. worldgen). Decodes every block ID in this chunk into blocksOut (must be at
++        /// least Length in size) in one pass, avoiding the per-position dispatch/decode cost of
++        /// calling GetBlockIdUnsafe once for every position that needs to be read.
++        /// </summary>
++        void CopyBlocksToUnsafe(int[] blocksOut);
++
+         /// <summary>
+         /// Enter a locked section for bulk block reads from this ChunkData, using Unsafe read methods
+         /// </summary>
+         void TakeBulkReadLock();
+ 
