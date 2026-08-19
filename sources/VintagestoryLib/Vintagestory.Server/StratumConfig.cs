@@ -1635,6 +1635,10 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig ClearItems { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
 
+	public StratumCommandAccessConfig Kits { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.kits");
+
+	public StratumCommandAccessConfig KitEdit { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
+
 	public int NearDefaultRadiusBlocks { get; set; } = 128;
 
 	public int NearMaxRadiusBlocks { get; set; } = 512;
@@ -1678,6 +1682,8 @@ internal class StratumCommandsConfig
 		ReportManage ??= StratumCommandAccessConfig.ForPrivilege("stratum.reports");
 		Restart ??= StratumCommandAccessConfig.ForPrivilege("stratum.restart");
 		ClearItems ??= StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
+		Kits ??= StratumCommandAccessConfig.ForPrivilege("stratum.kits");
+		KitEdit ??= StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
 		JailSettings ??= new StratumJailConfig();
 		Spawn.EnsurePopulated("stratum.spawn");
 		SetSpawn.EnsurePopulated("setspawn");
@@ -1710,6 +1716,8 @@ internal class StratumCommandsConfig
 		ReportManage.EnsurePopulated("stratum.reports");
 		Restart.EnsurePopulated("stratum.restart");
 		ClearItems.EnsurePopulated("stratum.clearitems");
+		Kits.EnsurePopulated("stratum.kits");
+		KitEdit.EnsurePopulated("stratum.kitedit");
 		NearDefaultRadiusBlocks = Math.Max(1, NearDefaultRadiusBlocks);
 		NearMaxRadiusBlocks = Math.Max(NearDefaultRadiusBlocks, NearMaxRadiusBlocks);
 		SlowmodeMaxSeconds = Math.Max(0, SlowmodeMaxSeconds);
