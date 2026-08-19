@@ -1,31 +1,37 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/WorldAPI.cs b/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
-index 2b525d3..e3e2830 100644
+index 2b525d3..e6a2f25 100644
 --- a/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
 +++ b/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
-@@ -9,10 +9,15 @@ using Vintagestory.Common;
+@@ -9,10 +9,18 @@ using Vintagestory.Common;
  
  namespace Vintagestory.Server;
  
  internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
  {
-+	// Stratum: cache AllLoadedMapRegions per server frame. The property copies the
-+	// entire dictionary on every access. Weather ticks call it multiple times per frame.
++	// Stratum start: added two private fields to cache AllLoadedMapRegions per server tick.
++	// stratumCachedMapRegions — the snapshot dictionary returned by the getter.
++	// stratumMapRegionsCacheTick — the last tick for which the cache is valid; compared
++	// against server.StratumTickSequence to decide whether to rebuild the copy.
 +	private Dictionary<long, IMapRegion> stratumCachedMapRegions;
 +	private long stratumMapRegionsCacheTick = -1;
++	// Stratum end
 +
  	public PlayStyle CurrentPlayStyle
  	{
  		get
  		{
  			foreach (Mod mod in server.api.ModLoader.Mods)
-@@ -129,15 +134,24 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
+@@ -129,18 +137,31 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
  
  	public Dictionary<long, IMapRegion> AllLoadedMapRegions
  	{
  		get
  		{
 -			Dictionary<long, IMapRegion> dictionary = new Dictionary<long, IMapRegion>();
-+			// Stratum: rebuild once per server frame regardless of count changes.
++			// Stratum start: replaced unconditional full copy with tick-gated cache invalidation.
++			// On each server tick the dictionary is rebuilt once; subsequent calls within the
++			// same tick return the cached snapshot, eliminating repeated allocations and O(n)
++			// copies when multiple subsystems (e.g., weather) read this property per frame.
 +			long tick = server.StratumTickSequence;
 +			if (stratumMapRegionsCacheTick == tick && stratumCachedMapRegions != null)
 +			{
@@ -42,5 +48,80 @@ index 2b525d3..e3e2830 100644
  			return dictionary;
  		}
  	}
++	// Stratum end
  
  	public List<LandClaim> LandClaims => server.WorldMap.All;
+ 
+ 	internal int RegionMapSizeX => server.WorldMap.RegionMapSizeX;
+ 
+@@ -293,22 +314,59 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
+ 		{
+ 			IWorldChunk obj = chunks[i];
+ 			obj.Unpack();
+ 			obj.Lighting.FillWithSunlight(sunLight);
+ 		}
+-		server.WorldMap.chunkIlluminatorWorldGen.Sunlight(chunks, chunkX, num, chunkZ, 0);
+-		server.WorldMap.chunkIlluminatorWorldGen.SunlightFlood(chunks, chunkX, num, chunkZ);
++
++		// Stratum start: entire body rewritten to use rented flat int[] buffers and a shared
++		// lighting session so each chunk is decoded only once instead of per BFS flush.
++		// Steps: (1) snapshot only the recomputed range + one read-only source row,
++		//        (2) run Sunlight/SunlightFlood on flat arrays to avoid interface/GC overhead,
++		//        (3) commit back ONLY chunks that were actually written (0..num),
++		//        (4) return buffers and end the session in finally.
++		int chunksPerColumn = server.WorldMap.ChunkMapSizeY;
++		int bufferedCount = Math.Min(num + 2, chunksPerColumn);
++		int[][] lightBuffers = new int[chunksPerColumn][];
++		for (int i = 0; i < bufferedCount; i++)
++			lightBuffers[i] = server.WorldMap.chunkIlluminatorWorldGen.RentLightBuffer();
++
++		// Stratum: ONE shared block-snapshot session for the entire column pass —
++		// each chunk is decoded exactly once instead of once per BFS flush.
++		server.WorldMap.chunkIlluminatorWorldGen.BeginWorldGenLightingSession();
++		try
++		{
++			// 1. Snapshot only the range we recompute (+ source row)
++			for (int i = 0; i < bufferedCount; i++)
++				chunks[i].Data.CopyLightToUnsafe(lightBuffers[i]);
++
++			// 2. Calculate sunlight entirely in flat arrays (Zero-Interface, Zero-GC)
++			server.WorldMap.chunkIlluminatorWorldGen.Sunlight(chunks, chunkX, num, chunkZ, 0, lightBuffers);
++			server.WorldMap.chunkIlluminatorWorldGen.SunlightFlood(chunks, chunkX, num, chunkZ, 0, lightBuffers);
++
++			// 3. Commit ONLY the chunks Sunlight actually wrote (0..num)
++			for (int i = 0; i <= num; i++)
++				chunks[i].Data.SetLightBulkUnsafe(lightBuffers[i]);
++		}
++		finally
++		{
++			server.WorldMap.chunkIlluminatorWorldGen.EndWorldGenLightingSession();
++			for (int i = 0; i < bufferedCount; i++)
++				server.WorldMap.chunkIlluminatorWorldGen.ReturnLightBuffer(lightBuffers[i]);
++		}
+ 	}
++	// Stratum end
+ 
+ 	public void SunFloodChunkColumnNeighboursForWorldGen(IWorldChunk[] chunks, int chunkX, int chunkZ)
+ 	{
+ 		IMapChunk mapChunk = GetMapChunk(chunkX + 1, chunkZ);
+ 		IMapChunk mapChunk2 = GetMapChunk(chunkX - 1, chunkZ);
+ 		IMapChunk mapChunk3 = GetMapChunk(chunkX, chunkZ + 1);
+ 		IMapChunk mapChunk4 = GetMapChunk(chunkX, chunkZ - 1);
+ 		int mapSizeY = server.WorldMap.MapSizeY;
+ 		int chunkY = GameMath.Max(chunks[0].MapChunk.YMax, ((int?)mapChunk?.YMax) ?? (mapSizeY - 1), ((int?)mapChunk2?.YMax) ?? (mapSizeY - 1), ((int?)mapChunk3?.YMax) ?? (mapSizeY - 1), ((int?)mapChunk4?.YMax) ?? (mapSizeY - 1)) / ChunkSize;
++
++		// Stratum: sparse boundary exchange — no dense buffers, no snapshot session needed.
+ 		server.WorldMap.chunkIlluminatorWorldGen.SunLightFloodNeighbourChunks(chunks, chunkX, chunkY, chunkZ, 0);
+ 	}
+ 
+ 	public void LoadChunkColumn(int chunkX, int chunkZ, bool keepLoaded = false)
+ 	{
+@@ -567,6 +625,6 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
+ 		{
+ 			throw new InvalidOperationException("Can not be executed after EnumServerRunPhase.WorldReady");
+ 		}
+ 		return server.BlockingLoadChunkColumn(chunkX, chunkZ);
+ 	}
+-}
++}
+\ No newline at end of file
