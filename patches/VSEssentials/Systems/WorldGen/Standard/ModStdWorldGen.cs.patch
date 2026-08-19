@@ -2,7 +2,9 @@ diff --git a/VSEssentials/Systems/WorldGen/Standard/ModStdWorldGen.cs b/VSEssent
 index 1bd4340..3d6d3f6 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ModStdWorldGen.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ModStdWorldGen.cs
-@@ -44,6 +44,8 @@ namespace Vintagestory.ServerMods
+@@ -42,21 +42,26 @@ namespace Vintagestory.ServerMods
+         /// </summary>
+         public event Action<int, int> OnRegenFinalized;
  
          public void TriggerRegenFinalized(int chunkX, int chunkZ) => OnRegenFinalized?.Invoke(chunkX, chunkZ);
          protected IStructureProvider[] providers;
@@ -11,7 +13,10 @@ index 1bd4340..3d6d3f6 100644
          public override bool ShouldLoad(EnumAppSide forSide) => true;
  
  
-@@ -54,7 +56,10 @@ namespace Vintagestory.ServerMods
+         public override void StartPre(ICoreAPI api)
+         {
+             providers = Array.Empty<IStructureProvider>();
+         }
  
          public void RegisterProvider(IStructureProvider provider)
          {
@@ -23,7 +28,11 @@ index 1bd4340..3d6d3f6 100644
          }
  
          /// <summary>
-@@ -68,13 +73,16 @@ namespace Vintagestory.ServerMods
+         /// Checks weather the provided position is inside a story structures schematics for the specified skipCategory, or it's radius.
+         /// If the Radius for the storystrcuture should be also checked is defined in the json as int as part of the skipGenerationCategories. Does only check 2D from story locations center.
+@@ -66,17 +71,20 @@ namespace Vintagestory.ServerMods
+         /// <param name="z"></param>
+         /// <param name="category">The hashcode of the string category from storystructure.json skipGenerationCategories. The strings from storystructure.json are first converted to lowercase before getting the hash code.</param>
          /// <returns></returns>
          public IStructureLocation GetIntersectingStructure(int x, int z, int category)
          {
@@ -45,3 +54,5 @@ index 1bd4340..3d6d3f6 100644
          }
  
      }
+ 
+     public abstract class ModStdWorldGen : ModSystem

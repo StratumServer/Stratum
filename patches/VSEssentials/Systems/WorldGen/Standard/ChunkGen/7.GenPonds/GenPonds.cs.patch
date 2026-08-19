@@ -2,14 +2,12 @@ diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/7.GenPonds/GenPonds
 index acfac74..fb99e05 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/7.GenPonds/GenPonds.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/7.GenPonds/GenPonds.cs
-@@ -24,16 +24,48 @@ namespace Vintagestory.ServerMods
-         int climateUpLeft;
-         int climateUpRight;
+@@ -26,12 +26,44 @@ namespace Vintagestory.ServerMods
          int climateBotLeft;
          int climateBotRight;
          int[] didCheckPosition;
          int iteration;
-
+ 
 +        // Stratum: isolate the original scratch fields while the stock handler runs concurrently.
 +        [ThreadStatic] private static StratumWorldgenThreadGuard<LCGRandom> stratumRandGuard;
 +        [ThreadStatic] private static QueueOfInt stratumSearchPositionsDeltas;
@@ -22,7 +20,7 @@ index acfac74..fb99e05 100644
 +        [ThreadStatic] private static int stratumActiveDepth;
 +
          LakeBedLayerProperties lakebedLayerConfig;
-
+ 
 +        // Stratum: clear active TLS state on every handler exit without allocating on the hot path.
 +        private readonly struct StratumPondCallScope : IDisposable
 +        {
@@ -44,16 +42,12 @@ index acfac74..fb99e05 100644
 +            }
 +        }
 +
-
+ 
          public override double ExecuteOrder()
          {
              return 0.4;
          }
-
-         public override bool ShouldLoad(EnumAppSide side)
-@@ -85,35 +117,48 @@ namespace Vintagestory.ServerMods
-             var chunks = request.Chunks;
-             int chunkX = request.ChunkX;
+@@ -87,12 +119,25 @@ namespace Vintagestory.ServerMods
              int chunkZ = request.ChunkZ;
              if (GetIntersectingStructure(chunkX * chunksize + chunksize / 2, chunkZ * chunksize + chunksize / 2, PondsHashCode) != null)
              {
@@ -78,16 +72,14 @@ index acfac74..fb99e05 100644
              rand.InitPositionSeed(chunkX, chunkZ);
              int maxHeight = mapheight - 1;
              int pondYPos;
-
+ 
              ushort[] heightmap = chunks[0].MapChunk.RainHeightMap;
-             var mc = chunks[0].MapChunk;
-
-             IntDataMap2D climateMap = chunks[0].MapChunk.MapRegion.ClimateMap;
+@@ -102,16 +147,16 @@ namespace Vintagestory.ServerMods
              int regionChunkSize = api.WorldManager.RegionSize / chunksize;
              float fac = (float)climateMap.InnerSize / regionChunkSize;
              int rlX = chunkX % regionChunkSize;
              int rlZ = chunkZ % regionChunkSize;
-
+ 
 -            climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * fac), (int)(rlZ * fac));
 -            climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * fac + fac), (int)(rlZ * fac));
 -            climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * fac), (int)(rlZ * fac + fac));
@@ -96,19 +88,15 @@ index acfac74..fb99e05 100644
 +            climateUpRight = stratumClimateUpRight = climateMap.GetUnpaddedInt((int)(rlX * fac + fac), (int)(rlZ * fac));
 +            climateBotLeft = stratumClimateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * fac), (int)(rlZ * fac + fac));
 +            climateBotRight = stratumClimateBotRight = climateMap.GetUnpaddedInt((int)(rlX * fac + fac), (int)(rlZ * fac + fac));
-
+ 
 -            int climateMid = GameMath.BiLerpRgbColor(0.5f, 0.5f, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight);
 +            int climateMid = GameMath.BiLerpRgbColor(0.5f, 0.5f, stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight);
-
+ 
              // 16-23 bits = Red = temperature
              // 8-15 bits = Green = rain
              // 0-7 bits = Blue = humidity
-
-             int rain = (climateMid >> 8) & 0xff;
-             int temp = (climateMid >> 16) & 0xff;
-@@ -182,26 +227,36 @@ namespace Vintagestory.ServerMods
-         {
-             int mapOffset = this.mapOffset;
+ 
+@@ -184,10 +229,19 @@ namespace Vintagestory.ServerMods
              int searchSize = this.searchSize;
              int minBoundary = this.minBoundary;
              int maxBoundary = this.maxBoundary;
@@ -125,11 +113,11 @@ index acfac74..fb99e05 100644
 +            int activeClimateBotRight = useStratumState ? stratumClimateBotRight : climateBotRight;
              searchPositionsDeltas.Clear();
              pondPositions.Clear();
-
+ 
              int basePosX = chunkX * chunksize;
              int basePosZ = chunkZ * chunksize;
-             Vec2i tmp = new Vec2i();
-
+@@ -195,11 +249,12 @@ namespace Vintagestory.ServerMods
+ 
              // The starting block is an air block
              int arrayIndex = (dz + mapOffset) * searchSize + dx + mapOffset;
              searchPositionsDeltas.Enqueue(arrayIndex);
@@ -138,32 +126,24 @@ index acfac74..fb99e05 100644
 +            int iteration = useStratumState ? ++stratumIteration : ++this.iteration;
 +            if (useStratumState) this.iteration = iteration; // Stratum: publish the current counter through the vanilla field.
              didCheckPosition[arrayIndex] = iteration;
-
+ 
              BlockPos tmpPos = new BlockPos(API.Config.Dimensions.NormalWorld);
-
+ 
              while (searchPositionsDeltas.Count > 0)
-             {
-                 int p = searchPositionsDeltas.Dequeue();
-@@ -260,15 +315,15 @@ namespace Vintagestory.ServerMods
-             int regionChunkSize = api.WorldManager.RegionSize / chunksize;
-             IMapChunk mapchunk=null;
+@@ -262,11 +317,11 @@ namespace Vintagestory.ServerMods
              IServerChunk chunk = null;
              IServerChunk chunkOneBlockBelow = null;
-
+ 
              int ly = GameMath.Mod(pondYPos, chunksize);
-
+ 
 -            bool extraPondDepth = rand.NextFloat() > 0.5f;
 +            bool extraPondDepth = activeRand.NextFloat() > 0.5f;
              bool withSeabed = extraPondDepth || pondPositions.Count > 16;
-
+ 
              while (pondPositions.Count > 0)
              {
                  int p = pondPositions.Dequeue();
-                 int px = p % searchSize - mapOffset + basePosX;
-                 int pz = p / searchSize - mapOffset + basePosZ;
-@@ -279,14 +334,16 @@ namespace Vintagestory.ServerMods
-                 int lz = GameMath.Mod(pz, chunksize);
-
+@@ -281,10 +336,12 @@ namespace Vintagestory.ServerMods
                  // Get correct chunk and correct climate data if we don't have it already
                  if (curChunkX != prevChunkX || curChunkZ != prevChunkZ)
                  {
@@ -172,20 +152,16 @@ index acfac74..fb99e05 100644
 +                    // Stratum: concurrent generation can observe an absent neighbour.
 +                    if (chunk == null) return;
                      chunk.Unpack();
-
+ 
                      if (ly == 0)
                      {
                          chunkOneBlockBelow = ((IServerChunk)blockAccessor.GetChunk(curChunkX, (pondYPos - 1) / chunksize, curChunkZ));
-                         if (chunkOneBlockBelow == null) return;
-                         chunkOneBlockBelow.Unpack();
-@@ -298,32 +355,44 @@ namespace Vintagestory.ServerMods
-                     mapchunk = chunk.MapChunk;
-                     IntDataMap2D climateMap = mapchunk.MapRegion.ClimateMap;
-
+@@ -300,14 +357,26 @@ namespace Vintagestory.ServerMods
+ 
                      float fac = (float)climateMap.InnerSize / regionChunkSize;
                      int rlX = curChunkX % regionChunkSize;
                      int rlZ = curChunkZ % regionChunkSize;
-
+ 
 -                    climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * fac), (int)(rlZ * fac));
 -                    climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * fac + fac), (int)(rlZ * fac));
 -                    climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * fac), (int)(rlZ * fac + fac));
@@ -206,42 +182,34 @@ index acfac74..fb99e05 100644
 +                    climateUpRight = activeClimateUpRight;
 +                    climateBotLeft = activeClimateBotLeft;
 +                    climateBotRight = activeClimateBotRight;
-
+ 
                      prevChunkX = curChunkX;
                      prevChunkZ = curChunkZ;
-
+ 
                      chunkOneBlockBelow.MarkModified();
-                     chunk.MarkModified();
-                 }
-
-
+@@ -317,11 +386,11 @@ namespace Vintagestory.ServerMods
+ 
                  // Raise heightmap by 1 (only relevant for above-ground ponds)
                  if (mapchunk.RainHeightMap[lz * chunksize + lx] < pondYPos) mapchunk.RainHeightMap[lz * chunksize + lx] = (ushort)pondYPos;
-
+ 
                  // Identify correct climate at this position - could be optimised if we place water into ponds in columns instead of layers
 -                int climate = GameMath.BiLerpRgbColor((float)lx / chunksize, (float)lz / chunksize, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight);
 +                int climate = GameMath.BiLerpRgbColor((float)lx / chunksize, (float)lz / chunksize, activeClimateUpLeft, activeClimateUpRight, activeClimateBotLeft, activeClimateBotRight);
                  float temp = Climate.GetScaledAdjustedTemperatureFloat((climate >> 16) & 0xff, pondYPos - TerraGenConfig.seaLevel);
-
-
+ 
+ 
                  // 1. Place water or ice block
                  int index3d = (ly * chunksize + lz) * chunksize + lx;
-                 Block existing = api.World.GetBlock(chunk.Data.GetBlockId(index3d, BlockLayersAccess.Solid));
-                 if (existing.BlockMaterial == EnumBlockMaterial.Plant)
-@@ -353,15 +422,15 @@ namespace Vintagestory.ServerMods
-                 // Water below? Seabed already placed
-                 if (belowBlock.IsLiquid()) continue;
-
+@@ -355,11 +424,11 @@ namespace Vintagestory.ServerMods
+ 
                  float rainRel = Climate.GetRainFall((climate >> 8) & 0xff, pondYPos) / 255f;
                  int rockBlockId = mapchunk.TopRockIdMap[lz * chunksize + lx];
                  if (rockBlockId == 0) continue;
-
+ 
 -                int lakebedId = lakebedLayerConfig.GetSuitable(temp, rainRel, (float)pondYPos / mapheight, rand, rockBlockId);
 +                int lakebedId = lakebedLayerConfig.GetSuitable(temp, rainRel, (float)pondYPos / mapheight, activeRand, rockBlockId);
                  if (lakebedId != 0) chunkOneBlockBelow.Data[index] = lakebedId;
              }
-
-
+ 
+ 
              if (extraPondDepth)
-             {
-                 TryPlacePondAt(dx, pondYPos+1, dz, chunkX, chunkZ, depth + 1);

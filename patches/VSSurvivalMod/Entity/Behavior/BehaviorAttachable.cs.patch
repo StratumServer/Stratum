@@ -7,7 +7,7 @@ index ca7d5e3..69e50ea 100644
          {
              int seleBox = (byEntity as EntityPlayer).EntitySelection?.SelectionBoxIndex ?? -1;
              if (seleBox <= 0) return;
-
+ 
 -            var index = GetSlotIndexFromSelectionBoxIndex(seleBox - 1);
 -            var slot = index >= 0 ? inv[index] : null;
 +            // Stratum: reject stale selection boxes before indexing attachments.
@@ -15,20 +15,20 @@ index ca7d5e3..69e50ea 100644
 +			var slot = index >= 0 && index < inv.Count ? inv[index] : null;
              if (slot == null) return;
              handled = EnumHandling.PreventSubsequent;
-
+ 
              var controls = byEntity.MountedOn?.Controls ?? byEntity.Controls;
              var attachKey = UseShiftAttach ? controls.ShiftKey : controls.CtrlKey;
 @@ -374,20 +375,24 @@ namespace Vintagestory.GameContent
          }
-
+ 
          private bool TryRemoveAttachment(EntityAgent byEntity, int selectionBoxIndex)
          {
              int slotIndex = GetSlotIndexFromSelectionBoxIndex(selectionBoxIndex);
 +            if (slotIndex < 0) return false;
              ItemSlot slot = inv[slotIndex];
-
+ 
              if (slot.Empty) return false;
-
+ 
              // Don't allow removal of seats where somebody sits on
 -            var ebh = entity.GetBehavior<EntityBehaviorSeatable>();
 -            if (ebh != null)
@@ -52,48 +52,48 @@ index ca7d5e3..69e50ea 100644
          {
              var iatta = IAttachableToEntity.FromCollectible(itemslot.Itemstack.Collectible);
              if (iatta == null || !iatta.IsAttachable(entity, itemslot.Itemstack)) return false;
-
+ 
              int slotIndex = GetSlotIndexFromSelectionBoxIndex(selectionBoxIndex);
 +            if (slotIndex < 0) return false;
              ItemSlot targetSlot = inv[slotIndex];
              string code = iatta.GetCategoryCode(itemslot.Itemstack);
              WearableSlotConfig slotConfig = wearableSlots[slotIndex];
-
+ 
              var ebhs = entity.GetBehavior<EntityBehaviorSeatable>();
 @@ -530,21 +536,23 @@ namespace Vintagestory.GameContent
              var index = GetSlotIndexFromSelectionBoxIndex(boxIndex);
              if (index == -1) return null;
              return inv[index];
          }
-
+ 
 -        public int GetSlotIndexFromSelectionBoxIndex(int boxIndex)
 -        {
 -            if (boxIndex < 0) return -1;
 +		public int GetSlotIndexFromSelectionBoxIndex(int boxIndex)
 +		{
 +			if (boxIndex < 0) return -1;
-
+ 
 -            var selectionBehavior = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
 -            ArgumentNullException.ThrowIfNull(selectionBehavior);
 +            // Stratum: bound selection-box and inventory indices before lookup.
 +			var selectionBehavior = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
 +			var selectionBoxes = selectionBehavior?.selectionBoxes;
 +			if (selectionBoxes == null || (uint)boxIndex >= (uint)selectionBoxes.Length) return -1;
-
+ 
 -            // Allow throwing if the index is out of bounds, since that shouldn't be happening
 -            string apCode = selectionBehavior.selectionBoxes[boxIndex].AttachPoint.Code;
 +			string apCode = selectionBoxes[boxIndex].AttachPoint.Code;
-
+ 
 -            return wearableSlots.IndexOf(elem => elem.AttachmentPointCode == apCode);
 +			int slotIndex = wearableSlots.IndexOf(elem => elem.AttachmentPointCode == apCode);
 +			return slotIndex >= 0 && slotIndex < inv.Count ? slotIndex : -1;
          }
-
+ 
          public ItemSlot GetSlotConfigFromAPName(string apCode)
          {
              var seleBoxes = entity.GetBehavior<EntityBehaviorSelectionBoxes>().selectionBoxes;
 @@ -590,11 +598,13 @@ namespace Vintagestory.GameContent
-
+ 
          public override WorldInteraction[] GetInteractionHelp(IClientWorldAccessor world, EntitySelection es, IClientPlayer player, ref EnumHandling handled)
          {
              if (es.SelectionBoxIndex > 0)
@@ -103,16 +103,16 @@ index ca7d5e3..69e50ea 100644
 +                if (slot == null) return base.GetInteractionHelp(world, es, player, ref handled);
 +                return AttachableInteractionHelp.GetOrCreateInteractionHelp(world.Api, this, wearableSlots, es.SelectionBoxIndex - 1, slot);
              }
-
+ 
              return base.GetInteractionHelp(world, es, player, ref handled);
          }
-
+ 
 @@ -608,11 +618,15 @@ namespace Vintagestory.GameContent
              if (capi.World.Player.CurrentEntitySelection == null) return null;
-
+ 
              var selebox = capi.World.Player.CurrentEntitySelection.SelectionBoxIndex - 1;
              if (selebox < 0) return null;
-
+ 
 -            return entity.GetBehavior<EntityBehaviorSelectionBoxes>().GetCenterPosOfBox(selebox)?.Add(0, 0.5, 0);
 +			var selectionBoxes = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
 +			var selectionBoxArray = selectionBoxes?.selectionBoxes;
@@ -120,7 +120,7 @@ index ca7d5e3..69e50ea 100644
 +
 +            return selectionBoxes.GetCenterPosOfBox(selebox)?.Add(0, 0.5, 0);
          }
-
+ 
          public override void OnEntityDeath(DamageSource damageSourceForDeath)
          {
              int i = 0;

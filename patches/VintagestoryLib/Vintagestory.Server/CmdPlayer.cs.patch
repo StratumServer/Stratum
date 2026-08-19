@@ -2,7 +2,8 @@ diff --git a/VintagestoryLib/Vintagestory.Server/CmdPlayer.cs b/VintagestoryLib/
 index 8af710f..88910a9 100644
 --- a/VintagestoryLib/Vintagestory.Server/CmdPlayer.cs
 +++ b/VintagestoryLib/Vintagestory.Server/CmdPlayer.cs
-@@ -334,12 +334,18 @@ public class CmdPlayer : ServerSystem
+@@ -333,28 +333,40 @@ public class CmdPlayer : ServerSystem
+ 
  	private TextCommandResult OnRevokeCmd(TextCommandCallingArgs args)
  	{
  		IPlayerRole playerRole = (IPlayerRole)args.Parsers[0].GetValue();
@@ -21,7 +22,7 @@ index 8af710f..88910a9 100644
  		server.ConfigNeedsSaving = true;
  		return TextCommandResult.Success(Lang.Get("Ok, privilege '{0}' now revoked", text));
  	}
-@@ -347,12 +347,18 @@ public class CmdPlayer : ServerSystem
+ 
  	private TextCommandResult OnGrantCmd(TextCommandCallingArgs args)
  	{
  		IPlayerRole playerRole = (IPlayerRole)args.Parsers[0].GetValue();
@@ -40,7 +41,9 @@ index 8af710f..88910a9 100644
  		server.ConfigNeedsSaving = true;
  		return TextCommandResult.Success(Lang.Get("Ok, privilege '{0}' now granted", text));
  	}
-@@ -821,8 +821,15 @@ public class CmdPlayer : ServerSystem
+ 
+ 	private TextCommandResult OnPrivilegeCmd(TextCommandCallingArgs args)
+@@ -821,10 +833,17 @@ public class CmdPlayer : ServerSystem
  		{
  			server.SendOwnPlayerData(clientByPlayername.Player, sendInventory: false, sendPrivileges: true);
  			string message = ((playerRole.PrivilegeLevel > playerRole2.PrivilegeLevel) ? Lang.Get("You've been promoted to role {0}", playerRole.Name) : Lang.Get("You've been demoted to role {0}", playerRole.Name));
@@ -56,3 +59,5 @@ index 8af710f..88910a9 100644
  		}
  		return TextCommandResult.Success(Lang.Get("Ok, role {0} assigned to {1}", playerRole.Name, targetPlayer.Name));
  	}
+ 
+ 	private TextCommandResult removeDenyPrivilege(PlayerUidName targetPlayer, TextCommandCallingArgs args)

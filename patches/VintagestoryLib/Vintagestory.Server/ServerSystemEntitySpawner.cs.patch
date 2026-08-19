@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
-index 52a073b..87610a6 100644
+index 52a073b..34b2679 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
 @@ -65,10 +65,19 @@ public class ServerSystemEntitySpawner : ServerSystem

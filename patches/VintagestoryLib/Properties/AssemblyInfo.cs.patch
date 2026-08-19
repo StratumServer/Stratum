@@ -1,7 +1,10 @@
 diff --git a/VintagestoryLib/Properties/AssemblyInfo.cs b/VintagestoryLib/Properties/AssemblyInfo.cs
+index 8e6aec1..ce2093c 100644
 --- a/VintagestoryLib/Properties/AssemblyInfo.cs
 +++ b/VintagestoryLib/Properties/AssemblyInfo.cs
-@@ -14,4 +14,4 @@
+@@ -12,6 +12,6 @@ using System.Security.Permissions;
+ [assembly: AssemblyProduct("Vintage Story")]
+ [assembly: AssemblyCopyright("Copyright © 2016-2026 Anego Studios")]
  [assembly: ComVisible(false)]
  [assembly: Guid("8495b9b8-6974-45de-b896-87f195304ede")]
  [assembly: AssemblyFileVersion("1.22.7")]

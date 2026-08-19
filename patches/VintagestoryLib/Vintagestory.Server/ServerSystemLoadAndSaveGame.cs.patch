@@ -1,7 +1,10 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs
+index 43dace8..b047996 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs
-@@ -30,6 +30,20 @@
+@@ -28,10 +28,24 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 
+ 	private BlockAccessorWorldGenUpdateHeightmap blockAccessorWGUpdateHeightMap;
  
  	private Dictionary<long, ServerChunk> chunksCopy = new Dictionary<long, ServerChunk>();
  
@@ -22,7 +25,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  	private bool ignoreSave;
  
  	internal static PlayerSpawnPos SetDefaultSpawnOnce;
-@@ -47,6 +61,7 @@
+ 
+ 	private FastMemoryStream reusableStream => reusableMemoryStream ?? (reusableMemoryStream = new FastMemoryStream());
+@@ -45,10 +59,11 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 
+ 	public override void OnSeparateThreadTick()
  	{
  		if (!chunkthread.runOffThreadSaveNow)
  		{
@@ -30,7 +37,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  			return;
  		}
  		lock (savingLock)
-@@ -67,6 +82,192 @@
+ 		{
+ 			if (chunkthread.runOffThreadSaveNow)
+@@ -65,10 +80,196 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 				chunkthread.runOffThreadSaveNow = false;
+ 			}
  		}
  	}
  
@@ -223,7 +234,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  	public override void OnFinalizeAssets()
  	{
  		server.SaveGameData.WillSave(reusableStream);
-@@ -155,6 +356,7 @@
+ 		server.SaveGameData.UpdateLandClaims(server.WorldMap.All);
+ 		chunkthread.gameDatabase.StoreSaveGame(server.SaveGameData, reusableStream);
+@@ -153,18 +354,41 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 				ServerMain.Logger.Event("Failed upgrading old savegame, giving up, sorry.");
+ 				throw new InvalidDataException("Failed upgrading savegame {0}", innerException);
  			}
  		}
  		chunkthread.gameDatabase.UpgradeToWriteAccess();
@@ -231,7 +246,8 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  		server.ModEventManager.OnWorldgenStartup += OnWorldgenStartup;
  		if (!string.IsNullOrWhiteSpace(server.progArgs.RestoreLogsFolder))
  		{
-@@ -163,6 +365,28 @@
+ 			server.ModEventManager.RegisterOnServerRunPhase(EnumServerRunPhase.RunGame, OnRestoreFromBuildLog);
+ 		}
  		LoadSaveGame();
  	}
  
@@ -260,7 +276,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  	public override void OnBeginModsAndConfigReady()
  	{
  		if (server.SaveGameData.IsNewWorld)
-@@ -209,6 +433,8 @@
+ 		{
+ 			server.ModEventManager.TriggerSaveGameCreated();
+@@ -207,10 +431,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 		}
+ 	}
  
  	public override void OnSeperateThreadShutDown()
  	{
@@ -269,7 +289,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  		chunkthread.gameDatabase.Dispose();
  	}
  
-@@ -400,7 +626,8 @@
+ 	public void OnWorldBeingSaved()
+ 	{
+@@ -398,11 +624,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 	}
+ 
  	private int SaveAllDirtyMapRegions(FastMemoryStream ms)
  	{
  		int num = 0;
@@ -279,7 +303,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  		foreach (KeyValuePair<long, ServerMapRegion> loadedMapRegion in server.loadedMapRegions)
  		{
  			if (loadedMapRegion.Value.DirtyForSaving)
-@@ -421,7 +648,8 @@
+ 			{
+ 				loadedMapRegion.Value.DirtyForSaving = false;
+@@ -419,11 +646,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 	}
+ 
  	private int SaveAllDirtyMapChunks(FastMemoryStream ms)
  	{
  		int num = 0;
@@ -289,7 +317,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  		foreach (KeyValuePair<long, ServerMapChunk> loadedMapChunk in server.loadedMapChunks)
  		{
  			if (loadedMapChunk.Value.DirtyForSaving)
-@@ -448,7 +676,8 @@
+ 			{
+ 				loadedMapChunk.Value.DirtyForSaving = false;
+@@ -446,11 +674,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 	}
+ 
  	internal int SaveAllDirtyLoadedChunks(bool isSaveLater, FastMemoryStream ms)
  	{
  		int num = 0;
@@ -299,7 +331,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  		if (!isSaveLater)
  		{
  			PopulateChunksCopy();
-@@ -506,7 +735,8 @@
+ 		}
+ 		foreach (KeyValuePair<long, ServerChunk> item in chunksCopy)
+@@ -504,11 +733,12 @@ internal class ServerSystemLoadAndSaveGame : ServerSystem, IChunkProviderThread
+ 	internal int SaveAllDirtyGeneratingChunks(FastMemoryStream ms)
+ 	{
  		int num = 0;
  		if (chunkthread.requestedChunkColumns.Count > 0)
  		{
@@ -309,3 +345,5 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemLoadAndSaveGame.cs 
  			List<DbChunk> list2 = new List<DbChunk>();
  			foreach (ChunkColumnLoadRequest item in chunkthread.requestedChunkColumns.Snapshot())
  			{
+ 				if (item.Chunks == null || item.Disposed || item.CurrentIncompletePass <= EnumWorldGenPass.Terrain)
+ 				{

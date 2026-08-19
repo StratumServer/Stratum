@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/Entity/Entity.cs b/VintagestoryApi/Common/Entity/Entity.cs
-index aafb4f0..735ca4b 100644
+index 3a55cef..35c1c8c 100644
 --- a/VintagestoryApi/Common/Entity/Entity.cs
 +++ b/VintagestoryApi/Common/Entity/Entity.cs
 @@ -577,12 +577,16 @@ namespace Vintagestory.API.Common.Entities
