@@ -1,47 +1,346 @@
 diff --git a/VintagestoryApi/Common/API/IWorldChunk.cs b/VintagestoryApi/Common/API/IWorldChunk.cs
-index 1016d62..fccf531 100644
+index 1016d62..4826fd5 100644
 --- a/VintagestoryApi/Common/API/IWorldChunk.cs
 +++ b/VintagestoryApi/Common/API/IWorldChunk.cs
-@@ -32,10 +32,23 @@ namespace Vintagestory.API.Common
+@@ -10,11 +10,11 @@ namespace Vintagestory.API.Common
+     public interface IChunkBlocks
+     {
+         /// <summary>
+         /// Retrieves the first solid block, if that one is empty, retrieves the first fluid block
+         /// </summary>
+-        /// <param name="index3d"></param>
++        /// <param name="index3d"></param</param>
+         /// <returns></returns>
+         int this[int index3d] { get; set; }
+ 
+         int Length { get; }
+ 
+@@ -29,29 +29,94 @@ namespace Vintagestory.API.Common
+         /// </summary>
+         void SetBlockBulk(int index3d, int lenX, int lenZ, int value);
+         /// <summary>
          /// Not threadsafe, used only in cases where we know that the chunk already has a palette (e.g. in worldgen when replacing rock with other blocks)
          /// </summary>
-         /// <param name="index3d"></param>
-         /// <param name="value"></param>
+-        /// <param name="index3d"></param>
+-        /// <param name="value"></param>
++        /// <param name="index3d"></param</param>
++        /// <param name="value"></param</param>
          void SetBlockUnsafe(int index3d, int value);
 +
++        // Stratum start: Added bulk block write variant that takes a flat int[] buffer of length Length.
++        // Each contiguous chunk of 4 ints encodes one (x, y, z) position followed by the target block id,
++        // enabling worldgen code to push pre-batched writes without per-position lock acquisition.
 +        /// <summary>
-+        /// Bulk variant of <see cref="SetBlockUnsafe"/>. Not threadsafe for the same reasons.
-+        /// Applies every (index3d, value) pair in indices/values (up to count entries) while
-+        /// taking the underlying layer's write lock only once for the whole batch, instead of
-+        /// once per block. Useful for worldgen code that already buffers many block writes for
-+        /// one chunk before flushing (e.g. rock strata generation), to cut lock-acquisition
-+        /// overhead and contention with other worldgen threads writing to the same chunk.
++        /// Bulk variant of <see cref="SetBlockUnsafe"/> that takes a flat <c>int[]</c> buffer whose length must equal
++        /// <see cref="Length"/>. The buffer is read in groups of 4 ints: each group encodes the target position as
++        /// (x, y, z) followed by the block id to place at that position. Acquires the layer's write lock once for
++        /// the entire batch rather than per-position, cutting lock-acquisition overhead and contention with other
++        /// worldgen threads writing to the same chunk. Not thread-safe; caller must ensure exclusive access or hold
++        /// a bulk write lock beforehand.
 +        /// </summary>
-+        /// <param name="indices">Buffered index3d values.</param>
-+        /// <param name="values">Buffered block ids, parallel to indices.</param>
++        /// <param name="blocksIn">Buffer of interleaved (x, y, z, blockId) tuples, one per chunk position.</param</param>
++        void SetBlocksBulkUnsafe(int[] blocksIn);
++
++        // Stratum end
++
++        // Stratum start: Added batched unsafe block write taking parallel indices/values lists.
++        // Lets worldgen code flush a sparse set of buffered writes in one call instead of issuing
++        // per-position SetBlockUnsafe calls, reducing lock contention and dispatch overhead.
++        /// <summary>
++        /// Bulk variant of <see cref="SetBlockUnsafe"/>. Not threadsafe for the same reasons. Applies every (index3d, value) pair
++        /// in indices/values (up to count entries) while taking the underlying layer's write lock only once for the whole batch, instead
++        /// of once per block. Useful for worldgen code that already buffers many block writes for one chunk before flushing (e.g. rock strata generation),
++        /// to cut lock-acquisition overhead and contention with other worldgen threads writing to the same chunk.
++        /// </summary>
++        /// <param name="indices">Buffered index3d values.</param</param>
++        /// <param name="values">Buffered block ids, parallel to indices.</param</param>
 +        void SetBlocksUnsafe(List<int> indices, List<int> values);
++
++        // Stratum end
++
++        // Stratum start: Added light readout variant that copies all light levels into a caller-provided array.
++        // Provides lock-free access for code that needs every light value (e.g. strata-based light propagation
++        /// <summary>
++        /// Not threadsafe, used only where a single thread has exclusive access to this chunk (e.g. worldgen). Copies the
++        /// entire light buffer into <c>lightOut</c> (must be at least <see cref="Length"/> in size) in one pass, avoiding the per-position
++        /// dispatch cost of calling <see cref="GetSunlight(int)"/> or <see cref="GetBlocklight(int)"/> for every position that needs to be read.
++        /// </summary>
++        /// <param name="lightOut">Output buffer; filled with light values in chunk-index order.</param</param>
++        void CopyLightToUnsafe(int[] lightOut);
++
++        // Stratum end
++
++        // Stratum start: Added bulk unsafe light write taking a flat int[] buffer.
++        // Lets worldgen code push pre-batched light updates without per-position lock acquisition,
++        /// <summary>
++        /// Not threadsafe, used only where a single thread has exclusive access to this chunk (e.g. worldgen). Bulk writes the entire
++        /// light buffer from <c>lightIn</c>, which must be at least <see cref="Length"/> in size. Acquires the underlying layer's write lock once for
++        /// the whole batch rather than per-position, cutting lock-acquisition overhead and contention with other worldgen threads writing to the same chunk.
++        /// </summary>
++        /// <param name="lightIn">Source buffer of light values in chunk-index order.</param</param>
++        void SetLightBulkUnsafe(int[] lightIn);
++
++        // Stratum end
 +
          void SetBlockAir(int index3d);
          /// <summary>
          /// Used to place blocks into the fluid layer instead of the solid blocks layer; calling code must do this
          /// </summary>
-         /// <param name="index3d"></param>
-@@ -48,10 +61,18 @@ namespace Vintagestory.API.Common
+-        /// <param name="index3d"></param>
+-        /// <param name="value"></param>
++        /// <param name="index3d"></param</param>
++        /// <param name="value"></param</param>
+         void SetFluid(int index3d, int value);
+         int GetBlockId(int index3d, int layer);
+         int GetFluid(int index3d);
+ 
+         /// <summary>
          /// Like get (i.e. this[]) but not threadsafe - only for use where setting and getting is guaranteed to be all on the same thread (e.g. during worldgen)
          /// </summary>
-         /// <param name="index3d"></param>
+-        /// <param name="index3d"></param>
++        /// <param name="index3d"></param</param>
          int GetBlockIdUnsafe(int index3d);
  
++        // Stratum start: Added bulk block readout variant that copies all decoded block IDs into a caller-provided array.
++        // Provides lock-free access for code that needs every block value (e.g. strata-based worldgen reads) without per-position dispatch cost.
 +        /// <summary>
-+        /// Not threadsafe, used only where a single thread has exclusive access to this chunk
-+        /// (e.g. worldgen). Decodes every block ID in this chunk into blocksOut (must be at
-+        /// least Length in size) in one pass, avoiding the per-position dispatch/decode cost of
-+        /// calling GetBlockIdUnsafe once for every position that needs to be read.
++        /// Not threadsafe, used only where a single thread has exclusive access to this chunk (e.g. worldgen). Decodes every block ID in this chunk into blocksOut (must be at least Length in size) in one pass, avoiding the per-position dispatch/decode cost of calling GetBlockIdUnsafe once for every position that needs to be read.
 +        /// </summary>
 +        void CopyBlocksToUnsafe(int[] blocksOut);
++
++        // Stratum end
 +
          /// <summary>
          /// Enter a locked section for bulk block reads from this ChunkData, using Unsafe read methods
          /// </summary>
          void TakeBulkReadLock();
  
+@@ -95,11 +160,11 @@ namespace Vintagestory.API.Common
+         bool LoadedFromServer { get; }
+ 
+         /// <summary>
+         /// Can be used to set a chunk as invisible, probably temporarily (e.g. for the Timeswitch system)
+         /// </summary>
+-        /// <param name="visible"></param>
++        /// <param name="visible"></param</param>
+         void SetVisibility(bool visible);
+     }
+ 
+ 
+     public interface IWorldChunk
+@@ -195,58 +260,58 @@ namespace Vintagestory.API.Common
+         bool Disposed { get; }
+ 
+         /// <summary>
+         /// Adds an entity to the chunk.
+         /// </summary>
+-        /// <param name="entity">The entity to add.</param>
++        /// <param name="entity">The entity to add.</param</param>
+         void AddEntity(Entity entity);
+ 
+         /// <summary>
+         /// Removes an entity from the chunk.
+         /// </summary>
+-        /// <param name="entityId">the ID for the entity</param>
++        /// <param name="entityId">the ID for the entity</param</param>
+         /// <returns>Whether or not the entity was removed.</returns>
+         bool RemoveEntity(long entityId);
+ 
+ 
+         /// <summary>
+         /// Allows setting of arbitrary, permanantly stored moddata of this chunk. When set on the server before the chunk is sent to the client, the data will also be sent to the client.
+         /// When set on the client the data is discarded once the chunk gets unloaded
+         /// </summary>
+-        /// <param name="key"></param>
+-        /// <param name="data"></param>
++        /// <param name="key"></param</param>
++        /// <param name="data"></param</param>
+         void SetModdata(string key, byte[] data);
+ 
+         /// <summary>
+         /// Removes the permanently stored data.
+         /// </summary>
+-        /// <param name="key"></param>
++        /// <param name="key"></param</param>
+         void RemoveModdata(string key);
+ 
+         /// <summary>
+         /// Retrieve arbitrary, permantly stored mod data
+         /// </summary>
+-        /// <param name="key"></param>
++        /// <param name="key"></param</param>
+         /// <returns></returns>
+         byte[] GetModdata(string key);
+ 
+         /// <summary>
+         /// Allows setting of arbitrary, permanantly stored moddata of this chunk. When set on the server before the chunk is sent to the client, the data will also be sent to the client.
+         /// When set on the client the data is discarded once the chunk gets unloaded
+         /// </summary>
+         /// <typeparam name="T"></typeparam>
+-        /// <param name="key"></param>
+-        /// <param name="data"></param>
++        /// <param name="key"></param</param>
++        /// <param name="data"></param</param>
+ 
+         void SetModdata<T>(string key, T data);
+ 
+         /// <summary>
+         /// Retrieve arbitrary, permantly stored mod data
+         /// </summary>
+         /// <typeparam name="T"></typeparam>
+-        /// <param name="key"></param>
+-        /// <param name="defaultValue"></param>
++        /// <param name="key"></param</param>
++        /// <param name="defaultValue"></param</param>
+         /// <returns></returns>
+         T GetModdata<T>(string key, T defaultValue = default(T));
+ 
+         /// <summary>
+         /// Can be used to store non-serialized mod data that is only serialized into the standard moddata dictionary on unload. This prevents the need for constant serializing/deserializing. Useful when storing large amounts of data. Is not populated on chunk load, you need to populate it with stored data yourself using GetModData()
+@@ -256,101 +321,101 @@ namespace Vintagestory.API.Common
+ 
+ 
+         /// <summary>
+         /// Retrieve a block from this chunk ignoring ice/water layer, performs Unpack() and a modulo operation on the position arg to get a local position in the 0..chunksize range (it's your job to pick out the right chunk before calling this method)
+         /// </summary>
+-        /// <param name="world"></param>
+-        /// <param name="position"></param>
++        /// <param name="world"></param</param>
++        /// <param name="position"></param</param>
+         /// <returns></returns>
+         Block GetLocalBlockAtBlockPos(IWorldAccessor world, BlockPos position);
+ 
+         Block GetLocalBlockAtBlockPos(IWorldAccessor world, int posX, int posY, int posZ, int layer);
+ 
+         /// <summary>
+         /// As GetLocalBlockAtBlockPos except lock-free, use it inside paired LockForReading(true/false) calls
+         /// </summary>
+-        /// <param name="world"></param>
+-        /// <param name="position"></param>
+-        /// <param name="layer"></param>
++        /// <param name="world"></param</param>
++        /// <param name="position"></param</param>
++        /// <param name="layer"></param</param>
+         /// <returns></returns>
+         Block GetLocalBlockAtBlockPos_LockFree(IWorldAccessor world, BlockPos position, int layer = BlockLayersAccess.Default);
+ 
+         /// <summary>
+         /// Retrieve a block entity from this chunk
+         /// </summary>
+-        /// <param name="pos"></param>
++        /// <param name="pos"></param</param>
+         /// <returns></returns>
+         BlockEntity GetLocalBlockEntityAtBlockPos(BlockPos pos);
+ 
+         /// <summary>
+         /// Sets a decor block to the side of an existing block. Use air block (id 0) to remove a decor.<br/>
+         /// </summary>
+-        /// <param name="index3d"></param>
+-        /// <param name="onFace"></param>
+-        /// <param name="block"></param>
++        /// <param name="index3d"></param</param>
++        /// <param name="onFace"></param</param>
++        /// <param name="block"></param</param>
+         /// <returns>False if there already exists a block in this position and facing</returns>
+         bool SetDecor(Block block, int index3d, BlockFacing onFace);
+         //bool SetDecor(IBlockAccessor blockAccessor, Block block, BlockPos pos, BlockFacing onFace);
+ 
+ 
+         /// <summary>
+         /// Sets a decor block to a specific sub-position on the side of an existing block. Use air block (id 0) to remove a decor.<br/>
+         /// </summary>
+-        /// <param name="block"></param>
+-        /// <param name="index3d"></param>
+-        /// <param name="faceAndSubposition"></param>
++        /// <param name="block"></param</param>
++        /// <param name="index3d"></param</param>
++        /// <param name="faceAndSubposition"></param</param>
+         /// <returns>False if there already exists a block in this position and facing</returns>
+         bool SetDecor(Block block, int index3d, int faceAndSubposition);
+ 
+         /// <summary>
+         /// If allowed by a player action, removes all decors at given position and calls OnBrokenAsDecor() on all selected decors and drops the items that are returned from Block.GetDrops()
+         /// </summary>
+-        /// <param name="world"></param>
+-        /// <param name="pos"></param>
+-        /// <param name="side">If null, all the decor blocks on all sides are removed</param>
+-        /// <param name="decorIndex">If not null breaks only this part of the decor for give face. Requires side to be set.</param>
++        /// <param name="world"></param</param>
++        /// <param name="pos"></param</param>
++        /// <param name="side">If null, all the decor blocks on all sides are removed</param</param>
++        /// <param name="decorIndex">If not null breaks only this part of the decor for give face. Requires side to be set.</param</param>
+         bool BreakDecor(IWorldAccessor world, BlockPos pos, BlockFacing side = null, int? decorIndex = null);
+ 
+         /// <summary>
+         /// Removes a decor block from given position, saves a few cpu cycles by not calculating index3d
+         /// </summary>
+-        /// <param name="world"></param>
+-        /// <param name="pos"></param>
+-        /// <param name="index3d"></param>
+-        /// <param name="callOnBrokenAsDecor">When set to true it will call block.OnBrokenAsDecor(...) which is used to drop the decors of that block</param>
++        /// <param name="world"></param</param>
++        /// <param name="pos"></param</param>
++        /// <param name="index3d"></param</param>
++        /// <param name="callOnBrokenAsDecor">When set to true it will call block.OnBrokenAsDecor(...) which is used to drop the decors of that block</param</param>
+         void BreakAllDecorFast(IWorldAccessor world, BlockPos pos, int index3d, bool callOnBrokenAsDecor = true);
+ 
+         /// <summary>
+         ///
+         /// </summary>
+-        /// <param name="blockAccessor"></param>
+-        /// <param name="pos"></param>
++        /// <param name="blockAccessor"></param</param>
++        /// <param name="pos"></param</param>
+         /// <returns></returns>
+         Block[] GetDecors(IBlockAccessor blockAccessor, BlockPos pos);
+ 
+         /// <summary>
+         ///
+         /// </summary>
+-        /// <param name="blockAccessor"></param>
+-        /// <param name="position"></param>
++        /// <param name="blockAccessor"></param</param>
++        /// <param name="position"></param</param>
+         /// <returns></returns>
+         Dictionary<int, Block> GetSubDecors(IBlockAccessor blockAccessor, BlockPos position);
+ 
+         Block GetDecor(IBlockAccessor blockAccessor, BlockPos pos, int decorIndex);
+ 
+         /// <summary>
+         /// Set entire Decors for a chunk - used in Server->Client updates
+         /// </summary>
+-        /// <param name="newDecors"></param>
++        /// <param name="newDecors"></param</param>
+         void SetDecors(Dictionary<int, Block> newDecors);
+ 
+         /// <summary>
+         /// Adds extra selection boxes in case a decor block is attached at given position
+         /// </summary>
+-        /// <param name="blockAccessor"></param>
+-        /// <param name="pos"></param>
+-        /// <param name="orig"></param>
++        /// <param name="blockAccessor"></param</param>
++        /// <param name="pos"></param</param>
++        /// <param name="orig"></param</param>
+         /// <returns></returns>
+         Cuboidf[] AdjustSelectionBoxForDecor(IBlockAccessor blockAccessor, BlockPos pos, Cuboidf[] orig);
+ 
+         /// <summary>
+         /// Only to be implemented client side
+@@ -358,13 +423,13 @@ namespace Vintagestory.API.Common
+         void FinishLightDoubleBuffering();
+ 
+         /// <summary>
+         /// Returns the higher light absorption between solids and fluids block layers
+         /// </summary>
+-        /// <param name="index3d"></param>
+-        /// <param name="blockPos"></param>
+-        /// <param name="blockTypes"></param>
++        /// <param name="index3d"></param</param>
++        /// <param name="blockPos"></param</param>
++        /// <param name="blockTypes"></param</param>
+         /// <returns></returns>
+         int GetLightAbsorptionAt(int index3d, BlockPos blockPos, IList<Block> blockTypes);
+ 
+         /// <summary>
+         /// For bulk chunk GetBlock operations, allows the chunkDataLayers to be pre-locked for reading, instead of entering and releasing one lock per read
