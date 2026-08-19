@@ -17,6 +17,13 @@ internal class CmdStratumStaffCommands
 {
 	private const string VanishIndicatorCode = "stratum-vanish-active";
 
+	// Constructed exactly once per server (ServerSystemCommands.cs.patch), never held onto by its
+	// caller. StratumAnticheatPunishments needs the jail mechanism this class owns (the active-jail
+	// tracking set and the tick loop that enforces it are both instance state, not reusable statics
+	// the way Freeze and BanPlayer already are), so this is the smallest way to reach it from
+	// outside without duplicating that tracking elsewhere.
+	internal static CmdStratumStaffCommands Instance { get; private set; }
+
 	private readonly ServerMain server;
 	private readonly Dictionary<string, string> lastMessagePartnerByUid = new Dictionary<string, string>(StringComparer.Ordinal);
 	private readonly Dictionary<string, long> lastVanishIndicatorMsByUid = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -25,6 +32,7 @@ internal class CmdStratumStaffCommands
 
 	public CmdStratumStaffCommands(ServerMain server)
 	{
+		Instance = this;
 		this.server = server;
 		server.EventManager.OnPlayerJoin += OnPlayerJoin;
 		server.EventManager.OnPlayerDisconnect += OnPlayerDisconnect;
@@ -1432,6 +1440,21 @@ internal class CmdStratumStaffCommands
 		string reason = args[1] as string;
 		Caller caller = args.Caller;
 		return RunForKnownTargets(token, (targetData, onlineTarget) => JailSingleTarget(targetData, onlineTarget, caller, reason, jailPosition));
+	}
+
+	// Entry point for StratumAnticheatPunishments. Same jailing as /jail, minus the command-access
+	// check a staff member already passed by definition and an automated punishment has no caller
+	// to check against; resolves the configured jail location itself since there is no
+	// TextCommandCallingArgs to read it from.
+	internal TextCommandResult JailAutomatically(ServerPlayerData targetData, ConnectedClient onlineTarget, Caller caller, string reason)
+	{
+		if (!TryGetJailLocation(out EntityPos jailPosition, out string error))
+		{
+			StratumRuntime.LogWarning("anticheat punishment could not jail " + targetData?.LastKnownPlayername + ": " + error);
+			return TextCommandResult.Error(error);
+		}
+
+		return JailSingleTarget(targetData, onlineTarget, caller, reason, jailPosition);
 	}
 
 	private TextCommandResult JailSingleTarget(ServerPlayerData targetData, ConnectedClient onlineTarget, Caller caller, string reason, EntityPos jailPosition)

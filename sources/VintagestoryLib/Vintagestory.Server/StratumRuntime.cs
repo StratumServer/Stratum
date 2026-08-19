@@ -345,6 +345,27 @@ internal static class StratumRuntime
 			report.Warnings.Add("Anticheat.BlockBreakProgress KickAfterViolations is very low; raise it while validating modded mining behavior");
 		}
 
+		StratumAnticheatPunishmentConfig punishments = Config.Anticheat.Punishments;
+		if (punishments.Enabled && !Config.Anticheat.Enabled)
+		{
+			report.Warnings.Add("Anticheat.Punishments is enabled but Anticheat itself is disabled; punishments will never trigger");
+		}
+
+		if (punishments.Enabled && punishments.WipeInsteadOfDrop)
+		{
+			report.Warnings.Add("Anticheat.Punishments.WipeInsteadOfDrop discards items instead of dropping them; a false positive at that tier is unrecoverable");
+		}
+
+		if (punishments.Enabled && punishments.DropInventoryAfterFlags < 10)
+		{
+			report.Warnings.Add("Anticheat.Punishments.DropInventoryAfterFlags is very low; watch /stratum ac's false-positive rate in monitor-only mode before automating consequences");
+		}
+
+		if (punishments.Enabled && punishments.BanDurationHours == 0)
+		{
+			report.Warnings.Add("Anticheat.Punishments.BanDurationHours is 0 (permanent); a false positive at the top of the ladder has no automatic recovery");
+		}
+
 		if (blockBreak.RequiredProgressRatio > 0.95f && blockBreak.GraceSeconds <= 0.1f)
 		{
 			report.Warnings.Add("BlockBreakGuards has a strict progress ratio with little grace; this can false-positive under latency");
