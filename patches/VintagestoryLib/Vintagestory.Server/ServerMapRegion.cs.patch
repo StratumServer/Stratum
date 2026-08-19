@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs b/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
-index d06a399..b56c20c 100644
+index 10bf95f..d95b0e1 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMapRegion.cs
 @@ -272,27 +272,46 @@ public class ServerMapRegion : IMapRegion

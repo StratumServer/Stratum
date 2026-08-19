@@ -2,7 +2,9 @@ diff --git a/VintagestoryApi/Server/PathfinderTask.cs b/VintagestoryApi/Server/P
 index cc21075..6051161 100644
 --- a/VintagestoryApi/Server/PathfinderTask.cs
 +++ b/VintagestoryApi/Server/PathfinderTask.cs
-@@ -18,10 +18,20 @@ namespace Vintagestory.API.Server
+@@ -16,22 +16,34 @@ namespace Vintagestory.API.Server
+         public int searchDepth;
+         public int mhdistanceTolerance = 0;
          public List<Vec3d> waypoints;
          public EnumAICreatureType CreatureType;
          public float modeMinFleeDistance;
@@ -23,7 +25,10 @@ index cc21075..6051161 100644
          {
              this.startBlockPos = startBlockPos;
              this.targetBlockPos = targetBlockPos;
-@@ -32,6 +42,8 @@ namespace Vintagestory.API.Server
+             this.maxFallHeight = maxFallHeight;
+             this.stepHeight = stepHeight;
+             this.collisionBox = collisionBox;
+             this.searchDepth = searchDepth;
              this.mhdistanceTolerance = mhdistanceTolerance;
              this.modeMinFleeDistance = modeMinFleeDistance;
              this.CreatureType = creatureType;

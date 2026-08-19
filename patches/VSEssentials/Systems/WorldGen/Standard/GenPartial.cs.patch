@@ -1,7 +1,10 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
+index 58aa710..ccaa47a 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs
-@@ -30,6 +30,23 @@
+@@ -28,10 +28,27 @@ namespace Vintagestory.ServerMods
+ 
+             worldheight = api.WorldManager.MapSizeY;
              chunkRand = new LCGRandom(api.WorldManager.Seed);
          }
  
@@ -25,3 +28,5 @@ diff --git a/VSEssentials/Systems/WorldGen/Standard/GenPartial.cs b/VSEssentials
  
          protected virtual void GenChunkColumn(IChunkColumnGenerateRequest request)
          {
+             var chunks = request.Chunks;
+             int chunkX = request.ChunkX;

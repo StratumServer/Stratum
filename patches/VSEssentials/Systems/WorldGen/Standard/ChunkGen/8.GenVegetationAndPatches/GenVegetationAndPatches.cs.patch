@@ -2,7 +2,8 @@ diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndP
 index aadf540..6f1c45c 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/8.GenVegetationAndPatches/GenVegetationAndPatches.cs
-@@ -48,8 +48,15 @@ namespace Vintagestory.ServerMods
+@@ -47,10 +47,17 @@ namespace Vintagestory.ServerMods
+ 
          /// <summary>
          /// Vegetation and BlockPatch sub seed
          /// </summary>
@@ -18,38 +19,45 @@ index aadf540..6f1c45c 100644
          {
              return side == EnumAppSide.Server;
          }
-@@ -246,10 +253,10 @@ namespace Vintagestory.ServerMods
+ 
+@@ -245,12 +252,12 @@ namespace Vintagestory.ServerMods
+         {
              int dx, dz, x, z;
              Block liquidBlock;
              int mapsizeY = blockAccessor.MapSizeY;
-
+ 
 -            var patchIterRandom = new LCGRandom();
 -            var blockPatchRandom = new LCGRandom();
 +            var patchIterRandom = stratumPatchIterRandom ??= new LCGRandom();
 +            var blockPatchRandom = stratumBlockPatchRandom ??= new LCGRandom();
-
+ 
              // get temp pos to check if we need a story location patch or a regular one
              patchIterRandom.SetWorldSeed(sapi.WorldManager.Seed - subSeed);
              patchIterRandom.InitPositionSeed(chunkX, chunkZ);
-@@ -367,9 +374,9 @@ namespace Vintagestory.ServerMods
+ 
+@@ -366,11 +373,11 @@ namespace Vintagestory.ServerMods
+         {
              rnd.InitPositionSeed(chunkX, chunkZ);
              int triesShrubs = (int)treeSupplier.treeGenProps.shrubsPerChunk.nextFloat(1f, rnd);
              int dx, dz, x, z;
              Block block;
 -            var shrubTryRandom = new LCGRandom();
 +            var shrubTryRandom = stratumShrubTryRandom ??= new LCGRandom();
-
+ 
              while (triesShrubs > 0)
              {
                  shrubTryRandom.SetWorldSeed(sapi.World.Seed - subSeed + triesShrubs);
-@@ -430,9 +437,9 @@ namespace Vintagestory.ServerMods
+                 shrubTryRandom.InitPositionSeed(chunkX, chunkZ);
+@@ -429,11 +436,11 @@ namespace Vintagestory.ServerMods
+             Block block;
              int treesGenerated = 0;
-
+ 
              EnumHemisphere hemisphere = sapi.World.Calendar.GetHemisphere(new BlockPos(chunkX * chunksize + chunksize / 2, 0, chunkZ * chunksize + chunksize / 2));
-
+ 
 -            var treeTryRandom = new LCGRandom();
 +            var treeTryRandom = stratumTreeTryRandom ??= new LCGRandom();
              while (triesTrees > 0)
              {
                  treeTryRandom.SetWorldSeed(sapi.World.Seed - subSeed + triesTrees);
                  treeTryRandom.InitPositionSeed(chunkX, chunkZ);
+                 triesTrees--;

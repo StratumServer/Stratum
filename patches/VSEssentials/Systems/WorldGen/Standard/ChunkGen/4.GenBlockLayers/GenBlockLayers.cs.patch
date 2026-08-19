@@ -2,12 +2,10 @@ diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/Ge
 index 55b134c..28229c8 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-@@ -12,14 +12,18 @@ namespace Vintagestory.ServerMods
-
-     public class GenBlockLayers : ModStdWorldGen
+@@ -14,10 +14,14 @@ namespace Vintagestory.ServerMods
      {
          private ICoreServerAPI api;
-
+ 
          List<int> BlockLayersIds = new List<int>();
          LCGRandom rnd;
 +
@@ -18,24 +16,20 @@ index 55b134c..28229c8 100644
          ClampedSimplexNoise grassDensity;
          ClampedSimplexNoise grassHeight;
          int boilingWaterBlockId;
-
-         public int[] layersUnderWaterTmp = new int[1];
-         public int[] layersUnderWater = Array.Empty<int>();
-@@ -36,23 +40,24 @@ namespace Vintagestory.ServerMods
-         {
-             return 0.4;
+ 
+@@ -38,19 +42,20 @@ namespace Vintagestory.ServerMods
          }
-
+ 
          public override void StartServerSide(ICoreServerAPI api)
          {
              this.api = api;
 +            stratumWorkers = new StratumWorkerInstances<GenBlockLayers>(StratumCreateWorker); // Stratum: isolate mutable fields without changing their shape
-
+ 
              this.api.Event.InitWorldGenerator(InitWorldGen, "standard");
              this.api.Event.InitWorldGenerator(InitWorldGen, "superflat"); // Just the Init so that BlockSoil can grow grass; and both these are needed even if DecoPass is off
              //this.api.Event.MapRegionGeneration(OnMapRegionGen, "standard");   // 8.2.24 commented out because the method has no code
-
-
+ 
+ 
              if (TerraGenConfig.DoDecorationPass)
              {
 -                this.api.Event.ChunkColumnGeneration(OnChunkColumnGeneration, EnumWorldGenPass.Terrain, "standard");
@@ -44,17 +38,13 @@ index 55b134c..28229c8 100644
              distort2dx = new SimplexNoise(new double[] { 14, 9, 6, 3 }, new double[] { 1 / 100.0, 1 / 50.0, 1 / 25.0, 1 / 12.5 }, api.World.SeaLevel + 20980);
              distort2dz = new SimplexNoise(new double[] { 14, 9, 6, 3 }, new double[] { 1 / 100.0, 1 / 50.0, 1 / 25.0, 1 / 12.5 }, api.World.SeaLevel + 20981);
          }
-
-         private void OnMapRegionGen(IMapRegion mapRegion, int regionX, int regionZ, ITreeAttribute chunkGenParams = null)
-         {
-@@ -88,14 +93,44 @@ namespace Vintagestory.ServerMods
-             grassHeight = new ClampedSimplexNoise(new double[] { 1.5 }, new double[] { 0.5 }, rnd.NextInt());
-
+ 
+@@ -90,10 +95,40 @@ namespace Vintagestory.ServerMods
              mapheight = api.WorldManager.MapSizeY;
-
+ 
              boilingWaterBlockId = gcfg.boilingWaterBlockId;
          }
-
+ 
 +        private void StratumOnChunkColumnGeneration(IChunkColumnGenerateRequest request)
 +        {
 +            stratumWorkers.Current.OnChunkColumnGeneration(request);
@@ -90,14 +80,10 @@ index 55b134c..28229c8 100644
              var chunks = request.Chunks;
              int chunkX = request.ChunkX;
              int chunkZ = request.ChunkZ;
-
-             rnd.InitPositionSeed(chunkX, chunkZ);
-@@ -357,14 +392,21 @@ namespace Vintagestory.ServerMods
-                     }
-                 }
+@@ -359,10 +394,17 @@ namespace Vintagestory.ServerMods
              }
          }
-
+ 
          public void PlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
          {
 +            // Stratum: external callers use the same per-thread generator as the registered handler.
@@ -108,9 +94,7 @@ index 55b134c..28229c8 100644
 +            }
 +
              double rndVal = blockLayerConfig.Tallgrass.RndWeight * rnd.NextDouble() + blockLayerConfig.Tallgrass.PerlinWeight * grassDensity.Noise(x, z, -0.5f);
-
+ 
              double extraGrass = Math.Max(0, rainRel * tempRel - 0.25);
-
+ 
              if (rndVal <= GameMath.Clamp(forestRel - extraGrass, 0.05, 0.99) || posY >= mapheight - 1 || posY < 1) return;
-
-             int blockId = chunks[posY / chunksize].Data[(chunksize * (posY % chunksize) + z) * chunksize + x];
