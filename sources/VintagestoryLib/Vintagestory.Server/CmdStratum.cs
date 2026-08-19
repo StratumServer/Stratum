@@ -243,7 +243,7 @@ internal class CmdStratum
 
 	private TextCommandResult HandleAnticheat(string playerName)
 	{
-		return TextCommandResult.Success(StratumAnticheatReporter.BuildReport(playerName));
+		return TextCommandResult.Success(StratumAnticheatReporter.BuildReport(server, playerName));
 	}
 
 	private TextCommandResult HandleHealth()

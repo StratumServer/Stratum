@@ -30,6 +30,8 @@ internal class StratumAnticheatConfig
 
 	public StratumMovementAuthorityAnticheatConfig MovementAuthority { get; set; } = new StratumMovementAuthorityAnticheatConfig();
 
+	public StratumAnticheatPunishmentConfig Punishments { get; set; } = new StratumAnticheatPunishmentConfig();
+
 	public void EnsureSane()
 	{
 		MaxStoredViolationsPerPlayer = Math.Clamp(MaxStoredViolationsPerPlayer, 16, 2048);
@@ -43,6 +45,7 @@ internal class StratumAnticheatConfig
 		NoFall ??= new StratumNoFallAnticheatConfig();
 		MultiBreak ??= new StratumMultiBreakAnticheatConfig();
 		MovementAuthority ??= new StratumMovementAuthorityAnticheatConfig();
+		Punishments ??= new StratumAnticheatPunishmentConfig();
 		BlockEntityOutOfRange.EnsureSane();
 		BlockInteractionOutOfRange.EnsureSane();
 		EntityInteractionOutOfRange.EnsureSane();
@@ -52,6 +55,49 @@ internal class StratumAnticheatConfig
 		NoFall.EnsureSane();
 		MultiBreak.EnsureSane();
 		MovementAuthority.EnsureSane();
+		Punishments.EnsureSane();
+	}
+}
+
+// Cross-rule escalation ladder, evaluated in StratumAnticheatPunishments against the persistent
+// total in StratumAnticheatHistory, not any single rule's own rolling count above. Off by default:
+// every action here already exists and is already tested (Freeze, jail, DropAll/Clear, BanPlayer),
+// but chaining them into automatic consequences on a false positive is a different risk profile
+// than an alert or even a kick, so an operator has to opt in with eyes open, the same way
+// KickConfirmedCheats does per rule.
+internal class StratumAnticheatPunishmentConfig
+{
+	public bool Enabled { get; set; } = false;
+
+	public int DropInventoryAfterFlags { get; set; } = 15;
+
+	// Off by default: dropped items land on the ground and can be walked back to if the flag turns
+	// out to be wrong. A wipe destroys them outright, with nothing to reverse.
+	public bool WipeInsteadOfDrop { get; set; } = false;
+
+	public int FreezeAfterFlags { get; set; } = 25;
+
+	public int JailAfterFlags { get; set; } = 40;
+
+	public int BanAfterFlags { get; set; } = 60;
+
+	// Hours until the ban lifts on its own. 0 means permanent. Defaults to a long timeout rather
+	// than permanent, so an unnoticed false positive at the top of the ladder is not unrecoverable.
+	public int BanDurationHours { get; set; } = 720;
+
+	public string JailReason { get; set; } = "Stratum anticheat: repeated confirmed violations";
+
+	public string BanReason { get; set; } = "Stratum anticheat: repeated confirmed violations";
+
+	public void EnsureSane()
+	{
+		DropInventoryAfterFlags = Math.Clamp(DropInventoryAfterFlags, 3, 100000);
+		FreezeAfterFlags = Math.Clamp(FreezeAfterFlags, DropInventoryAfterFlags, 100000);
+		JailAfterFlags = Math.Clamp(JailAfterFlags, FreezeAfterFlags, 100000);
+		BanAfterFlags = Math.Clamp(BanAfterFlags, JailAfterFlags, 100000);
+		BanDurationHours = Math.Clamp(BanDurationHours, 0, 87600);
+		JailReason ??= "Stratum anticheat: repeated confirmed violations";
+		BanReason ??= "Stratum anticheat: repeated confirmed violations";
 	}
 }
 
