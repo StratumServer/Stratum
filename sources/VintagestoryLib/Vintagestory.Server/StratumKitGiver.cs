@@ -59,13 +59,35 @@ internal static class StratumKitGiver
 
 	public static ItemStack DecodeStack(IWorldAccessor world, StratumKitItem entry)
 	{
-		if (string.IsNullOrWhiteSpace(entry?.Base64))
+		if (string.IsNullOrWhiteSpace(entry?.StackJson) && string.IsNullOrWhiteSpace(entry?.Base64))
 		{
 			return null;
 		}
 
 		try
 		{
+			if (!string.IsNullOrWhiteSpace(entry.StackJson))
+			{
+				JsonItemStack jsonStack = JsonItemStack.FromString(entry.StackJson);
+				if (jsonStack == null || !jsonStack.Resolve(world, "Stratum kit", false))
+				{
+					return null;
+				}
+
+				ItemStack resolvedStack = jsonStack.ResolvedItemstack;
+				if (resolvedStack == null)
+				{
+					return null;
+				}
+
+				if (entry.Quantity > 0)
+				{
+					resolvedStack.StackSize = entry.Quantity;
+				}
+
+				return resolvedStack;
+			}
+
 			byte[] data = Convert.FromBase64String(entry.Base64);
 			ItemStack stack = new ItemStack(data);
 			if (!stack.ResolveBlockOrItem(world))

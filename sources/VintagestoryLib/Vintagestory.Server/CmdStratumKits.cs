@@ -2,8 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
+using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
 
 namespace Vintagestory.Server;
@@ -29,10 +32,7 @@ internal class CmdStratumKits
 		StratumKitStore.Load();
 		server.EventManager.OnPlayerRespawn += OnPlayerRespawn;
 
-		if (!StratumRuntime.Config.Commands.Enabled)
-		{
-			return;
-		}
+		if (!StratumRuntime.Config.Commands.Enabled) return;
 
 		CommandArgumentParsers parsers = server.api.commandapi.Parsers;
 
@@ -54,9 +54,7 @@ internal class CmdStratumKits
 				.WithArgs(
 					parsers.WordRange("action", "create", "additem", "removeitem", "delete", "rename", "setrole", "setcooldown", "onrespawn", "oneperlife", "preview", "give", "list"),
 					parsers.OptionalWord("name"),
-					parsers.OptionalWord("value"),
-					parsers.OptionalWord("value2"))
-				.RequiresPrivilege(Privilege.gamemode)
+					parsers.OptionalWord("value"))
 				.HandleWith(HandleKitEdit);
 		}
 	}
@@ -66,17 +64,14 @@ internal class CmdStratumKits
 	// itself is keyed to.
 	private void OnPlayerRespawn(IServerPlayer player)
 	{
-		if (player?.ServerData == null)
+		if (player?.ServerData == null) return;
+
+		if (player.ServerData.CustomPlayerData.Remove(RedeemedThisLifeKey))
 		{
-			return;
+			server.PlayerDataManager.playerDataDirty = true;
 		}
 
-		player.ServerData.CustomPlayerData.Remove(RedeemedThisLifeKey);
-
-		if (!StratumRuntime.Config.Commands.Kits.Enabled)
-		{
-			return;
-		}
+		if (!StratumRuntime.Config.Commands.Kits.Enabled) return;
 
 		// This event fires before the player is actually revived: vanilla's own handler for it
 		// (ServerSystemEntitySimulation.OnPlayerRespawn) only starts an async teleport, calling
@@ -91,16 +86,10 @@ internal class CmdStratumKits
 		{
 			ConnectedClient client = server.GetClientByUID(playerUid);
 			bool alive = client?.Player?.Entity?.Alive == true;
-			if (!alive && client != null && --attemptsRemaining > 0)
-			{
-				return;
-			}
+			if (!alive && client != null && --attemptsRemaining > 0) return;
 
 			server.UnregisterGameTickListener(listenerId);
-			if (client?.Player == null || !alive)
-			{
-				return;
-			}
+			if (client?.Player == null || !alive) return;
 
 			GiveAssignedRespawnKits(client.Player, client.ServerData);
 		}, 250);
@@ -110,7 +99,9 @@ internal class CmdStratumKits
 	{
 		foreach (StratumKitDefinition kit in StratumKitStore.All())
 		{
-			if (kit.GiveOnRespawn && IsAssignedTo(kit, data))
+			if (kit.GiveOnRespawn
+				&& IsAssignedTo(kit, data)
+				&& StratumCommandAccessCatalog.PlayerHasAccess(target, StratumRuntime.Config.Commands.Kits))
 			{
 				StratumKitGiver.Give(target, kit);
 				MarkRedeemedThisLife(data, kit.Name);
@@ -203,7 +194,6 @@ internal class CmdStratumKits
 		string action = (args[0] as string)?.ToLowerInvariant();
 		string name = args.Parsers[1].IsMissing ? null : args[1] as string;
 		string value = args.Parsers[2].IsMissing ? null : args[2] as string;
-		string value2 = args.Parsers[3].IsMissing ? null : args[3] as string;
 
 		return action switch
 		{
@@ -481,8 +471,9 @@ internal class CmdStratumKits
 		List<StratumKitItem> items = new List<StratumKitItem>();
 		foreach (InventoryBase inventory in player.InventoryManager.InventoriesOrdered)
 		{
+			// A worn backpack's contents are stored in the backpack stack in the character inventory.
+			// Walking the backpack inventory too would add every content item a second time.
 			if (inventory.ClassName != GlobalConstants.hotBarInvClassName
-				&& inventory.ClassName != GlobalConstants.backpackInvClassName
 				&& inventory.ClassName != GlobalConstants.characterInvClassName)
 			{
 				continue;
@@ -502,9 +493,27 @@ internal class CmdStratumKits
 
 	private static StratumKitItem EncodeStack(ItemStack stack)
 	{
+		JsonItemStack jsonStack = new JsonItemStack
+		{
+			Type = stack.Class,
+			Code = stack.Collectible?.Code,
+			StackSize = stack.StackSize,
+			Attributes = stack.Attributes == null ? null : JsonObject.FromJson(stack.Attributes.ToJsonToken())
+		};
+		JObject json = new JObject
+		{
+			["type"] = jsonStack.Type == EnumItemClass.Block ? "block" : "item",
+			["code"] = jsonStack.Code?.ToShortString(),
+			["stacksize"] = jsonStack.StackSize
+		};
+		if (jsonStack.Attributes?.Token != null)
+		{
+			json["attributes"] = jsonStack.Attributes.Token.DeepClone();
+		}
+
 		return new StratumKitItem
 		{
-			Base64 = Convert.ToBase64String(stack.Clone().ToBytes()),
+			StackJson = json.ToString(Formatting.None),
 			Code = stack.Collectible?.Code?.ToString() ?? "unknown",
 			Quantity = stack.StackSize
 		};
@@ -544,6 +553,12 @@ internal class CmdStratumKits
 	private bool CheckAccess(TextCommandCallingArgs args, string commandLabel, StratumCommandAccessConfig access, out TextCommandResult failure)
 	{
 		failure = null;
+		if (!StratumRuntime.Config.Commands.Enabled)
+		{
+			failure = TextCommandResult.Error("Stratum commands are disabled.");
+			return false;
+		}
+
 		if (access == null || !access.Enabled)
 		{
 			failure = TextCommandResult.Error("/" + commandLabel + " is disabled.");

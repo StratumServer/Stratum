@@ -8,14 +8,18 @@ using Vintagestory.API.Config;
 namespace Vintagestory.Server;
 
 /// <summary>
-/// One item inside a kit. Base64 is the source of truth (a full ItemStack.ToBytes(), attributes
-/// and stack size included, the same format every chest and player inventory already persists
-/// through); Code and Quantity are a human-readable mirror so a server owner can tell what a kit
-/// contains, and hand-edit Quantity, without needing to know item codes, per #210's own complaint.
-/// Regenerating an item via /kitedit additem replaces both together.
+/// One item inside a kit. StackJson stores a JsonItemStack with a stable asset code and the stack
+/// attributes. Code and Quantity are human-readable mirrors so a server owner can tell what a kit
+/// contains and hand-edit Quantity without needing to know item codes. Base64 remains as a legacy
+/// fallback for kits saved by an earlier build.
 /// </summary>
 internal sealed class StratumKitItem
 {
+	public string StackJson { get; set; }
+
+	/// <summary>
+	/// Legacy ItemStack serialization. New kits use StackJson instead.
+	/// </summary>
 	public string Base64 { get; set; }
 
 	public string Code { get; set; }
