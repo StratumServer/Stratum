@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
-index 95025db..7c475dd 100644
+index 95025db..a7465d4 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
 @@ -46,19 +46,44 @@ namespace Vintagestory.ServerMods
@@ -48,7 +48,7 @@ index 95025db..7c475dd 100644
          WorldGenStructure[] shuffledStructures;
          private Dictionary<string, WorldGenStructure[]> StoryStructures;
  
-@@ -238,10 +263,47 @@ namespace Vintagestory.ServerMods
+@@ -238,13 +263,61 @@ namespace Vintagestory.ServerMods
              int chunkZ = request.ChunkZ;
  
              worldgenBlockAccessor.BeginColumn();
@@ -94,9 +94,23 @@ index 95025db..7c475dd 100644
  
              DoGenStructures(region, chunkX, chunkZ, true, structure?.Code, request.ChunkGenParams);
              TryGenVillages(region, chunkX, chunkZ, true, request.ChunkGenParams);
++
++            // Stratum: this column's structure generation is done on this thread once the
++            // postpass returns. Release the cached state rather than leaving it set until this
++            // thread happens to process another chunk's main pass (which may be much later, or
++            // never, once worldgen quiets down) - stratumStateOwner otherwise keeps the owning
++            // GenStructures instance, and everything it holds (WorldGenStructuresConfig's loaded
++            // schematic cache included), reachable from this thread for as long as the thread
++            // itself lives, well past the point this chunk's own data would otherwise be
++            // collectible.
++            stratumStateOwner = null;
++            stratumHeightmap = null;
          }
  
-@@ -268,24 +330,28 @@ namespace Vintagestory.ServerMods
+         private void OnChunkColumnGen(IChunkColumnGenerateRequest request)
+         {
+             if (!TerraGenConfig.GenerateStructures) return;
+@@ -268,24 +341,28 @@ namespace Vintagestory.ServerMods
              // rlX, rlZ goes from 0..16 pixel
              // facF = 16/16 = 1
              // Get 4 pixels for chunkx, chunkz, chunkx+1 and chunkz+1 inside the map
@@ -134,7 +148,7 @@ index 95025db..7c475dd 100644
              if (structure == null)
              {
                  TryGenVillages(region, chunkX, chunkZ, false, request.ChunkGenParams);
-@@ -294,27 +360,29 @@ namespace Vintagestory.ServerMods
+@@ -294,27 +371,29 @@ namespace Vintagestory.ServerMods
  
          private void DoGenStructures(IMapRegion region, int chunkX, int chunkZ, bool postPass, string locationCode, ITreeAttribute chunkGenParams = null)
          {
@@ -168,7 +182,7 @@ index 95025db..7c475dd 100644
              ITreeAttribute chanceModTree = null;
              ITreeAttribute maxQuantityModTree = null;
              StoryStructureLocation location = null;
-@@ -326,17 +394,31 @@ namespace Vintagestory.ServerMods
+@@ -326,17 +405,31 @@ namespace Vintagestory.ServerMods
              {
                  maxQuantityModTree = chunkGenParams["structureMaxCount"] as TreeAttribute;
              }
@@ -206,7 +220,7 @@ index 95025db..7c475dd 100644
                  float chance = struc.Chance * scfg.ChanceMultiplier;
                  int toGenerate = 9999;
                  if (chanceModTree != null)
-@@ -348,26 +430,26 @@ namespace Vintagestory.ServerMods
+@@ -348,26 +441,26 @@ namespace Vintagestory.ServerMods
                  {
                      toGenerate = maxQuantityModTree.GetInt(struc.Code, 9999);
                  }
@@ -239,7 +253,7 @@ index 95025db..7c475dd 100644
                      else
                      {
                          startPos.Set(chunkX * chunksize + dx, ySurface, chunkZ * chunksize + dz);
-@@ -382,61 +464,69 @@ namespace Vintagestory.ServerMods
+@@ -382,61 +475,69 @@ namespace Vintagestory.ServerMods
  
                      // check if in storylocation and if we can still generate this structure
                      if (locationCode != null)
@@ -272,14 +286,9 @@ index 95025db..7c475dd 100644
 +                        if (didGenerate)
                          {
 -                            if (location.SchematicsSpawned?.TryGetValue(struc.Group, out var spawnedSchematics) == true)
--                            {
--                                location.SchematicsSpawned[struc.Group] = spawnedSchematics + 1;
--                            }
--                            else
 +                            if(locationCode != null && location != null)
                              {
--                                location.SchematicsSpawned ??= new Dictionary<string, int>();
--                                location.SchematicsSpawned[struc.Group] = 1;
+-                                location.SchematicsSpawned[struc.Group] = spawnedSchematics + 1;
 +                                if (location.SchematicsSpawned?.TryGetValue(struc.Group, out var spawnedSchematics) == true)
 +                                {
 +                                    location.SchematicsSpawned[struc.Group] = spawnedSchematics + 1;
@@ -290,6 +299,11 @@ index 95025db..7c475dd 100644
 +                                    location.SchematicsSpawned[struc.Group] = 1;
 +                                }
                              }
+-                            else
+-                            {
+-                                location.SchematicsSpawned ??= new Dictionary<string, int>();
+-                                location.SchematicsSpawned[struc.Group] = 1;
+-                            }
 -                        }
 -                        Cuboidi loc = struc.LastPlacedSchematicLocation;
 +                            Cuboidi loc = struc.LastPlacedSchematicLocation;
@@ -344,7 +358,7 @@ index 95025db..7c475dd 100644
                  }
              }
          }
-@@ -444,89 +534,119 @@ namespace Vintagestory.ServerMods
+@@ -444,89 +545,119 @@ namespace Vintagestory.ServerMods
  
  
  
