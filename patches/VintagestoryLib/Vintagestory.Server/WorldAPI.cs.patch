@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/WorldAPI.cs b/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
-index 2b525d3..e6a2f25 100644
+index 2b525d3..12bd9b1 100644
 --- a/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
 +++ b/VintagestoryLib/Vintagestory.Server/WorldAPI.cs
 @@ -9,10 +9,18 @@ using Vintagestory.Common;
@@ -54,7 +54,7 @@ index 2b525d3..e6a2f25 100644
  
  	internal int RegionMapSizeX => server.WorldMap.RegionMapSizeX;
  
-@@ -293,22 +314,59 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
+@@ -293,22 +314,52 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
  		{
  			IWorldChunk obj = chunks[i];
  			obj.Unpack();
@@ -63,17 +63,11 @@ index 2b525d3..e6a2f25 100644
 -		server.WorldMap.chunkIlluminatorWorldGen.Sunlight(chunks, chunkX, num, chunkZ, 0);
 -		server.WorldMap.chunkIlluminatorWorldGen.SunlightFlood(chunks, chunkX, num, chunkZ);
 +
-+		// Stratum start: entire body rewritten to use rented flat int[] buffers and a shared
-+		// lighting session so each chunk is decoded only once instead of per BFS flush.
-+		// Steps: (1) snapshot only the recomputed range + one read-only source row,
-+		//        (2) run Sunlight/SunlightFlood on flat arrays to avoid interface/GC overhead,
-+		//        (3) commit back ONLY chunks that were actually written (0..num),
-+		//        (4) return buffers and end the session in finally.
++		// Stratum: rented outer array from pool — eliminates per-call allocation of int[][] wrapper.
++		// Inner int[32768] buffers are still pooled individually via RentLightBuffer/ReturnLightBuffer.
 +		int chunksPerColumn = server.WorldMap.ChunkMapSizeY;
 +		int bufferedCount = Math.Min(num + 2, chunksPerColumn);
-+		int[][] lightBuffers = new int[chunksPerColumn][];
-+		for (int i = 0; i < bufferedCount; i++)
-+			lightBuffers[i] = server.WorldMap.chunkIlluminatorWorldGen.RentLightBuffer();
++		int[][] lightBuffers = server.WorldMap.chunkIlluminatorWorldGen.RentLightBuffers(chunksPerColumn);
 +
 +		// Stratum: ONE shared block-snapshot session for the entire column pass —
 +		// each chunk is decoded exactly once instead of once per BFS flush.
@@ -95,11 +89,10 @@ index 2b525d3..e6a2f25 100644
 +		finally
 +		{
 +			server.WorldMap.chunkIlluminatorWorldGen.EndWorldGenLightingSession();
-+			for (int i = 0; i < bufferedCount; i++)
-+				server.WorldMap.chunkIlluminatorWorldGen.ReturnLightBuffer(lightBuffers[i]);
++			// Stratum: return the whole outer array to pool — inner buffers are recycled by ReturnLightBuffer.
++			server.WorldMap.chunkIlluminatorWorldGen.ReturnLightBuffers(lightBuffers);
 +		}
  	}
-+	// Stratum end
  
  	public void SunFloodChunkColumnNeighboursForWorldGen(IWorldChunk[] chunks, int chunkX, int chunkZ)
  	{
@@ -116,7 +109,7 @@ index 2b525d3..e6a2f25 100644
  
  	public void LoadChunkColumn(int chunkX, int chunkZ, bool keepLoaded = false)
  	{
-@@ -567,6 +625,6 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
+@@ -567,6 +618,6 @@ internal class WorldAPI : ServerAPIComponentBase, IWorldManagerAPI
  		{
  			throw new InvalidOperationException("Can not be executed after EnumServerRunPhase.WorldReady");
  		}
