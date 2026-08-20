@@ -24,6 +24,9 @@
 
   <ItemGroup>
     <Compile Include="$(StratumInfoPath)" Link="StratumInfo.cs" Condition="'$(StratumInfoPath)' != ''" />
+    <!-- Pinned arm64 native overlay releases (see forks.json's arm64NativeOverlays), read back at
+         runtime by VanillaBootstrap so arm64 asset resolution needs no GitHub API call. -->
+    <EmbeddedResource Include="..\forks.json" LogicalName="Stratum.forks.json" />
   </ItemGroup>
 
   <Target Name="ValidateStratumInfoPath" BeforeTargets="CoreCompile">

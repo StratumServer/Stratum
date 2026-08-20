@@ -100,6 +100,10 @@ aarch64 builds from
 Only `*.so` files are taken from that overlay: its managed and `VintagestoryServer` host files
 lag the base game by a patch release or two, and Stratum ships its own apphost anyway.
 
-The overlay is resolved per minor version, so a 1.22.6 base picks the newest `1.22.x` overlay.
-Set `GITHUB_TOKEN` in the environment if the anonymous GitHub API limit (60 requests/hour per IP)
-becomes a problem. The resolved asset name is recorded in `.stratum-arm64-natives`.
+The overlay asset for each Vintage Story minor version is pinned in `forks.json`
+(`arm64NativeOverlays`), embedded into the assembly at build time, and verified against its
+sha256 digest on download - resolving it needs no GitHub API call, and there is no
+unauthenticated-fallback path that skips verification. Add an entry there (name, url, sha256 from
+the release asset's `digest` field) when overlaying a new Vintage Story minor version; boot on
+arm64 without one and the launcher fails with a clear error instead of guessing. The base game
+version this overlay was applied for is recorded in `.stratum-arm64-natives`.
