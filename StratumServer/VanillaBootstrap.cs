@@ -18,6 +18,12 @@ internal static class VanillaBootstrap
 	// Pinned in forks.json (arm64NativeOverlays), embedded into the assembly - resolving it needs
 	// no GitHub API call at runtime.
 	private const string Arm64CatalogResourceName = "Stratum.forks.json";
+	private static readonly string[] RequiredArm64NativeLibraries =
+	{
+		"libe_sqlite3.so",
+		"libSkiaSharp.so",
+		"libzstd.so"
+	};
 
 	internal static void EnsureVanillaAssets(string baseGameVersion, bool refresh)
 	{
@@ -27,9 +33,25 @@ internal static class VanillaBootstrap
 		bool markerExists = File.Exists(markerPath);
 		string currentMarker = markerExists ? File.ReadAllText(markerPath).Trim() : string.Empty;
 		bool markerMatches = markerExists && currentMarker == expectedMarker;
+		bool isLinuxArm64 = IsLinuxArm64();
+		Arm64Asset arm64Asset = default;
+		if (isLinuxArm64)
+		{
+			// Resolve from the embedded catalog before the base-marker fast path. An install
+			// created on x64 still needs the arm64 overlay when it moves to an arm64 host.
+			arm64Asset = ResolveArm64Asset(baseGameVersion);
+		}
 
 		if (!refresh && markerMatches)
 		{
+			if (!isLinuxArm64)
+			{
+				return;
+			}
+
+			string existingCacheDir = Path.Combine(installDir, ".vanilla-cache");
+			Directory.CreateDirectory(existingCacheDir);
+			ApplyArm64NativeOverlay(installDir, existingCacheDir, baseGameVersion, arm64Asset, refresh);
 			return;
 		}
 
@@ -97,9 +119,9 @@ internal static class VanillaBootstrap
 
 		// Anego ships no linux-arm64 server archive, so the files just laid down are x86-64.
 		// Swap the handful of architecture-specific natives before PatchedFileOverlay runs.
-		if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+		if (isLinuxArm64)
 		{
-			ApplyArm64NativeOverlay(installDir, cacheDir, baseGameVersion, refresh);
+			ApplyArm64NativeOverlay(installDir, cacheDir, baseGameVersion, arm64Asset, refresh);
 		}
 
 		File.WriteAllText(markerPath, expectedMarker);
@@ -154,17 +176,25 @@ internal static class VanillaBootstrap
 	// patch release or two, so copying its managed/host files would risk a version mismatch against
 	// Stratum's patched assemblies. The natives are self-contained third-party libraries
 	// (SkiaSharp, e_sqlite3, zstd) whose ABI does not track Vintage Story patch releases.
-	private static void ApplyArm64NativeOverlay(string installDir, string cacheDir, string baseGameVersion, bool refresh)
+	private static void ApplyArm64NativeOverlay(string installDir, string cacheDir, string baseGameVersion, Arm64Asset asset, bool refresh)
 	{
 		string markerPath = Path.Combine(installDir, ".stratum-arm64-natives");
-		if (!refresh && File.Exists(markerPath) && File.ReadAllText(markerPath).Trim() == baseGameVersion)
+		string expectedMarker = BuildArm64Marker(baseGameVersion, asset);
+		if (!refresh && File.Exists(markerPath) && File.ReadAllText(markerPath).Trim() == expectedMarker)
 		{
-			Console.WriteLine("Stratum: arm64 natives already in place for " + baseGameVersion + "; leaving them untouched");
-			return;
+			try
+			{
+				ValidateArm64NativeLibraries(installDir);
+				Console.WriteLine("Stratum: arm64 natives already in place for " + baseGameVersion + "; leaving them untouched");
+				return;
+			}
+			catch (InvalidOperationException exception)
+			{
+				Console.WriteLine("Stratum: arm64 native layout is stale; reapplying the overlay: " + exception.Message);
+			}
 		}
 
-		Arm64Asset asset = ResolveArm64Asset(baseGameVersion);
-		Console.WriteLine($"Stratum: arm64 node detected; fetching native overlay {asset.Name}");
+		Console.WriteLine($"Stratum: linux-arm64 host detected; fetching native overlay {asset.Name}");
 
 		string archivePath = Path.Combine(cacheDir, asset.Name);
 		if (File.Exists(archivePath) && !VerifyArm64Digest(archivePath, asset.Digest))
@@ -224,8 +254,79 @@ internal static class VanillaBootstrap
 			throw new InvalidOperationException("arm64 native overlay " + asset.Name + " contained no shared libraries; refusing to run against x86-64 natives.");
 		}
 
+		RemoveUnusedArm64NativeLibraries(installDir);
+		ValidateArm64NativeLibraries(installDir);
 		Console.WriteLine($"Stratum: replaced {copied} native librar(ies) with aarch64 builds from {asset.Name}");
-		File.WriteAllText(markerPath, baseGameVersion);
+		File.WriteAllText(markerPath, expectedMarker);
+	}
+
+	private static bool IsLinuxArm64()
+	{
+		return RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+			&& RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
+	}
+
+	private static string BuildArm64Marker(string baseGameVersion, Arm64Asset asset)
+	{
+		return "version=" + baseGameVersion + "\nasset=" + asset.Name + "\ndigest=" + asset.Digest;
+	}
+
+	private static void RemoveUnusedArm64NativeLibraries(string installDir)
+	{
+		// The official x64 archive includes OpenAL for the client, but the dedicated server
+		// never loads it and the archive has no arm64 replacement. Do not leave an x64 ELF
+		// in an arm64 install where a mod or future code could load it accidentally.
+		string openAlPath = Path.Combine(installDir, "Lib", "libopenal.so.1");
+		if (File.Exists(openAlPath))
+		{
+			File.Delete(openAlPath);
+			Console.WriteLine("Stratum: removed unused x86-64 libopenal.so.1 from arm64 install");
+		}
+	}
+
+	private static void ValidateArm64NativeLibraries(string installDir)
+	{
+		string libDir = Path.Combine(installDir, "Lib");
+		if (!Directory.Exists(libDir))
+		{
+			throw new InvalidOperationException("arm64 native directory is missing: Lib");
+		}
+
+		foreach (string name in RequiredArm64NativeLibraries)
+		{
+			string path = Path.Combine(libDir, name);
+			if (!File.Exists(path))
+			{
+				throw new InvalidOperationException("required arm64 native library is missing: Lib/" + name);
+			}
+		}
+
+		foreach (string path in Directory.EnumerateFiles(libDir, "*", SearchOption.TopDirectoryOnly))
+		{
+			if (!IsNativeLibrary(path))
+			{
+				continue;
+			}
+
+			if (!IsArm64Elf(path))
+			{
+				throw new InvalidOperationException("native library is not an AArch64 ELF: " + Path.GetRelativePath(installDir, path));
+			}
+		}
+	}
+
+	private static bool IsArm64Elf(string path)
+	{
+		byte[] header = new byte[20];
+		using FileStream stream = File.OpenRead(path);
+		stream.ReadExactly(header);
+		if (header[0] != 0x7f || header[1] != (byte)'E' || header[2] != (byte)'L' || header[3] != (byte)'F')
+		{
+			return false;
+		}
+
+		// Linux arm64 uses ELF64 little-endian and e_machine EM_AARCH64 (183).
+		return header[4] == 2 && header[5] == 1 && header[18] == 183 && header[19] == 0;
 	}
 
 	private static bool IsNativeLibrary(string path)

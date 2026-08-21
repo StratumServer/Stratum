@@ -105,5 +105,7 @@ The overlay asset for each Vintage Story minor version is pinned in `forks.json`
 sha256 digest on download - resolving it needs no GitHub API call, and there is no
 unauthenticated-fallback path that skips verification. Add an entry there (name, url, sha256 from
 the release asset's `digest` field) when overlaying a new Vintage Story minor version; boot on
-arm64 without one and the launcher fails with a clear error instead of guessing. The base game
-version this overlay was applied for is recorded in `.stratum-arm64-natives`.
+arm64 without one and the launcher fails with a clear error instead of guessing. The marker in
+`.stratum-arm64-natives` records the base version, asset name, and digest. If an existing install
+was prepared on x64 and later runs on arm64, the launcher still applies the native overlay before
+starting the server.
