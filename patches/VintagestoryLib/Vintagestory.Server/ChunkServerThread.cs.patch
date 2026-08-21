@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-index ee7d12d..a7b02bd 100644
+index ee7d12d..5baab55 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-@@ -12,10 +12,23 @@ namespace Vintagestory.Server;
+@@ -12,10 +12,34 @@ namespace Vintagestory.Server;
  
  public class ChunkServerThread : ServerThread, IChunkProvider
  {
@@ -21,12 +21,23 @@ index ee7d12d..a7b02bd 100644
 +	// pin their shared neighbours twice and each releases its own.
 +	internal readonly System.Collections.Concurrent.ConcurrentDictionary<long, int> stratumPinnedColumns = new System.Collections.Concurrent.ConcurrentDictionary<long, int>();
 +
++	// Stratum: map-chunk indices that UnloadChunkColumns has committed to removing from
++	// server.loadedMapChunks. These are Done columns with no ChunkColumnLoadRequest left
++	// (the request is disposed once a column reaches Done), so they can't carry the
++	// per-request stratumDropping flag EnsureMinimumWorldgenPassAt already checks for
++	// still-generating columns. This is the same signal for the same purpose, keyed by
++	// index2d instead of hung off a request object, so a claim in the middle of pass
++	// 1/pass 2 can be refused instead of observing a column mid-removal as resident.
++	// See UnloadChunkColumns for the commit-then-recheck-pin handshake that sets it.
++	internal readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte> stratumDroppingMapChunks = new System.Collections.Concurrent.ConcurrentDictionary<long, byte>();
++
++
  	internal ConcurrentIndexedFifoQueue<ChunkColumnLoadRequest> requestedChunkColumns;
  
  	internal IndexedFifoQueue<ChunkColumnLoadRequest> peekingChunkColumns;
  
  	internal Dictionary<long, ServerMapRegion> peekingMapRegions = new Dictionary<long, ServerMapRegion>(8);
-@@ -39,13 +52,13 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -39,13 +63,13 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	public ILogger Logger => ServerMain.Logger;
  
  	public ChunkServerThread(ServerMain server, string threadname, CancellationToken cancellationToken)
@@ -43,7 +54,7 @@ index ee7d12d..a7b02bd 100644
  		}
  		if (additionalWorldGenThreadsCount < 0)
  		{
-@@ -101,15 +114,21 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -101,15 +125,21 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  		return peekingChunkColumns.GetByIndex(index);
  	}
  
@@ -67,7 +78,7 @@ index ee7d12d..a7b02bd 100644
  	}
  
  	internal ServerMapChunk GetMapChunk(long index2d)
-@@ -143,19 +162,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -143,19 +173,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	IWorldChunk IChunkProvider.GetUnpackedChunkFast(int chunkX, int chunkY, int chunkZ, bool notRecentlyAccessed)
  	{
  		ServerChunk generatingChunk = GetGeneratingChunk(chunkX, chunkY, chunkZ);
@@ -89,38 +100,12 @@ index ee7d12d..a7b02bd 100644
  		});
  	}
  
-@@ -186,38 +205,125 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -186,18 +216,142 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  			requestedChunkColumns.EnqueueWithoutAddingToIndex(chunkRequest);
  		}
  		return !orAdd.Disposed;
  	}
  
--	internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
--	{
--		server.loadedMapChunks.TryGetValue(index2d, out var value);
--		if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
--		{
--			return true;
--		}
--		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, (long index2d2) => new ChunkColumnLoadRequest(index2d2, chunkX, chunkZ, server.serverConsoleId, -1, server));
--		if (orAdd.CurrentIncompletePass_AsInt < minPass)
--		{
--			if (orAdd.untilPass < minPass)
--			{
--				if (orAdd.untilPass < 0)
--				{
--					requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
--				}
--				orAdd.untilPass = minPass;
--				if (orAdd.creationTime < requirorTime)
--				{
--					orAdd.creationTime = requirorTime;
--				}
--			}
--			return false;
--		}
--		return true;
--	}
 +    /// <summary>
 +    /// Stratum: holds the 3x3 neighbourhood of a column against unloading. Taken before the
 +    /// neighbour gate runs, released when the stage finishes or the gate refuses. Pins the
@@ -188,57 +173,87 @@ index ee7d12d..a7b02bd 100644
 +        return stratumPinnedColumns.ContainsKey(index2d);
 +    }
 +
-+    internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
++    /// <summary>
++    /// Stratum: marks a Done, request-less map chunk index as being dropped by
++    /// UnloadChunkColumns. Returns false if it's already marked (shouldn't happen -
++    /// mapChunkUnloadCandidates is a HashSet and UnloadChunkColumns runs one index at a
++    /// time - but TryAdd makes double-marking a no-op instead of silently overwriting).
++    /// </summary>
++    internal bool StratumTryMarkMapChunkDropping(long index2d)
 +    {
-+        // Stratum: a column the unload pass has committed to dropping is absent as far
-+        // as this gate is concerned, even while its map chunk is still in the registry.
-+        // Deciding to drop and finishing the drop are not one step, and granting a claim
-+        // in between is what let a generator read a column that vanished under it.
-+        if (requestedChunkColumns.elementsByIndex.TryGetValue(index2d, out var dropCheck) && Volatile.Read(ref dropCheck.stratumDropping) != 0)
-+        {
-+            return false;
-+        }
-+        server.loadedMapChunks.TryGetValue(index2d, out var value);
-+        if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
-+        {
-+            return true;
-+        }
-+
-+        // Stratum start: avoiding Func<> + DisplayClass allocation for each call.
-+        // In the vast majority of cases, the entry already exists in the dictionary.
-+        if (!requestedChunkColumns.elementsByIndex.TryGetValue(index2d, out var orAdd))
-+        {
-+            orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(
-+                index2d,
-+                static (idx, arg) => new ChunkColumnLoadRequest(idx, arg.chunkX, arg.chunkZ, arg.consoleId, -1, arg.server),
-+                (chunkX, chunkZ, consoleId: server.serverConsoleId, server));
-+        }
-+
-+        if (orAdd.CurrentIncompletePass_AsInt < minPass)
-+        {
-+            if (orAdd.untilPass < minPass)
-+            {
-+                if (orAdd.untilPass < 0)
-+                {
-+                    requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
-+                }
-+                orAdd.untilPass = minPass;
-+                if (orAdd.creationTime < requirorTime)
-+                {
-+                    orAdd.creationTime = requirorTime;
-+                }
-+            }
-+            return false;
-+        }
-+
-+        // Stratum end
-+        return true;
++	    return stratumDroppingMapChunks.TryAdd(index2d, 0);
 +    }
- 
--	public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
-+    public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
++
++    /// <summary>
++    /// Stratum: releases what StratumTryMarkMapChunkDropping took. Must run on every
++    /// exit from the removal it guards, success or failure, or the index stays
++    /// invisible to the neighbour gate forever.
++    /// </summary>
++    internal void StratumClearMapChunkDropping(long index2d)
++    {
++	    stratumDroppingMapChunks.TryRemove(index2d, out _);
++    }
++
++    /// <summary>
++    /// Stratum: true while UnloadChunkColumns is in the middle of dropping this index.
++    /// </summary>
++    internal bool StratumIsMapChunkDropping(long index2d)
++    {
++	    return stratumDroppingMapChunks.ContainsKey(index2d);
++    }
++
++
++
+ 	internal bool EnsureMinimumWorldgenPassAt(long index2d, int chunkX, int chunkZ, int minPass, long requirorTime)
  	{
- 		return ((long)chunkY * (long)server.WorldMap.index3dMulZ + chunkZ) * server.WorldMap.index3dMulX + chunkX;
++		// Stratum: a column the unload pass has committed to dropping is absent as far
++		// as this gate is concerned, even while its map chunk is still in the registry.
++		// Deciding to drop and finishing the drop are not one step, and granting a claim
++		// in between is what let a generator read a column that vanished under it.
++		if (requestedChunkColumns.elementsByIndex.TryGetValue(index2d, out var dropCheck) && Volatile.Read(ref dropCheck.stratumDropping) != 0)
++		{
++			return false;
++		}
++		// Stratum: same rule, for a neighbour that already finished generation and is
++		// now tracked only in loadedMapChunks (its ChunkColumnLoadRequest is long gone,
++		// so it can't carry the flag above). UnloadChunkColumns sets this before it
++		// touches loadedMapChunks for the index; see its own comment for the handshake.
++		if (StratumIsMapChunkDropping(index2d))
++		{
++			return false;
++		}
+ 		server.loadedMapChunks.TryGetValue(index2d, out var value);
+ 		if (value != null && value.CurrentIncompletePass == EnumWorldGenPass.Done)
+ 		{
+ 			return true;
+ 		}
+-		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(index2d, (long index2d2) => new ChunkColumnLoadRequest(index2d2, chunkX, chunkZ, server.serverConsoleId, -1, server));
++
++		// Stratum start: avoiding Func<> + DisplayClass allocation for each call.
++		// In the vast majority of cases, the entry already exists in the dictionary.
++		if (!requestedChunkColumns.elementsByIndex.TryGetValue(index2d, out var orAdd))
++		{
++			orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(
++				index2d,
++				static (idx, arg) => new ChunkColumnLoadRequest(idx, arg.chunkX, arg.chunkZ, arg.consoleId, -1, arg.server),
++				(chunkX, chunkZ, consoleId: server.serverConsoleId, server));
++		}
++
+ 		if (orAdd.CurrentIncompletePass_AsInt < minPass)
+ 		{
+ 			if (orAdd.untilPass < minPass)
+ 			{
+ 				if (orAdd.untilPass < 0)
+@@ -210,10 +364,12 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 					orAdd.creationTime = requirorTime;
+ 				}
+ 			}
+ 			return false;
+ 		}
++
++		// Stratum end
+ 		return true;
  	}
  
- 	public long ChunkIndex3D(EntityPos pos)
+ 	public long ChunkIndex3D(int chunkX, int chunkY, int chunkZ)
+ 	{
