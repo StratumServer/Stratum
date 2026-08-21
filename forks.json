@@ -27,5 +27,20 @@
       "url": "https://github.com/anegostudios/vssurvivalmod.git",
       "ref": "849fa8cad9e392368566efc7474e73db6404a145"
     }
+  ],
+  "_arm64NativeOverlaysComment": "Pinned anegostudios/VintagestoryServerArm64 releases, keyed by Vintage Story major.minor. VanillaBootstrap overlays these *.so files onto the official linux-x64 archive on arm64 hosts. Bump/add an entry when overlaying a new Vintage Story minor version; the sha256 comes from the release asset's 'digest' field.",
+  "arm64NativeOverlays": [
+    {
+      "version": "1.22",
+      "name": "vs_server_linux-arm64_1.22.0.tar.gz",
+      "url": "https://github.com/anegostudios/VintagestoryServerArm64/releases/download/1.22.0/vs_server_linux-arm64_1.22.0.tar.gz",
+      "sha256": "191c7f3a58a89a47843e7ab8d1fb16d51f3030f7a6cead639c7c48a907679bfa"
+    },
+    {
+      "version": "1.21",
+      "name": "vs_server_linux-arm64_1.21.0.tar.gz",
+      "url": "https://github.com/anegostudios/VintagestoryServerArm64/releases/download/1.21.0/vs_server_linux-arm64_1.21.0.tar.gz",
+      "sha256": "a0f26b3999410559f1fa2b0f3c270367ff59d5a289d990419d5f3e31d1af59d1"
+    }
   ]
 }

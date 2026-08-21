@@ -78,10 +78,34 @@ Commit the updated `patches/` and `sources/` files.
 ## Release Zips
 
 ```powershell
-.\scripts\pack-release.ps1 -Rids win-x64,linux-x64 -OutDir release-out
+.\scripts\pack-release.ps1 -Rids win-x64,linux-x64,linux-arm64 -OutDir release-out
 ```
 
 Release zips contain `StratumServer` plus Stratum patched managed files. They do
 not contain the full official Vintage Story server archive or files. On first run, the
 launcher downloads and verifies the official archive, extracts it, writes the
 patched files, and then starts the server.
+
+Every project except `StratumServer` builds AnyCPU, and the launcher is published
+framework-dependent, so the only architecture-specific artifact is the apphost. The SDK
+cross-targets it from an x64 host - `linux-arm64` needs no arm64 build machine.
+
+## arm64
+
+Anego publishes no `linux-arm64` server archive, so on an arm64 host the launcher still
+downloads the official `linux-x64` archive for its assets and IL, then replaces the
+architecture-specific natives (`libe_sqlite3.so`, `libSkiaSharp.so`, `libzstd.so`) with the
+aarch64 builds from
+[anegostudios/VintagestoryServerArm64](https://github.com/anegostudios/VintagestoryServerArm64).
+Only `*.so` files are taken from that overlay: its managed and `VintagestoryServer` host files
+lag the base game by a patch release or two, and Stratum ships its own apphost anyway.
+
+The overlay asset for each Vintage Story minor version is pinned in `forks.json`
+(`arm64NativeOverlays`), embedded into the assembly at build time, and verified against its
+sha256 digest on download - resolving it needs no GitHub API call, and there is no
+unauthenticated-fallback path that skips verification. Add an entry there (name, url, sha256 from
+the release asset's `digest` field) when overlaying a new Vintage Story minor version; boot on
+arm64 without one and the launcher fails with a clear error instead of guessing. The marker in
+`.stratum-arm64-natives` records the base version, asset name, and digest. If an existing install
+was prepared on x64 and later runs on arm64, the launcher still applies the native overlay before
+starting the server.
