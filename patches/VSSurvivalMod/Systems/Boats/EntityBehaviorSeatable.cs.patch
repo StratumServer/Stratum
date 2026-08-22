@@ -1,43 +1,54 @@
 diff --git a/VSSurvivalMod/Systems/Boats/EntityBehaviorSeatable.cs b/VSSurvivalMod/Systems/Boats/EntityBehaviorSeatable.cs
-index e0e3ce5..2e86ae0 100644
+index e0e3ce5..77f664e 100644
 --- a/VSSurvivalMod/Systems/Boats/EntityBehaviorSeatable.cs
 +++ b/VSSurvivalMod/Systems/Boats/EntityBehaviorSeatable.cs
-@@ -135,14 +135,16 @@ namespace Vintagestory.GameContent
+@@ -133,16 +133,20 @@ namespace Vintagestory.GameContent
+         {
+             if (mode != EnumInteractMode.Interact || !entity.Alive || !byEntity.Alive) return;
              if (!allowSit(byEntity)) return;
              if (itemslot.Itemstack?.Collectible is ItemRope) return;
  
-             int seleBox = (byEntity as EntityPlayer).EntitySelection?.SelectionBoxIndex ?? -1;
-             var bhs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
-+            int selectionBoxIndex = seleBox - 1;
-+            bool hasSelectionBox = bhs?.selectionBoxes != null && selectionBoxIndex >= 0 && selectionBoxIndex < bhs.selectionBoxes.Length;
- 
+-            int seleBox = (byEntity as EntityPlayer).EntitySelection?.SelectionBoxIndex ?? -1;
+-            var bhs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
+-
 -            if (bhs != null && byEntity.MountedOn == null && seleBox > 0)
-+            if (hasSelectionBox && byEntity.MountedOn == null)
-             {
+-            {
 -                var apap = bhs.selectionBoxes[seleBox - 1];
-+                var apap = bhs.selectionBoxes[selectionBoxIndex];
++            // Stratum: ignore selection boxes outside the resolved seat array.
++			int seleBox = (byEntity as EntityPlayer).EntitySelection?.SelectionBoxIndex ?? -1;
++			var bhs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
++			var selectionBoxes = bhs?.selectionBoxes;
++			int selectionBoxIndex = seleBox - 1;
++			bool hasSelectionBox = selectionBoxes != null && (uint)selectionBoxIndex < (uint)selectionBoxes.Length;
++
++			if (hasSelectionBox && byEntity.MountedOn == null)
++			{
++				var apap = selectionBoxes[selectionBoxIndex];
                  string apname = apap.AttachPoint.Code;
                  var seat = Seats.FirstOrDefault((seat) => seat.Config.APName == apname || seat.Config.SelectionBox == apname);
                  if (seat != null && seat.Passenger != null && seat.Passenger.HasBehavior<EntityBehaviorRopeTieable>())
                  {
                      (seat.Passenger as EntityAgent).TryUnmount();
-@@ -155,13 +157,13 @@ namespace Vintagestory.GameContent
+@@ -154,14 +158,14 @@ namespace Vintagestory.GameContent
+             if (byEntity.Controls.CtrlKey)
              {
                  return;
              }
  
-             // If we have the selection boxes behavior, use that
+-            // If we have the selection boxes behavior, use that
 -            if (seleBox > 0 && bhs != null)
-+            if (hasSelectionBox)
-             {
+-            {
 -                var apap = bhs.selectionBoxes[seleBox - 1];
-+                var apap = bhs.selectionBoxes[selectionBoxIndex];
++			// If we have the selection boxes behavior, use that
++			if (hasSelectionBox)
++			{
++				var apap = selectionBoxes[selectionBoxIndex];
                  string apname = apap.AttachPoint.Code;
  
                  var seat = Seats.FirstOrDefault((seat) => seat.Config.APName == apname || seat.Config.SelectionBox == apname);
                  if (seat != null && CanSitOn(seat) && byEntity.TryMount(seat))
                  {
-@@ -367,18 +369,25 @@ namespace Vintagestory.GameContent
+@@ -367,18 +371,25 @@ namespace Vintagestory.GameContent
  
  
  
@@ -54,10 +65,10 @@ index e0e3ce5..2e86ae0 100644
              return base.GetInteractionHelp(world, es, player, ref handled);
          }
  
-+        public bool HasSelectionBox(int selectionBoxIndex)
-+        {
-+            var bhs = entity.GetBehavior<EntityBehaviorSelectionBoxes>();
-+            return bhs?.selectionBoxes != null && selectionBoxIndex >= 0 && selectionBoxIndex < bhs.selectionBoxes.Length;
++		public bool HasSelectionBox(int selectionBoxIndex)
++		{
++			var selectionBoxes = entity.GetBehavior<EntityBehaviorSelectionBoxes>()?.selectionBoxes;
++			return selectionBoxes != null && (uint)selectionBoxIndex < (uint)selectionBoxes.Length;
 +        }
 +
          public override void OnEntityDeath(DamageSource damageSourceForDeath)
@@ -65,16 +76,25 @@ index e0e3ce5..2e86ae0 100644
              base.OnEntityDeath(damageSourceForDeath);
  
              foreach (var seat in Seats) {
-@@ -447,11 +456,11 @@ namespace Vintagestory.GameContent
+@@ -444,16 +455,16 @@ namespace Vintagestory.GameContent
+             }
+ 
+             return null;
          }
  
-         private static IMountableSeat getSeat(EntityBehaviorSeatable eba, IMountableSeat[] seats, int slotIndex)
-         {
-             var bhs = eba.entity.GetBehavior<EntityBehaviorSelectionBoxes>();
+-        private static IMountableSeat getSeat(EntityBehaviorSeatable eba, IMountableSeat[] seats, int slotIndex)
+-        {
+-            var bhs = eba.entity.GetBehavior<EntityBehaviorSelectionBoxes>();
 -            if (bhs == null) return null;
-+            if (bhs?.selectionBoxes == null || slotIndex < 0 || slotIndex >= bhs.selectionBoxes.Length) return null;
++		private static IMountableSeat getSeat(EntityBehaviorSeatable eba, IMountableSeat[] seats, int slotIndex)
++		{
++			var selectionBoxes = eba.entity.GetBehavior<EntityBehaviorSelectionBoxes>()?.selectionBoxes;
++			if (selectionBoxes == null || (uint)slotIndex >= (uint)selectionBoxes.Length) return null;
  
-             var apap = bhs.selectionBoxes[slotIndex];
+-            var apap = bhs.selectionBoxes[slotIndex];
++			var apap = selectionBoxes[slotIndex];
              string apname = apap.AttachPoint.Code;
  
              return seats.FirstOrDefault((seat) => seat.Config.APName == apname || seat.Config.SelectionBox == apname);
+         }
+     }

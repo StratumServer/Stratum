@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
-index 642722c..9b46a7c 100644
+index 642722c..a933fe2 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemUnloadChunks.cs
 @@ -34,15 +34,30 @@ internal class ServerSystemUnloadChunks : ServerSystem
@@ -86,7 +86,7 @@ index 642722c..9b46a7c 100644
  			list3.Add(new DbChunk
  			{
  				Position = item.pos,
-@@ -271,12 +292,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -271,47 +292,85 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		server.readyToAutoSave = true;
  	}
  
@@ -103,7 +103,100 @@ index 642722c..9b46a7c 100644
  		{
  			if (server.forceLoadedChunkColumns.Contains(mapChunkUnloadCandidate))
  			{
-@@ -354,132 +377,225 @@ internal class ServerSystemUnloadChunks : ServerSystem
+ 				continue;
+ 			}
+-			ChunkPos ret = server.WorldMap.ChunkPosFromChunkIndex2D(mapChunkUnloadCandidate);
+-			ServerSystemSupplyChunks.UpdateLoadedNeighboursFlags(server.WorldMap, ret.X, ret.Z);
+-			server.api.eventapi.TriggerChunkColumnUnloaded(ret.ToVec3i());
+-			for (int i = 0; i < server.WorldMap.ChunkMapSizeY; i++)
++
++			// Stratum: FindUnloadableChunkColumnCandidates checked the pin when it built
++			// this set, up to 3s ago - that check is a fast pre-filter, not authoritative.
++			// A neighbour gate can pin this column at any point since, including after
++			// that scan and before this loop reaches it, which is exactly the residency
++			// window the pin exists to protect once a claim has accepted both its passes.
++			// Commit to the drop first, then look at the pin once more: a pin taken
++			// before this point wins (we see it here and back off); a pin taken after
++			// this point loses, because EnsureMinimumWorldgenPassAt checks the same flag
++			// we set below and refuses to grant residency over a column already
++			// committed to removal. One of the two always happens, so no claim can be
++			// granted over a column this pass is mid-removal on, and this pass never
++			// removes a column a claim is holding. Mirrors the handshake
++			// UnloadGeneratingChunkColumns already uses for requestedChunkColumns
++			// entries; this is the equivalent for Done columns that no longer have a
++			// ChunkColumnLoadRequest to hang a flag on.
++			if (!chunkthread.StratumTryMarkMapChunkDropping(mapChunkUnloadCandidate))
+ 			{
+-				ret.Y = i;
+-				long num2 = server.WorldMap.ChunkIndex3D(ret.X, i, ret.Z);
+-				ServerChunk loadedChunk = server.GetLoadedChunk(num2);
+-				if (loadedChunk != null && TryUnloadChunk(num2, ret, loadedChunk, list, server))
+-				{
+-					num++;
+-				}
++				continue; // already being dropped by another concurrent call - skip
++			}
++			if (chunkthread.StratumIsColumnPinned(mapChunkUnloadCandidate))
++			{
++				chunkthread.StratumClearMapChunkDropping(mapChunkUnloadCandidate);
++				continue;
+ 			}
+-			server.loadedMapChunks.TryGetValue(mapChunkUnloadCandidate, out var value);
+-			if (value != null)
++
++			try
+ 			{
+-				if (value.DirtyForSaving)
++				ChunkPos ret = server.WorldMap.ChunkPosFromChunkIndex2D(mapChunkUnloadCandidate);
++				ServerSystemSupplyChunks.UpdateLoadedNeighboursFlags(server.WorldMap, ret.X, ret.Z);
++				server.api.eventapi.TriggerChunkColumnUnloaded(ret.ToVec3i());
++				for (int i = 0; i < server.WorldMap.ChunkMapSizeY; i++)
+ 				{
+-					list2.Add(new ServerMapChunkWithCoord
++					ret.Y = i;
++					long num2 = server.WorldMap.ChunkIndex3D(ret.X, i, ret.Z);
++					ServerChunk loadedChunk = server.GetLoadedChunk(num2);
++					if (loadedChunk != null && TryUnloadChunk(num2, ret, loadedChunk, list, server))
+ 					{
+-						chunkX = ret.X,
+-						chunkZ = ret.Z,
+-						index2d = mapChunkUnloadCandidate,
+-						mapchunk = value
+-					});
++						num++;
++					}
+ 				}
+-				value.DirtyForSaving = false;
+-				server.loadedMapChunks.Remove(mapChunkUnloadCandidate);
++				server.loadedMapChunks.TryGetValue(mapChunkUnloadCandidate, out var value);
++				if (value != null)
++				{
++					if (value.DirtyForSaving)
++					{
++						list2.Add(new ServerMapChunkWithCoord
++						{
++							chunkX = ret.X,
++							chunkZ = ret.Z,
++							index2d = mapChunkUnloadCandidate,
++							mapchunk = value
++						});
++					}
++					value.DirtyForSaving = false;
++					server.loadedMapChunks.Remove(mapChunkUnloadCandidate);
++				}
++			}
++			finally
++			{
++				// Stratum: out of loadedMapChunks (or never was in it), the flag has no
++				// further job - clear it on every path, success or exception, so it can
++				// never permanently blind the neighbour gate to this index.
++				chunkthread.StratumClearMapChunkDropping(mapChunkUnloadCandidate);
+ 			}
+ 		}
+ 		lock (dirtyChunksLock)
+ 		{
+ 			dirtyUnloadedChunks.AddRange(list);
+@@ -354,132 +413,225 @@ internal class ServerSystemUnloadChunks : ServerSystem
  			chunk.Dispose();
  		}
  		return flag;
@@ -248,11 +341,7 @@ index 642722c..9b46a7c 100644
 -		List<ChunkColumnLoadRequest> list = new List<ChunkColumnLoadRequest>();
 -		int num = 0;
 -		foreach (ChunkColumnLoadRequest item in chunkthread.requestedChunkColumns.Snapshot())
-+		private readonly int x;
-+		private readonly int z;
-+
-+		public StratumUnloadChunkPosition(int x, int z)
- 		{
+-		{
 -			if (item.Chunks == null || item.Disposed)
 -			{
 -				continue;
@@ -279,21 +368,24 @@ index 642722c..9b46a7c 100644
 -			{
 -				list.Add(item);
 -			}
-+			this.x = x;
-+			this.z = z;
- 		}
+-		}
 -		if (list.Count == 0)
++		private readonly int x;
++		private readonly int z;
 +
-+		public bool Equals(StratumUnloadChunkPosition other)
++		public StratumUnloadChunkPosition(int x, int z)
  		{
 -			return;
-+			return x == other.x && z == other.z;
++			this.x = x;
++			this.z = z;
  		}
 -		List<DbChunk> list2 = new List<DbChunk>();
 -		List<DbChunk> list3 = new List<DbChunk>();
 -		using FastMemoryStream ms = new FastMemoryStream();
 -		foreach (ChunkColumnLoadRequest item2 in list)
--		{
++
++		public bool Equals(StratumUnloadChunkPosition other)
+ 		{
 -			item2.generatingLock.AcquireReadLock();
 -			try
 -			{
@@ -334,7 +426,8 @@ index 642722c..9b46a7c 100644
 -			}
 -			server.ChunkColumnRequested.Remove(item2.mapIndex2d);
 -			num++;
--		}
++			return x == other.x && z == other.z;
+ 		}
 -		if (list2.Count > 0)
 +
 +		public override bool Equals(object obj)
@@ -366,7 +459,11 @@ index 642722c..9b46a7c 100644
  		{
 -			if (value2.State != EnumClientState.Queued)
 +			if (value2.State == EnumClientState.Queued)
-+			{
+ 			{
+-				int allowedChunkRadius = server.GetAllowedChunkRadius(value2);
+-				int x = ((value2.Position == null) ? (server.WorldMap.MapSizeX / 2) : ((int)value2.Position.X)) / MagicNum.ServerChunkSize;
+-				int y = ((value2.Position == null) ? (server.WorldMap.MapSizeZ / 2) : ((int)value2.Position.Z)) / MagicNum.ServerChunkSize;
+-				for (int i = 0; i <= allowedChunkRadius; i++)
 +				continue;
 +			}
 +			int allowedChunkRadius = server.GetAllowedChunkRadius(value2);
@@ -375,11 +472,7 @@ index 642722c..9b46a7c 100644
 +			StratumUnloadChunkPosition positionKey = new StratumUnloadChunkPosition(x, y);
 +			int startRadius = 0;
 +			if (seenPositions.TryGetValue(positionKey, out int seenRadius))
- 			{
--				int allowedChunkRadius = server.GetAllowedChunkRadius(value2);
--				int x = ((value2.Position == null) ? (server.WorldMap.MapSizeX / 2) : ((int)value2.Position.X)) / MagicNum.ServerChunkSize;
--				int y = ((value2.Position == null) ? (server.WorldMap.MapSizeZ / 2) : ((int)value2.Position.Z)) / MagicNum.ServerChunkSize;
--				for (int i = 0; i <= allowedChunkRadius; i++)
++			{
 +				if (seenRadius >= allowedChunkRadius)
  				{
 -					ShapeUtil.LoadOctagonIndices(list, x, y, i, server.WorldMap.ChunkMapSizeX);
@@ -419,7 +512,7 @@ index 642722c..9b46a7c 100644
  					if (value.IsOld())
  					{
  						mapChunkUnloadCandidates.Add(mapChunkIndex);
-@@ -497,14 +613,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -497,14 +649,16 @@ internal class ServerSystemUnloadChunks : ServerSystem
  	{
  		if (server.unloadedChunks.IsEmpty)
  		{
@@ -438,7 +531,7 @@ index 642722c..9b46a7c 100644
  			list2.Clear();
  			foreach (long item in list)
  			{
-@@ -545,12 +663,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
+@@ -545,12 +699,14 @@ internal class ServerSystemUnloadChunks : ServerSystem
  		}
  	}
  

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Client.NoObf/ClientSettings.cs b/VintagestoryLib/Vintagestory.Client.NoObf/ClientSettings.cs
-index 9786197..c1e2c75 100644
+index 6b6ece9..bdaa84a 100644
 --- a/VintagestoryLib/Vintagestory.Client.NoObf/ClientSettings.cs
 +++ b/VintagestoryLib/Vintagestory.Client.NoObf/ClientSettings.cs
 @@ -7,11 +7,11 @@ using Vintagestory.API.Config;

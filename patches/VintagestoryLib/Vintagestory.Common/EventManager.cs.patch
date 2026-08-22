@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/EventManager.cs b/VintagestoryLib/Vintagestory.Common/EventManager.cs
-index 842d31f..2db0d99 100644
+index 842d31f..21dfb24 100644
 --- a/VintagestoryLib/Vintagestory.Common/EventManager.cs
 +++ b/VintagestoryLib/Vintagestory.Common/EventManager.cs
 @@ -1,11 +1,13 @@
@@ -121,7 +121,7 @@ index 842d31f..2db0d99 100644
  			{
 -				gameTickListener.OnTriggered(ellapsedMilliseconds);
 +				continue;
- 			}
++			}
 +			int stratumEffectiveInterval = gameTickListener.Millisecondinterval;
 +			if (stratumAdaptiveThrottle && stratumEffectiveInterval > stratumAdaptiveCritMs)
 +			{
@@ -143,7 +143,7 @@ index 842d31f..2db0d99 100644
 +				{
 +					gameTickListener.OnTriggered(ellapsedMilliseconds);
 +				}
-+			}
+ 			}
 +			else if (stratumAdaptiveThrottle && stratumEffectiveInterval != gameTickListener.Millisecondinterval)
 +			{
 +				stratumEntityListenersThrottled++;
@@ -323,3 +323,50 @@ index 842d31f..2db0d99 100644
  	public virtual long AddGameTickListener(Action<float> handler, int millisecondInterval, int initialDelayOffsetMs = 0)
  	{
  		return AddGameTickListener(handler, null, millisecondInterval, initialDelayOffsetMs);
+@@ -301,21 +451,44 @@ public abstract class EventManager
+ 	}
+ 
+ 	public virtual long AddGameTickListener(Action<float> handler, BlockPos pos, Action<Exception> errorHandler, int millisecondInterval, int initialDelayOffsetMs = 0)
+ 	{
+ 		long newListenerId = ++listenerId;
+-		GameTickListenerBlock listener = new GameTickListenerBlock(newListenerId, millisecondInterval, InWorldEllapsedMs + initialDelayOffsetMs, pos.Copy(), handler, errorHandler);
++		// Stratum: stagger default block entity listeners by position.
++		int stratumInitialDelayOffsetMs = GetStratumBlockEntityInitialDelay(pos, millisecondInterval, initialDelayOffsetMs);
++		GameTickListenerBlock listener = new GameTickListenerBlock(newListenerId, millisecondInterval, InWorldEllapsedMs + stratumInitialDelayOffsetMs, pos.Copy(), handler, errorHandler);
+ 		return AddGameTickListenerBlockInternal(listener, newListenerId);
+ 	}
+ 
+ 	public virtual long AddGameTickListener(Action<IWorldAccessor, BlockPos, float> handler, BlockPos pos, Action<Exception> errorHandler, int millisecondInterval, int initialDelayOffsetMs = 0)
+ 	{
+ 		long newListenerId = ++listenerId;
+-		GameTickListenerBlock listener = new GameTickListenerBlock(newListenerId, millisecondInterval, InWorldEllapsedMs + initialDelayOffsetMs, pos.Copy(), handler, errorHandler);
++		// Stratum: stagger default block entity listeners by position.
++		int stratumInitialDelayOffsetMs = GetStratumBlockEntityInitialDelay(pos, millisecondInterval, initialDelayOffsetMs);
++		GameTickListenerBlock listener = new GameTickListenerBlock(newListenerId, millisecondInterval, InWorldEllapsedMs + stratumInitialDelayOffsetMs, pos.Copy(), handler, errorHandler);
+ 		return AddGameTickListenerBlockInternal(listener, newListenerId);
+ 	}
+ 
++	private static int GetStratumBlockEntityInitialDelay(BlockPos pos, int millisecondInterval, int initialDelayOffsetMs)
++	{
++		// Stratum: stagger default block entity listeners by position.
++		if (initialDelayOffsetMs != 0 || pos == null || StratumRuntime.Config?.Performance?.BlockEntityInit == null)
++		{
++			return initialDelayOffsetMs;
++		}
++
++		StratumBlockEntityInitConfig config = StratumRuntime.Config.Performance.BlockEntityInit;
++		if (!config.Enabled || config.MaxStaggerMs <= 0 || millisecondInterval <= 0)
++		{
++			return initialDelayOffsetMs;
++		}
++
++		int staggerWindowMs = Math.Min(config.MaxStaggerMs, millisecondInterval);
++		int positionHash = pos.GetHashCode() & int.MaxValue;
++		return positionHash % staggerWindowMs;
++	}
++
+ 	private long AddGameTickListenerBlockInternal(GameTickListenerBlock listener, long newListenerId)
+ 	{
+ 		List<GameTickListenerBlock> gameTickListenersBlock = GameTickListenersBlock;
+ 		for (int i = 0; i < gameTickListenersBlock.Count; i++)
+ 		{

@@ -17,6 +17,13 @@ internal class CmdStratumStaffCommands
 {
 	private const string VanishIndicatorCode = "stratum-vanish-active";
 
+	// Constructed exactly once per server (ServerSystemCommands.cs.patch), never held onto by its
+	// caller. StratumAnticheatPunishments needs the jail mechanism this class owns (the active-jail
+	// tracking set and the tick loop that enforces it are both instance state, not reusable statics
+	// the way Freeze and BanPlayer already are), so this is the smallest way to reach it from
+	// outside without duplicating that tracking elsewhere.
+	internal static CmdStratumStaffCommands Instance { get; private set; }
+
 	private readonly ServerMain server;
 	private readonly Dictionary<string, string> lastMessagePartnerByUid = new Dictionary<string, string>(StringComparer.Ordinal);
 	private readonly Dictionary<string, long> lastVanishIndicatorMsByUid = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -25,6 +32,7 @@ internal class CmdStratumStaffCommands
 
 	public CmdStratumStaffCommands(ServerMain server)
 	{
+		Instance = this;
 		this.server = server;
 		server.EventManager.OnPlayerJoin += OnPlayerJoin;
 		server.EventManager.OnPlayerDisconnect += OnPlayerDisconnect;
@@ -112,6 +120,13 @@ internal class CmdStratumStaffCommands
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleLockChat);
 
+			server.api.commandapi.Create("chattoggle")
+				.WithAlias("togglechat")
+				.WithDescription("Enable or disable global or group player chat")
+				.WithArgs(parsers.OptionalWordRange("channel", "global", "group", "all", "status"), parsers.OptionalWordRange("mode", "on", "off", "toggle", "status"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleChatToggle);
+
 			server.api.commandapi.Create("chatclear")
 				.WithAlias("clearchat")
 				.WithDescription("Clear visible chat history for online players")
@@ -156,8 +171,10 @@ internal class CmdStratumStaffCommands
 		if (StratumCommandRegistration.ShouldRegister(commands.Vanish, "/vanish", "Commands.Vanish"))
 		{
 			server.api.commandapi.Create("vanish")
-				.WithDescription("Toggle staff vanish")
-				.WithArgs(parsers.OptionalWordRange("mode", "on", "off", "toggle"))
+				.WithDescription("Toggle staff vanish, or /vanish hideothers to hide other vanished staff from yourself")
+				.WithArgs(
+					parsers.OptionalWordRange("mode", "on", "off", "toggle", "hideothers", "status"),
+					parsers.OptionalWordRange("state", "on", "off", "toggle"))
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleVanish);
 		}
@@ -187,6 +204,27 @@ internal class CmdStratumStaffCommands
 				.WithArgs(parsers.Word("player"))
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleRevive);
+		}
+
+		if (StratumCommandRegistration.ShouldRegister(commands.Lives, "/lives", "Commands.Lives"))
+		{
+			server.api.commandapi.Create("lives")
+				.WithDescription("Manage player lives and show the lives leaderboard")
+				.WithArgs(
+					parsers.OptionalWordRange("action", "list", "leaderboard", "check", "give", "take", "set"),
+					parsers.OptionalWord("player or group:<id>"),
+					parsers.OptionalInt("amount", 1))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleLives);
+		}
+
+		if (StratumCommandRegistration.ShouldRegister(commands.MobSpawning, "/mobs", "Commands.MobSpawning"))
+		{
+			server.api.commandapi.Create("mobs")
+				.WithDescription("Control natural mob spawning and wipe loaded creatures")
+				.WithArgs(parsers.OptionalWordRange("action", "status", "set", "scale", "wipe"), parsers.OptionalWord("category or multiplier"), parsers.OptionalWord("state or confirm"))
+				.RequiresPrivilege(Privilege.controlserver)
+				.HandleWith(HandleMobSpawning);
 		}
 
 		if (StratumCommandRegistration.ShouldRegister(commands.Jail, "/jail commands", "Commands.Jail"))
@@ -290,6 +328,24 @@ internal class CmdStratumStaffCommands
 				.HandleWith(HandleReports);
 		}
 
+		if (StratumCommandRegistration.ShouldRegister(commands.Restart, "/restart", "Commands.Restart"))
+		{
+			server.api.commandapi.Create("restart")
+				.WithDescription("Schedule a server restart with countdown warnings")
+				.WithArgs(parsers.Word("minutes or cancel"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleRestart);
+		}
+
+		if (StratumCommandRegistration.ShouldRegister(commands.ClearItems, "/clearitems", "Commands.ClearItems"))
+		{
+			server.api.commandapi.Create("clearitems")
+				.WithDescription("Clear all dropped items on the ground")
+				.WithArgs(parsers.OptionalWordRange("mode", "now", "cancel"))
+				.RequiresPrivilege(Privilege.chat)
+				.HandleWith(HandleClearItems);
+		}
+
 		StratumTargetCommandOverrides.Register(server);
 	}
 
@@ -384,7 +440,12 @@ internal class CmdStratumStaffCommands
 		var nearby = server.Clients.Values
 			.Where(client => client.State.IsAdmitted() && client.Player?.Entity?.Pos != null && client.Player.PlayerUID != player.PlayerUID)
 			.Where(client => client.Player.Entity.Pos.Dimension == pos.Dimension)
-			.Where(client => !StratumStaffCommandState.IsVanished(client.Player.PlayerUID) || StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish))
+			// Stratum #213: mirror the entity-visibility rule exactly, including the
+			// per-viewer "hide other vanished" preference, so /near never lists someone
+			// the caller cannot see.
+			.Where(client => !StratumStaffCommandState.IsVanished(client.Player.PlayerUID)
+				|| (StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish)
+					&& !StratumStaffCommandState.HidesOtherVanished(player.PlayerUID)))
 			.Select(client => new
 			{
 				client.Player.PlayerName,
@@ -611,6 +672,233 @@ internal class CmdStratumStaffCommands
 		return TextCommandResult.Success(StratumCommandText.Confirm("Chat unlocked"));
 	}
 
+	private TextCommandResult HandleChatToggle(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.ChatControl, "chattoggle", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		StratumChatConfig chat = StratumRuntime.Config.Chat;
+		string channel = args[0] as string;
+		string mode = args[1] as string;
+
+		if (string.IsNullOrWhiteSpace(channel) || string.Equals(channel, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			StringBuilder status = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+			status.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+			status.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+			return TextCommandResult.Success(status.ToString());
+		}
+
+		bool touchGlobal = string.Equals(channel, "global", StringComparison.OrdinalIgnoreCase) || string.Equals(channel, "all", StringComparison.OrdinalIgnoreCase);
+		bool touchGroups = string.Equals(channel, "group", StringComparison.OrdinalIgnoreCase) || string.Equals(channel, "all", StringComparison.OrdinalIgnoreCase);
+
+		if (string.Equals(mode, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			StringBuilder channelStatus = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+			if (touchGlobal)
+			{
+				channelStatus.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+			}
+
+			if (touchGroups)
+			{
+				channelStatus.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+			}
+
+			return TextCommandResult.Success(channelStatus.ToString());
+		}
+
+		// "toggle" and an omitted mode both flip; resolve per channel so /chattoggle all toggle
+		// does not desynchronise two channels that started in different states.
+		bool globalTarget = ResolveChatToggleTarget(mode, chat.Global.Enabled);
+		bool groupsTarget = ResolveChatToggleTarget(mode, chat.Groups.Enabled);
+
+		if (touchGlobal)
+		{
+			chat.Global.Enabled = globalTarget;
+		}
+
+		if (touchGroups)
+		{
+			chat.Groups.Enabled = groupsTarget;
+		}
+
+		try
+		{
+			StratumRuntime.SaveConfig();
+		}
+		catch (Exception ex)
+		{
+			return TextCommandResult.Error(StratumCommandText.Warning("Applied in memory but failed to write config") + ": " + ex.Message);
+		}
+
+		string actor = args.Caller.GetName();
+		StringBuilder result = new StringBuilder(StratumCommandText.Title("Chat Channels"));
+		if (touchGlobal)
+		{
+			AnnounceChatChannelChange("Global chat", globalTarget);
+			StratumRuntime.LogAudit("chattoggle global=" + (globalTarget ? "on" : "off") + " actor=" + actor, true);
+			result.Append(StratumCommandText.Row("Global", DescribeChatChannel(chat.Global)));
+		}
+
+		if (touchGroups)
+		{
+			AnnounceChatChannelChange("Group chat", groupsTarget);
+			StratumRuntime.LogAudit("chattoggle group=" + (groupsTarget ? "on" : "off") + " actor=" + actor, true);
+			result.Append(StratumCommandText.Row("Group", DescribeChatChannel(chat.Groups)));
+		}
+
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private static bool ResolveChatToggleTarget(string mode, bool current)
+	{
+		if (string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		if (string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		return !current;
+	}
+
+	private TextCommandResult HandleMobSpawning(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.MobSpawning, "mobs", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		StratumMobSpawningConfig config = StratumRuntime.Config.MobSpawning;
+		string action = args.Parsers[0].IsMissing ? "status" : args[0] as string;
+		string category = args.Parsers[1].IsMissing ? null : args[1] as string;
+		string value = args.Parsers[2].IsMissing ? null : args[2] as string;
+
+		if (string.Equals(action, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			return TextCommandResult.Success(DescribeMobSpawning(config));
+		}
+
+		if (string.Equals(action, "set", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumMobSpawning.IsKnownCategory(category) || (!string.Equals(value, "on", StringComparison.OrdinalIgnoreCase) && !string.Equals(value, "off", StringComparison.OrdinalIgnoreCase)))
+			{
+				return TextCommandResult.Error("Usage: /mobs set <hostile|neutral|passive|all> <on|off>");
+			}
+
+			bool enabled = string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
+			if (string.Equals(category, "all", StringComparison.OrdinalIgnoreCase))
+			{
+				config.Enabled = enabled;
+				config.HostileEnabled = enabled;
+				config.NeutralEnabled = enabled;
+				config.PassiveEnabled = enabled;
+			}
+			else
+			{
+				config.Enabled = true;
+				SetMobCategory(config, category, enabled);
+			}
+
+			return SaveMobSpawningConfig(config, "set " + category + "=" + (enabled ? "on" : "off"), args.Caller.GetName());
+		}
+
+		if (string.Equals(action, "scale", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!float.TryParse(category, NumberStyles.Float, CultureInfo.InvariantCulture, out float multiplier) || multiplier < 0f || multiplier > 1f)
+			{
+				return TextCommandResult.Error("Usage: /mobs scale <0..1>");
+			}
+
+			config.NaturalSpawnMultiplier = multiplier;
+			return SaveMobSpawningConfig(config, "scale=" + multiplier.ToString(CultureInfo.InvariantCulture), args.Caller.GetName());
+		}
+
+		if (string.Equals(action, "wipe", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumMobSpawning.IsKnownCategory(category))
+			{
+				return TextCommandResult.Error("Usage: /mobs wipe <hostile|neutral|passive|all> confirm");
+			}
+
+			if (!string.Equals(value, "confirm", StringComparison.OrdinalIgnoreCase))
+			{
+				return TextCommandResult.Error("This removes loaded creatures. Repeat the command with the final argument 'confirm'.");
+			}
+
+			int wiped = 0;
+			EntityDespawnData despawnData = new EntityDespawnData { Reason = EnumDespawnReason.Unload };
+			foreach (Entity entity in server.LoadedEntities.Values.ToArray())
+			{
+				if (!StratumMobSpawning.IsCategory(entity, category) || entity.ShouldDespawn)
+				{
+					continue;
+				}
+
+				server.DespawnEntity(entity, despawnData);
+				wiped++;
+			}
+
+			StratumRuntime.LogAudit("mobs wipe=" + category + " count=" + wiped + " actor=" + args.Caller.GetName(), true);
+			return TextCommandResult.Success(StratumCommandText.Confirm("Removed " + wiped + " loaded " + category + " creature" + (wiped == 1 ? "" : "s") + "."));
+		}
+
+		return TextCommandResult.Error("Usage: /mobs status, /mobs set <category> <on|off>, /mobs scale <0..1>, or /mobs wipe <category> confirm");
+	}
+
+	private static string DescribeMobSpawning(StratumMobSpawningConfig config)
+	{
+		StringBuilder result = new StringBuilder(StratumCommandText.Title("Natural Mob Spawning"));
+		result.Append(StratumCommandText.Row("Enabled", config.Enabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Hostile", config.HostileEnabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Neutral", config.NeutralEnabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Passive", config.PassiveEnabled ? "on" : "off"));
+		result.Append(StratumCommandText.Row("Natural scale", config.NaturalSpawnMultiplier.ToString("0.##", CultureInfo.InvariantCulture)));
+		return result.ToString();
+	}
+
+	private static void SetMobCategory(StratumMobSpawningConfig config, string category, bool enabled)
+	{
+		if (string.Equals(category, "hostile", StringComparison.OrdinalIgnoreCase)) config.HostileEnabled = enabled;
+		if (string.Equals(category, "neutral", StringComparison.OrdinalIgnoreCase)) config.NeutralEnabled = enabled;
+		if (string.Equals(category, "passive", StringComparison.OrdinalIgnoreCase)) config.PassiveEnabled = enabled;
+	}
+
+	private static TextCommandResult SaveMobSpawningConfig(StratumMobSpawningConfig config, string action, string actor)
+	{
+		config.EnsureSane();
+		StratumMobSpawning.Refresh();
+		try
+		{
+			StratumRuntime.SaveConfig();
+		}
+		catch (Exception exception)
+		{
+			return TextCommandResult.Error(StratumCommandText.Warning("Applied in memory but failed to write config") + ": " + exception.Message);
+		}
+
+		StratumRuntime.LogAudit("mobs " + action + " actor=" + actor, true);
+		return TextCommandResult.Success(DescribeMobSpawning(config));
+	}
+
+	private static string DescribeChatChannel(StratumChatChannelConfig channel)
+	{
+		return (channel.Enabled ? "enabled" : "disabled") + ", staffBypass=" + (channel.AllowStaffBypass ? "on" : "off");
+	}
+
+	private void AnnounceChatChannelChange(string label, bool enabled)
+	{
+		string colour = enabled ? "#9bd77e" : "#e47d68";
+		string verb = enabled ? " has been enabled." : " has been disabled by staff.";
+		server.SendMessageToGeneral("<font color=\"" + colour + "\"><strong>" + label + verb + "</strong></font>", EnumChatType.Notification);
+	}
+
 	private TextCommandResult HandleClearChat(TextCommandCallingArgs args)
 	{
 		if (!CheckAccess(args, StratumRuntime.Config.Commands.ChatControl, "chatclear", out TextCommandResult failure))
@@ -701,6 +989,22 @@ internal class CmdStratumStaffCommands
 		}
 
 		string mode = args[0] as string;
+
+		// Stratum #213: /vanish hideothers [on|off|toggle] is a per-viewer preference and
+		// does not touch the caller's own vanish state. Must be handled before the toggle
+		// fallthrough below, which treats any unrecognised mode word as "toggle vanish".
+		if (string.Equals(mode, "hideothers", StringComparison.OrdinalIgnoreCase))
+		{
+			return HandleVanishHideOthers(player, args[1] as string);
+		}
+
+		if (string.Equals(mode, "status", StringComparison.OrdinalIgnoreCase))
+		{
+			return TextCommandResult.Success(StratumCommandText.Title("Vanish")
+				+ StratumCommandText.Row("Vanished", StratumStaffCommandState.IsVanished(player.PlayerUID) ? "yes" : "no")
+				+ StratumCommandText.Row("Hide other vanished", StratumStaffCommandState.HidesOtherVanished(player.PlayerUID) ? "on" : "off"));
+		}
+
 		bool enable = string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase) || (!string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase) && !StratumStaffCommandState.IsVanished(player.PlayerUID));
 		StratumStaffCommandState.SetVanished(player, enable);
 		if (enable)
@@ -713,6 +1017,32 @@ internal class CmdStratumStaffCommands
 		StratumStaffCommandState.RevealPlayerToOthers(server, player);
 		lastVanishIndicatorMsByUid.Remove(player.PlayerUID);
 		return TextCommandResult.Success(StratumCommandText.Confirm("Vanish disabled"));
+	}
+
+	private TextCommandResult HandleVanishHideOthers(IServerPlayer player, string state)
+	{
+		bool current = StratumStaffCommandState.HidesOtherVanished(player.PlayerUID);
+		bool target;
+		if (string.Equals(state, "on", StringComparison.OrdinalIgnoreCase))
+		{
+			target = true;
+		}
+		else if (string.Equals(state, "off", StringComparison.OrdinalIgnoreCase))
+		{
+			target = false;
+		}
+		else
+		{
+			target = !current;
+		}
+
+		StratumStaffCommandState.SetHidesOtherVanished(player.PlayerUID, target);
+		StratumStaffCommandState.RefreshVanishedVisibilityForViewer(server, player);
+		StratumRuntime.LogAudit("vanish hideothers=" + (target ? "on" : "off") + " actor=" + EscapeLog(player.PlayerName));
+
+		return TextCommandResult.Success(StratumCommandText.Confirm(target
+			? "Other vanished staff are now hidden from you"
+			: "Other vanished staff are now visible to you"));
 	}
 
 	private TextCommandResult HandlePvp(TextCommandCallingArgs args)
@@ -800,6 +1130,281 @@ internal class CmdStratumStaffCommands
 		return TextCommandResult.Success(StratumCommandText.Confirm("Revived", StratumCommandText.Escape(target.PlayerName) + " in place."));
 	}
 
+	private TextCommandResult HandleLives(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.Lives, "lives", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		string action = args[0] as string;
+		if (string.IsNullOrWhiteSpace(action) || string.Equals(action, "list", StringComparison.OrdinalIgnoreCase))
+		{
+			return FormatLivesList(leaderboard: false);
+		}
+
+		if (string.Equals(action, "leaderboard", StringComparison.OrdinalIgnoreCase))
+		{
+			return FormatLivesList(leaderboard: true);
+		}
+
+		string token = args[1] as string;
+		if (string.IsNullOrWhiteSpace(token))
+		{
+			return TextCommandResult.Error("Usage: /lives check <player> or /lives <give|take|set> <player|group:<id>> [amount]");
+		}
+
+		if (LooksLikeLivesTeam(token))
+		{
+			return TextCommandResult.Error("Team targets are not supported. Use a player or group:<id>.");
+		}
+
+		if (string.Equals(action, "check", StringComparison.OrdinalIgnoreCase))
+		{
+			return RunLivesTargets(token, DescribeLives);
+		}
+
+		if (!string.Equals(action, "give", StringComparison.OrdinalIgnoreCase) &&
+			!string.Equals(action, "take", StringComparison.OrdinalIgnoreCase) &&
+			!string.Equals(action, "set", StringComparison.OrdinalIgnoreCase))
+		{
+			return TextCommandResult.Error("Usage: /lives [list|leaderboard|check|give|take|set] <player|group:<id>> [amount]");
+		}
+
+		int amount = (int)args[2];
+		if (amount < 0 || (amount == 0 && !string.Equals(action, "set", StringComparison.OrdinalIgnoreCase)))
+		{
+			return TextCommandResult.Error("Amount must be positive. Use zero only with /lives set.");
+		}
+
+		string actorName = args.Caller.GetName();
+		System.Func<ServerPlayerData, ConnectedClient, TextCommandResult> apply = (targetData, onlineTarget) => AdjustLives(targetData, onlineTarget, action, amount, actorName);
+		if (LooksLikeLivesGroup(token))
+		{
+			return RunForLivesGroupTargets(token, apply);
+		}
+
+		return RunForKnownTargets(token, apply);
+	}
+
+	private TextCommandResult RunLivesTargets(string token, System.Func<ServerPlayerData, ConnectedClient, TextCommandResult> perTarget)
+	{
+		if (LooksLikeLivesGroup(token))
+		{
+			return RunForLivesGroupTargets(token, perTarget);
+		}
+
+		return RunForKnownTargets(token, perTarget);
+	}
+
+	private TextCommandResult RunForLivesGroupTargets(string token, System.Func<ServerPlayerData, ConnectedClient, TextCommandResult> perTarget)
+	{
+		if (!TryResolveLivesGroup(token, out PlayerGroup group))
+		{
+			return TextCommandResult.Error("No player group found for '" + token + "'. Use group:<id> or group:<name>.");
+		}
+
+		List<(ServerPlayerData data, ConnectedClient client)> targets = new List<(ServerPlayerData, ConnectedClient)>();
+		foreach (ServerPlayerData playerData in server.PlayerDataManager.PlayerDataByUid.Values)
+		{
+			if (playerData?.PlayerGroupMemberShips == null || !playerData.PlayerGroupMemberShips.TryGetValue(group.Uid, out PlayerGroupMembership membership) || membership.Level == EnumPlayerGroupMemberShip.None)
+			{
+				continue;
+			}
+
+			targets.Add((playerData, FindOnlineClientByUid(playerData.PlayerUID)));
+		}
+
+		if (targets.Count == 0)
+		{
+			return TextCommandResult.Error("Player group '" + group.Name + "' has no known members.");
+		}
+
+		if (targets.Count == 1)
+		{
+			return perTarget(targets[0].data, targets[0].client);
+		}
+
+		int success = 0;
+		List<string> failures = new List<string>();
+		foreach ((ServerPlayerData data, ConnectedClient client) target in targets)
+		{
+			TextCommandResult result;
+			try
+			{
+				result = perTarget(target.data, target.client);
+			}
+			catch (Exception exception)
+			{
+				failures.Add(target.data.LastKnownPlayername + " (" + exception.GetType().Name + ")");
+				continue;
+			}
+
+			if (result != null && result.Status == EnumCommandStatus.Success)
+			{
+				success++;
+			}
+			else
+			{
+				failures.Add(target.data.LastKnownPlayername);
+			}
+		}
+
+		string message = StratumCommandText.Confirm("Applied", success + "/" + targets.Count + " players in " + group.Name);
+		if (failures.Count > 0)
+		{
+			message += " " + StratumCommandText.Warning("skipped: " + string.Join(", ", failures));
+		}
+		return TextCommandResult.Success(message);
+	}
+
+	private TextCommandResult AdjustLives(ServerPlayerData targetData, ConnectedClient onlineTarget, string action, int amount, string actorName)
+	{
+		int bonusLives;
+		if (string.Equals(action, "set", StringComparison.OrdinalIgnoreCase))
+		{
+			bonusLives = StratumLivesStore.SetBonus(server, targetData, amount);
+		}
+		else
+		{
+			int delta = string.Equals(action, "take", StringComparison.OrdinalIgnoreCase) ? -amount : amount;
+			bonusLives = StratumLivesStore.AddBonus(server, targetData, delta);
+		}
+
+		int livesLeft = StratumLivesStore.GetLivesLeft(server, targetData, StratumLivesStore.GetWorldData(server, targetData));
+		string targetName = targetData.LastKnownPlayername ?? targetData.PlayerUID;
+		bool revived = false;
+		if ((string.Equals(action, "give", StringComparison.OrdinalIgnoreCase) || string.Equals(action, "set", StringComparison.OrdinalIgnoreCase)) &&
+			livesLeft > 0 && onlineTarget?.Player?.Entity is EntityPlayer targetEntity && !targetEntity.Alive)
+		{
+			targetEntity.Revive();
+			revived = true;
+			Send(onlineTarget.Player, StratumCommandText.Confirm("You have been revived.", "A life was granted."), EnumChatType.Notification);
+		}
+
+		StratumRuntime.LogAudit("lives action=" + action + " target=" + targetName + " amount=" + amount + " actor=" + actorName, true);
+		StringBuilder result = new StringBuilder(StratumCommandText.Confirm("Lives updated", targetName));
+		result.Append(StratumCommandText.Row("Bonus", bonusLives.ToString(GlobalConstants.DefaultCultureInfo)));
+		result.Append(StratumCommandText.Row("Remaining", FormatLivesLeft(livesLeft)));
+		if (revived)
+		{
+			result.Append(StratumCommandText.Row("Status", "revived"));
+		}
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private TextCommandResult DescribeLives(ServerPlayerData targetData, ConnectedClient onlineTarget)
+	{
+		ServerWorldPlayerData worldData = StratumLivesStore.GetWorldData(server, targetData);
+		int deaths = Math.Max(0, worldData?.Deaths ?? 0);
+		int bonusLives = StratumLivesStore.GetBonus(targetData);
+		int livesLeft = StratumLivesStore.GetLivesLeft(server, targetData, worldData);
+		string targetName = targetData.LastKnownPlayername ?? targetData.PlayerUID;
+		StringBuilder result = new StringBuilder(StratumCommandText.Title("Lives: " + targetName));
+		result.Append(StratumCommandText.Row("Deaths", deaths.ToString(GlobalConstants.DefaultCultureInfo)));
+		result.Append(StratumCommandText.Row("Bonus", bonusLives.ToString(GlobalConstants.DefaultCultureInfo)));
+		result.Append(StratumCommandText.Row("Remaining", FormatLivesLeft(livesLeft)));
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private TextCommandResult FormatLivesList(bool leaderboard)
+	{
+		List<(ServerPlayerData data, int remaining)> rows = new List<(ServerPlayerData, int)>();
+		foreach (ServerPlayerData playerData in server.PlayerDataManager.PlayerDataByUid.Values)
+		{
+			if (playerData == null)
+			{
+				continue;
+			}
+
+			int remaining = StratumLivesStore.GetLivesLeft(server, playerData, StratumLivesStore.GetWorldData(server, playerData));
+			if (leaderboard)
+			{
+				ConnectedClient onlineTarget = FindOnlineClientByUid(playerData.PlayerUID);
+				if (remaining == 0 || onlineTarget?.Player?.Entity == null || !onlineTarget.Player.Entity.Alive)
+				{
+					continue;
+				}
+			}
+
+			rows.Add((playerData, remaining));
+		}
+
+		rows.Sort((left, right) =>
+		{
+			if (left.remaining < 0) return right.remaining < 0 ? ComparePlayerNames(left.data, right.data) : -1;
+			if (right.remaining < 0) return 1;
+			int remainingComparison = right.remaining.CompareTo(left.remaining);
+			return remainingComparison != 0 ? remainingComparison : ComparePlayerNames(left.data, right.data);
+		});
+
+		if (rows.Count == 0)
+		{
+			return TextCommandResult.Success(StratumCommandText.Empty(leaderboard ? "No living players have lives remaining." : "No player lives recorded."));
+		}
+
+		StringBuilder result = new StringBuilder(StratumCommandText.Title(leaderboard ? "Lives Leaderboard" : "Player Lives"));
+		for (int index = 0; index < rows.Count; index++)
+		{
+			(string name, int remaining) row = (rows[index].data.LastKnownPlayername ?? rows[index].data.PlayerUID, rows[index].remaining);
+			result.Append(StratumCommandText.Bullet((index + 1).ToString(GlobalConstants.DefaultCultureInfo) + ". " + row.name, FormatLivesLeft(row.remaining)));
+		}
+
+		return TextCommandResult.Success(result.ToString());
+	}
+
+	private static int ComparePlayerNames(ServerPlayerData left, ServerPlayerData right)
+	{
+		return string.Compare(left.LastKnownPlayername, right.LastKnownPlayername, StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static string FormatLivesLeft(int livesLeft)
+	{
+		return livesLeft < 0 ? "unlimited" : livesLeft.ToString(GlobalConstants.DefaultCultureInfo);
+	}
+
+	private bool LooksLikeLivesGroup(string token)
+	{
+		return token.StartsWith("group:", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private bool LooksLikeLivesTeam(string token)
+	{
+		return token.StartsWith("team:", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private bool TryResolveLivesGroup(string token, out PlayerGroup group)
+	{
+		group = null;
+		if (!LooksLikeLivesGroup(token) || server.PlayerDataManager.PlayerGroupsById == null)
+		{
+			return false;
+		}
+
+		int separator = token.IndexOf(':');
+		string identifier = token.Substring(separator + 1).Trim();
+		if (identifier.Length == 0)
+		{
+			return false;
+		}
+
+		if (int.TryParse(identifier, out int groupId))
+		{
+			return server.PlayerDataManager.PlayerGroupsById.TryGetValue(groupId, out group);
+		}
+
+		foreach (PlayerGroup candidate in server.PlayerDataManager.PlayerGroupsById.Values)
+		{
+			if (string.Equals(candidate.Name, identifier, StringComparison.OrdinalIgnoreCase))
+			{
+				group = candidate;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private TextCommandResult HandleSetJail(TextCommandCallingArgs args)
 	{
 		if (!CheckAccess(args, StratumRuntime.Config.Commands.Jail, "setjail", out TextCommandResult failure))
@@ -835,6 +1440,21 @@ internal class CmdStratumStaffCommands
 		string reason = args[1] as string;
 		Caller caller = args.Caller;
 		return RunForKnownTargets(token, (targetData, onlineTarget) => JailSingleTarget(targetData, onlineTarget, caller, reason, jailPosition));
+	}
+
+	// Entry point for StratumAnticheatPunishments. Same jailing as /jail, minus the command-access
+	// check a staff member already passed by definition and an automated punishment has no caller
+	// to check against; resolves the configured jail location itself since there is no
+	// TextCommandCallingArgs to read it from.
+	internal TextCommandResult JailAutomatically(ServerPlayerData targetData, ConnectedClient onlineTarget, Caller caller, string reason)
+	{
+		if (!TryGetJailLocation(out EntityPos jailPosition, out string error))
+		{
+			StratumRuntime.LogWarning("anticheat punishment could not jail " + targetData?.LastKnownPlayername + ": " + error);
+			return TextCommandResult.Error(error);
+		}
+
+		return JailSingleTarget(targetData, onlineTarget, caller, reason, jailPosition);
 	}
 
 	private TextCommandResult JailSingleTarget(ServerPlayerData targetData, ConnectedClient onlineTarget, Caller caller, string reason, EntityPos jailPosition)
@@ -1328,6 +1948,21 @@ internal class CmdStratumStaffCommands
 			}
 
 			stratumMuteExpiryByUid.Remove(player.PlayerUID);
+		}
+		// Stratum end
+
+		// Stratum start: runtime per-channel chat toggles (issue #218)
+		StratumChatChannelConfig chatChannel = StratumRuntime.Config.Chat?.ChannelFor(channelId);
+		if (chatChannel != null && !chatChannel.Enabled)
+		{
+			bool staffExempt = chatChannel.AllowStaffBypass
+				&& StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.ChatControl);
+			if (!staffExempt)
+			{
+				consumed.value = true;
+				player.SendMessage(channelId, chatChannel.DisabledMessage, EnumChatType.CommandError);
+				return;
+			}
 		}
 		// Stratum end
 
@@ -1917,5 +2552,85 @@ internal class CmdStratumStaffCommands
 		}
 
 		return builder.ToString();
+	}
+
+	private TextCommandResult HandleRestart(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.Restart, "restart", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		if (StratumRuntime.RestartScheduler == null)
+		{
+			return TextCommandResult.Error("Restart scheduler not yet initialized.");
+		}
+
+		string input = args[0] as string;
+		if (string.Equals(input, "cancel", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumRuntime.RestartScheduler.IsRestartScheduled)
+			{
+				return TextCommandResult.Error("No restart is scheduled.");
+			}
+			StratumRuntime.RestartScheduler.Cancel();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml("Scheduled restart cancelled.", StratumRuntime.Config?.Appearance?.Theme?.GoodColor),
+				EnumChatType.Notification);
+			return TextCommandResult.Success("Restart cancelled.");
+		}
+
+		if (!int.TryParse(input, out int minutes) || minutes < 1 || minutes > 60)
+		{
+			return TextCommandResult.Error("Usage: /restart <1-60> or /restart cancel");
+		}
+
+		if (StratumRuntime.RestartScheduler.IsRestartScheduled)
+		{
+			StratumRuntime.RestartScheduler.Cancel();
+		}
+
+		StratumRuntime.RestartScheduler.Schedule(minutes * 60);
+		return TextCommandResult.Success($"Restart scheduled in {minutes} minute(s).");
+	}
+
+	private TextCommandResult HandleClearItems(TextCommandCallingArgs args)
+	{
+		if (!CheckAccess(args, StratumRuntime.Config.Commands.ClearItems, "clearitems", out TextCommandResult failure))
+		{
+			return failure;
+		}
+
+		if (StratumRuntime.RestartScheduler == null)
+		{
+			return TextCommandResult.Error("Restart scheduler not yet initialized.");
+		}
+
+		string mode = args[0] as string;
+		if (string.Equals(mode, "now", StringComparison.OrdinalIgnoreCase))
+		{
+			int count = StratumRuntime.RestartScheduler.ClearGroundItems();
+			server.SendMessageToGeneral(
+				StratumChatFormatter.ColorizeVtml($"Cleaned up {count} ground items.", StratumRuntime.Config?.Appearance?.Theme?.AccentColor),
+				EnumChatType.Notification);
+			return TextCommandResult.Success($"Cleared {count} items.");
+		}
+
+		if (string.Equals(mode, "cancel", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!StratumRuntime.RestartScheduler.CancelClearItemsWarning())
+			{
+				return TextCommandResult.Error("No ground item clear is scheduled.");
+			}
+			return TextCommandResult.Success("Ground item clear cancelled.");
+		}
+
+		int leadSeconds = StratumRuntime.Config?.Performance?.Restart?.ClearGroundItemsLeadSeconds ?? 30;
+		if (!StratumRuntime.RestartScheduler.ScheduleClearItemsWarning(leadSeconds))
+		{
+			return TextCommandResult.Error("A ground item clear is already scheduled. Use /clearitems cancel first.");
+		}
+
+		return TextCommandResult.Success($"Ground items will be cleared in {leadSeconds} seconds.");
 	}
 }

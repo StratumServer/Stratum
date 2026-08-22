@@ -1,11 +1,13 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-index e2ca303..da7c67d 100644
+index e2ca303..e78ad8d 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-@@ -1,1110 +1,1641 @@
+@@ -1,1110 +1,2182 @@
  using System;
  using System.Collections.Generic;
++using System.Collections.Concurrent;
 +using System.Runtime.CompilerServices;
++using System.Threading;
  using Vintagestory.API.Client.Tesselation;
  using Vintagestory.API.Common;
  using Vintagestory.API.Datastructures;
@@ -24,17 +26,18 @@ index e2ca303..da7c67d 100644
 +// - Batching: Clustering sources and calculating from their geometric center reduce CPU load by tens of times.
 +// - Directional Absorption: Universal face-checking system correctly handles light propagation through slabs, stairs, and volumetric transparent blocks (water, leaves) in all 6 directions.
 +// - Sunlight Invalidation: Rewrote UpdateSunLight to correctly extinguish trapped sunlight in sealed caves and rooms, recalculating only the affected chunks below the modified block.
++// - Sunlight Batching: Sunlight/SunlightFlood/SunLightFloodNeighbourChunks/SpreadSunLightInColumn read blocks through a once-per-chunk bulk
++//   snapshot (Data.CopyBlocksToUnsafe). Sunlight is staged in a plain byte[] during these calls and committed to live storage once, only for
++//   cells that actually changed. Sessions nest via a depth counter so FullRelight and FlushPendingSunLightUpdates can wrap several calls in
++//   one shared session, while each method still works correctly when called standalone.
++// - Thread Safety: All shared dictionaries are ConcurrentDictionary, object pools are protected with locks.
++//   Stratum: block-snapshot and sun-staging SESSIONS ARE NOW PER-THREAD.
++//
++//   NOTE: SunlightFlood and SpreadSunLightInColumn take an explicit `dim` parameter instead of relying on a shared currentDimOffset field.
 +
 +// Limitations:
 +// Hard limit of 128³: Light is simply "clipped" at the boundaries of the invisible cube, which will cause artifacts during large explosions. This exists in vanilla too, so it's not critical.
 +// Color distortion: The Top-4 limit slightly breaks the physics of HSV mixing if >4 multi-colored sources shine on a single point. But do we even need to mix that many colors?
-+// Not thread-safe: Shared arrays and pools require creating a separate instance of the class for each thread. Vanilla is also not thread-safe. 
-+
-+// Tested on the generation of 10200 chunk columns:
-+// - UpdateLightAt summary method execution time:  from 22.9 s to 30...42 s
-+// - SunLightFloodNeighbourChunks summary method execution time:from 11.1 s to 22..25 s
-+// - GC memory allocations: reduced from 9.88 GB to 194 MB
-+// P.S. can be calculated in several threads simultaneously.
 +
 +/// <summary>
 +/// Main lighting calculation class.
@@ -42,37 +45,39 @@ index e2ca303..da7c67d 100644
 +/// </summary>
  public class ChunkIlluminator
  {
--	private ushort defaultSunLight;
-+	private ushort defaultSunLight; // Maximum sunlight level
++	/// <summary> Maximum sunlight level for the world. </summary>
+ 	private ushort defaultSunLight;
  
 -	private const int MAXLIGHTSPREAD = 31;
- 
+-
 -	private const int VISITED_WIDTH = 63;
 +	private const int DARKNESS_SPREAD_WIDTH = 63;
 +	private const int DARKNESS_SPREAD_HALF = 31;
 +	private const int DARKNESS_VISITED_SIZE = DARKNESS_SPREAD_WIDTH * DARKNESS_SPREAD_WIDTH * DARKNESS_SPREAD_WIDTH; // 250047
 +	private const int DARKNESS_VISITED_CENTER = 125023;
  
++	/// <summary> World dimensions in blocks along X/Y/Z axes. </summary>
  	private int mapsizex;
 -
  	private int mapsizey;
 -
  	private int mapsizez;
  
-+	// Offsets for fast transition to neighboring blocks in the flat chunk array
++	/// <summary> Offsets for fast transition to neighboring blocks in the flat chunk array. </summary>
  	private int XPlus = 1;
 +	private int YPlus; // chunkSize * chunkSize
 +	private int ZPlus; // chunkSize
  
 -	private int YPlus;
 +	private IList<Block> blockTypes; // Reference to the global array of block types
-+	private int chunkSize;           // Chunk size
++									 /// <summary> Chunk size in blocks (always a power of two). </summary>
++	private int chunkSize;
  
 -	private int ZPlus;
 +	// Precomputed shift/mask for chunkSize, since it's always a power of two (e.g. 32).
-+	// Replaces division/modulo by chunkSize with bit shift/AND in hot loops (much cheaper,
-+	// since the JIT cannot turn div/mod by a *variable* into shifts even if it's a power of two).
++	/// <summary> Log₂(chunkSize), precomputed for shift-based division in hot loops. </summary>
 +	private int chunkSizeLog2;
++	/// <summary> chunkSize - 1, used as bitmask for fast modulo by chunkSize. </summary>
 +	private int chunkSizeMask;
  
 -	private IList<Block> blockTypes;
@@ -80,52 +85,76 @@ index e2ca303..da7c67d 100644
 +	private IBlockAccessor readBlockAccess;  // Interface for reading blocks (needed to get light color)
  
 -	private int chunkSize;
-+	// Temporary position variables (reused to avoid creating new objects in memory)
++	/// <summary> Reusable BlockPos instances to avoid GC allocations during BFS traversal. </summary>
 +	private BlockPos tmpDiPos = new BlockPos(0);
 +	private BlockPos tmpPos = new BlockPos(0);
-+	private BlockPos tmpPos2 = new BlockPos(0); 
++	private BlockPos tmpPos2 = new BlockPos(0);
 +	private BlockPos tmpPosDimensionAware = new BlockPos(0);
  
 -	internal IChunkProvider chunkProvider;
-+	private int[] currentVisited; // Array for tracking visited blocks during BFS (protection against infinite loops)
++	/// <summary> Array for tracking visited blocks during darkness BFS (infinite-loop protection). </summary>
++	private int[] currentVisited;
++	/// <summary> Current iteration ID — replaces clearing the entire currentVisited array every time. </summary>
 +	private int iteration;        // Current iteration ID (instead of clearing the currentVisited array, we just change iteration)
  
 -	private IBlockAccessor readBlockAccess;
++	/// <summary> Grid dimension constants: 2^7 = 128 (grid size for BFS), mask for fast modulo-128 operation. </summary>
 +	private const int GRID_BITS = 7;      // 2^7 = 128 (grid dimension for BFS)
 +	private const int GRID_MASK = 127;    // 0x7F (mask for fast modulo 128 operation)
  
 -	private Dictionary<Vec3i, LightSourcesAtBlock> VisitedNodes = new Dictionary<Vec3i, LightSourcesAtBlock>();
++	/// <summary> List of 3D grid cell indices affected by the last BFS pass. </summary>
 +	private List<int> touchedCells = new List<int>(4096); // List of grid cell indices that were affected by light
  
 -	private List<NearbyLightSource> nearbyLightSources = new List<NearbyLightSource>();
 +	#region Object Pools (Object pools for GC optimization)
  
 -	private BlockPos tmpDiPos = new BlockPos(0);
++	/// <summary> Object pool for QueueOfInt instances (Zero-GC optimization). </summary>
 +	private Stack<QueueOfInt> queueOfIntPool = new Stack<QueueOfInt>();
++	private readonly object queueOfIntPoolLock = new object(); // Stratum: lock for thread-safe pool access
  
 -	private BlockPos tmpPos = new BlockPos(0);
++	// Stratum: Object pool for dense light buffers during WorldGen
++	private readonly Stack<int[]> lightBufferPool = new Stack<int[]>(256);
++	private readonly object lightBufferPoolLock = new object(); // Stratum: lock for thread-safe pool access
+ 
+-	private BlockPos tmpPosDimensionAware = new BlockPos(0);
++	internal int[] RentLightBuffer()
++	{
++		lock (lightBufferPoolLock) { if (lightBufferPool.Count > 0) return lightBufferPool.Pop(); }
++		return new int[32768];
++	}
+ 
+-	private int[] currentVisited;
++	internal void ReturnLightBuffer(int[] buffer)
++	{
++		lock (lightBufferPoolLock) { if (lightBufferPool.Count < 512) lightBufferPool.Push(buffer); }
++	}
+ 
+-	private int iteration;
 +	/// <summary> Gets a custom QueueOfInt queue from the pool and clears it. </summary>
 +	private QueueOfInt GetQueueOfInt()
 +	{
-+		if (queueOfIntPool.Count > 0)
++		lock (queueOfIntPoolLock)
 +		{
-+			var q = queueOfIntPool.Pop();
-+			while (q.Count > 0) q.Dequeue();
-+			return q;
++			if (queueOfIntPool.Count > 0)
++			{
++				var q = queueOfIntPool.Pop();
++				while (q.Count > 0) q.Dequeue();
++				return q;
++			}
 +		}
 +		return new QueueOfInt();
 +	}
 +	#endregion
- 
--	private BlockPos tmpPosDimensionAware = new BlockPos(0);
++
 +	#region Generational Grid for Multi-Source BFS
- 
--	private int[] currentVisited;
++
 +	private const int LIGHT_GRID_WIDTH = 128; // Size of the 3D grid for local light calculation
 +	private const int LIGHT_GRID_HALF = 64;
 +	private const int LIGHT_GRID_SIZE = LIGHT_GRID_WIDTH * LIGHT_GRID_WIDTH * LIGHT_GRID_WIDTH;
- 
--	private int iteration;
++
 +	/// <summary>
 +	/// Light grid cell structure. Uses Top-4 Tracking (stores up to 4 sources)
 +	/// to prevent the combinatorial explosion of paths when mixing multiple colored sources.
@@ -141,10 +170,12 @@ index e2ca303..da7c67d 100644
 +		public byte trackedCount;          // How many sources are currently being tracked (from 0 to 4)
 +	}
 +
++	/// <summary> Flat array of the 128³ light grid. </summary>
 +	private LightCell[] lightGrid;                   // Flat array of the 3D grid
++													 /// <summary> Buckets (queues) for BFS, divided by light level (from 31 to 1). </summary>
 +	private List<(int idx, int srcIdx)>[] buckets;   // Buckets (queues) for BFS, divided by light level (from 31 to 1)
 +
-+	// Direction vectors for traversing 6 neighbors in the order of ALLFACES (N, E, S, W, U, D)
++	/// <summary> Direction vectors for traversing ALLFACES neighbors in order (N, E, S, W, U, D). </summary>
 +	private static readonly int[] dx = { 0, 1, 0, -1, 0, 0 };
 +	private static readonly int[] dy = { 0, 0, 0, 0, 1, -1 };
 +	private static readonly int[] dz = { -1, 0, 1, 0, 0, 0 };
@@ -152,37 +183,80 @@ index e2ca303..da7c67d 100644
 +
 +	#region Struct-based nearby sources (Arrays for storing nearby light sources)
 +
++	/// <summary> Lightweight position holder for nearby light sources. </summary>
 +	private struct NearbyLightSourceStruct
 +	{
 +		public int posX, posY, posZ;
 +	}
 +
 +	// Preallocated arrays for storing sources around the calculation point
-+
++	/// <summary> Position data for all discovered nearby light sources. </summary>
 +	private NearbyLightSourceStruct[] nearbyLightSourcesArray;
++	/// <summary> Hue channel (H) for each nearby light source. </summary>
 +	private byte[] nearbyH; // Hue
++							/// <summary> Saturation channel (S) for each nearby light source. </summary>
 +	private byte[] nearbyS; // Saturation
++							/// <summary> Brightness/Value channel (V) for each nearby light source. </summary>
 +	private byte[] nearbyB; // Brightness/Value
++							/// <summary> Number of currently discovered nearby light sources. </summary>
 +	private int nearbyCount;
 +
 +	#endregion
  
 -	public bool IsValidPos(int x, int y, int z)
++	// Stratum: pool for the outer int[][] wrapper used by SunFloodChunkColumnForWorldGen.
++	// The wrapper is recycled, but inner buffers are ALWAYS re-rented on Rent and nulled on Return,
++	// so a pooled wrapper can never alias an inner buffer that another thread already rented.
++	private readonly Stack<int[][]> lightBuffersOuterPool = new Stack<int[][]>(64);
++	private readonly object lightBuffersOuterPoolLock = new object();
 +
-+	// Lightweight struct for stack positions
-+	private struct FastBlockPos
++	/// <summary> Rents a pre-allocated int[][] wrapper with fresh inner buffers from the buffer pool. </summary>
++	internal int[][] RentLightBuffers(int count)
  	{
 -		if (x >= 0 && y >= 0 && z >= 0 && x < mapsizex && y % 32768 <= mapsizey)
-+		public int X, Y, Z, Dim;
-+		public FastBlockPos(int x, int y, int z, int dim)
++		lock (lightBuffersOuterPoolLock)
  		{
 -			return z <= mapsizez;
-+			X = x; Y = y; Z = z; Dim = dim;
++			if (lightBuffersOuterPool.Count > 0)
++			{
++				var arr = lightBuffersOuterPool.Pop();
++				if (arr.Length == count)
++				{
++					// Stratum: inners were nulled on return; always rent fresh ones.
++					for (int i = 0; i < count; i++) arr[i] = RentLightBuffer();
++					return arr;
++				}
++				// Wrong size (should not happen) — drop it, allocate fresh below.
++			}
  		}
 -		return false;
++		var fresh = new int[count][];
++		for (int i = 0; i < count; i++) fresh[i] = RentLightBuffer();
++		return fresh;
  	}
  
++	/// <summary> Returns the inner buffers to their pool and recycles the (now empty) outer array. </summary>
++	internal void ReturnLightBuffers(int[][] buffers)
++	{
++		if (buffers == null) return;
++		for (int i = 0; i < buffers.Length; i++)
++		{
++			ReturnLightBuffer(buffers[i]);
++			buffers[i] = null; // Stratum: no stale references inside the pooled wrapper
++		}
++		lock (lightBuffersOuterPoolLock) { if (lightBuffersOuterPool.Count < 256) lightBuffersOuterPool.Push(buffers); }
++	}
 +
++	// Lightweight struct for stack positions
++	/// <summary> Lightweight stack-friendly position with dimension, avoids BlockPos allocations. </summary>
++	private struct FastBlockPos
++	{
++		public int X, Y, Z, Dim;
++		public FastBlockPos(int x, int y, int z, int dim)
++		{
++			X = x; Y = y; Z = z; Dim = dim;
++		}
++	}
 +
 +	/// <summary> Initialization of pools, grids, and constants for light calculation. </summary>
  	public ChunkIlluminator(IChunkProvider chunkProvider, IBlockAccessor readBlockAccess, int chunkSize)
@@ -226,115 +300,976 @@ index e2ca303..da7c67d 100644
  		this.mapsizez = mapsizez;
  	}
  
-+	/// <summary> Full recalculation of light in a given cubic region </summary>
- 	public void FullRelight(BlockPos minPos, BlockPos maxPos)
+-	public void FullRelight(BlockPos minPos, BlockPos maxPos)
++	// ─── Stratum: PER-THREAD block-snapshot sessions ─────────────────────────
++	// The previous implementation used ONE shared ConcurrentDictionary cache + a shared non-atomic int depth counter.
++	// Under concurrent WorldGen threads the counter suffered lost updates, got stuck > 0, and the cache was never
++	// cleared again (≈108k int[32768] ≈ 14 GB retained). Sessions are inherently per-thread (a column pass runs on
++	// one thread), so all session state now lives in per-thread objects keyed by ManagedThreadId.
++
++	/// <summary> Per-thread block-snapshot session state. </summary>
++	private sealed class BlockSnapshotSession
  	{
- 		int num = chunkSize;
- 		Dictionary<Vec3i, IWorldChunk> dictionary = new Dictionary<Vec3i, IWorldChunk>();
-+
-+		// 1. Expand the region boundaries by 1 chunk in all directions so that light can correctly flow across boundaries
- 		int num2 = GameMath.Clamp(Math.Min(minPos.X, maxPos.X) - num, 0, mapsizex - 1);
- 		int num3 = GameMath.Clamp(Math.Min(minPos.Y, maxPos.Y) - num, 0, mapsizey - 1);
- 		int num4 = GameMath.Clamp(Math.Min(minPos.Z, maxPos.Z) - num, 0, mapsizez - 1);
- 		int num5 = GameMath.Clamp(Math.Max(minPos.X, maxPos.X) + num, 0, mapsizex - 1);
- 		int num6 = GameMath.Clamp(Math.Max(minPos.Y, maxPos.Y) + num, 0, mapsizey - 1);
- 		int num7 = GameMath.Clamp(Math.Max(minPos.Z, maxPos.Z) + num, 0, mapsizez - 1);
-+
-+		// Convert world coordinates to chunk coordinates
- 		int num8 = num2 / num;
- 		int num9 = num3 / num;
- 		int num10 = num4 / num;
- 		int num11 = num5 / num;
- 		int num12 = num6 / num;
- 		int num13 = num7 / num;
+-		int num = chunkSize;
+-		Dictionary<Vec3i, IWorldChunk> dictionary = new Dictionary<Vec3i, IWorldChunk>();
+-		int num2 = GameMath.Clamp(Math.Min(minPos.X, maxPos.X) - num, 0, mapsizex - 1);
+-		int num3 = GameMath.Clamp(Math.Min(minPos.Y, maxPos.Y) - num, 0, mapsizey - 1);
+-		int num4 = GameMath.Clamp(Math.Min(minPos.Z, maxPos.Z) - num, 0, mapsizez - 1);
+-		int num5 = GameMath.Clamp(Math.Max(minPos.X, maxPos.X) + num, 0, mapsizex - 1);
+-		int num6 = GameMath.Clamp(Math.Max(minPos.Y, maxPos.Y) + num, 0, mapsizey - 1);
+-		int num7 = GameMath.Clamp(Math.Max(minPos.Z, maxPos.Z) + num, 0, mapsizez - 1);
+-		int num8 = num2 / num;
+-		int num9 = num3 / num;
+-		int num10 = num4 / num;
+-		int num11 = num5 / num;
+-		int num12 = num6 / num;
+-		int num13 = num7 / num;
 -		int num14 = minPos.dimension * 1024;
+-		for (int i = num8; i <= num11; i++)
++		public int depth;
++		public readonly Dictionary<long, int[]> cache = new Dictionary<long, int[]>();
++	}
 +
-+		int num14 = minPos.dimension * 1024; // Offset for dimensions
-+		IWorldChunk chunk;
++	/// <summary> Per-thread sunlight staging session state. </summary>
++	private sealed class SunStagingSession
++	{
++		public int depth;
++		public readonly Dictionary<long, byte[]> staging = new Dictionary<long, byte[]>();
++		public readonly Dictionary<long, IChunkLight> lightingRefs = new Dictionary<long, IChunkLight>();
++		public readonly Dictionary<long, IWorldChunk> chunkRefs = new Dictionary<long, IWorldChunk>();
++	}
 +
-+		// 2. Load and unpack all necessary chunks
- 		for (int i = num8; i <= num11; i++)
++	private readonly ConcurrentDictionary<int, BlockSnapshotSession> blockSessions = new ConcurrentDictionary<int, BlockSnapshotSession>();
++	private readonly ConcurrentDictionary<int, SunStagingSession> sunSessions = new ConcurrentDictionary<int, SunStagingSession>();
++
++	/// <summary> Object pool for reusable block-snapshot arrays (Zero-GC). </summary>
++	private readonly Stack<int[]> blockSnapshotPool = new Stack<int[]>(256);
++	private readonly object blockSnapshotPoolLock = new object(); // Stratum: lock for thread-safe pool access
++
++	/// <summary> Object pool for reusable staging byte arrays (Zero-GC). </summary>
++	private readonly Stack<byte[]> sunStagingPool = new Stack<byte[]>(256);
++	private readonly object sunStagingPoolLock = new object(); // Stratum: lock for thread-safe pool access
++
++	/// <summary> Pending column-based sunlight recalculation requests keyed by packed column ID. </summary>
++	private readonly ConcurrentDictionary<long, int> pendingSunlightUpdates = new ConcurrentDictionary<long, int>();
++
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private BlockSnapshotSession GetBlockSession() =>
++		blockSessions.GetOrAdd(Thread.CurrentThread.ManagedThreadId, static _ => new BlockSnapshotSession());
++
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private BlockSnapshotSession PeekBlockSession() =>
++		blockSessions.TryGetValue(Thread.CurrentThread.ManagedThreadId, out var s) ? s : null;
++
++	/// <summary> Nesting depth of the block-snapshot session of THE CURRENT THREAD (0 = no session). </summary>
++	private int BlockSessionDepth => PeekBlockSession()?.depth ?? 0;
++
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private SunStagingSession GetSunSession() =>
++		sunSessions.GetOrAdd(Thread.CurrentThread.ManagedThreadId, static _ => new SunStagingSession());
++
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private SunStagingSession PeekSunSession() =>
++		sunSessions.TryGetValue(Thread.CurrentThread.ManagedThreadId, out var s) ? s : null;
++
++	/// <summary> Nesting depth of the sunlight staging session of THE CURRENT THREAD (0 = no session). </summary>
++	private int SunSessionDepth => PeekSunSession()?.depth ?? 0;
++
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private int[] RentBlockSnapshotArray()
++	{
++		lock (blockSnapshotPoolLock)
  		{
- 			for (int j = num9; j <= num12; j++)
- 			{
- 				for (int k = num10; k <= num13; k++)
- 				{
+-			for (int j = num9; j <= num12; j++)
+-			{
+-				for (int k = num10; k <= num13; k++)
+-				{
 -					IWorldChunk chunk = chunkProvider.GetChunk(i, j + num14, k);
-+					chunk = chunkProvider.GetChunk(i, j + num14, k);
- 					if (chunk != null)
- 					{
- 						chunk.Unpack();
- 						dictionary[new Vec3i(i, j, k)] = chunk;
- 					}
- 				}
- 			}
+-					if (chunk != null)
+-					{
+-						chunk.Unpack();
+-						dictionary[new Vec3i(i, j, k)] = chunk;
+-					}
+-				}
+-			}
++			if (blockSnapshotPool.Count > 0) return blockSnapshotPool.Pop();
  		}
+-		foreach (IWorldChunk value2 in dictionary.Values)
++		return new int[chunkSize * chunkSize * chunkSize];
++	}
 +
-+		// 3. Completely clear the old light in all affected chunks
- 		foreach (IWorldChunk value2 in dictionary.Values)
++	private int[] GetOrCreateBlockSnapshot(long chunkKey, IWorldChunk chunk)
++	{
++		// Stratum: per-thread cache — plain Dictionary, no races, no TryAdd fallback needed.
++		var session = GetBlockSession();
++		if (session.cache.TryGetValue(chunkKey, out var snap)) return snap;
++
++		snap = RentBlockSnapshotArray();
++
++		if (chunk != null && chunk.Data != null)
  		{
- 			value2?.Lighting.ClearLight();
+-			value2?.Lighting.ClearLight();
++			try { chunk.Data.CopyBlocksToUnsafe(snap); }
++			catch { Array.Clear(snap, 0, snap.Length); }
  		}
-+
- 		IWorldChunk[] array = new IWorldChunk[mapsizey / num];
-+		IWorldChunk chunk2;
-+
-+		// 4. Calculate sunlight top-down for each column of chunks
- 		for (int l = num8; l <= num11; l++)
+-		IWorldChunk[] array = new IWorldChunk[mapsizey / num];
+-		for (int l = num8; l <= num11; l++)
++		else
  		{
- 			for (int m = num10; m <= num13; m++)
+-			for (int m = num10; m <= num13; m++)
++			Array.Clear(snap, 0, snap.Length);
++		}
++
++		session.cache[chunkKey] = snap;
++		return snap;
++	}
++
++	private void BeginBlockSnapshotSession()
++	{
++		GetBlockSession().depth++;
++	}
++
++	private void EndBlockSnapshotSession()
++	{
++		int tid = Thread.CurrentThread.ManagedThreadId;
++		if (!blockSessions.TryGetValue(tid, out var session)) return;
++		if (--session.depth > 0) return;
++
++		// Stratum: this thread's outermost session ended — release everything it snapshotted.
++		// No other thread can possibly use this cache, so clearing here is always safe.
++		lock (blockSnapshotPoolLock)
++		{
++			foreach (var arr in session.cache.Values)
++				if (blockSnapshotPool.Count < 512) blockSnapshotPool.Push(arr);
++		}
++		session.cache.Clear();
++		blockSessions.TryRemove(tid, out _);
++	}
++
++	// ─── Batched sunlight staging session (per-thread, same rationale) ───────────
++
++	/// <summary> Retrieves a staging array from the pool or allocates a new one if empty. </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private byte[] RentStagingArray()
++	{
++		lock (sunStagingPoolLock) { if (sunStagingPool.Count > 0) return sunStagingPool.Pop(); }
++		return new byte[chunkSize * chunkSize * chunkSize];
++	}
++
++	/// <summary> Static helper: reads sunlight from staging array or live lighting. </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static int ReadSun(byte[] staging, IChunkLight lighting, int idx)
++	{
++		return staging is not null ? staging[idx] : lighting.GetSunlight(idx);
++	}
++
++	/// <summary> Static helper: writes sunlight to staging array or live lighting. </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static void WriteSun(byte[] staging, IChunkLight lighting, int idx, int val)
++	{
++		if (staging is not null) staging[idx] = (byte)val;
++		else lighting.SetSunlight(idx, val);
++	}
++
++	/// <summary> Static helper: packs column coordinates and dimension into a 64-bit key. </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static long PackColumn(int cx, int cz, int dim)
++	{
++		return ((long)(cx & 0x1FFFFF)) | ((long)(cz & 0x1FFFFF) << 21) | ((long)(dim & 0x3FF) << 42);
++	}
++
++	/// <summary>
++	/// Returns the staging array for a chunk, creating and populating it from live sunlight (once per chunk, per session) if absent.
++	/// After this call all reads/writes for that chunk within the session should go through ReadSun/WriteSun using this array.
++	/// Stratum: per-thread session state, no cross-thread races.
++	/// </summary>
++	private byte[] GetOrCreateSunStaging(long chunkKey, IWorldChunk chunk, IChunkLight lighting)
++	{
++		var session = GetSunSession();
++		if (session.staging.TryGetValue(chunkKey, out var st)) return st;
++
++		st = RentStagingArray();
++		int total = chunkSize * chunkSize * chunkSize;
++		for (int idx = 0; idx < total; idx++) st[idx] = (byte)lighting.GetSunlight(idx);
++
++		session.staging[chunkKey] = st;
++		session.lightingRefs[chunkKey] = lighting;
++		session.chunkRefs[chunkKey] = chunk;
++		return st;
++	}
++
++	/// <summary> Opens (or extends) a sunlight staging session. Must be paired with EndSunStagingSession. </summary>
++	private void BeginSunStagingSession()
++	{
++		GetSunSession().depth++;
++	}
++
++	/// <summary> Closes a sunlight staging session of the current thread and commits staged changes. </summary>
++	private FastSetOfLongs EndSunStagingSession()
++	{
++		var touched = new FastSetOfLongs();
++		int tid = Thread.CurrentThread.ManagedThreadId;
++		if (!sunSessions.TryGetValue(tid, out var session)) return touched;
++		if (--session.depth > 0) return touched;
++
++		foreach (var kvp in session.staging)
++		{
++			long key = kvp.Key;
++			byte[] staging = kvp.Value;
++
++			if (!session.lightingRefs.TryGetValue(key, out var lighting))
  			{
- 				bool flag = false;
- 				for (int n = 0; n < array.Length; n++)
- 				{
+-				bool flag = false;
+-				for (int n = 0; n < array.Length; n++)
+-				{
 -					IWorldChunk chunk2 = chunkProvider.GetChunk(l, n + num14, m);
 -					if (chunk2 == null)
 -					{
 -						flag = true;
 -					}
-+					chunk2 = chunkProvider.GetChunk(l, n + num14, m);
-+					if (chunk2 == null) flag = true;
- 					array[n] = chunk2;
- 				}
+-					array[n] = chunk2;
+-				}
 -				if (!flag)
++				lock (sunStagingPoolLock) { if (sunStagingPool.Count < 512) sunStagingPool.Push(staging); }
++				continue;
++			}
++			session.lightingRefs.Remove(key);
 +
-+				if (!flag) // If the chunk column is fully loaded
++			bool chunkChanged = false;
++			for (int idx = 0; idx < staging.Length; idx++)
++			{
++				int newVal = staging[idx];
++				if (lighting.GetSunlight(idx) != newVal)
  				{
 -					Sunlight(array, l, array.Length - 1, m, minPos.dimension);
 -					SunlightFlood(array, l, array.Length - 1, m);
 -					SunLightFloodNeighbourChunks(array, l, array.Length - 1, m, minPos.dimension);
-+					Sunlight(array, l, array.Length - 1, m, minPos.dimension);           // Direct light from above
-+					SunlightFlood(array, l, array.Length - 1, m);                         // Scattering inside the chunk
-+					SunLightFloodNeighbourChunks(array, l, array.Length - 1, m, minPos.dimension); // Flowing into neighboring chunks
++					lighting.SetSunlight(idx, newVal);
++					chunkChanged = true;
  				}
  			}
- 		}
-+
-+		// 5. Collect all light sources in the region
- 		Dictionary<BlockPos, Block> dictionary2 = new Dictionary<BlockPos, Block>();
- 		foreach (KeyValuePair<Vec3i, IWorldChunk> item in dictionary)
- 		{
- 			Vec3i key = item.Key;
- 			IWorldChunk value = item.Value;
+-		}
+-		Dictionary<BlockPos, Block> dictionary2 = new Dictionary<BlockPos, Block>();
+-		foreach (KeyValuePair<Vec3i, IWorldChunk> item in dictionary)
+-		{
+-			Vec3i key = item.Key;
+-			IWorldChunk value = item.Value;
 -			if (value == null)
--			{
++
++			if (chunkChanged)
+ 			{
 -				continue;
--			}
++				touched.Add(key);
++				if (session.chunkRefs.TryGetValue(key, out var chunk))
++				{
++					chunk.MarkModified();
++					session.chunkRefs.Remove(key);
++				}
+ 			}
 -			int num15 = key.X * num;
 -			int num16 = key.Y * num;
 -			int num17 = key.Z * num;
-+			if (value == null) continue;
-+
-+			int chunkBaseX = key.X * num;
-+			int chunkBaseY = key.Y * num;
-+			int chunkBaseZ = key.Z * num;
-+
- 			foreach (int lightPosition in value.LightPositions)
+-			foreach (int lightPosition in value.LightPositions)
++			else
  			{
 -				int num18 = key.Y * num + lightPosition / (num * num);
 -				int num19 = key.Z * num + lightPosition / num % num;
 -				int num20 = key.X * num + lightPosition % num;
 -				dictionary2[new BlockPos(num15 + num20, num16 + num18, num17 + num19, minPos.dimension)] = blockTypes[value.Data[lightPosition]];
++				session.chunkRefs.Remove(key);
+ 			}
++
++			lock (sunStagingPoolLock) { if (sunStagingPool.Count < 512) sunStagingPool.Push(staging); }
+ 		}
+-		foreach (KeyValuePair<BlockPos, Block> item2 in dictionary2)
+-		{
+-			byte[] lightHsv = item2.Value.GetLightHsv(readBlockAccess, item2.Key);
+-			PlaceBlockLight(lightHsv, item2.Key.X, item2.Key.InternalY, item2.Key.Z);
+-		}
++
++		session.staging.Clear();
++		session.lightingRefs.Clear();
++		session.chunkRefs.Clear();
++		sunSessions.TryRemove(tid, out _);
++		return touched;
++	}
++
++	/// <summary> Non-creating staging lookup: returns the staged array if the chunk is already part of the active session of the current thread, otherwise null (live lighting). </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private byte[] GetStagingForChunk(long chunkKey)
++	{
++		var session = PeekSunSession();
++		return session is not null && session.staging.TryGetValue(chunkKey, out var s) ? s : null;
+ 	}
+ 
+-	public void Sunlight(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ, int dim)
++	public void Sunlight(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ, int dim, int[][] lightBuffers = null)
+ 	{
+ 		tmpPosDimensionAware.SetDimension(dim);
+ 		int num = chunkSize;
+-		if (chunkY != chunks.Length - 1)
+-		{
+-			chunks[chunkY + 1].Unpack();
+-		}
+-		for (int num2 = chunkY; num2 >= 0; num2--)
+-		{
+-			chunks[num2].Unpack();
+-		}
+-		int num3 = chunkX * num;
+-		int num4 = chunkZ * num;
+-		for (int i = 0; i < num; i++)
++		int dimOffset = dim * 1024;
++
++		if (chunkY != chunks.Length - 1) chunks[chunkY + 1].Unpack();
++		for (int num2 = chunkY; num2 >= 0; num2--) chunks[num2].Unpack();
++
++		bool useBuffers = lightBuffers != null;
++		bool ownSession = !useBuffers && SunSessionDepth == 0;      // Stratum: per-thread depth
++		bool ownBlockSession = BlockSessionDepth == 0;              // Stratum: per-thread depth
++		if (ownSession) BeginSunStagingSession();
++		if (ownBlockSession) BeginBlockSnapshotSession();
++
++		try
+ 		{
+-			for (int j = 0; j < num; j++)
++			bool stagingActive = !useBuffers;
++
++			byte[][] staging = new byte[chunks.Length][];
++			IChunkLight[] lighting = new IChunkLight[chunks.Length];
++			int[][] blockSnaps = new int[chunks.Length][];
++			for (int c = 0; c < chunks.Length; c++)
+ 			{
+-				int num5 = defaultSunLight;
+-				if (chunkY != chunks.Length - 1)
++				// Stratum: skip uninitialized chunks, but still create an empty snapshot to prevent NRE in hot loop
++				if (chunks[c] == null || chunks[c].Data == null)
+ 				{
+-					num5 = chunks[chunkY + 1].Lighting.GetSunlight(j * num + i);
++					blockSnaps[c] = GetOrCreateBlockSnapshot(chunkProvider.ChunkIndex3D(chunkX, c + dimOffset, chunkZ), null);
++					continue;
+ 				}
+-				for (int num6 = chunkY; num6 >= 0; num6--)
++
++				lighting[c] = chunks[c].Lighting;
++				blockSnaps[c] = GetOrCreateBlockSnapshot(chunkProvider.ChunkIndex3D(chunkX, c + dimOffset, chunkZ), chunks[c]);
++				if (!stagingActive) continue;
++
++				if (c <= chunkY)
++					staging[c] = GetOrCreateSunStaging(chunkProvider.ChunkIndex3D(chunkX, c + dimOffset, chunkZ), chunks[c], lighting[c]);
++				else
++					staging[c] = GetStagingForChunk(chunkProvider.ChunkIndex3D(chunkX, c + dimOffset, chunkZ));
++			}
++
++			int num3 = chunkX * num;
++			int num4 = chunkZ * num;
++
++			for (int i = 0; i < num; i++)
++			{
++				for (int j = 0; j < num; j++)
+ 				{
+-					int num7 = ((num - 1) * num + j) * num + i;
+-					IWorldChunk worldChunk = chunks[num6];
+-					IChunkLight lighting = chunks[num6].Lighting;
+-					tmpPosDimensionAware.Set(num3 + i, num6 * num + num - 1, num4 + j);
+-					for (int num8 = num - 1; num8 >= 0; num8--)
++					int num5 = defaultSunLight;
++					if (chunkY != chunks.Length - 1)
++					{
++						if (useBuffers) num5 = lightBuffers[chunkY + 1][j * num + i] & 0x1F;
++						else num5 = ReadSun(staging[chunkY + 1], lighting[chunkY + 1], j * num + i);
++					}
++
++					for (int num6 = chunkY; num6 >= 0; num6--)
+ 					{
+-						int lightAbsorptionAt = worldChunk.GetLightAbsorptionAt(num7, tmpPosDimensionAware, blockTypes);
+-						lighting.SetSunlight(num7, num5);
+-						num7 -= YPlus;
+-						if (lightAbsorptionAt > num5)
++						if (chunks[num6] == null || chunks[num6].Data == null) continue;
++
++						int num7 = ((num - 1) * num + j) * num + i;
++						IWorldChunk worldChunk = chunks[num6];
++						int[] snap = blockSnaps[num6];
++						if (snap == null) continue; // Stratum: safety fallback
++						int[] buf = useBuffers ? lightBuffers[num6] : null;
++						byte[] st = stagingActive ? staging[num6] : null;
++						IChunkLight lg = lighting[num6];
++
++						for (int num8 = num - 1; num8 >= 0; num8--)
+ 						{
+-							num6 = -1;
+-							break;
++							tmpPosDimensionAware.Set(num3 + i, num6 * num + num8, num4 + j);
++							int lightAbsorptionAt = worldChunk.GetLightAbsorptionAt(num7, tmpPosDimensionAware, blockTypes);
++							Block block = blockTypes[snap[num7]]; // Stratum: snapshot read, no bit-plane decode
++
++							int effectiveAbs = GetEffectiveAbsorption(
++								block, lightAbsorptionAt, BlockFacing.DOWN, num5, tmpPosDimensionAware);
++
++							if (effectiveAbs > num5)
++							{
++								int solidMask = 0;
++								if (block.SideSolid[0]) solidMask |= 1;
++								if (block.SideSolid[1]) solidMask |= 2;
++								if (block.SideSolid[2]) solidMask |= 4;
++								if (block.SideSolid[3]) solidMask |= 8;
++								if (block.SideSolid[4]) solidMask |= 16;
++								if (block.SideSolid[5]) solidMask |= 32;
++
++								if (solidMask == 63)
++								{
++									if (useBuffers) buf[num7] = (buf[num7] & -32) | (num5 & 0x1F);
++									else WriteSun(st, lg, num7, num5);
++								}
++								else
++								{
++									if (useBuffers) buf[num7] = buf[num7] & -32;
++									else WriteSun(st, lg, num7, 0);
++								}
++
++								num6 = -1;
++								break;
++							}
++
++							if (useBuffers) buf[num7] = (buf[num7] & -32) | (num5 & 0x1F);
++							else WriteSun(st, lg, num7, num5);
++
++							num7 -= YPlus;
++							num5 -= (ushort)effectiveAbs;
++							tmpPosDimensionAware.Y--;
+ 						}
+-						num5 -= (ushort)lightAbsorptionAt;
+-						tmpPosDimensionAware.Y--;
+ 					}
+ 				}
+ 			}
+ 		}
++		finally
++		{
++			if (ownBlockSession) EndBlockSnapshotSession();
++			if (ownSession) EndSunStagingSession();
++		}
+ 	}
+ 
+-	public void SunlightFlood(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ)
++	/// <summary> Horizontal propagation of sunlight inside chunks. </summary>
++	public void SunlightFlood(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ, int dim, int[][] lightBuffers = null)
+ 	{
++		tmpPosDimensionAware.SetDimension(dim);
+ 		int num = chunkSize;
+-		Stack<BlockPos> stack = new Stack<BlockPos>();
++		int dimOffset = dim * 1024;
++		Stack<FastBlockPos> stack = new Stack<FastBlockPos>();
+ 		int num2 = chunkX * num;
+ 		int num3 = chunkZ * num;
+-		for (int num4 = chunkY; num4 >= 0; num4--)
++
++		bool useBuffers = lightBuffers != null;
++		bool ownSession = !useBuffers && SunSessionDepth == 0;      // Stratum: per-thread depth
++		bool ownBlockSession = BlockSessionDepth == 0;              // Stratum: per-thread depth
++		if (ownSession) BeginSunStagingSession();
++		if (ownBlockSession) BeginBlockSnapshotSession();
++
++		try
+ 		{
+-			IWorldChunk worldChunk = chunks[num4];
+-			worldChunk.Unpack();
+-			_ = worldChunk.Data;
+-			IChunkLight lighting = worldChunk.Lighting;
+-			for (int i = 0; i < num; i++)
++			bool stagingActive = !useBuffers;
++
++			for (int num4 = chunkY; num4 >= 0; num4--)
+ 			{
+-				tmpPosDimensionAware.Set(num2 + i, num4 * num + num, num3);
+-				for (int j = 0; j < num; j++)
++				if (chunks[num4] == null) continue; // Null-safe
++
++				IWorldChunk worldChunk = chunks[num4];
++				worldChunk.Unpack();
++
++				int[] buf = useBuffers ? lightBuffers[num4] : null;
++				byte[] st = stagingActive ? GetOrCreateSunStaging(chunkProvider.ChunkIndex3D(chunkX, num4 + dimOffset, chunkZ), worldChunk, worldChunk.Lighting) : null;
++				IChunkLight lg = worldChunk.Lighting;
++
++				for (int i = 0; i < num; i++)
+ 				{
+-					int num5 = (num * num + j) * num + i;
+-					tmpPosDimensionAware.Z = num3 + j;
+-					for (int num6 = num - 1; num6 >= 0; num6--)
++					tmpPosDimensionAware.Set(num2 + i, num4 * num + num, num3);
++					for (int j = 0; j < num; j++)
+ 					{
+-						num5 -= YPlus;
+-						tmpPosDimensionAware.Y--;
+-						int num7 = lighting.GetSunlight(num5) - 1;
+-						if (num7 <= 0)
+-						{
+-							break;
+-						}
+-						int lightAbsorptionAt = worldChunk.GetLightAbsorptionAt(num5, tmpPosDimensionAware, blockTypes);
+-						num7 -= lightAbsorptionAt;
+-						if (num7 > 0 && ((i < num - 1 && lighting.GetSunlight(num5 + XPlus) < num7) || (j < num - 1 && lighting.GetSunlight(num5 + ZPlus) < num7) || (i > 0 && lighting.GetSunlight(num5 - XPlus) < num7) || (j > 0 && lighting.GetSunlight(num5 - ZPlus) < num7)))
++						int num5 = (num * num + j) * num + i;
++						tmpPosDimensionAware.Z = num3 + j;
++						for (int num6 = num - 1; num6 >= 0; num6--)
+ 						{
+-							stack.Push(new BlockPos(num2 + i, num4 * num + num6, num3 + j, tmpPosDimensionAware.dimension));
+-							if (stack.Count > 50)
++							num5 -= YPlus;
++							tmpPosDimensionAware.Y--;
++
++							int currentSun = useBuffers ? (buf != null ? buf[num5] & 0x1F : 0) : ReadSun(st, lg, num5);
++							int num7 = currentSun - 1;
++							if (num7 <= 0) break;
++
++							int nE, nW, nS, nN;
++							if (useBuffers)
++							{
++								nE = (i < num - 1 && buf != null) ? (buf[num5 + XPlus] & 0x1F) : 0;
++								nS = (j < num - 1 && buf != null) ? (buf[num5 + ZPlus] & 0x1F) : 0;
++								nW = (i > 0 && buf != null) ? (buf[num5 - XPlus] & 0x1F) : 0;
++								nN = (j > 0 && buf != null) ? (buf[num5 - ZPlus] & 0x1F) : 0;
++							}
++							else
++							{
++								nE = (i < num - 1) ? ReadSun(st, lg, num5 + XPlus) : 0;
++								nS = (j < num - 1) ? ReadSun(st, lg, num5 + ZPlus) : 0;
++								nW = (i > 0) ? ReadSun(st, lg, num5 - XPlus) : 0;
++								nN = (j > 0) ? ReadSun(st, lg, num5 - ZPlus) : 0;
++							}
++
++							if (nE < num7 || nS < num7 || nW < num7 || nN < num7)
+ 							{
+-								SpreadSunLightInColumn(stack, chunks);
++								stack.Push(new FastBlockPos(num2 + i, num4 * num + num6, num3 + j, tmpPosDimensionAware.dimension));
++								if (stack.Count > 50) SpreadSunLightInColumn(stack, chunks, dim, lightBuffers);
+ 							}
+ 						}
+ 					}
+ 				}
+ 			}
++			SpreadSunLightInColumn(stack, chunks, dim, lightBuffers);
++		}
++		finally
++		{
++			if (ownBlockSession) EndBlockSnapshotSession();
++			if (ownSession) EndSunStagingSession();
+ 		}
+-		SpreadSunLightInColumn(stack, chunks);
+ 	}
+ 
+-	public byte SunLightFloodNeighbourChunks(IWorldChunk[] curChunks, int chunkX, int chunkY, int chunkZ, int dimension)
++	public byte SunLightFloodNeighbourChunks(IWorldChunk[] curChunks, int chunkX, int chunkY, int chunkZ, int dimension, int[][] lightBuffers = null)
+ 	{
+ 		tmpPosDimensionAware.SetDimension(dimension);
+ 		int num = chunkSize;
+ 		byte b = 0;
+-		Stack<BlockPos> stack = new Stack<BlockPos>();
+-		Stack<BlockPos> stack2 = new Stack<BlockPos>();
++		Stack<FastBlockPos> stack = new Stack<FastBlockPos>();
++		Stack<FastBlockPos> stack2 = new Stack<FastBlockPos>();
+ 		int[] array = new int[2];
+ 		int[] array2 = new int[3];
+ 		IWorldChunk[] array3 = new IWorldChunk[curChunks.Length];
+ 		int num2 = chunkX * num;
+ 		int num3 = chunkZ * num;
+-		BlockFacing[] hORIZONTALS = BlockFacing.HORIZONTALS;
+-		foreach (BlockFacing blockFacing in hORIZONTALS)
++		int dimOffset = dimension * 1024;
++
++		bool useBuffers = lightBuffers != null;
++		// Stratum: NO ownSession and NO block snapshots here. Boundary exchange is sparse:
++		// decoding whole 32768-block chunks to read a few thousand boundary blocks costs
++		// far more than the direct Data[idx] reads it replaces.
++		bool stagingActive = !useBuffers && SunSessionDepth > 0;   // Stratum: per-thread depth
++
++		foreach (BlockFacing blockFacing in BlockFacing.HORIZONTALS)
+ 		{
+ 			bool flag = true;
+ 			int x = blockFacing.Normali.X;
+ 			int z = blockFacing.Normali.Z;
+ 			for (int j = 0; j < curChunks.Length; j++)
+ 			{
+-				array3[j] = chunkProvider.GetChunk(chunkX + x, j + dimension * 1024, chunkZ + z);
+-				if (array3[j] == null)
++				array3[j] = chunkProvider.GetChunk(chunkX + x, j + dimOffset, chunkZ + z);
++				if (array3[j] == null) { flag = false; break; }
++				array3[j].Unpack();
++				curChunks[j].Unpack();
++			}
++			if (!flag) continue;
++
++			int y = blockFacing.Normali.Y;
++			array2[0] = (num - 1) * Math.Max(0, x);
++			array2[1] = (num - 1) * Math.Max(0, y);
++			array2[2] = (num - 1) * Math.Max(0, z);
++			int num4 = (chunkX + x) * num;
++			int num11 = (chunkZ + z) * num;
++			int num5 = 0;
++			if (x == 0) array[num5++] = 0;
++			if (y == 0) array[num5++] = 1;
++			if (z == 0) array[num5++] = 2;
++
++			int fixedNeighbourX = (x != 0) ? GameMath.Mod(array2[0] + x, num) : 0;
++			int fixedNeighbourZ = (z != 0) ? GameMath.Mod(array2[2] + z, num) : 0;
++
++			for (int num6 = chunkY; num6 >= 0; num6--)
++			{
++				IWorldChunk worldChunk = array3[num6];
++				IWorldChunk worldChunk2 = curChunks[num6];
++
++				// Stratum: skip if neighbor or current chunk is uninitialized
++				if (worldChunk == null || worldChunk.Data == null || worldChunk2 == null || worldChunk2.Data == null) continue;
++
++				int[] bufCur = useBuffers ? lightBuffers[num6] : null;
++				byte[] stCur = stagingActive ? GetOrCreateSunStaging(chunkProvider.ChunkIndex3D(chunkX, num6 + dimOffset, chunkZ), worldChunk2, worldChunk2.Lighting) : null;
++				IChunkLight lgCur = worldChunk2.Lighting;
++
++				byte[] stN = stagingActive ? GetStagingForChunk(chunkProvider.ChunkIndex3D(chunkX + x, num6 + dimOffset, chunkZ + z)) : null;
++				IChunkLight lgN = worldChunk.Lighting;
++
++				for (int num7 = num - 1; num7 >= 0; num7--)
++				{
++					array2[array[0]] = num7;
++					for (int num8 = num - 1; num8 >= 0; num8--)
++					{
++						array2[array[1]] = num8;
++						int index3d = (array2[1] * num + array2[2]) * num + array2[0];
++						int num9 = (x != 0) ? fixedNeighbourX : array2[0];
++						int num10 = (z != 0) ? fixedNeighbourZ : array2[2];
++						int index3d2 = (array2[1] * num + num10) * num + num9;
++
++						int curLight = useBuffers ? (bufCur[index3d] & 0x1F) : ReadSun(stCur, lgCur, index3d);
++						int nLight = ReadSun(stN, lgN, index3d2);
++
++						BlockFacing dir = blockFacing;
++						BlockFacing oppDir = dir.Opposite;
++
++						// Stratum: sparse direct reads — only boundary blocks, no full-chunk snapshot
++						Block curBlock = blockTypes[worldChunk2.Data[index3d]];
++						int curBaseAbs = worldChunk2.GetLightAbsorptionAt(index3d, tmpPosDimensionAware, blockTypes);
++						tmpPos2.Set(num2 + array2[0], num6 * num + array2[1], num3 + array2[2]);
++						tmpPos2.dimension = dimension;
++						int absCurToN = GetEffectiveAbsorption(curBlock, curBaseAbs, dir, curLight, tmpPos2);
++						int lightArrivingAtN = curLight - absCurToN - 1;
++
++						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num11 + num10);
++						Block nBlock = blockTypes[worldChunk.Data[index3d2]];
++						int nBaseAbs = worldChunk.GetLightAbsorptionAt(index3d2, tmpPosDimensionAware, blockTypes);
++						int absNFromCur = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, lightArrivingAtN, tmpPosDimensionAware);
++						int finalLightToN = lightArrivingAtN;
++						if (absNFromCur > lightArrivingAtN) finalLightToN = 0;
++
++						int absNToCur = GetEffectiveAbsorption(nBlock, nBaseAbs, oppDir, nLight);
++						int lightArrivingAtCur = nLight - absNToCur - 1;
++						int absCurFromN = GetEffectiveAbsorption(curBlock, curBaseAbs, oppDir, lightArrivingAtCur);
++						int finalLightToCur = lightArrivingAtCur;
++						if (absCurFromN > lightArrivingAtCur) finalLightToCur = 0;
++
++						if (finalLightToN > nLight)
++						{
++							WriteSun(stN, lgN, index3d2, finalLightToN);
++							stack2.Push(new FastBlockPos(num4 + num9, num6 * num + array2[1], num11 + num10, dimension));
++							b |= blockFacing.Flag;
++						}
++						else if (finalLightToCur > curLight)
++						{
++							if (useBuffers) bufCur[index3d] = (bufCur[index3d] & -32) | (finalLightToCur & 0x1F);
++							else WriteSun(stCur, lgCur, index3d, finalLightToCur);
++
++							stack.Push(new FastBlockPos(num2 + array2[0], num6 * num + array2[1], num3 + array2[2], dimension));
++						}
++					}
++				}
++				if (stack2.Count > 0) SpreadSunLightInColumn(stack2, array3, dimension);
++				if (stack.Count > 0) SpreadSunLightInColumn(stack, curChunks, dimension, lightBuffers);
++			}
++		}
++		return b;
++	}
++
++	private void SpreadSunLightInColumn(Stack<FastBlockPos> stack, IWorldChunk[] chunks, int dim, int[][] lightBuffers = null)
++	{
++		int num = chunkSize;
++		int dimOffset = dim * 1024;
++		bool useBuffers = lightBuffers != null;
++		bool stagingActive = !useBuffers && SunSessionDepth > 0;   // Stratum: per-thread depth
++		bool ownBlockSession = BlockSessionDepth == 0;             // Stratum: per-thread depth
++		if (ownBlockSession) BeginBlockSnapshotSession();
++
++		try
++		{
++			int cachedChunkY = int.MinValue;
++			int[] buf = null;
++			byte[] st = null;
++			IChunkLight lg = null;
++			int[] snap = null;
++
++			while (stack.Count > 0)
++			{
++				FastBlockPos pos = stack.Pop();
++				int chunkX = pos.X >> chunkSizeLog2;
++				int chunkY = pos.Y >> chunkSizeLog2;
++				int chunkZ = pos.Z >> chunkSizeLog2;
++				int localX = pos.X & chunkSizeMask;
++				int localY = pos.Y & chunkSizeMask;
++				int localZ = pos.Z & chunkSizeMask;
++				int index3d = (localY * num + localZ) * num + localX;
++
++				if (chunkY < 0 || chunkY >= chunks.Length || chunks[chunkY] == null) continue;
++				IWorldChunk worldChunk = chunks[chunkY];
++				if (worldChunk.Data == null) continue;
++
++				tmpPos.Set(pos.X, pos.Y, pos.Z);
++				tmpPos.dimension = pos.Dim;
++
++				if (chunkY != cachedChunkY)
++				{
++					cachedChunkY = chunkY;
++					buf = useBuffers ? lightBuffers[chunkY] : null;
++					st = stagingActive ? GetStagingForChunk(chunkProvider.ChunkIndex3D(chunkX, chunkY + dimOffset, chunkZ)) : null;
++					lg = worldChunk.Lighting;
++					snap = GetOrCreateBlockSnapshot(chunkProvider.ChunkIndex3D(chunkX, chunkY + dimOffset, chunkZ), worldChunk);
++					if (snap == null) continue; // Stratum: safety fallback
++				}
++
++				int baseAbsorption = worldChunk.GetLightAbsorptionAt(index3d, tmpPos, blockTypes);
++				Block posBlock = blockTypes[snap[index3d]];
++				int currentLight = useBuffers ? (buf[index3d] & 0x1F) : ReadSun(st, lg, index3d);
++
++				if (currentLight <= 0) continue;
++
++				int lastChunkY = chunkY;
++				int[] nSnap = snap;
++				for (int i = 0; i < 6; i++)
++				{
++					Vec3i vec3i = BlockFacing.ALLNORMALI[i];
++					int ny = pos.Y + vec3i.Y;
++					int nlx = localX + vec3i.X;
++					int nlz = localZ + vec3i.Z;
++
++					if (nlx >= 0 && ny >= 0 && nlz >= 0 && nlx < num && ny < mapsizey && nlz < num)
++					{
++						int nChunkY = ny >> chunkSizeLog2;
++						if (nChunkY != lastChunkY)
++						{
++							if (nChunkY < 0 || nChunkY >= chunks.Length || chunks[nChunkY] == null || chunks[nChunkY].Data == null) continue;
++							worldChunk = chunks[nChunkY];
++							lastChunkY = nChunkY;
++							nSnap = GetOrCreateBlockSnapshot(chunkProvider.ChunkIndex3D(chunkX, nChunkY + dimOffset, chunkZ), worldChunk);
++						}
++
++						int nIndex3d = ((ny & chunkSizeMask) * num + nlz) * num + nlx;
++						BlockFacing dir = BlockFacing.ALLFACES[i];
++						int effectiveAbs = GetEffectiveAbsorption(posBlock, baseAbsorption, dir, currentLight, tmpPos);
++						int newLight = currentLight - effectiveAbs - 1;
++
++						if (newLight <= 0) continue;
++
++						Block nBlock = blockTypes[nSnap[nIndex3d]];
++						tmpPos.Set(chunkX * num + nlx, ny, chunkZ * num + nlz);
++						int nBaseAbs = worldChunk.GetLightAbsorptionAt(nIndex3d, tmpPos, blockTypes);
++						tmpPos2.Set(chunkX * num + nlx, ny, chunkZ * num + nlz);
++						tmpPos2.dimension = pos.Dim;
++						int nEffectiveAbs = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, newLight, tmpPos2);
++
++						int finalLight = newLight;
++						if (nEffectiveAbs > newLight)
++						{
++							int solidMask = 0;
++							if (nBlock.SideSolid[0]) solidMask |= 1;
++							if (nBlock.SideSolid[1]) solidMask |= 2;
++							if (nBlock.SideSolid[2]) solidMask |= 4;
++							if (nBlock.SideSolid[3]) solidMask |= 8;
++							if (nBlock.SideSolid[4]) solidMask |= 16;
++							if (nBlock.SideSolid[5]) solidMask |= 32;
++
++							if (solidMask != 63) finalLight = 0;
++						}
++
++						int[] nBuf = buf;
++						byte[] nSt = st;
++						IChunkLight nLg = lg;
++						if (nChunkY != cachedChunkY)
++						{
++							nBuf = useBuffers ? lightBuffers[nChunkY] : null;
++							nSt = stagingActive ? GetStagingForChunk(chunkProvider.ChunkIndex3D(chunkX, nChunkY + dimOffset, chunkZ)) : null;
++							nLg = worldChunk.Lighting;
++						}
++
++						int nLightCurrent = useBuffers ? (nBuf[nIndex3d] & 0x1F) : ReadSun(nSt, nLg, nIndex3d);
++						if (nLightCurrent < finalLight)
++						{
++							if (useBuffers) nBuf[nIndex3d] = (nBuf[nIndex3d] & -32) | (finalLight & 0x1F);
++							else WriteSun(nSt, nLg, nIndex3d, finalLight);
++
++							int absX = chunkX * num + nlx;
++							int absZ = chunkZ * num + nlz;
++							stack.Push(new FastBlockPos(absX, ny, absZ, pos.Dim));
++						}
++					}
++				}
++			}
++		}
++		finally
++		{
++			if (ownBlockSession) EndBlockSnapshotSession();
++		}
++	}
++
++	/// <summary> Updates sunlight when a block's transparency changes (DEFERRED). </summary>
++	public FastSetOfLongs UpdateSunLight(int posX, int posY, int posZ, int oldAbsorb, int newAbsorb)
++	{
++		FastSetOfLongs touchedChunks = new FastSetOfLongs();
++		if (newAbsorb == oldAbsorb) return touchedChunks;
++
++		if (posX < 0 || posY < 0 || posZ < 0 ||
++			posX >= mapsizex || posY >= mapsizey || posZ >= mapsizez)
++			return touchedChunks;
++
++		int chunkX = posX >> chunkSizeLog2;
++		int chunkZ = posZ >> chunkSizeLog2;
++		int dim = posY / 32768;
++		int localY = posY - dim * 32768;
++		int chunkY = localY >> chunkSizeLog2;
++
++		for (int dx = -1; dx <= 1; dx++)
++		{
++			for (int dz = -1; dz <= 1; dz++)
++			{
++				if (dx != 0 && dz != 0) continue;
++				int cx = chunkX + dx;
++				int cz = chunkZ + dz;
++				if (cx < 0 || cz < 0 || cx * chunkSize >= mapsizex || cz * chunkSize >= mapsizez)
++					continue;
++
++				long key = PackColumn(cx, cz, dim);
++				// Stratum: Thread-safe update for ConcurrentDictionary
++				pendingSunlightUpdates.AddOrUpdate(key, chunkY, (k, oldY) => Math.Max(oldY, chunkY));
++			}
++		}
++		return touchedChunks; // Returns an empty set; actual chunks will be in Flush
++	}
++
++	/// <summary> Full recalculation of light in a given cubic region </summary>
++	public void FullRelight(BlockPos minPos, BlockPos maxPos)
++	{
++		int num = chunkSize;
++		Dictionary<Vec3i, IWorldChunk> dictionary = new Dictionary<Vec3i, IWorldChunk>();
++
++		// 1. Expand the region boundaries by 1 chunk in all directions so that light can correctly flow across boundaries
++		int num2 = GameMath.Clamp(Math.Min(minPos.X, maxPos.X) - num, 0, mapsizex - 1);
++		int num3 = GameMath.Clamp(Math.Min(minPos.Y, maxPos.Y) - num, 0, mapsizey - 1);
++		int num4 = GameMath.Clamp(Math.Min(minPos.Z, maxPos.Z) - num, 0, mapsizez - 1);
++		int num5 = GameMath.Clamp(Math.Max(minPos.X, maxPos.X) + num, 0, mapsizex - 1);
++		int num6 = GameMath.Clamp(Math.Max(minPos.Y, maxPos.Y) + num, 0, mapsizey - 1);
++		int num7 = GameMath.Clamp(Math.Max(minPos.Z, maxPos.Z) + num, 0, mapsizez - 1);
++
++		// Convert world coordinates to chunk coordinates
++		int num8 = num2 / num;
++		int num9 = num3 / num;
++		int num10 = num4 / num;
++		int num11 = num5 / num;
++		int num12 = num6 / num;
++		int num13 = num7 / num;
++
++		int num14 = minPos.dimension * 1024; // Offset for dimensions
++		IWorldChunk chunk;
++
++		// 2. Load and unpack all necessary chunks
++		for (int i = num8; i <= num11; i++)
++		{
++			for (int j = num9; j <= num12; j++)
++			{
++				for (int k = num10; k <= num13; k++)
++				{
++					chunk = chunkProvider.GetChunk(i, j + num14, k);
++					if (chunk is not null)
++					{
++						chunk.Unpack();
++						dictionary[new Vec3i(i, j, k)] = chunk;
++					}
++				}
++			}
++		}
++
++		// 3. Completely clear the old light in all affected chunks
++		foreach (IWorldChunk value2 in dictionary.Values)
++		{
++			value2?.Lighting.ClearLight();
++		}
++
++		IWorldChunk[] array = new IWorldChunk[mapsizey / num];
++		IWorldChunk chunk2;
++
++		// 4. Calculate sunlight top-down for each column of chunks
++		for (int l = num8; l <= num11; l++)
++		{
++			for (int m = num10; m <= num13; m++)
++			{
++				bool flag = false;
++				for (int n = 0; n < array.Length; n++)
++				{
++					chunk2 = chunkProvider.GetChunk(l, n + num14, m);
++					if (chunk2 is null) flag = true;
++					array[n] = chunk2;
++				}
++
++				if (!flag) // If the chunk column is fully loaded
+ 				{
+-					flag = false;
+-					if (j != 0)
++					// Stratum: one shared block-snapshot / sunlight-staging session across all three calls for this
++					// column, so blocks and staged light are snapshotted once instead of once per call.
++					// Stratum: wrapped in try/finally so an exception can no longer wedge the depth counter forever.
++					BeginBlockSnapshotSession();
++					BeginSunStagingSession();
++					try
+ 					{
+-						chunkProvider.Logger.Error("not full column loaded @{0} {1} {2}, lighting error will probably happen", chunkX, j, chunkZ);
++						Sunlight(array, l, array.Length - 1, m, minPos.dimension);           // Direct light from above
++						SunlightFlood(array, l, array.Length - 1, m, minPos.dimension);       // Scattering inside the chunk
++						SunLightFloodNeighbourChunks(array, l, array.Length - 1, m, minPos.dimension); // Flowing into neighboring chunks
++					}
++					finally
++					{
++						EndSunStagingSession();
++						EndBlockSnapshotSession();
+ 					}
+-					break;
+ 				}
+-				array3[j].Unpack();
+-				curChunks[j].Unpack();
+-			}
+-			if (!flag)
+-			{
+-				continue;
+ 			}
+-			int y = blockFacing.Normali.Y;
+-			array2[0] = (num - 1) * Math.Max(0, x);
+-			array2[1] = (num - 1) * Math.Max(0, y);
+-			array2[2] = (num - 1) * Math.Max(0, z);
+-			int num4 = (chunkX + x) * num;
+-			int num5 = 0;
+-			if (x == 0)
++		}
++
++		// 5. Collect all light sources in the region
++		Dictionary<BlockPos, Block> dictionary2 = new Dictionary<BlockPos, Block>();
++		foreach (KeyValuePair<Vec3i, IWorldChunk> item in dictionary)
++		{
++			Vec3i key = item.Key;
++			IWorldChunk value = item.Value;
++			if (value is null) continue;
++
++			int chunkBaseX = key.X * num;
++			int chunkBaseY = key.Y * num;
++			int chunkBaseZ = key.Z * num;
++
++			foreach (int lightPosition in value.LightPositions)
+ 			{
+-				array[num5++] = 0;
 +				int localY = lightPosition / (num * num);
 +				int localZ = (lightPosition / num) % num;
 +				int localX = lightPosition % num;
@@ -346,28 +1281,28 @@ index e2ca303..da7c67d 100644
 +				BlockPos worldPos = new BlockPos(worldX, worldY, worldZ, minPos.dimension);
 +				dictionary2[worldPos] = blockTypes[value.Data[lightPosition]];
  			}
- 		}
--		foreach (KeyValuePair<BlockPos, Block> item2 in dictionary2)
+-			if (y == 0)
++		}
 +
 +		// 6. Find the geometric center of all sources
 +		// BFS builds a 128x128x128 grid around the passed point.
 +		// If called from the center of mass, the grid will cover all torches in the chunk (32³) with a margin.
 +		if (dictionary2.Count > 0)
- 		{
--			byte[] lightHsv = item2.Value.GetLightHsv(readBlockAccess, item2.Key);
--			PlaceBlockLight(lightHsv, item2.Key.X, item2.Key.InternalY, item2.Key.Z);
++		{
 +			long sumX = 0, sumY = 0, sumZ = 0;
 +			int maxRange = 0;
 +
 +			foreach (var kvp in dictionary2)
-+			{
+ 			{
+-				array[num5++] = 1;
 +				sumX += kvp.Key.X;
 +				sumY += kvp.Key.InternalY;
 +				sumZ += kvp.Key.Z;
 +
 +				byte[] hsv = kvp.Value.GetLightHsv(readBlockAccess, kvp.Key);
 +				if (hsv[2] > maxRange) maxRange = hsv[2];
-+			}
+ 			}
+-			if (z == 0)
 +
 +			int centerX = (int)(sumX / dictionary2.Count);
 +			int centerY = (int)(sumY / dictionary2.Count);
@@ -376,11 +1311,11 @@ index e2ca303..da7c67d 100644
 +			// A SINGLE call to UpdateLightAt from the center
 +			FastSetOfLongs touchedChunks = new FastSetOfLongs();
 +			UpdateLightAt(maxRange, centerX, centerY, centerZ, touchedChunks);
- 		}
- 	}
- 
++		}
++	}
++
 +	/// <summary>
-+	/// Universal calculation of effective light absorption by a block for a given ray direction.
++	/// Universal calculated effective light absorption by a block for a given ray direction.
 +	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetEffectiveAbsorption(
@@ -415,13 +1350,13 @@ index e2ca303..da7c67d 100644
 +		BlockFacing incoming = dir.Opposite;
 +		BlockFacing outgoing = dir;
 +
-+		bool incomingSolid = (pos != null && readBlockAccess != null)
++		bool incomingSolid = (pos is not null && readBlockAccess is not null)
 +			? block.SideIsSolid(readBlockAccess, pos, incoming.Index)
 +			: block.SideSolid[incoming.Index];
 +
 +		if (incomingSolid) return baseAbsorption;
 +
-+		bool outgoingSolid = (pos != null && readBlockAccess != null)
++		bool outgoingSolid = (pos is not null && readBlockAccess is not null)
 +			? block.SideIsSolid(readBlockAccess, pos, outgoing.Index)
 +			: block.SideSolid[outgoing.Index];
 +
@@ -433,459 +1368,152 @@ index e2ca303..da7c67d 100644
 +		return (int)(incomingEnergy * clampedAbs / 64f);
 +	}
 +
++	/// <summary>
++	/// Computes and applies a single batch of deferred sunlight updates using staging arrays.
++	/// Works in temporary buffers so the render thread never sees an intermediate "zeroed" state,
++	/// which completely eliminates flickering.
++	/// Stratum: sessions wrapped in try/finally; staging dictionaries are per-thread.
++	/// </summary>
++	public FastSetOfLongs FlushPendingSunLightUpdates()
++	{
++		FastSetOfLongs touchedChunks = new FastSetOfLongs();
++		if (pendingSunlightUpdates.Count == 0) return touchedChunks;
 +
-+	/// <summary> Calculation of direct sunlight falling from top to bottom, taking into account absorption by blocks. </summary>
- 	public void Sunlight(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ, int dim)
- 	{
- 		tmpPosDimensionAware.SetDimension(dim);
- 		int num = chunkSize;
++		var updates = new Dictionary<long, int>(pendingSunlightUpdates);
++		pendingSunlightUpdates.Clear();
 +
- 		if (chunkY != chunks.Length - 1)
--		{
- 			chunks[chunkY + 1].Unpack();
--		}
++		int num = chunkSize;
++		int chunksPerColumn = mapsizey / num;
++		int totalBlocks = num * num * num;
 +
- 		for (int num2 = chunkY; num2 >= 0; num2--)
--		{
- 			chunks[num2].Unpack();
--		}
++		var validColumns = new List<(int cx, int cz, int dim, int startChunkY, IWorldChunk[] chunks)>();
 +
- 		int num3 = chunkX * num;
- 		int num4 = chunkZ * num;
++		foreach (var kvp in updates)
++		{
++			long key = kvp.Key;
++			int startChunkY = kvp.Value;
++			int cx = (int)(key & 0x1FFFFF);
++			int cz = (int)((key >> 21) & 0x1FFFFF);
++			int dim = (int)((key >> 42) & 0x3FF);
 +
-+		IWorldChunk worldChunk;
-+		IChunkLight lighting;
++			if ((cx & 0x100000) != 0) cx |= unchecked((int)0xFFE00000);
++			if ((cz & 0x100000) != 0) cz |= unchecked((int)0xFFE00000);
++			if ((dim & 0x200) != 0) dim |= unchecked((int)0xFFFFFC00);
 +
- 		for (int i = 0; i < num; i++)
- 		{
- 			for (int j = 0; j < num; j++)
++			int dimOffset = dim * 1024;
++			IWorldChunk[] chunks = new IWorldChunk[chunksPerColumn];
++			bool allLoaded = true;
++			for (int cy = 0; cy < chunksPerColumn; cy++)
  			{
- 				int num5 = defaultSunLight;
--				if (chunkY != chunks.Length - 1)
--				{
--					num5 = chunks[chunkY + 1].Lighting.GetSunlight(j * num + i);
--				}
-+				if (chunkY != chunks.Length - 1) num5 = chunks[chunkY + 1].Lighting.GetSunlight(j * num + i);
-+
- 				for (int num6 = chunkY; num6 >= 0; num6--)
- 				{
- 					int num7 = ((num - 1) * num + j) * num + i;
--					IWorldChunk worldChunk = chunks[num6];
--					IChunkLight lighting = chunks[num6].Lighting;
-+					worldChunk = chunks[num6];
-+					lighting = chunks[num6].Lighting;
-+
- 					tmpPosDimensionAware.Set(num3 + i, num6 * num + num - 1, num4 + j);
-+
- 					for (int num8 = num - 1; num8 >= 0; num8--)
- 					{
- 						int lightAbsorptionAt = worldChunk.GetLightAbsorptionAt(num7, tmpPosDimensionAware, blockTypes);
--						lighting.SetSunlight(num7, num5);
--						num7 -= YPlus;
--						if (lightAbsorptionAt > num5)
-+						Block block = blockTypes[worldChunk.Data[num7]];
-+
-+						// Light travels from top to bottom
-+						tmpPosDimensionAware.Set(num3 + i, num6 * num + num8, num4 + j);
-+						int effectiveAbs = GetEffectiveAbsorption(
-+							block, lightAbsorptionAt, BlockFacing.DOWN, num5, tmpPosDimensionAware);
-+
-+						if (effectiveAbs > num5)
- 						{
-+							int solidMask = 0;
-+							if (block.SideSolid[0]) solidMask |= 1;
-+							if (block.SideSolid[1]) solidMask |= 2;
-+							if (block.SideSolid[2]) solidMask |= 4;
-+							if (block.SideSolid[3]) solidMask |= 8;
-+							if (block.SideSolid[4]) solidMask |= 16;
-+							if (block.SideSolid[5]) solidMask |= 32;
-+
-+							if (solidMask == 63)
-+								lighting.SetSunlight(num7, num5); // Full cube: keep light at the surface so adjacent leaves don't darken
-+							else
-+								lighting.SetSunlight(num7, 0);
-+
- 							num6 = -1;
- 							break;
- 						}
--						num5 -= (ushort)lightAbsorptionAt;
-+
-+						lighting.SetSunlight(num7, num5);
-+						num7 -= YPlus;
-+						num5 -= (ushort)effectiveAbs;
- 						tmpPosDimensionAware.Y--;
- 					}
- 				}
- 			}
- 		}
- 	}
- 
-+	/// <summary> Horizontal propagation of sunlight inside chunks. </summary>
- 	public void SunlightFlood(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ)
- 	{
- 		int num = chunkSize;
--		Stack<BlockPos> stack = new Stack<BlockPos>();
-+		Stack<FastBlockPos> stack = new Stack<FastBlockPos>();
-+
- 		int num2 = chunkX * num;
- 		int num3 = chunkZ * num;
-+
-+		IWorldChunk worldChunk;
-+		IChunkLight lighting;
-+
- 		for (int num4 = chunkY; num4 >= 0; num4--)
- 		{
--			IWorldChunk worldChunk = chunks[num4];
-+			worldChunk = chunks[num4];
- 			worldChunk.Unpack();
--			_ = worldChunk.Data;
--			IChunkLight lighting = worldChunk.Lighting;
-+			lighting = worldChunk.Lighting;
-+
- 			for (int i = 0; i < num; i++)
- 			{
- 				tmpPosDimensionAware.Set(num2 + i, num4 * num + num, num3);
-+
- 				for (int j = 0; j < num; j++)
- 				{
- 					int num5 = (num * num + j) * num + i;
- 					tmpPosDimensionAware.Z = num3 + j;
-+
- 					for (int num6 = num - 1; num6 >= 0; num6--)
- 					{
- 						num5 -= YPlus;
- 						tmpPosDimensionAware.Y--;
-+
- 						int num7 = lighting.GetSunlight(num5) - 1;
--						if (num7 <= 0)
--						{
--							break;
--						}
--						int lightAbsorptionAt = worldChunk.GetLightAbsorptionAt(num5, tmpPosDimensionAware, blockTypes);
--						num7 -= lightAbsorptionAt;
--						if (num7 > 0 && ((i < num - 1 && lighting.GetSunlight(num5 + XPlus) < num7) || (j < num - 1 && lighting.GetSunlight(num5 + ZPlus) < num7) || (i > 0 && lighting.GetSunlight(num5 - XPlus) < num7) || (j > 0 && lighting.GetSunlight(num5 - ZPlus) < num7)))
-+						if (num7 <= 0) break;
-+
-+						// Absorption is calculated later in SpreadSunLightInColumn, taking direction into account
-+						if ((i < num - 1 && lighting.GetSunlight(num5 + XPlus) < num7) ||
-+							(j < num - 1 && lighting.GetSunlight(num5 + ZPlus) < num7) ||
-+							(i > 0 && lighting.GetSunlight(num5 - XPlus) < num7) ||
-+							(j > 0 && lighting.GetSunlight(num5 - ZPlus) < num7))
- 						{
--							stack.Push(new BlockPos(num2 + i, num4 * num + num6, num3 + j, tmpPosDimensionAware.dimension));
-+							stack.Push(new FastBlockPos(
-+								num2 + i,
-+								num4 * num + num6,
-+								num3 + j,
-+								tmpPosDimensionAware.dimension));
-+
- 							if (stack.Count > 50)
--							{
- 								SpreadSunLightInColumn(stack, chunks);
--							}
- 						}
- 					}
- 				}
- 			}
- 		}
- 		SpreadSunLightInColumn(stack, chunks);
- 	}
- 
-+	/// <summary> Exchange of sunlight across the boundaries of neighboring chunks. </summary>
- 	public byte SunLightFloodNeighbourChunks(IWorldChunk[] curChunks, int chunkX, int chunkY, int chunkZ, int dimension)
- 	{
- 		tmpPosDimensionAware.SetDimension(dimension);
- 		int num = chunkSize;
- 		byte b = 0;
--		Stack<BlockPos> stack = new Stack<BlockPos>();
--		Stack<BlockPos> stack2 = new Stack<BlockPos>();
-+
-+		Stack<FastBlockPos> stack = new Stack<FastBlockPos>();
-+		Stack<FastBlockPos> stack2 = new Stack<FastBlockPos>();
-+
- 		int[] array = new int[2];
- 		int[] array2 = new int[3];
- 		IWorldChunk[] array3 = new IWorldChunk[curChunks.Length];
-+
- 		int num2 = chunkX * num;
- 		int num3 = chunkZ * num;
-+
- 		BlockFacing[] hORIZONTALS = BlockFacing.HORIZONTALS;
- 		foreach (BlockFacing blockFacing in hORIZONTALS)
- 		{
- 			bool flag = true;
- 			int x = blockFacing.Normali.X;
- 			int z = blockFacing.Normali.Z;
-+
- 			for (int j = 0; j < curChunks.Length; j++)
- 			{
- 				array3[j] = chunkProvider.GetChunk(chunkX + x, j + dimension * 1024, chunkZ + z);
--				if (array3[j] == null)
--				{
--					flag = false;
--					if (j != 0)
--					{
--						chunkProvider.Logger.Error("not full column loaded @{0} {1} {2}, lighting error will probably happen", chunkX, j, chunkZ);
--					}
--					break;
--				}
-+				if (array3[j] == null) { flag = false; break; }
- 				array3[j].Unpack();
- 				curChunks[j].Unpack();
- 			}
--			if (!flag)
--			{
--				continue;
--			}
-+			if (!flag) continue;
-+
- 			int y = blockFacing.Normali.Y;
- 			array2[0] = (num - 1) * Math.Max(0, x);
- 			array2[1] = (num - 1) * Math.Max(0, y);
- 			array2[2] = (num - 1) * Math.Max(0, z);
-+
- 			int num4 = (chunkX + x) * num;
- 			int num5 = 0;
--			if (x == 0)
--			{
--				array[num5++] = 0;
--			}
--			if (y == 0)
--			{
--				array[num5++] = 1;
--			}
--			if (z == 0)
--			{
 -				array[num5++] = 2;
--			}
++				chunks[cy] = chunkProvider.GetChunk(cx, cy + dimOffset, cz);
++				if (chunks[cy] is null) { allLoaded = false; break; }
++				chunks[cy].Unpack();
+ 			}
+-			for (int num6 = chunkY; num6 >= 0; num6--)
++			if (allLoaded) validColumns.Add((cx, cz, dim, startChunkY, chunks));
++		}
 +
-+			if (x == 0) array[num5++] = 0;
-+			if (y == 0) array[num5++] = 1;
-+			if (z == 0) array[num5++] = 2;
++		if (validColumns.Count == 0) return touchedChunks;
 +
-+			int fixedNeighbourX = (x != 0) ? GameMath.Mod(array2[0] + x, num) : 0;
-+			int fixedNeighbourZ = (z != 0) ? GameMath.Mod(array2[2] + z, num) : 0;
++		// Stratum: keep the whole flush batch in one shared session, so the Sunlight/SunlightFlood/SunLightFloodNeighbourChunks
++		// calls below reuse (rather than prematurely commit/release) both the block snapshots and the staged sunlight arrays
++		// this method itself manages manually via the per-thread staging dictionary.
++		// Stratum: try/finally guarantees the depth counters return to 0 even on exceptions.
++		BeginSunStagingSession();
++		BeginBlockSnapshotSession();
++		try
++		{
++			var session = GetSunSession();
++			session.staging.Clear(); // safety: session is fresh, must be empty
 +
-+			IWorldChunk worldChunk;
-+			IWorldChunk worldChunk2;
-+			IChunkLight lighting;
-+			IChunkLight lighting2;
-+
- 			for (int num6 = chunkY; num6 >= 0; num6--)
++			// 1. Allocate staging arrays and copy old light
++			foreach (var (cx, cz, dim, startChunkY, chunks) in validColumns)
  			{
 -				IWorldChunk worldChunk = array3[num6];
 -				IWorldChunk worldChunk2 = curChunks[num6];
 -				IChunkLight lighting = worldChunk.Lighting;
 -				IChunkLight lighting2 = worldChunk2.Lighting;
-+				worldChunk = array3[num6];
-+				worldChunk2 = curChunks[num6];
-+				lighting = worldChunk.Lighting;
-+				lighting2 = worldChunk2.Lighting;
-+
- 				for (int num7 = num - 1; num7 >= 0; num7--)
+-				for (int num7 = num - 1; num7 >= 0; num7--)
++				int dimOffset = dim * 1024;
++				for (int cy = 0; cy <= startChunkY; cy++)
  				{
- 					array2[array[0]] = num7;
- 					for (int num8 = num - 1; num8 >= 0; num8--)
- 					{
- 						array2[array[1]] = num8;
- 						int index3d = (array2[1] * num + array2[2]) * num + array2[0];
+-					array2[array[0]] = num7;
+-					for (int num8 = num - 1; num8 >= 0; num8--)
+-					{
+-						array2[array[1]] = num8;
+-						int index3d = (array2[1] * num + array2[2]) * num + array2[0];
 -						int num9 = GameMath.Mod(array2[0] + x, num);
 -						int num10 = GameMath.Mod(array2[2] + z, num);
-+
-+						int num9 = (x != 0) ? fixedNeighbourX : array2[0];
-+						int num10 = (z != 0) ? fixedNeighbourZ : array2[2];
- 						int index3d2 = (array2[1] * num + num10) * num + num9;
+-						int index3d2 = (array2[1] * num + num10) * num + num9;
 -						int num11 = lighting.GetSunlight(index3d2) - 1;
 -						int num12 = lighting2.GetSunlight(index3d) - 1;
 -						tmpPosDimensionAware.Set(num2 + array2[0], num6 * num + array2[1], num3 + array2[2]);
 -						int lightAbsorptionAt = worldChunk2.GetLightAbsorptionAt(index3d, tmpPosDimensionAware, blockTypes);
-+
-+						int curLight = lighting2.GetSunlight(index3d);
-+						int nLight = lighting.GetSunlight(index3d2);
-+
-+						BlockFacing dir = blockFacing;
-+						BlockFacing oppDir = dir.Opposite;
-+
-+						Block curBlock = blockTypes[worldChunk2.Data[index3d]];
-+						int curBaseAbs = worldChunk2.GetLightAbsorptionAt(index3d, tmpPosDimensionAware, blockTypes);
-+
- 						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num4 + num10);
+-						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num4 + num10);
 -						int lightAbsorptionAt2 = worldChunk.GetLightAbsorptionAt(index3d2, tmpPosDimensionAware, blockTypes);
 -						int num13 = num11 - lightAbsorptionAt2;
 -						int num14 = num12 - lightAbsorptionAt;
 -						if (num14 > num11)
-+						Block nBlock = blockTypes[worldChunk.Data[index3d2]];
-+						int nBaseAbs = worldChunk.GetLightAbsorptionAt(index3d2, tmpPosDimensionAware, blockTypes);
-+
-+						// Ray from Current chunk to Neighbor chunk
-+						tmpPos2.Set(num2 + array2[0], num6 * num + array2[1], num3 + array2[2]);
-+						tmpPos2.dimension = dimension;
-+						int absCurToN = GetEffectiveAbsorption(curBlock, curBaseAbs, dir, curLight, tmpPos2);
-+						int lightArrivingAtN = curLight - absCurToN - 1;
-+						tmpPosDimensionAware.Set(num4 + num9, num6 * num + array2[1], num4 + num10);
-+						int absNFromCur = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, lightArrivingAtN,
-+							tmpPosDimensionAware);
-+						int finalLightToN = lightArrivingAtN;
-+						if (absNFromCur > lightArrivingAtN) finalLightToN = 0;
-+
-+						// Ray from Neighbor chunk to Current chunk
-+						int absNToCur = GetEffectiveAbsorption(nBlock, nBaseAbs, oppDir, nLight);
-+						int lightArrivingAtCur = nLight - absNToCur - 1;
-+						int absCurFromN = GetEffectiveAbsorption(curBlock, curBaseAbs, oppDir, lightArrivingAtCur);
-+						int finalLightToCur = lightArrivingAtCur;
-+						if (absCurFromN > lightArrivingAtCur) finalLightToCur = 0;
-+
-+						if (finalLightToN > nLight)
- 						{
+-						{
 -							lighting.SetSunlight(index3d2, num14);
 -							stack2.Push(new BlockPos(num2 + num9, num6 * num + array2[1], num3 + num10, dimension));
-+							lighting.SetSunlight(index3d2, finalLightToN);
-+							stack2.Push(new FastBlockPos(num4 + num9, num6 * num + array2[1], num4 + num10, dimension));
- 							b |= blockFacing.Flag;
- 						}
+-							b |= blockFacing.Flag;
+-						}
 -						else if (num13 > num12)
-+						else if (finalLightToCur > curLight)
- 						{
+-						{
 -							lighting2.SetSunlight(index3d, num13);
 -							stack.Push(new BlockPos(num2 + array2[0], num6 * num + array2[1], num3 + array2[2], dimension));
-+							lighting2.SetSunlight(index3d, finalLightToCur);
-+							stack.Push(new FastBlockPos(num2 + array2[0], num6 * num + array2[1], num3 + array2[2], dimension));
- 						}
- 					}
+-						}
+-					}
++					long chunkKey = chunkProvider.ChunkIndex3D(cx, cy + dimOffset, cz);
++					if (!session.staging.ContainsKey(chunkKey))
++						session.staging[chunkKey] = RentStagingArray();
++
++					var staging = session.staging[chunkKey];
++					var lighting = chunks[cy].Lighting;
++					for (int idx = 0; idx < totalBlocks; idx++)
++						staging[idx] = (byte)lighting.GetSunlight(idx);
  				}
  			}
+-			if (stack2.Count > 0)
 +
- 			if (stack2.Count > 0)
++			// 2. Zero the range and recalculate inside the staging buffer
++			foreach (var (cx, cz, dim, startChunkY, chunks) in validColumns)
  			{
- 				SpreadSunLightInColumn(stack2, array3);
+-				SpreadSunLightInColumn(stack2, array3);
 -				for (int k = 0; k < array3.Length; k++)
-+				for (int k = 0; k < array3.Length; k++) array3[k].MarkModified();
-+			}
-+			if (stack.Count > 0) SpreadSunLightInColumn(stack, curChunks);
-+		}
-+		return b;
-+	}
-+
-+	/// <summary> Processing a batch of deferred block light updates  </summary>
-+	public void ProcessScheduledBlockLightUpdates(List<Vec4i> scheduledUpdates)
-+	{
-+		if (scheduledUpdates == null || scheduledUpdates.Count == 0) return;
-+
-+		// 1. Collect all light sources and register them in chunks
-+		var sources = new List<(int x, int y, int z, byte h, byte s, byte b)>();
-+		BlockPos blockPos = new BlockPos(0);
-+
-+		foreach (Vec4i item in scheduledUpdates)
-+		{
-+			Block block = blockTypes[item.W];
-+			blockPos.SetAndCorrectDimension(item.X, item.Y, item.Z);
-+			byte[] lightHsv = block.GetLightHsv(readBlockAccess, blockPos);
-+
-+			if (lightHsv[2] > 0) // Only light sources (brightness > 0)
-+			{
-+				IWorldChunk chunkAtPos = GetChunkAtPos(blockPos.X, blockPos.InternalY, blockPos.Z);
-+				if (chunkAtPos != null)
-+				{
-+					int inChunkIndex = InChunkIndex(blockPos.X, blockPos.InternalY, blockPos.Z);
-+
-+					// Protection against duplicates: one block can be in the list multiple times
-+					if (!chunkAtPos.LightPositions.Contains(inChunkIndex))
-+						chunkAtPos.LightPositions.Add(inChunkIndex);
-+
-+					sources.Add((blockPos.X, blockPos.InternalY, blockPos.Z,
-+								 lightHsv[0], lightHsv[1], lightHsv[2]));
-+				}
-+			}
-+		}
-+
-+		if (sources.Count == 0)
-+			return;
-+
-+		// 2. Cluster sources by bounding box 
-+		// Group sources so that their common bounding box fits into the BFS grid (128³).
-+		// This guarantees that a single call to UpdateLightAt will cover the entire cluster.
-+		var clusters = new List<List<(int x, int y, int z, byte h, byte s, byte b)>>();
-+		var bounds = new List<(int minX, int maxX, int minY, int maxY, int minZ, int maxZ)>();
-+
-+		foreach (var src in sources)
-+		{
-+			bool added = false;
-+			for (int i = 0; i < clusters.Count; i++)
-+			{
-+				var b = bounds[i];
-+				int newMinX = Math.Min(b.minX, src.x);
-+				int newMaxX = Math.Max(b.maxX, src.x);
-+				int newMinY = Math.Min(b.minY, src.y);
-+				int newMaxY = Math.Max(b.maxY, src.y);
-+				int newMinZ = Math.Min(b.minZ, src.z);
-+				int newMaxZ = Math.Max(b.maxZ, src.z);
-+
-+				// Check if the expanded bounding box will fit into the 128³ grid
-+				if (newMaxX - newMinX <= LIGHT_GRID_WIDTH &&
-+					newMaxY - newMinY <= LIGHT_GRID_WIDTH &&
-+					newMaxZ - newMinZ <= LIGHT_GRID_WIDTH)
++				int dimOffset = dim * 1024;
++				for (int cy = startChunkY; cy >= 0; cy--)
  				{
 -					array3[k].MarkModified();
-+					clusters[i].Add(src);
-+					bounds[i] = (newMinX, newMaxX, newMinY, newMaxY, newMinZ, newMaxZ);
-+					added = true;
-+					break;
++					long chunkKey = chunkProvider.ChunkIndex3D(cx, cy + dimOffset, cz);
++					Array.Clear(session.staging[chunkKey], 0, totalBlocks);
  				}
++				Sunlight(chunks, cx, startChunkY, cz, dim);
++				SunlightFlood(chunks, cx, startChunkY, cz, dim);
  			}
 -			if (stack.Count > 0)
 +
-+			if (!added)
++			// 3. Cross-chunk boundary exchange
++			foreach (var (cx, cz, dim, startChunkY, chunks) in validColumns)
  			{
 -				SpreadSunLightInColumn(stack, curChunks);
-+				var newCluster = new List<(int x, int y, int z, byte h, byte s, byte b)> { src };
-+				clusters.Add(newCluster);
-+				bounds.Add((src.x, src.x, src.y, src.y, src.z, src.z));
++				SunLightFloodNeighbourChunks(chunks, cx, startChunkY, cz, dim);
  			}
  		}
 -		return b;
-+
-+		// 3. For each cluster, call UpdateLightAt from the center of its bounding box
-+		foreach (var cluster in clusters)
+-	}
++		finally
 +		{
-+			int minX = int.MaxValue, maxX = int.MinValue;
-+			int minY = int.MaxValue, maxY = int.MinValue;
-+			int minZ = int.MaxValue, maxZ = int.MinValue;
-+			int maxRange = 0;
-+
-+			foreach (var src in cluster)
-+			{
-+				if (src.x < minX) minX = src.x;
-+				if (src.x > maxX) maxX = src.x;
-+				if (src.y < minY) minY = src.y;
-+				if (src.y > maxY) maxY = src.y;
-+				if (src.z < minZ) minZ = src.z;
-+				if (src.z > maxZ) maxZ = src.z;
-+				if (src.b > maxRange) maxRange = src.b;
-+			}
-+
-+			int centerX = (minX + maxX) / 2;
-+			int centerY = (minY + maxY) / 2;
-+			int centerZ = (minZ + maxZ) / 2;
-+
-+			// halfBBSize = maximum Manhattan distance from the center to the corner of the bounding box.
-+			// We pass Math.Max(maxRange, halfBBSize) so that the cutoff in MultiSourceBFS 
-+			// (ndist >= range + newLevel) does not clip the light inside the bounding box.
-+			int halfBBSize = (maxX - minX) / 2 + (maxY - minY) / 2 + (maxZ - minZ) / 2;
-+			int effectiveRange = Math.Max(maxRange, halfBBSize);
-+
-+			FastSetOfLongs touchedChunks = new FastSetOfLongs();
-+			UpdateLightAt(effectiveRange, centerX, centerY, centerZ, touchedChunks);
++			EndBlockSnapshotSession(); // blocks no longer needed past this point
 +		}
- 	}
  
 -	public void SpreadSunLightInColumn(Stack<BlockPos> stack, IWorldChunk[] chunks)
-+	/// <summary> BFS propagation of sunlight over a stack of coordinates. </summary>
-+	private void SpreadSunLightInColumn(Stack<FastBlockPos> stack, IWorldChunk[] chunks)
- 	{
- 		int num = chunkSize;
-+		IWorldChunk worldChunk;
-+
- 		while (stack.Count > 0)
+-	{
+-		int num = chunkSize;
+-		while (stack.Count > 0)
++		// 4. Atomic commit to live lighting arrays
  		{
 -			BlockPos blockPos = stack.Pop();
 -			int num2 = blockPos.X / num;
@@ -903,136 +1531,75 @@ index e2ca303..da7c67d 100644
 -				continue;
 -			}
 -			int num9 = num3;
-+			FastBlockPos pos = stack.Pop();
-+			int chunkX = pos.X >> chunkSizeLog2;
-+			int chunkY = pos.Y >> chunkSizeLog2;
-+			int chunkZ = pos.Z >> chunkSizeLog2;
-+			int localX = pos.X & chunkSizeMask;
-+			int localY = pos.Y & chunkSizeMask;
-+			int localZ = pos.Z & chunkSizeMask;
-+
-+			int index3d = (localY * num + localZ) * num + localX;
-+			worldChunk = chunks[chunkY];
-+
-+			tmpPos.Set(pos.X, pos.Y, pos.Z);
-+			tmpPos.dimension = pos.Dim;
-+			int baseAbsorption = worldChunk.GetLightAbsorptionAt(index3d, tmpPos, blockTypes);
-+			Block posBlock = blockTypes[worldChunk.Data[index3d]];
-+			int currentLight = worldChunk.Lighting.GetSunlight(index3d);
-+
-+			if (currentLight <= 0) continue;
-+
-+			int lastChunkY = chunkY;
-+
- 			for (int i = 0; i < 6; i++)
+-			for (int i = 0; i < 6; i++)
++			var session = PeekSunSession();
++			foreach (var (cx, cz, dim, startChunkY, chunks) in validColumns)
  			{
- 				Vec3i vec3i = BlockFacing.ALLNORMALI[i];
+-				Vec3i vec3i = BlockFacing.ALLNORMALI[i];
 -				int num10 = blockPos.Y + vec3i.Y;
 -				int num11 = num5 + vec3i.X;
 -				int num12 = num7 + vec3i.Z;
 -				if (num11 >= 0 && num10 >= 0 && num12 >= 0 && num11 < num && num10 < mapsizey && num12 < num)
-+				int ny = pos.Y + vec3i.Y;
-+				int nlx = localX + vec3i.X;
-+				int nlz = localZ + vec3i.Z;
-+
-+				if (nlx >= 0 && ny >= 0 && nlz >= 0 && nlx < num && ny < mapsizey && nlz < num)
++				int dimOffset = dim * 1024;
++				for (int cy = startChunkY; cy >= 0; cy--)
  				{
 -					num3 = num10 / num;
 -					if (num3 != num9)
-+					int nChunkY = ny >> chunkSizeLog2;
-+					if (nChunkY != lastChunkY)
-+					{
-+						worldChunk = chunks[nChunkY];
-+						lastChunkY = nChunkY;
-+					}
-+
-+					int nIndex3d = ((ny & chunkSizeMask) * num + nlz) * num + nlx;
-+
-+					BlockFacing dir = BlockFacing.ALLFACES[i];
-+					int effectiveAbs = GetEffectiveAbsorption(
-+						posBlock, baseAbsorption, dir, currentLight, tmpPos);
-+					int newLight = currentLight - effectiveAbs - 1;
-+
-+					// Prevent light from propagating into fully opaque blocks or dying out
-+					if (newLight <= 0) continue;
-+
-+					// Absorption by the neighboring block
-+					Block nBlock = blockTypes[worldChunk.Data[nIndex3d]];
-+					tmpPos.Set(chunkX * num + nlx, ny, chunkZ * num + nlz);
-+					int nBaseAbs = worldChunk.GetLightAbsorptionAt(nIndex3d, tmpPos, blockTypes);
-+					tmpPos2.Set(chunkX * num + nlx, ny, chunkZ * num + nlz);
-+					tmpPos2.dimension = pos.Dim;
-+					int nEffectiveAbs = GetEffectiveAbsorption(
-+						nBlock, nBaseAbs, dir, newLight, tmpPos2);
-+
-+					int finalLight = newLight;
-+
-+					if (nEffectiveAbs > newLight)
++					long chunkKey = chunkProvider.ChunkIndex3D(cx, cy + dimOffset, cz);
++					var staging = session.staging[chunkKey];
++					var lighting = chunks[cy].Lighting;
++					bool chunkChanged = false;
++					for (int idx = 0; idx < totalBlocks; idx++)
  					{
 -						worldChunk = chunks[num3];
 -						worldChunk.Unpack();
 -						num9 = num3;
-+						int solidMask = 0;
-+						if (nBlock.SideSolid[0]) solidMask |= 1;
-+						if (nBlock.SideSolid[1]) solidMask |= 2;
-+						if (nBlock.SideSolid[2]) solidMask |= 4;
-+						if (nBlock.SideSolid[3]) solidMask |= 8;
-+						if (nBlock.SideSolid[4]) solidMask |= 16;
-+						if (nBlock.SideSolid[5]) solidMask |= 32;
-+
-+						// Full cube: keep the incoming light so adjacent leaves don't darken.
-+						if (solidMask != 63)
-+							finalLight = 0;
++						int oldSun = lighting.GetSunlight(idx);
++						int newSun = staging[idx];
++						if (oldSun != newSun)
++						{
++							lighting.SetSunlight(idx, newSun);
++							chunkChanged = true;
++						}
  					}
 -					index3d = (num10 % num * num + num12) * num + num11;
 -					if (worldChunk.Lighting.GetSunlight(index3d) < num8)
-+
-+					if (worldChunk.Lighting.GetSunlight(nIndex3d) < finalLight)
++					if (chunkChanged)
  					{
 -						worldChunk.Lighting.SetSunlight(index3d, num8);
 -						stack.Push(new BlockPos(num2 * num + num11, num10, num4 * num + num12, blockPos.dimension));
-+						worldChunk.Lighting.SetSunlight(nIndex3d, finalLight);
-+						int absX = chunkX * num + nlx;
-+						int absZ = chunkZ * num + nlz;
-+						stack.Push(new FastBlockPos(absX, ny, absZ, pos.Dim));
++						touchedChunks.Add(chunkKey);
++						chunks[cy].MarkModified();
  					}
  				}
  			}
- 		}
- 	}
+-		}
+-	}
  
-+	/// <summary> Gets the sunlight level at world coordinates. </summary>
- 	private int SunLightLevelAt(int posX, int posY, int posZ, bool substractAbsorb = false)
- 	{
- 		int num = chunkSize;
- 		IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / num, posY / num, posZ / num, notRecentlyAccessed: true);
+-	private int SunLightLevelAt(int posX, int posY, int posZ, bool substractAbsorb = false)
+-	{
+-		int num = chunkSize;
+-		IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / num, posY / num, posZ / num, notRecentlyAccessed: true);
 -		if (unpackedChunkFast == null)
 -		{
 -			return defaultSunLight;
--		}
-+		if (unpackedChunkFast == null) return defaultSunLight;
-+
- 		int index3d = (posY % num * num + posZ % num) * num + posX % num;
- 		return unpackedChunkFast.Lighting.GetSunlight(index3d) - (substractAbsorb ? unpackedChunkFast.GetLightAbsorptionAt(index3d, tmpPos.Set(posX, posY, posZ), blockTypes) : 0);
- 	}
++			// 5. Return staging arrays to the pool (Zero-GC)
++			lock (sunStagingPoolLock)
++			{
++				foreach (var arr in session.staging.Values)
++				{
++					if (sunStagingPool.Count < 512) sunStagingPool.Push(arr);
++				}
++			}
++			session.staging.Clear();
+ 		}
+-		int index3d = (posY % num * num + posZ % num) * num + posX % num;
+-		return unpackedChunkFast.Lighting.GetSunlight(index3d) - (substractAbsorb ? unpackedChunkFast.GetLightAbsorptionAt(index3d, tmpPos.Set(posX, posY, posZ), blockTypes) : 0);
+-	}
  
 -	private void SetSunLightLevelAt(int posX, int posY, int posZ, int level)
-+
-+	/// <summary>
-+	/// Updates sunlight when a block's transparency changes.
-+	/// Fully recalculates a cross of 5 chunk columns, but ONLY from posY and below.
-+	/// Sunlight above the changed block remains unchanged.
-+	/// </summary>
-+	public FastSetOfLongs UpdateSunLight(int posX, int posY, int posZ, int oldAbsorb, int newAbsorb)
- 	{
-+		FastSetOfLongs touchedChunks = new FastSetOfLongs();
-+		if (newAbsorb == oldAbsorb) return touchedChunks;
-+
-+		if (posX < 0 || posY < 0 || posZ < 0 ||
-+			posX >= mapsizex || posY >= mapsizey || posZ >= mapsizez)
-+			return touchedChunks;
-+
- 		int num = chunkSize;
+-	{
+-		int num = chunkSize;
 -		IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / num, posY / num, posZ / num, notRecentlyAccessed: true);
 -		if (unpackedChunkFast != null)
 -		{
@@ -1040,62 +1607,60 @@ index e2ca303..da7c67d 100644
 -			unpackedChunkFast.Lighting.SetSunlight(index3d, level);
 -		}
 -	}
-+		int chunkX = posX >> chunkSizeLog2;
-+		int chunkZ = posZ >> chunkSizeLog2;
-+		int dim = posY / 32768;
-+		int dimOffset = dim * 1024;
-+		int chunksPerColumn = mapsizey / num;
++		// session staging is now empty, so this just resets the session depth to 0 without redundant work.
++		EndSunStagingSession();
  
 -	private void ClearSunLightLevelAt(int posX, int posY, int posZ)
 -	{
 -		SetSunLightLevelAt(posX, posY, posZ, 0);
--	}
-+		// Recalculate only from this chunk and below.
-+		// Sunlight propagates from top to bottom. A transparency change at
-+		// posY only affects blocks at posY and below. Chunks above startChunkY
-+		// retain correct light, so we don't touch them.
-+		int startChunkY = posY >> chunkSizeLog2;
++		return touchedChunks;
+ 	}
  
 -	private int GetSunLightFromNeighbour(int posX, int posY, int posZ, bool directlyIlluminated)
--	{
++
++	/// <summary> Processing a batch of deferred block light updates  </summary>
++	public void ProcessScheduledBlockLightUpdates(List<Vec4i> scheduledUpdates)
+ 	{
 -		int num = posY / 32768 * 32768;
 -		int num2 = 0;
 -		for (int i = 0; i < 6; i++)
-+		// Gather 5 columns (cross pattern: center + N/S/E/W)
-+		var columns = new List<(int cx, int cz, IWorldChunk[] chunks)>(5);
++		if (scheduledUpdates is null || scheduledUpdates.Count == 0) return;
 +
-+		for (int dx = -1; dx <= 1; dx++)
++		// 1. Collect all light sources and register them in chunks
++		var sources = new List<(int x, int y, int z, byte h, byte s, byte b)>();
++		BlockPos blockPos = new BlockPos(0);
++
++		foreach (Vec4i item in scheduledUpdates)
  		{
 -			Vec3i vec3i = BlockFacing.ALLNORMALI[i];
 -			int num3 = posX + vec3i.X;
 -			int num4 = posY + vec3i.Y;
 -			int num5 = posZ + vec3i.Z;
 -			if ((num3 | num5) >= 0 && num4 >= num && num3 < mapsizex && num4 < mapsizey + num && num5 < mapsizez)
-+			for (int dz = -1; dz <= 1; dz++)
++			Block block = blockTypes[item.W];
++			blockPos.SetAndCorrectDimension(item.X, item.Y, item.Z);
++			byte[] lightHsv = block.GetLightHsv(readBlockAccess, blockPos);
++
++			if (lightHsv[2] > 0) // Only light sources (brightness > 0)
  			{
 -				IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(num3 / chunkSize, num4 / chunkSize, num5 / chunkSize);
 -				if (unpackedChunkFast != null)
-+				if (dx != 0 && dz != 0) continue; // Skip diagonals
-+
-+				int cx = chunkX + dx;
-+				int cz = chunkZ + dz;
-+				if (cx < 0 || cz < 0 || cx * num >= mapsizex || cz * num >= mapsizez)
-+					continue;
-+
-+				IWorldChunk[] chunks = new IWorldChunk[chunksPerColumn];
-+				bool allLoaded = true;
-+				for (int cy = 0; cy < chunksPerColumn; cy++)
++				IWorldChunk chunkAtPos = GetChunkAtPos(blockPos.X, blockPos.InternalY, blockPos.Z);
++				if (chunkAtPos is not null)
  				{
 -					int index3d = (num4 % chunkSize * chunkSize + num5 % chunkSize) * chunkSize + num3 % chunkSize;
 -					int lightAbsorptionAt = unpackedChunkFast.GetLightAbsorptionAt(index3d, tmpPos.Set(num3, num4, num5), blockTypes);
 -					int val = unpackedChunkFast.Lighting.GetSunlight(index3d) - lightAbsorptionAt - ((!(i == 4 && directlyIlluminated)) ? 1 : 0);
 -					num2 = Math.Max(num2, val);
-+					chunks[cy] = chunkProvider.GetChunk(cx, cy + dimOffset, cz);
-+					if (chunks[cy] == null) { allLoaded = false; break; }
-+					chunks[cy].Unpack();
++					int inChunkIndex = InChunkIndex(blockPos.X, blockPos.InternalY, blockPos.Z);
++
++					// Protection against duplicates: one block can be in the list multiple times
++					if (!chunkAtPos.LightPositions.Contains(inChunkIndex))
++						chunkAtPos.LightPositions.Add(inChunkIndex);
++
++					sources.Add((blockPos.X, blockPos.InternalY, blockPos.Z,
++								 lightHsv[0], lightHsv[1], lightHsv[2]));
  				}
-+				if (allLoaded)
-+					columns.Add((cx, cz, chunks));
  			}
  		}
 -		return num2;
@@ -1117,18 +1682,20 @@ index e2ca303..da7c67d 100644
 -		bool flag = IsDirectlyIlluminated(posX, posY, posZ);
 -		BlockPos centerPos = new BlockPos(posX, posY, posZ);
 -		if (newAbsorb > oldAbsorb)
-+		if (columns.Count == 0) return touchedChunks;
++		if (sources.Count == 0)
++			return;
 +
-+		int totalBlocks = num * num * num;
++		// 2. Cluster sources by bounding box 
++		// Group sources so that their common bounding box fits into the BFS grid (128³).
++		// This guarantees that a single call to UpdateLightAt will cover the entire cluster.
++		var clusters = new List<List<(int x, int y, int z, byte h, byte s, byte b)>>();
++		var bounds = new List<(int minX, int maxX, int minY, int maxY, int minZ, int maxZ)>();
 +
-+		// Pass 1: Extinguishing + Direct light + Horizontal flood
-+		foreach (var (cx, cz, chunks) in columns)
++		foreach (var src in sources)
  		{
 -			IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / chunkSize, posY / chunkSize, posZ / chunkSize, notRecentlyAccessed: true);
 -			if (unpackedChunkFast == null)
-+			// Extinguish sunlight ONLY in chunks from startChunkY down to 0
-+			for (int cy = startChunkY; cy >= 0; cy--)
- 			{
+-			{
 -				return fastSetOfLongs;
 -			}
 -			int index3d = (posY % chunkSize * chunkSize + posZ % chunkSize) * chunkSize + posX % chunkSize;
@@ -1136,23 +1703,38 @@ index e2ca303..da7c67d 100644
 -			unpackedChunkFast.Lighting.SetSunlight_Buffered(index3d, 0);
 -			QueueOfInt queueOfInt2 = new QueueOfInt();
 -			for (int i = 0; i < 6; i++)
--			{
++			bool added = false;
++			for (int i = 0; i < clusters.Count; i++)
+ 			{
 -				Vec3i vec3i = BlockFacing.ALLNORMALI[i];
 -				int num2 = posX + vec3i.X;
 -				int num3 = posY + vec3i.Y;
 -				int num4 = posZ + vec3i.Z;
 -				if (num2 >= 0 && num3 >= num && num4 >= 0 && num2 < mapsizex && num3 < num + mapsizey && num4 < mapsizez)
--				{
++				var b = bounds[i];
++				int newMinX = Math.Min(b.minX, src.x);
++				int newMaxX = Math.Max(b.maxX, src.x);
++				int newMinY = Math.Min(b.minY, src.y);
++				int newMaxY = Math.Max(b.maxY, src.y);
++				int newMinZ = Math.Min(b.minZ, src.z);
++				int newMaxZ = Math.Max(b.maxZ, src.z);
++
++				// Check if the expanded bounding box will fit into the 128³ grid
++				if (newMaxX - newMinX <= LIGHT_GRID_WIDTH &&
++					newMaxY - newMinY <= LIGHT_GRID_WIDTH &&
++					newMaxZ - newMinZ <= LIGHT_GRID_WIDTH)
+ 				{
 -					int num5 = sunlight - oldAbsorb - 1 + ((flag && i == 5) ? 1 : 0);
 -					int num6 = SunLightLevelAt(num2, num3, num4);
 -					if (num5 >= num6)
 -					{
 -						queueOfInt2.Enqueue(vec3i.X, vec3i.Y, vec3i.Z, num5 + (TileSideEnum.GetOpposite(i) + 1 << 5));
 -					}
--				}
-+				IChunkLight lighting = chunks[cy].Lighting;
-+				for (int idx = 0; idx < totalBlocks; idx++)
-+					lighting.SetSunlight(idx, 0);
++					clusters[i].Add(src);
++					bounds[i] = (newMinX, newMaxX, newMinY, newMaxY, newMinZ, newMaxZ);
++					added = true;
++					break;
+ 				}
  			}
 -			ClearSunlightAt(queueOfInt2, centerPos, flag, queueOfInt, fastSetOfLongs);
 -		}
@@ -1162,24 +1744,25 @@ index e2ca303..da7c67d 100644
 -		{
 -			SetSunLightLevelAt(posX, posY - 1, posZ, GetSunLightFromNeighbour(posX, posY - 1, posZ, flag));
 +
-+			// Direct sunlight: start from startChunkY.
-+			// Sunlight() will read the initial level from chunks[startChunkY+1] itself
-+			// (which was NOT extinguished and still contains correct light).
-+			Sunlight(chunks, cx, startChunkY, cz, dim);
-+
-+			// Horizontal propagation inside the column (also from startChunkY downwards)
-+			SunlightFlood(chunks, cx, startChunkY, cz);
++			if (!added)
++			{
++				var newCluster = new List<(int x, int y, int z, byte h, byte s, byte b)> { src };
++				clusters.Add(newCluster);
++				bounds.Add((src.x, src.x, src.y, src.y, src.z, src.z));
++			}
  		}
 -		if (newAbsorb > oldAbsorb)
 +
-+		// Pass 2: Boundary exchange + marking modified chunks
-+		foreach (var (cx, cz, chunks) in columns)
++		// 3. For each cluster, call UpdateLightAt from the center of its bounding box
++		foreach (var cluster in clusters)
  		{
 -			for (int j = 0; j < 6; j++)
-+			SunLightFloodNeighbourChunks(chunks, cx, startChunkY, cz, dim);
++			int minX = int.MaxValue, maxX = int.MinValue;
++			int minY = int.MaxValue, maxY = int.MinValue;
++			int minZ = int.MaxValue, maxZ = int.MinValue;
++			int maxRange = 0;
 +
-+			// Mark only the chunks that were actually recalculated
-+			for (int cy = startChunkY; cy >= 0; cy--)
++			foreach (var src in cluster)
  			{
 -				Vec3i vec3i2 = BlockFacing.ALLNORMALI[j];
 -				int num7 = posX + vec3i2.X;
@@ -1193,15 +1776,47 @@ index e2ca303..da7c67d 100644
 -						SetSunLightLevelAt(num7, num8, num9, sunLightFromNeighbour);
 -					}
 -				}
-+				touchedChunks.Add(chunkProvider.ChunkIndex3D(cx, cy + dimOffset, cz));
-+				chunks[cy].MarkModified();
++				if (src.x < minX) minX = src.x;
++				if (src.x > maxX) maxX = src.x;
++				if (src.y < minY) minY = src.y;
++				if (src.y > maxY) maxY = src.y;
++				if (src.z < minZ) minZ = src.z;
++				if (src.z > maxZ) maxZ = src.z;
++				if (src.b > maxRange) maxRange = src.b;
  			}
++
++			int centerX = (minX + maxX) / 2;
++			int centerY = (minY + maxY) / 2;
++			int centerZ = (minZ + maxZ) / 2;
++
++			// halfBBSize = maximum Manhattan distance from the center to the corner of the bounding box.
++			// We pass Math.Max(maxRange, halfBBSize) so that the cutoff in MultiSourceBFS 
++			// (ndist >= range + newLevel) does not clip the light inside the bounding box.
++			int halfBBSize = (maxX - minX) / 2 + (maxY - minY) / 2 + (maxZ - minZ) / 2;
++			int effectiveRange = Math.Max(maxRange, halfBBSize);
++
++			FastSetOfLongs touchedChunks = new FastSetOfLongs();
++			UpdateLightAt(effectiveRange, centerX, centerY, centerZ, touchedChunks);
  		}
 -		return fastSetOfLongs;
-+
-+		return touchedChunks;
  	}
  
++
++
++	/// <summary> Gets the sunlight level at world coordinates. </summary>
++	private int SunLightLevelAt(int posX, int posY, int posZ, bool substractAbsorb = false)
++	{
++		int num = chunkSize;
++		IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / num, posY / num, posZ / num, notRecentlyAccessed: true);
++		if (unpackedChunkFast is null) return defaultSunLight;
++
++		int index3d = (posY % num * num + posZ % num) * num + posX % num;
++		return unpackedChunkFast.Lighting.GetSunlight(index3d) - (substractAbsorb ? unpackedChunkFast.GetLightAbsorptionAt(index3d, tmpPos.Set(posX, posY, posZ), blockTypes) : 0);
++	}
++
++
++
++
 +	/// <summary> Checks if the sun rays reach the block directly (no obstacles from above). </summary>
  	public bool IsDirectlyIlluminated(int posX, int posY, int posZ)
  	{
@@ -1219,7 +1834,7 @@ index e2ca303..da7c67d 100644
 -				break;
 -			}
 +			unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / num, posY / num, posZ / num);
-+			if (unpackedChunkFast == null) break;
++			if (unpackedChunkFast is null) break;
 +
  			int index3d = (posY % num * num + posZ % num) * num + posX % num;
  			int sunlight = unpackedChunkFast.Lighting.GetSunlight(index3d);
@@ -1278,7 +1893,7 @@ index e2ca303..da7c67d 100644
 -			}
 +
 +			unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(num4 / num, num5 / num + centerPos.dimension * 1024, num6 / num);
-+			if (unpackedChunkFast == null) continue;
++			if (unpackedChunkFast is null) continue;
 +
  			int index3d = (num5 % num * num + num6 % num) * num + num4 % num;
  			unpackedChunkFast.Lighting.SetSunlight_Buffered(index3d, num3);
@@ -1313,7 +1928,8 @@ index e2ca303..da7c67d 100644
 +				if ((num8 | num9 | num10) < 0 || num8 >= mapsizex || num9 >= mapsizey || num10 >= mapsizez) continue;
 +
  				unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(num8 / num, num9 / num + centerPos.dimension * 1024, num10 / num);
- 				if (unpackedChunkFast != null)
+-				if (unpackedChunkFast != null)
++				if (unpackedChunkFast is not null)
  				{
  					touchedChunks.Add(chunkProvider.ChunkIndex3D(num8 / num, num9 / num + centerPos.dimension * 1024, num10 / num));
  					index3d = (num9 % num * num + num10 % num) * num + num8 % num;
@@ -1345,7 +1961,7 @@ index e2ca303..da7c67d 100644
  		tmpPos.SetDimension(0);
  	}
  
-+	/// <summary> BFS "clearing" (shadow spreading) when an obstacle for the sun appears. </summary>
++	/// <summary> BFS "clearing" (shadow spreading) when an obstacle for the sun appeared. </summary>
  	public void ClearSunlightAt(QueueOfInt positionsToClear, BlockPos centerPos, bool isDirectlyIlluminated, QueueOfInt retainedLightToSpread, FastSetOfLongs touchedChunks)
  	{
  		int num = chunkSize;
@@ -1366,7 +1982,7 @@ index e2ca303..da7c67d 100644
 -			}
 +
 +			unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(num3 / num, num4 / num + centerPos.dimension * 1024, num5 / num);
-+			if (unpackedChunkFast == null) continue;
++			if (unpackedChunkFast is null) continue;
 +
  			int index3d = (num4 % num * num + num5 % num) * num + num3 % num;
  			int sunlight = unpackedChunkFast.Lighting.GetSunlight(index3d);
@@ -1413,7 +2029,7 @@ index e2ca303..da7c67d 100644
 -				{
 -					continue;
 -				}
-+				if (unpackedChunkFast == null) continue;
++				if (unpackedChunkFast is null) continue;
 +
  				touchedChunks.Add(chunkProvider.ChunkIndex3D(num8 / num, num9 / num + centerPos.dimension * 1024, num10 / num));
 -				int num11 = num6 - 1 + ((isDirectlyIlluminated && num8 == centerPos.X && num10 == centerPos.Z && i == 5) ? 1 : 0);
@@ -1465,7 +2081,7 @@ index e2ca303..da7c67d 100644
 -		{
 -			return fastSetOfLongs;
 -		}
-+		if (chunkAtPos == null) return fastSetOfLongs;
++		if (chunkAtPos is null) return fastSetOfLongs;
 +
  		chunkAtPos.LightPositions.Add(InChunkIndex(posX, posY, posZ));
  		UpdateLightAt(lightHsv[2], posX, posY, posZ, fastSetOfLongs);
@@ -1558,7 +2174,7 @@ index e2ca303..da7c67d 100644
 -		{
 -			return fastSetOfLongs;
 -		}
-+		if (chunkAtPos == null) return fastSetOfLongs;
++		if (chunkAtPos is null) return fastSetOfLongs;
 +
  		chunkAtPos.LightPositions.Remove(InChunkIndex(posX, posY, posZ));
  		int num = oldLightHsv[2];
@@ -1585,7 +2201,7 @@ index e2ca303..da7c67d 100644
 -		{
 -			return fastSetOfLongs;
 -		}
-+		if (unpackedChunkFast == null) return fastSetOfLongs;
++		if (unpackedChunkFast is null) return fastSetOfLongs;
 +
  		int index3d = (posY % num * num + posZ % num) * num + posX % num;
  		int blocklight = unpackedChunkFast.Lighting.GetBlocklight(index3d);
@@ -1650,21 +2266,21 @@ index e2ca303..da7c67d 100644
 +		lz = idx >> (GRID_BITS * 2);
 +	}
 +
-+	/// <summary> Getting a reference (ref) to the source slot in the LightCell structure. </summary>
++	/// <summary> Returns a reference to the source index slot in a LightCell by slot index. </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static ref int SrcSlot(ref LightCell c, int i)
 +	{
 +		switch (i) { case 0: return ref c.src0; case 1: return ref c.src1; case 2: return ref c.src2; default: return ref c.src3; }
 +	}
 +
-+	/// <summary> Getting a reference (ref) to the level slot in the LightCell structure. </summary>
++	/// <summary> Returns a reference to the level byte slot in a LightCell by slot index. </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static ref byte LvlSlot(ref LightCell c, int i)
 +	{
 +		switch (i) { case 0: return ref c.lvl0; case 1: return ref c.lvl1; case 2: return ref c.lvl2; default: return ref c.lvl3; }
 +	}
 +
-+	/// <summary> Finding the source index in the cell's Top-4 slots. </summary>
++	/// <summary> Finds the slot index of a given source within a LightCell's tracked sources. </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static int FindSlot(ref LightCell c, int srcIdx)
 +	{
@@ -1747,7 +2363,7 @@ index e2ca303..da7c67d 100644
 +				int wx = lx + baseX; int wy = ly + baseY; int wz = lz + baseZ;
 +
 +				chunk = chunkProvider.GetUnpackedChunkFast(wx / num, wy / num, wz / num, notRecentlyAccessed: true);
-+				if (chunk == null) continue;
++				if (chunk is null) continue;
 +
 +				int index3d = (wy % num * num + wz % num) * num + wx % num;
 +				int baseAbsorption = chunk.GetLightAbsorptionAt(index3d, tmpPos.Set(wx, wy, wz), blockTypes);
@@ -1778,7 +2394,7 @@ index e2ca303..da7c67d 100644
 +
 +					// Get the NEIGHBOR's chunk and its local index
 +					IWorldChunk nChunk = chunkProvider.GetUnpackedChunkFast(nwx / num, nwy / num, nwz / num, notRecentlyAccessed: true);
-+					if (nChunk == null) continue;
++					if (nChunk is null) continue;
 +
 +					int nIndex3d = (nwy % num * num + nwz % num) * num + nwx % num;
 +					Block nBlock = blockTypes[nChunk.Data[nIndex3d]];
@@ -1890,7 +2506,8 @@ index e2ca303..da7c67d 100644
  		bool flag = posX < rangeNext - 1 || posZ < rangeNext - 1 || posX >= mapsizex - rangeNext + 1 || posZ >= mapsizez - rangeNext + 1;
 +
  		IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / num, posY / num, posZ / num, notRecentlyAccessed: true);
- 		if (unpackedChunkFast == null)
+-		if (unpackedChunkFast == null)
++		if (unpackedChunkFast is null)
  		{
 +			queueOfIntPool.Push(queueOfInt);
  			return;
@@ -1942,7 +2559,8 @@ index e2ca303..da7c67d 100644
 -				}
 +
  				unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(num8 / num, num9 / num, num10 / num);
- 				if (unpackedChunkFast != null)
+-				if (unpackedChunkFast != null)
++				if (unpackedChunkFast is not null)
  				{
  					index3d = (num9 % num * num + num10 % num) * num + num8 % num;
 +
@@ -1966,10 +2584,14 @@ index e2ca303..da7c67d 100644
  				}
  			}
  		}
--	}
++
++		queueOfIntPool.Push(queueOfInt);
+ 	}
  
 -	private void CollectLightValuesForLightSource(int posX, int posY, int posZ, int forPosX, int forPosY, int forPosZ, int forRange)
--	{
++	/// <summary> Horizontal propagation of sunlight inside chunks. Backward-compatible overload (default dim = 0). </summary>
++	public void SunlightFlood(IWorldChunk[] chunks, int chunkX, int chunkY, int chunkZ)
+ 	{
 -		int num = chunkSize;
 -		QueueOfInt queueOfInt = new QueueOfInt();
 -		Block block = GetBlock(posX, posY, posZ);
@@ -2038,10 +2660,18 @@ index e2ca303..da7c67d 100644
 -				}
 -			}
 -		}
-+		queueOfIntPool.Push(queueOfInt);
++		SunlightFlood(chunks, chunkX, chunkY, chunkZ, /*dim*/ 0);
  	}
  
 -	private void RecalcBlockLightAtPos(Vec3i pos, LightSourcesAtBlock lsab)
++
++	/// <summary> BFS propagation of sunlight over a stack of coordinates. Backward-compatible overload (default dim = 0). </summary>
++	private void SpreadSunLightInColumn(Stack<FastBlockPos> stack, IWorldChunk[] chunks)
++	{
++		SpreadSunLightInColumn(stack, chunks, /*dim*/ 0);
++	}
++
++
 +
 +	/// <summary> Final color mixing (HSV -> RGB -> HSV) from all sources at a specific point. </summary>
 +	private void RecalcBlockLightAtPos(int posX, int posY, int posZ, ref LightCell cell)
@@ -2050,7 +2680,7 @@ index e2ca303..da7c67d 100644
 -		IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(pos.X / num, pos.Y / num, pos.Z / num, notRecentlyAccessed: true);
 -		if (unpackedChunkFast == null)
 +		IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / num, posY / num, posZ / num, notRecentlyAccessed: true);
-+		if (unpackedChunkFast == null) return;
++		if (unpackedChunkFast is null) return;
 +
 +		int index3d = (posY % num * num + posZ % num) * num + posX % num;
 +
@@ -2116,9 +2746,8 @@ index e2ca303..da7c67d 100644
  		int num11 = ColorUtil.Rgb2Hsv(num5, num6, num7);
  		int num12 = Math.Min((int)((float)(num11 & 0xFF) / 4f + 0.5f), ColorUtil.HueQuantities - 1);
  		int num13 = Math.Min((int)((float)((num11 >> 8) & 0xFF) / 32f + 0.5f), ColorUtil.SatQuantities - 1);
-+
- 		unpackedChunkFast.Lighting.SetBlocklight(index3d, (num3 << 5) | (num12 << 10) | (num13 << 16));
- 	}
+-		unpackedChunkFast.Lighting.SetBlocklight(index3d, (num3 << 5) | (num12 << 10) | (num13 << 16));
+-	}
  
 -	private Block GetBlock(int posX, int posY, int posZ)
 -	{
@@ -2134,7 +2763,8 @@ index e2ca303..da7c67d 100644
 -		}
 -		int index3d = (posY % num * num + posZ % num) * num + posX % num;
 -		return blockTypes[unpackedChunkFast.Data[index3d]];
--	}
++		unpackedChunkFast.Lighting.SetBlocklight(index3d, (num3 << 5) | (num12 << 10) | (num13 << 16));
+ 	}
  
 +	/// <summary> Fast retrieval of a chunk by block coordinates. </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2150,6 +2780,23 @@ index e2ca303..da7c67d 100644
  		return (posY % chunkSize * chunkSize + posZ % chunkSize) * chunkSize + posX % chunkSize;
  	}
  
++	/// <summary>
++	/// Stratum: exposes block-snapshot session control so WorldAPI can wrap a whole column pass
++	/// (Sunlight + SunlightFlood + neighbour exchange) in ONE shared session, decoding each chunk
++	/// exactly once instead of once per BFS flush.
++	/// Stratum: sessions are per-thread, which is exactly how WorldGen uses them (one column pass per worker thread).
++	/// </summary>
++	internal void BeginWorldGenLightingSession()
++	{
++		BeginBlockSnapshotSession();
++	}
++
++	internal void EndWorldGenLightingSession()
++	{
++		EndBlockSnapshotSession();
++	}
++
++
 +	/// <summary> Calculation of the global 64-bit chunk index in the world. </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
  	internal long GetChunkIndexForPos(int posX, int posY, int posZ)
@@ -2175,9 +2822,10 @@ index e2ca303..da7c67d 100644
  				for (int k = -1; k <= 1; k++)
  				{
 -					IWorldChunk chunk = chunkProvider.GetChunk(num + i, num2 + j, num3 + k);
-+					chunk = chunkProvider.GetChunk(num + i, num2 + j, num3 + k);
- 					if (chunk == null)
+-					if (chunk == null)
 -					{
++					chunk = chunkProvider.GetChunk(num + i, num2 + j, num3 + k);
++					if (chunk is null)
  						continue;
 -					}
 +

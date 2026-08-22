@@ -1,0 +1,69 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/NoChunkData.cs b/VintagestoryLib/Vintagestory.Common/NoChunkData.cs
+index db9ffef..4060d59 100644
+--- a/VintagestoryLib/Vintagestory.Common/NoChunkData.cs
++++ b/VintagestoryLib/Vintagestory.Common/NoChunkData.cs
+@@ -6,17 +6,12 @@ namespace Vintagestory.Common;
+ 
+ public class NoChunkData : IChunkBlocks
+ {
+ 	public int this[int index3d]
+ 	{
+-		get
+-		{
+-			return 0;
+-		}
+-		set
+-		{
+-		}
++		get { return 0; }
++		set { }
+ 	}
+ 
+ 	public int Length { get; set; }
+ 
+ 	public static NoChunkData CreateNew(int chunksize)
+@@ -41,10 +36,35 @@ public class NoChunkData : IChunkBlocks
+ 
+ 	public void SetBlockUnsafe(int index3d, int blockId)
+ 	{
+ 	}
+ 
++	// Stratum: added to satisfy IChunkBlocks interface (bulk unsafe set with parallel lists of indices and values)
++	public void SetBlocksUnsafe(List<int> indices, List<int> values)
++	{
++	}
++
++	// Stratum: added to satisfy IChunkBlocks interface (copy all block IDs into a flat array)
++	public void CopyBlocksToUnsafe(int[] blocksOut)
++	{
++	}
++
++	// Stratum: added to satisfy IChunkBlocks interface (bulk unsafe set from flat int array of block values)
++	public void SetBlocksBulkUnsafe(int[] blocksIn)
++	{
++	}
++
++	// Stratum: added to satisfy IChunkBlocks interface (copy all light values into a flat array)
++	public void CopyLightToUnsafe(int[] lightOut)
++	{
++	}
++
++	// Stratum: added to satisfy IChunkBlocks interface (bulk unsafe set from flat int array of light values)
++	public void SetLightBulkUnsafe(int[] lightIn)
++	{
++	}
++
+ 	public void SetBlockAir(int index3d)
+ 	{
+ 	}
+ 
+ 	public int GetBlockId(int index, int layer)
+@@ -82,6 +102,6 @@ public class NoChunkData : IChunkBlocks
+ 
+ 	public void FuzzyListBlockIds(List<int> reusableList)
+ 	{
+ 		reusableList.Add(0);
+ 	}
+-}
++}
+\ No newline at end of file

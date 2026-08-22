@@ -1,15 +1,13 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
-index 95025db..7c475dd 100644
+index 95025db..a7465d4 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/GenStructures.cs
-@@ -44,23 +44,48 @@ namespace Vintagestory.ServerMods
-         int climateBotRight;
-
+@@ -46,19 +46,44 @@ namespace Vintagestory.ServerMods
          int forestUpLeft;
          int forestUpRight;
          int forestBotLeft;
          int forestBotRight;
-
+ 
 +        // Stratum: concurrent TerrainFeatures columns keep an isolated owner behind the vanilla fields.
 +        [ThreadStatic] private static ushort[] stratumHeightmap;
 +        [ThreadStatic] private static int stratumClimateUpLeft, stratumClimateUpRight, stratumClimateBotLeft, stratumClimateBotRight;
@@ -37,28 +35,24 @@ index 95025db..7c475dd 100644
 +        readonly object stratumStructurePlacementLock = new object();
 +
          public event PeventSchematicAtDelegate OnPreventSchematicPlaceAt;
-
+ 
          internal WorldGenStructuresConfig scfg;
-
+ 
          public WorldGenVillageConfig vcfg;
-
+ 
          LCGRandom strucRand; // Deterministic random
-
+ 
 -
          IWorldGenBlockAccessor worldgenBlockAccessor;
-
+ 
          WorldGenStructure[] shuffledStructures;
          private Dictionary<string, WorldGenStructure[]> StoryStructures;
-
-         public override double ExecuteOrder() { return 0.3; }
-
-@@ -236,14 +261,51 @@ namespace Vintagestory.ServerMods
-             var chunks = request.Chunks;
-             int chunkX = request.ChunkX;
+ 
+@@ -238,13 +263,61 @@ namespace Vintagestory.ServerMods
              int chunkZ = request.ChunkZ;
-
+ 
              worldgenBlockAccessor.BeginColumn();
-
+ 
              IMapRegion region = chunks[0].MapChunk.MapRegion;
 +            if (stratumHasColumnState(chunkX, chunkZ))
 +            {
@@ -97,20 +91,30 @@ index 95025db..7c475dd 100644
 +                stratumStateChunkX = chunkX;
 +                stratumStateChunkZ = chunkZ;
 +            }
-
+ 
              DoGenStructures(region, chunkX, chunkZ, true, structure?.Code, request.ChunkGenParams);
              TryGenVillages(region, chunkX, chunkZ, true, request.ChunkGenParams);
++
++            // Stratum: this column's structure generation is done on this thread once the
++            // postpass returns. Release the cached state rather than leaving it set until this
++            // thread happens to process another chunk's main pass (which may be much later, or
++            // never, once worldgen quiets down) - stratumStateOwner otherwise keeps the owning
++            // GenStructures instance, and everything it holds (WorldGenStructuresConfig's loaded
++            // schematic cache included), reachable from this thread for as long as the thread
++            // itself lives, well past the point this chunk's own data would otherwise be
++            // collectible.
++            stratumStateOwner = null;
++            stratumHeightmap = null;
          }
-
+ 
          private void OnChunkColumnGen(IChunkColumnGenerateRequest request)
          {
-@@ -266,57 +328,63 @@ namespace Vintagestory.ServerMods
-             // A region has 16 chunks
-             // Size of the forest map is RegionSize / TerraGenConfig.forestMapScale  => 32*16 / 32  = 16 pixel
+             if (!TerraGenConfig.GenerateStructures) return;
+@@ -268,24 +341,28 @@ namespace Vintagestory.ServerMods
              // rlX, rlZ goes from 0..16 pixel
              // facF = 16/16 = 1
              // Get 4 pixels for chunkx, chunkz, chunkx+1 and chunkz+1 inside the map
-
+ 
              float facC = (float)climateMap.InnerSize / regionChunkSize;
 -            climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC));
 -            climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
@@ -120,8 +124,8 @@ index 95025db..7c475dd 100644
 +            stratumClimateUpRight = climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
 +            stratumClimateBotLeft = climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC + facC));
 +            stratumClimateBotRight = climateBotRight = climateMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC + facC));
-
-
+ 
+ 
              float facf = (float)forestMap.InnerSize / regionChunkSize;
 -            forestUpLeft = forestMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC));
 -            forestUpRight = forestMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
@@ -131,22 +135,21 @@ index 95025db..7c475dd 100644
 +            stratumForestUpRight = forestUpRight = forestMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC));
 +            stratumForestBotLeft = forestBotLeft = forestMap.GetUnpaddedInt((int)(rlX * facC), (int)(rlZ * facC + facC));
 +            stratumForestBotRight = forestBotRight = forestMap.GetUnpaddedInt((int)(rlX * facC + facC), (int)(rlZ * facC + facC));
-
-
+ 
+ 
 -            heightmap = chunks[0].MapChunk.WorldGenTerrainHeightMap;
 +            stratumHeightmap = heightmap = chunks[0].MapChunk.WorldGenTerrainHeightMap;
 +            if (stratumStateOwner != this) stratumStrucRand = null; // Stratum: a reused thread may now belong to another world
 +            stratumStateOwner = this;
 +            stratumStateChunkX = chunkX;
 +            stratumStateChunkZ = chunkZ;
-
+ 
              DoGenStructures(region, chunkX, chunkZ, false, structure?.Code, request.ChunkGenParams);
              if (structure == null)
              {
                  TryGenVillages(region, chunkX, chunkZ, false, request.ChunkGenParams);
-             }
-         }
-
+@@ -294,27 +371,29 @@ namespace Vintagestory.ServerMods
+ 
          private void DoGenStructures(IMapRegion region, int chunkX, int chunkZ, bool postPass, string locationCode, ITreeAttribute chunkGenParams = null)
          {
              // We need to make a copy each time to preserve determinism
@@ -175,20 +178,16 @@ index 95025db..7c475dd 100644
              }
 +            shuffledStructures = activeShuffledStructures; // Stratum: publish the active vanilla field for mod code
              BlockPos startPos = new BlockPos(Dimensions.NormalWorld);
-
+ 
              ITreeAttribute chanceModTree = null;
              ITreeAttribute maxQuantityModTree = null;
              StoryStructureLocation location = null;
-             if (chunkGenParams?["structureChanceModifier"] != null)
-             {
-@@ -324,21 +392,35 @@ namespace Vintagestory.ServerMods
-             }
-             if (chunkGenParams?["structureMaxCount"] != null)
+@@ -326,17 +405,31 @@ namespace Vintagestory.ServerMods
              {
                  maxQuantityModTree = chunkGenParams["structureMaxCount"] as TreeAttribute;
              }
-
-
+ 
+ 
 -            strucRand.InitPositionSeed(chunkX, chunkZ);
 -
 -            shuffledStructures.Shuffle(strucRand);
@@ -217,20 +216,16 @@ index 95025db..7c475dd 100644
 -                WorldGenStructure struc = shuffledStructures[i];
 +                WorldGenStructure struc = activeShuffledStructures[i];
                  if (struc.PostPass != postPass) continue;
-
+ 
                  float chance = struc.Chance * scfg.ChanceMultiplier;
                  int toGenerate = 9999;
                  if (chanceModTree != null)
-                 {
-                     chance *= chanceModTree.GetFloat(struc.Code, 0);
-@@ -346,30 +428,30 @@ namespace Vintagestory.ServerMods
-
-                 if (maxQuantityModTree != null)
+@@ -348,26 +441,26 @@ namespace Vintagestory.ServerMods
                  {
                      toGenerate = maxQuantityModTree.GetInt(struc.Code, 9999);
                  }
-
-
+ 
+ 
 -                while (chance-- > strucRand.NextFloat() && toGenerate > 0)
 +                while (chance-- > activeRand.NextFloat() && toGenerate > 0)
                  {
@@ -241,7 +236,7 @@ index 95025db..7c475dd 100644
 +                    int dz = activeRand.NextInt(chunksize);
 +                    int ySurface = activeHeightmap[dz * chunksize + dx];
                      if (ySurface <= 0 || ySurface >= worldheight - 15) continue;
-
+ 
                      if (struc.Placement == EnumStructurePlacement.Underground)
                      {
                          if (struc.Depth != null)
@@ -258,12 +253,8 @@ index 95025db..7c475dd 100644
                      else
                      {
                          startPos.Set(chunkX * chunksize + dx, ySurface, chunkZ * chunksize + dz);
-                     }
-
-@@ -380,155 +462,193 @@ namespace Vintagestory.ServerMods
-                         continue;
-                     }
-
+@@ -382,61 +475,69 @@ namespace Vintagestory.ServerMods
+ 
                      // check if in storylocation and if we can still generate this structure
                      if (locationCode != null)
                      {
@@ -274,7 +265,7 @@ index 95025db..7c475dd 100644
                              continue;
                          }
 +                    }
-
+ 
 -                        if (struc.StoryMaxFromCenter != 0 &&  !startPos.InRangeHorizontally(location.CenterPos.X, location.CenterPos.Z, struc.StoryMaxFromCenter))
 +                    int forest = GameMath.BiLerpRgbColor((float)(startPos.X % chunksize) / chunksize, (float)(startPos.Z % chunksize) / chunksize, activeForestUpLeft, activeForestUpRight, activeForestBotLeft, activeForestBotRight);
 +                    bool didGenerate;
@@ -286,7 +277,7 @@ index 95025db..7c475dd 100644
                              continue;
                          }
 -                    }
-
+ 
 -                    int forest = GameMath.BiLerpRgbColor((float)(startPos.X % chunksize) / chunksize, (float)(startPos.Z % chunksize) / chunksize, forestUpLeft, forestUpRight, forestBotLeft, forestBotRight);
 -                    if (struc.TryGenerate(worldgenBlockAccessor, api.World, startPos, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight, forest, locationCode))
 -                    {
@@ -295,14 +286,9 @@ index 95025db..7c475dd 100644
 +                        if (didGenerate)
                          {
 -                            if (location.SchematicsSpawned?.TryGetValue(struc.Group, out var spawnedSchematics) == true)
--                            {
--                                location.SchematicsSpawned[struc.Group] = spawnedSchematics + 1;
--                            }
--                            else
 +                            if(locationCode != null && location != null)
                              {
--                                location.SchematicsSpawned ??= new Dictionary<string, int>();
--                                location.SchematicsSpawned[struc.Group] = 1;
+-                                location.SchematicsSpawned[struc.Group] = spawnedSchematics + 1;
 +                                if (location.SchematicsSpawned?.TryGetValue(struc.Group, out var spawnedSchematics) == true)
 +                                {
 +                                    location.SchematicsSpawned[struc.Group] = spawnedSchematics + 1;
@@ -313,13 +299,18 @@ index 95025db..7c475dd 100644
 +                                    location.SchematicsSpawned[struc.Group] = 1;
 +                                }
                              }
+-                            else
+-                            {
+-                                location.SchematicsSpawned ??= new Dictionary<string, int>();
+-                                location.SchematicsSpawned[struc.Group] = 1;
+-                            }
 -                        }
 -                        Cuboidi loc = struc.LastPlacedSchematicLocation;
 +                            Cuboidi loc = struc.LastPlacedSchematicLocation;
-
+ 
 -                        string code = (struc.LastPlacedSchematic == null ? "" : struc.LastPlacedSchematic.FromFile.GetNameWithDomain()) + "/" + struc.Code;
 +                            string code = (struc.LastPlacedSchematic == null ? "" : struc.LastPlacedSchematic.FromFile.GetNameWithDomain()) + "/" + struc.Code;
-
+ 
 -                        region.AddGeneratedStructure(new GeneratedStructure() {
 -                            Code = code,
 -                            Group = struc.Group,
@@ -334,7 +325,7 @@ index 95025db..7c475dd 100644
 +                                SuppressTreesAndShrubs = struc.SuppressTrees,
 +                                SuppressRivulets = struc.SuppressWaterfalls
 +                            });
-
+ 
 -                        if (struc.BuildProtected)
 -                        {
 -                            api.World.Claims.Add(new LandClaim()
@@ -367,12 +358,12 @@ index 95025db..7c475dd 100644
                  }
              }
          }
-
-
-
-
-
-
+@@ -444,89 +545,119 @@ namespace Vintagestory.ServerMods
+ 
+ 
+ 
+ 
+ 
 +        private bool stratumHasColumnState(int chunkX, int chunkZ)
 +        {
 +            return stratumStateOwner == this && stratumStateChunkX == chunkX && stratumStateChunkZ == chunkZ;
@@ -386,7 +377,7 @@ index 95025db..7c475dd 100644
 +                : strucRand;
 +            activeRand.InitPositionSeed(chunkX, chunkZ);
 +            strucRand = activeRand; // Stratum: keep the exact field current even when ruins returned early
-
+ 
              for (int i = 0; i < vcfg.VillageTypes.Length; i++)
              {
                  WorldGenVillage struc = vcfg.VillageTypes[i];
@@ -399,7 +390,7 @@ index 95025db..7c475dd 100644
                  }
              }
          }
-
+ 
          public bool GenVillage(IBlockAccessor blockAccessor, IMapRegion region, WorldGenVillage struc, int chunkX, int chunkZ)
          {
 +            bool hasColumnState = stratumHasColumnState(chunkX, chunkZ);
@@ -409,15 +400,15 @@ index 95025db..7c475dd 100644
 +            int activeClimateBotLeft = hasColumnState ? stratumClimateBotLeft : climateBotLeft;
 +            int activeClimateBotRight = hasColumnState ? stratumClimateBotRight : climateBotRight;
              BlockPos pos = new BlockPos(Dimensions.NormalWorld);
-
+ 
              int dx = chunksize / 2;
              int dz = chunksize / 2;
 -            int ySurface = heightmap[dz * chunksize + dx];
 +            int ySurface = activeHeightmap[dz * chunksize + dx];
              if (ySurface <= 0 || ySurface >= worldheight - 15) return false;
-
+ 
              pos.Set(chunkX * chunksize + dx, ySurface, chunkZ * chunksize + dz);
-
+ 
 -            return struc.TryGenerate(blockAccessor, api.World, pos, climateUpLeft, climateUpRight, climateBotLeft, climateBotRight, (loc, schematic) =>
 +            // Stratum: same lock as the ruins loop in DoGenStructures. Villages and
 +            // ruins share the same region.GeneratedStructures overlap check, so they
@@ -428,10 +419,10 @@ index 95025db..7c475dd 100644
 +                return struc.TryGenerate(blockAccessor, api.World, pos, activeClimateUpLeft, activeClimateUpRight, activeClimateBotLeft, activeClimateBotRight, (loc, schematic) =>
 +                {
 +                    string code = (schematic == null ? "" : schematic.FromFile.GetNameWithDomain()) + "/" + struc.Code;
-
+ 
 -                region.AddGeneratedStructure(new GeneratedStructure() { Code = code, Group = struc.Group, Location = loc.Clone() });
 +                    region.AddGeneratedStructure(new GeneratedStructure() { Code = code, Group = struc.Group, Location = loc.Clone() });
-
+ 
 -                if (struc.BuildProtected)
 -                {
 -                    api.World.Claims.Add(new LandClaim()
@@ -459,18 +450,18 @@ index 95025db..7c475dd 100644
 +                }, spawnPos);
 +            }
          }
-
-
+ 
+ 
 +        // Stratum: protect the shared suppression list while serial Vegetation rebuilds and reads it.
 +        // A future concurrent Vegetation pass will need per-column suppression state as well.
 +        readonly object stratumTreeShrubSuppressLock = new object();
          List<Cuboidi> treeAndShrubSupressingStructures = new List<Cuboidi>();
          int chunkMapSizeY;
-
+ 
          public bool PreventPlacementAt(int x, int z, int category)
          {
              if (category != ShrubsHashCode && category != TreesHashCode) return false;
-
+ 
 -            for (int i = 0; i < treeAndShrubSupressingStructures.Count; i++)
 +            lock (stratumTreeShrubSuppressLock)
              {
@@ -480,15 +471,15 @@ index 95025db..7c475dd 100644
 +                    if (treeAndShrubSupressingStructures[i].Contains(x, z)) return true;
 +                }
              }
-
+ 
              return false;
          }
-
+ 
          public bool PreventPlacementBroadlyAt(int chunkX, int chunkZ)
          {
              BlockPos chunkStart = new BlockPos(Dimensions.NormalWorld);
              BlockPos chunkEnd = new BlockPos(Dimensions.NormalWorld);
-
+ 
 -            treeAndShrubSupressingStructures.Clear();
 -            api.World.BlockAccessor.WalkStructures(
 -                chunkStart.Set(chunkX * chunksize, 0, chunkZ * chunksize),
@@ -510,10 +501,8 @@ index 95025db..7c475dd 100644
 +                    }
 +                });
 +            }
-
+ 
              return false;
          }
-
+ 
          public BlockPatchConfig GetPatchProviderAt(int chunkX, int chunkZ, ref EnumHandling handling)
-         {
-             return null;

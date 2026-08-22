@@ -11,7 +11,7 @@ Builds a clean working tree by laying down:
   3. Stratum patches and sources over those baselines.
 
 Options:
-  --version VERSION        Vintage Story server version to download. Default: 1.22.6
+  --version VERSION        Vintage Story server version to download. Default: 1.22.7
   --server-archive PATH    Existing vs_server_*.zip or .tar.gz archive to use.
   --client-lib-dir PATH    Optional full client Lib/ folder for client-only deps.
   --refresh               Force re-extract, re-decompile, and re-clone.
@@ -19,7 +19,7 @@ Options:
 EOF
 }
 
-version="1.22.6"
+version="1.22.7"
 server_archive=""
 client_lib_dir="${VS_CLIENT_LIB_DIR:-}"
 refresh=0
@@ -254,6 +254,110 @@ copy_optional_client_libs() {
   done
 }
 
+download_missing_client_refs() {
+  local lib_dir="$1"
+  local required_refs=(OpenTK.Graphics.dll csogg.dll csvorbis.dll)
+  local missing_refs=()
+
+  mkdir -p "$lib_dir"
+  for ref in "${required_refs[@]}"; do
+    if [[ ! -f "$lib_dir/$ref" ]]; then
+      missing_refs+=("$ref")
+    fi
+  done
+
+  if [[ "${#missing_refs[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  echo "Missing managed client references: ${missing_refs[*]}"
+
+  mkdir -p "$zip_cache_dir"
+  local manifest_file="$zip_cache_dir/.stable-unstable.json"
+  curl -L --fail --silent --show-error \
+    https://api.vintagestory.at/stable-unstable.json \
+    -o "$manifest_file"
+
+  local archive_info
+  archive_info="$(python3 - "$version" "$manifest_file" <<'PY'
+import json
+import sys
+
+version = sys.argv[1]
+with open(sys.argv[2], "r", encoding="utf-8") as file:
+    data = json.load(file)
+try:
+    entry = data[version]["linux"]
+    print(entry["filename"])
+    print(entry["urls"]["cdn"])
+    print(entry["md5"])
+except KeyError as exc:
+    raise SystemExit(f"client archive not found in Anego manifest for linux {version}") from exc
+PY
+)"
+  local archive_name url md5
+  archive_name="$(printf '%s\n' "$archive_info" | sed -n '1p')"
+  url="$(printf '%s\n' "$archive_info" | sed -n '2p')"
+  md5="$(printf '%s\n' "$archive_info" | sed -n '3p')"
+  local archive_path="$zip_cache_dir/$archive_name"
+
+  if [[ -f "$archive_path" ]]; then
+    local actual_md5
+    actual_md5="$(python3 - "$archive_path" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    print(hashlib.md5(file.read()).hexdigest())
+PY
+)"
+    if [[ "${actual_md5,,}" != "${md5,,}" ]]; then
+      echo "Cached client archive failed checksum, downloading a fresh copy" >&2
+      rm -f "$archive_path"
+    else
+      echo "Using cached $archive_path"
+    fi
+  fi
+
+  if [[ ! -f "$archive_path" ]]; then
+    echo "Downloading $url"
+    curl -L --fail --output "$archive_path" "$url"
+    local actual_md5
+    actual_md5="$(python3 - "$archive_path" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    print(hashlib.md5(file.read()).hexdigest())
+PY
+)"
+    if [[ "${actual_md5,,}" != "${md5,,}" ]]; then
+      rm -f "$archive_path"
+      echo "Downloaded client archive failed MD5 verification: $archive_name" >&2
+      exit 1
+    fi
+  fi
+
+  local extract_dir="$repo_root/.tmp-client-$version"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+  tar -xzf "$archive_path" -C "$extract_dir"
+
+  for ref in "${missing_refs[@]}"; do
+    local source_ref
+    source_ref="$(find "$extract_dir" -type f -name "$ref" -print -quit)"
+    if [[ -z "$source_ref" ]]; then
+      rm -rf "$extract_dir"
+      echo "Could not find $ref in $archive_name" >&2
+      exit 1
+    fi
+    cp -f "$source_ref" "$lib_dir/$ref"
+    echo "Restored build ref $ref from Linux client archive"
+  done
+
+  rm -rf "$extract_dir"
+}
+
 require_cmd dotnet
 require_cmd git
 require_cmd find
@@ -300,6 +404,9 @@ if [[ "$missing_server_dll" == "1" ]]; then
 fi
 
 copy_optional_client_libs "$client_lib_dir" "$vanilla_dir/Lib"
+if [[ -z "$client_lib_dir" ]]; then
+  download_missing_client_refs "$vanilla_dir/Lib"
+fi
 
 install_ilspycmd_if_missing
 

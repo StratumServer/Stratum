@@ -1,11 +1,11 @@
 {
   "_comment": "Pinned upstream commits for each Anego open-source fork. Bump these when overlaying a new Vintage Story release. Bootstrap clones each repo at the listed ref into .baseline/<name>/ and the working <name>/ folder, then applies patches/<name>/*.patch on top.",
-  "vintageStoryVersion": "1.22.6",
+  "vintageStoryVersion": "1.22.7",
   "forks": [
     {
       "name": "VintagestoryApi",
       "url": "https://github.com/anegostudios/vsapi.git",
-      "ref": "324ccf9e852ffbe3764e3271508f28081123d111"
+      "ref": "63d33f70018c606fb0f70ead900fe90625fbd7b2"
     },
     {
       "name": "Cairo",
@@ -20,12 +20,27 @@
     {
       "name": "VSEssentials",
       "url": "https://github.com/anegostudios/vsessentialsmod.git",
-      "ref": "0cd7da3e4f6e7faba7bcd7f56be4a9a144a1c088"
+      "ref": "06673b67318e002332b6aa8b3d0308f11d2aba99"
     },
     {
       "name": "VSSurvivalMod",
       "url": "https://github.com/anegostudios/vssurvivalmod.git",
-      "ref": "dfaeb44db824a7f37d5b7bf82ba0657633aa0f43"
+      "ref": "849fa8cad9e392368566efc7474e73db6404a145"
+    }
+  ],
+  "_arm64NativeOverlaysComment": "Pinned anegostudios/VintagestoryServerArm64 releases, keyed by Vintage Story major.minor. VanillaBootstrap overlays these *.so files onto the official linux-x64 archive on arm64 hosts. Bump/add an entry when overlaying a new Vintage Story minor version; the sha256 comes from the release asset's 'digest' field.",
+  "arm64NativeOverlays": [
+    {
+      "version": "1.22",
+      "name": "vs_server_linux-arm64_1.22.0.tar.gz",
+      "url": "https://github.com/anegostudios/VintagestoryServerArm64/releases/download/1.22.0/vs_server_linux-arm64_1.22.0.tar.gz",
+      "sha256": "191c7f3a58a89a47843e7ab8d1fb16d51f3030f7a6cead639c7c48a907679bfa"
+    },
+    {
+      "version": "1.21",
+      "name": "vs_server_linux-arm64_1.21.0.tar.gz",
+      "url": "https://github.com/anegostudios/VintagestoryServerArm64/releases/download/1.21.0/vs_server_linux-arm64_1.21.0.tar.gz",
+      "sha256": "a0f26b3999410559f1fa2b0f3c270367ff59d5a289d990419d5f3e31d1af59d1"
     }
   ]
 }

@@ -83,6 +83,33 @@ internal static class StratumModCompat
 		return null;
 	}
 
+	// Whether a mod has patched one method or code the compiler generated for its body.
+	public static bool IsMethodBodyPatchedByMod(Type declaringType, string methodName)
+	{
+		if (declaringType == null || string.IsNullOrEmpty(methodName)) return false;
+
+		if (DescribeModPatches(AccessTools.Method(declaringType, methodName)) != null) return true;
+
+		string generatedNamePrefix = "<" + methodName + ">";
+		MethodInfo[] declaredMethods = declaringType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+		foreach (MethodInfo method in declaredMethods)
+		{
+			if (method.Name.StartsWith(generatedNamePrefix, StringComparison.Ordinal) && DescribeModPatches(method) != null) return true;
+		}
+
+		Type[] nestedTypes = declaringType.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic);
+		foreach (Type nestedType in nestedTypes)
+		{
+			MethodInfo[] nestedMethods = nestedType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+			foreach (MethodInfo method in nestedMethods)
+			{
+				if (method.Name.StartsWith(generatedNamePrefix, StringComparison.Ordinal) && DescribeModPatches(method) != null) return true;
+			}
+		}
+
+		return false;
+	}
+
 	// Every mod-owned Harmony patch on one method, or null when there are none. Stratum compiles
 	// its own changes in and applies no Harmony patches, so anything here is third-party.
 	public static string DescribeModPatches(MethodBase method)

@@ -1,0 +1,240 @@
+diff --git a/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs b/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
+index 3fe5096..6bc906d 100644
+--- a/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
++++ b/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
+@@ -122,12 +122,14 @@ namespace Vintagestory.GameContent
+                 int localIndex3D = (chunksize * lY + lz) * chunksize + lx;
+ 
+                 chunks[chunkY].Blocks[localIndex3D] = rockStrataGen.rockBlockId;
+             }
+ 
+-            rockStrataGen.preLoad(chunks, chunkX, chunkZ);
+-            rockStrataGen.genBlockColumn(chunks, chunkX, chunkZ, lx, lz);
++            // Stratum start: Replaced two separate calls (preLoad + genBlockColumn) with a single wrapper method that encapsulates the full stratum workflow — snapshotting the initial rock block state, running block generation to mutate it, and flushing the result back into DummyChunk arrays. This ensures the subsequent loop reads the correct strata column instead of stale data.
++            rockStrataGen.GenRockColumnForProPick(chunks, chunkX, chunkZ, lx, lz);
++            // Stratum end
++
+ 
+             if (depositGen == null)
+             {
+                 // Wait for off-thread initialisation to finish (should be well finished by the time any player is able to use a ProPick, but let's make sure)
+                 int timeOutCount = 100;
+@@ -216,10 +218,65 @@ namespace Vintagestory.GameContent
+                 public void SetBlockUnsafe(int index3d, int value)
+                 {
+                     this[index3d] = value;
+                 }
+ 
++                // Stratum start: Added 5 interface methods required for the snapshot-flush workflow used by GenRockColumnForProPick. DummyChunkData stores only block IDs in a flat int[], so each method is implemented as a simple pass-through or no-op rather than a full palette/bit-plane-aware implementation.
++                /// <summary>
++                /// Stratum: necessary interface overload for the snapshot flush path.
++                /// Copies all block data from this DummyChunkData's internal array into
++                /// the provided output array using Array.Copy (which the runtime lowers to
++                /// a fast memcpy/memmove). Used by GenRockColumnForProPick to read back
++                /// the mutated stratum state after generation.
++                /// </summary>
++                public void CopyBlocksToUnsafe(int[] blocksOut)
++                {
++                    Array.Copy(blocks, blocksOut, blocks.Length);
++                }
++
++                /// <summary>
++                /// Stratum: bulk variant of SetBlockUnsafe for interface compatibility. DummyChunkData is a plain int[] with no locking or palette, so there's no batching benefit — this simply applies each index/value pair directly via the indexer, equivalent to calling SetBlockUnsafe in a loop but matching the IChunkBlocks contract signature.
++                /// </summary>
++                public void SetBlocksUnsafe(List<int> indices, List<int> values)
++                {
++                    int count = indices.Count;
++                    for (int i = 0; i < count; i++)
++                    {
++                        blocks[indices[i]] = values[i];
++                    }
++                }
++
++                /// <summary>
++                /// Stratum: bulk array overwrite for the snapshot flush path. Since DummyChunkData is a plain int[] with no palette or bit-planes, the fastest correct implementation is a single Array.Copy call (which the JIT/runtime optimises to a native memcpy). Length is clamped to avoid out-of-bounds writes if blocksIn is shorter than expected.
++                /// </summary>
++                public void SetBlocksBulkUnsafe(int[] blocksIn)
++                {
++                    if (blocksIn != null && blocksIn.Length > 0)
++                    {
++                        int len = Math.Min(blocksIn.Length, blocks.Length);
++                        Array.Copy(blocksIn, 0, blocks, 0, len);
++                    }
++                }
++
++                /// <summary>
++                /// Stratum: necessary interface overload. DummyChunkData stores only block IDs — no light data exists in this implementation. Returns all zeros (via Array.Clear) to prevent reading uninitialized memory if ever called by code that expects light values.
++                /// </summary>
++                public void CopyLightToUnsafe(int[] lightOut)
++                {
++                    if (lightOut != null) Array.Clear(lightOut, 0, lightOut.Length);
++                }
++
++                /// <summary>
++                /// Stratum: necessary interface overload. Light writes are silently ignored since the prospecting pick workflow only cares about block IDs — no light data is ever read or written by this code path, so a no-op is correct and safe.
++                /// </summary>
++                public void SetLightBulkUnsafe(int[] lightIn)
++                {
++                    // No-op: DummyChunkData has no light storage.
++                }
++                // Stratum end
++
++
+                 public void SetFluid(int index3d, int value)
+                 {
+ 
+                 }
+ 
+@@ -251,13 +308,13 @@ namespace Vintagestory.GameContent
+             public string GameVersionCreated => throw new NotImplementedException();
+ 
+             public bool Disposed => throw new NotImplementedException();
+ 
+             public bool Empty { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+-			Dictionary<BlockPos, BlockEntity> IWorldChunk.BlockEntities { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
++            Dictionary<BlockPos, BlockEntity> IWorldChunk.BlockEntities { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+ 
+-			public IChunkBlocks MaybeBlocks => throw new NotImplementedException();
++            public IChunkBlocks MaybeBlocks => throw new NotImplementedException();
+ 
+             public bool NotAtEdge => throw new NotImplementedException();
+ 
+             IChunkBlocks IWorldChunk.Blocks => throw new NotImplementedException();
+ 
+@@ -301,22 +358,22 @@ namespace Vintagestory.GameContent
+             }
+             public void Unpack()
+             {
+                 throw new NotImplementedException();
+             }
+-			public bool Unpack_ReadOnly()
+-			{
+-				throw new NotImplementedException();
+-			}
+-			public int UnpackAndReadBlock(int index, int layer)
+-			{
+-				throw new NotImplementedException();
+-			}
+-			public ushort Unpack_AndReadLight(int index)
+-			{
+-				throw new NotImplementedException();
+-			}
++            public bool Unpack_ReadOnly()
++            {
++                throw new NotImplementedException();
++            }
++            public int UnpackAndReadBlock(int index, int layer)
++            {
++                throw new NotImplementedException();
++            }
++            public ushort Unpack_AndReadLight(int index)
++            {
++                throw new NotImplementedException();
++            }
+             public ushort Unpack_AndReadLight(int index, out int lightSat)
+             {
+                 throw new NotImplementedException();
+             }
+ 
+@@ -334,19 +391,19 @@ namespace Vintagestory.GameContent
+             public BlockEntity GetLocalBlockEntityAtBlockPos(BlockPos pos)
+             {
+                 throw new NotImplementedException();
+             }
+ 
+-			public bool AddDecor(IBlockAccessor blockAccessor, BlockPos pos, int faceIndex, Block block)
+-			{
+-				throw new NotImplementedException();
+-			}
++            public bool AddDecor(IBlockAccessor blockAccessor, BlockPos pos, int faceIndex, Block block)
++            {
++                throw new NotImplementedException();
++            }
+ 
+-			public void RemoveDecor(int index3d, IWorldAccessor world, BlockPos pos)
+-			{
+-				throw new NotImplementedException();
+-			}
++            public void RemoveDecor(int index3d, IWorldAccessor world, BlockPos pos)
++            {
++                throw new NotImplementedException();
++            }
+ 
+             Block[] IWorldChunk.GetDecors(IBlockAccessor blockAccessor, BlockPos pos)
+             {
+                 throw new NotImplementedException();
+             }
+@@ -355,35 +412,35 @@ namespace Vintagestory.GameContent
+             {
+                 throw new NotImplementedException();
+             }
+ 
+             public bool GetDecors(IBlockAccessor blockAccessor, BlockPos pos, Block[] result)
+-			{
+-				throw new NotImplementedException();
+-			}
++            {
++                throw new NotImplementedException();
++            }
+ 
+-			public Cuboidf[] AdjustSelectionBoxForDecor(IBlockAccessor blockAccessor, BlockPos pos, Cuboidf[] orig)
+-			{
+-				throw new NotImplementedException();
+-			}
++            public Cuboidf[] AdjustSelectionBoxForDecor(IBlockAccessor blockAccessor, BlockPos pos, Cuboidf[] orig)
++            {
++                throw new NotImplementedException();
++            }
+ 
+-			public void FinishLightDoubleBuffering()
+-			{
+-				throw new NotImplementedException();
+-			}
++            public void FinishLightDoubleBuffering()
++            {
++                throw new NotImplementedException();
++            }
+ 
+             public bool SetDecor(IBlockAccessor blockAccessor, Block block, BlockPos pos, BlockFacing onFace)
+             {
+                 throw new NotImplementedException();
+             }
+ 
+-			public bool SetDecor(IBlockAccessor blockAccessor, Block block, BlockPos pos, int subPosition)
+-			{
+-				throw new NotImplementedException();
+-			}
++            public bool SetDecor(IBlockAccessor blockAccessor, Block block, BlockPos pos, int subPosition)
++            {
++                throw new NotImplementedException();
++            }
+ 
+-			public void BreakDecor(IWorldAccessor world, BlockPos pos, BlockFacing side = null)
++            public void BreakDecor(IWorldAccessor world, BlockPos pos, BlockFacing side = null)
+             {
+                 throw new NotImplementedException();
+             }
+ 
+             public void BreakAllDecorFast(IWorldAccessor world, BlockPos pos, int index3d, bool callOnBrokenAsDecor = true)
+@@ -394,16 +451,16 @@ namespace Vintagestory.GameContent
+             public Dictionary<int, Block> GetDecors(IBlockAccessor blockAccessor, BlockPos pos)
+             {
+                 throw new NotImplementedException();
+             }
+ 
+-			public void SetDecors(Dictionary<int, Block> newDecors)
+-			{
+-				throw new NotImplementedException();
+-			}
++            public void SetDecors(Dictionary<int, Block> newDecors)
++            {
++                throw new NotImplementedException();
++            }
+ 
+-			public void BreakDecorPart(IWorldAccessor world, BlockPos pos, BlockFacing side, int faceAndSubposition)
++            public void BreakDecorPart(IWorldAccessor world, BlockPos pos, BlockFacing side, int faceAndSubposition)
+             {
+                 throw new NotImplementedException();
+             }
+ 
+             public Block GetDecor(IBlockAccessor blockAccessor, BlockPos pos, int faceAndSubposition)

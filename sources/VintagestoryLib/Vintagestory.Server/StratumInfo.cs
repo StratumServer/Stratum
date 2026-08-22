@@ -9,14 +9,14 @@ internal static class StratumInfo
 
 	// Base Vintage Story release this build is patched against. Bump together with
 	// forks.json and the decompile target.
-	public const string BaseGameVersion = "1.22.6";
+	public const string BaseGameVersion = "1.22.7";
 
 	// Stratum revision on top of BaseGameVersion. Increment for every public release;
 	// reset to 1 when BaseGameVersion changes.
-	public const string StratumRevision = "2";
+	public const string StratumRevision = "1";
 
 	// Optional prerelease label appended after the revision ("rc.1", "dev", "").
-	public const string PreRelease = "";
+	public const string PreRelease = "indev.1";
 
 	public const string ProtocolMode = "vanilla-compatible";
 

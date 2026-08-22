@@ -168,7 +168,7 @@ internal class CmdStratum
 		output.Append(StratumCommandText.Row("Client mod policy", "enabled=" + (config.ClientModPolicy.Enabled ? "on" : "off") + ", strictWhitelist=" + (config.ClientModPolicy.StrictWhitelist ? "on" : "off") + ", allowExtras=" + config.ClientModPolicy.AllowModIds.Count));
 		output.Append(StratumCommandText.Row("Hardening", "packets=" + (config.Hardening.PacketMonitoring ? "on" : "off") + ", blockbreak=" + (config.Hardening.BlockBreakGuards ? "on" : "off") + ", inventory=" + (config.Hardening.InventoryGuards ? "on" : "off") + ", entities=" + (config.Hardening.EntityGuards ? "on" : "off")));
 		output.Append(StratumCommandText.Row("Commands", "playerQoL=" + (config.Commands.Enabled ? "on" : "off") + ", tpaTimeout=" + config.Commands.TeleportRequests.TimeoutSeconds + "s, defaultHomes=" + config.Commands.Homes.DefaultMaxHomes + ", near=" + config.Commands.NearDefaultRadiusBlocks + "/" + config.Commands.NearMaxRadiusBlocks));
-		output.Append(StratumCommandText.Row("Chat", "rolePrefixes=" + (config.Chat.Enabled && config.Appearance.RolePrefixes.Enabled ? "on" : "off") + ", urlLinks=" + (config.Chat.Enabled && config.Chat.LinkifyUrls ? "on" : "off") + ", configuredRoles=" + config.Appearance.RolePrefixes.Roles.Count));
+		output.Append(StratumCommandText.Row("Chat", "rolePrefixes=" + (config.Chat.Enabled && config.Appearance.RolePrefixes.Enabled ? "on" : "off") + ", urlLinks=" + (config.Chat.Enabled && config.Chat.LinkifyUrls ? "on" : "off") + ", configuredRoles=" + config.Appearance.RolePrefixes.Roles.Count + ", global=" + (config.Chat.Global.Enabled ? "on" : "off") + ", group=" + (config.Chat.Groups.Enabled ? "on" : "off")));
 		return TextCommandResult.Success(output.ToString());
 	}
 
@@ -212,6 +212,8 @@ internal class CmdStratum
 		if (loaded)
 		{
 			CmdStratumEssentials.RegisterConfiguredPrivileges(server);
+			StratumCoopCombatSystem.Apply(StratumRuntime.Config.CoopCombat);
+			StratumMobSpawning.Refresh(); // Stratum: issue #216 resync after config reload
 			// Stratum: clear region ticking fallback state on reload (#10)
 			var sim = server.Systems.OfType<ServerSystemEntitySimulation>().FirstOrDefault();
 			sim?.StratumClearFallbackState();
@@ -241,7 +243,7 @@ internal class CmdStratum
 
 	private TextCommandResult HandleAnticheat(string playerName)
 	{
-		return TextCommandResult.Success(StratumAnticheatReporter.BuildReport(playerName));
+		return TextCommandResult.Success(StratumAnticheatReporter.BuildReport(server, playerName));
 	}
 
 	private TextCommandResult HandleHealth()
@@ -448,6 +450,8 @@ internal class CmdStratum
 		StratumRolePrefixesConfig rolePrefixes = StratumRuntime.Config.Appearance.RolePrefixes;
 		StringBuilder output = new StringBuilder(StratumCommandText.Title("Stratum Chat"));
 		output.Append(StratumCommandText.Row("Enabled", chat.Enabled ? "true" : "false"));
+		output.Append(StratumCommandText.Row("Global chat", chat.Global.Enabled ? "enabled" : "disabled (staffBypass=" + (chat.Global.AllowStaffBypass ? "on" : "off") + ")"));
+		output.Append(StratumCommandText.Row("Group chat", chat.Groups.Enabled ? "enabled" : "disabled (staffBypass=" + (chat.Groups.AllowStaffBypass ? "on" : "off") + ")"));
 		output.Append(StratumCommandText.Row("Role prefixes", rolePrefixes.Enabled ? "true" : "false"));
 		output.Append(StratumCommandText.Row("URL links", chat.LinkifyUrls ? "true" : "false"));
 		output.Append(StratumCommandText.Row("Prefix format", rolePrefixes.Format));
@@ -807,6 +811,7 @@ internal class CmdStratum
 		try
 		{
 			StratumRuntime.Config.EnsurePopulated();
+			StratumMobSpawning.Refresh(); // Stratum: issue #216 apply live config changes
 			StratumRuntime.SaveConfig();
 		}
 		catch (Exception ex)

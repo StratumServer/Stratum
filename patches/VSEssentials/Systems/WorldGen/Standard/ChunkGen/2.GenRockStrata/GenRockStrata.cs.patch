@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
-index cb9eefa..3a5476e 100644
+index cb9eefa..574c98e 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/2.GenRockStrata/GenRockStrata.cs
-@@ -1,8 +1,9 @@
+@@ -1,6 +1,7 @@
  using System;
 +using System.Collections.Concurrent;
  using System.Collections.Generic;
@@ -10,67 +10,82 @@ index cb9eefa..3a5476e 100644
  using Vintagestory.API.Datastructures;
  using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
- using Vintagestory.ServerMods.NoObf;
-
-@@ -24,14 +25,20 @@ namespace Vintagestory.ServerMods
-         internal SimplexNoise distort2dx;
-         internal SimplexNoise distort2dz;
+@@ -26,10 +27,18 @@ namespace Vintagestory.ServerMods
          internal MapLayerCustomPerlin[] strataNoises;
-
+ 
          int regionMapSize;
          Dictionary<int, LerpedWeightedIndex2DMap> ProvinceMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(10);
-
-+        // Stratum: each worldgen thread gets a complete generator so vanilla fields stay intact.
+ 
++        // Stratum start: thread-local worker instances so each worldgen thread gets its own mutable state without interfering with other threads.
 +        StratumWorkerInstances<GenRockStrataNew> stratumWorkers;
++        // Stratum end
 +
-+        // Stratum: workers keep vanilla dictionaries while sharing the expensive cached maps.
++        // Stratum start: concurrent dictionary shared across workers for expensive cached province maps, avoiding per-worker duplication of the same LerpedWeightedIndex2DMap instances.
 +        ConcurrentDictionary<int, LerpedWeightedIndex2DMap> stratumProvinceMapsByRegion = new ConcurrentDictionary<int, LerpedWeightedIndex2DMap>();
++        // Stratum end
 +
          public override bool ShouldLoad(EnumAppSide side)
          {
              return side == EnumAppSide.Server;
          }
-
-         public override double ExecuteOrder()
-         {
-@@ -42,17 +49,18 @@ namespace Vintagestory.ServerMods
-         {
-             this.api = api;
+ 
+@@ -44,13 +53,14 @@ namespace Vintagestory.ServerMods
          }
-
+ 
          public override void StartServerSide(ICoreServerAPI api)
          {
              this.api = api;
-+            stratumWorkers = new StratumWorkerInstances<GenRockStrataNew>(StratumCreateWorker); // Stratum: isolate mutable fields without changing their shape
-
++            stratumWorkers = new StratumWorkerInstances<GenRockStrataNew>(StratumCreateWorker); // Stratum: initialize thread-local workers with their own mutable state copies.
+ 
              api.Event.InitWorldGenerator(initWorldGen, "standard");
 -            api.Event.ChunkColumnGeneration(GenChunkColumn, EnumWorldGenPass.Terrain, "standard");
-+            StratumTerrainSplit.Register(api, GenChunkColumn, StratumGenChunkColumn, "standard"); // Stratum: expose vanilla topology until the worker path is safe
-
++            StratumTerrainSplit.Register(api, GenChunkColumn, StratumGenChunkColumn, "standard"); // Stratum: register vanilla and stratum chunk generation paths for terrain pass.
+ 
              api.Event.MapRegionGeneration(OnMapRegionGen, "standard");
          }
-
-
-         public void initWorldGen()
-         {
-@@ -146,16 +154,59 @@ namespace Vintagestory.ServerMods
-
-         LerpedWeightedIndex2DMap map;
+ 
+ 
+@@ -69,10 +79,12 @@ namespace Vintagestory.ServerMods
+             regionSize = api.WorldManager.RegionSize;
+ 
+             // Unpadded region noise size in chunks
+             regionChunkSize = regionSize / chunksize;
+ 
++            chunksizeLog2 = System.Numerics.BitOperations.Log2((uint)chunksize); // Stratum: precompute log2(chunksize) for bit-shift operations instead of division/multiplication on every Y step.
++
+             // Unpadded region noise size in blocks
+             int geoProvRegionNoiseSize = regionSize / TerraGenConfig.geoProvMapScale;
+ 
+             // Amount of regions in all of the map
+             regionMapSize = api.WorldManager.MapSizeX / (chunksize * geoProvRegionNoiseSize);
+@@ -148,27 +160,120 @@ namespace Vintagestory.ServerMods
          float lerpMapInv;
          float chunkInRegionX;
          float chunkInRegionZ;
-
+ 
          GeologicProvinces provinces = NoiseGeoProvince.provinces;
 +
-+        // Stratum: reuse province weights to avoid one allocation per block column.
++        // Stratum start: reusable province weights buffer to avoid allocation per block column. Reallocated only when provinces.Variants.Length changes.
 +        float[] stratumIndicesBuf;
++        // Stratum end
++
++        // Stratum start: precomputed log2(chunksize) for bit-shift operations instead of division/multiplication on every Y step. chunksize is assumed to be a power of two (it always has been — 32).
++        int chunksizeLog2;
++        // Stratum end
++
++        // Stratum start: per-subchunk block snapshots, refreshed once per chunk column instead of calling GetBlockIdUnsafe (interface dispatch + palette decode) once per replaced block. Correctness relies on writes being deferred until StratumFlushPendingWrites at the end of GenChunkColumn — the real data is untouched throughout the whole column loop, so one snapshot at the start sees exactly what every individual GetBlockIdUnsafe call would have seen. We mutate this array directly during genBlockColumn and bulk-write it back to the chunk in one pass via SetBlocksBulkUnsafe, completely bypassing per-block list allocations and per-block palette encoding overhead.
++        int[][] stratumBlockSnapshot;
++        // Stratum end
++
          #endregion
-
+ 
++        /// <summary>Stratum: delegates chunk column generation to the current thread-local worker instance.</summary>
 +        private void StratumGenChunkColumn(IChunkColumnGenerateRequest request)
 +        {
 +            stratumWorkers.Current.GenChunkColumn(request);
 +        }
 +
++        /// <summary>Stratum: factory method that creates a new GenRockStrataNew worker and copies the configured state from this instance.</summary>
 +        private GenRockStrataNew StratumCreateWorker()
 +        {
 +            GenRockStrataNew worker = new GenRockStrataNew();
@@ -78,21 +93,55 @@ index cb9eefa..3a5476e 100644
 +            return worker;
 +        }
 +
-+        // Stratum: copy configured state and give mutable fields to one worldgen thread.
++        /// <summary>Stratum: (re)allocates the per-subchunk buffer arrays to match this column's chunk count. Cheap no-op after the first call for a given worker, since chunk column height doesn't change between calls.</summary>
++        private void StratumEnsureBuffers(int numSubchunks)
++        {
++            if (stratumBlockSnapshot != null && stratumBlockSnapshot.Length == numSubchunks)
++            {
++                return;
++            }
++            stratumBlockSnapshot = new int[numSubchunks][];
++            for (int i = 0; i < numSubchunks; i++)
++            {
++                stratumBlockSnapshot[i] = new int[chunksize * chunksize * chunksize]; // 32768
++            }
++        }
++
++        /// <summary>Stratum: bulk-reads every subchunk's current block IDs once per chunk column. See stratumBlockSnapshot field comment for the correctness argument.</summary>
++        private void StratumSnapshotBlocks(IServerChunk[] chunks)
++        {
++            for (int cy = 0; cy < chunks.Length; cy++)
++            {
++                chunks[cy].Data.CopyBlocksToUnsafe(stratumBlockSnapshot[cy]);
++            }
++        }
++
++        /// <summary>Stratum: bulk-write the mutated snapshot back to each subchunk in one pass.</summary>
++        private void StratumFlushPendingWrites(IServerChunk[] chunks)
++        {
++            for (int cy = 0; cy < stratumBlockSnapshot.Length; cy++)
++            {
++                // Stratum: single bulk write per subchunk. The engine handles palette encoding for the entire array in one optimized pass, which is vastly faster than per-block SetBlockUnsafe calls and avoids all list allocations.
++                chunks[cy].Data.SetBlocksBulkUnsafe(stratumBlockSnapshot[cy]);
++            }
++        }
++
++        /// <summary>Stratum: copy configured state from source to this worker instance. Copies immutable references (strata, distort2dx/dz, strataNoises) and clones mutable arrays/fields so each thread has its own isolated state.</summary>
 +        private void StratumCopyStateFrom(GenRockStrataNew source)
 +        {
 +            api = source.api;
 +            LoadGlobalConfig(api);
 +            regionSize = source.regionSize;
 +            regionChunkSize = source.regionChunkSize;
++            chunksizeLog2 = source.chunksizeLog2;
 +            rockBlockId = source.rockBlockId;
 +            strata = source.strata;
 +            distort2dx = source.distort2dx;
 +            distort2dz = source.distort2dz;
 +            strataNoises = source.strataNoises;
 +            regionMapSize = source.regionMapSize;
-+            ProvinceMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(source.ProvinceMapByRegion);
-+            stratumProvinceMapsByRegion = source.stratumProvinceMapsByRegion;
++            ProvinceMapByRegion = new Dictionary<int, LerpedWeightedIndex2DMap>(source.ProvinceMapByRegion); // Stratum: clone the dictionary so each worker has its own cache.
++            stratumProvinceMapsByRegion = source.stratumProvinceMapsByRegion; // Reference shared ConcurrentDictionary for expensive cached maps.
 +            rockGroupMaxThickness = (float[])source.rockGroupMaxThickness.Clone();
 +            rockGroupCurrentThickness = (int[])source.rockGroupCurrentThickness.Clone();
 +            mapChunk = source.mapChunk;
@@ -111,18 +160,33 @@ index cb9eefa..3a5476e 100644
              var chunks = request.Chunks;
              int chunkX = request.ChunkX;
              int chunkZ = request.ChunkZ;
-
+ 
              preLoad(chunks, chunkX, chunkZ);
-@@ -190,23 +241,29 @@ namespace Vintagestory.ServerMods
-             int ylower = 1;
-             int yupper = surfaceY;
++            StratumEnsureBuffers(chunks.Length); // Stratum: ensure per-subchunk buffers are allocated.
++            StratumSnapshotBlocks(chunks); // Stratum: one bulk read per subchunk instead of per block.
+ 
+             for (int x = 0; x < chunksize; x++)
+             {
+                 for (int z = 0; z < chunksize; z++)
+                 {
+                     genBlockColumn(chunks, chunkX, chunkZ, x, z);
+                 }
+             }
++
++            StratumFlushPendingWrites(chunks); // Stratum: one batched write per subchunk instead of per block.
+         }
+ 
+         public void preLoad(IServerChunk[] chunks, int chunkX, int chunkZ)
+         {
+             mapChunk = chunks[0].MapChunk;
+@@ -192,19 +297,25 @@ namespace Vintagestory.ServerMods
              int rockBlockId = this.rockBlockId;
-
+ 
              rockGroupMaxThickness[0] = rockGroupMaxThickness[1] = rockGroupMaxThickness[2] = rockGroupMaxThickness[3] = 0;
              rockGroupCurrentThickness[0] = rockGroupCurrentThickness[1] = rockGroupCurrentThickness[2] = rockGroupCurrentThickness[3] = 0;
-
+ 
 -            float[] indices = new float[provinces.Variants.Length];
-+            // Stratum: keep the measured allocation reduction while each worker owns its buffer.
++            // Stratum: reuse stratumIndicesBuf instead of allocating new float[] per block column. Reallocated only when provinces.Variants.Length changes.
 +            if (stratumIndicesBuf == null || stratumIndicesBuf.Length != provinces.Variants.Length)
 +            {
 +                stratumIndicesBuf = new float[provinces.Variants.Length];
@@ -132,34 +196,94 @@ index cb9eefa..3a5476e 100644
                  chunkInRegionX + lx * lerpMapInv,
                  chunkInRegionZ + lz * lerpMapInv,
 -                indices
-+                stratumIndicesBuf
++                stratumIndicesBuf // Stratum: write into pre-allocated buffer instead of new allocation.
              );
 -            for (int i = 0; i < indices.Length; i++)
 +
-+            for (int i = 0; i < stratumIndicesBuf.Length; i++)
++            for (int i = 0; i < stratumIndicesBuf.Length; i++) // Stratum: iterate over reused buffer.
              {
 -                float w = indices[i];
-+                float w = stratumIndicesBuf[i];
++                float w = stratumIndicesBuf[i]; // Stratum: read from reused buffer.
                  if (w == 0) continue;
-
+ 
                  GeologicProvinceRockStrata[] localstrata = provinces.Variants[i].RockStrataIndexed;
-
+ 
                  rockGroupMaxThickness[0] += localstrata[0].ScaledMaxThickness * w;
-                 rockGroupMaxThickness[1] += localstrata[1].ScaledMaxThickness * w;
-                 rockGroupMaxThickness[2] += localstrata[2].ScaledMaxThickness * w;
-@@ -320,13 +377,14 @@ namespace Vintagestory.ServerMods
-             return CreateLerpedProvinceMap(mapchunk.MapRegion.GeologicProvinceMap, chunkX / regionChunkSize, chunkZ / regionChunkSize);
+@@ -273,45 +384,35 @@ namespace Vintagestory.ServerMods
+                         }
+                         continue;
+                     }
+                 }
+ 
+-                rockGroupCurrentThickness[grp]++;
++                // Stratum start: direct mutation of the snapshot array instead of per-block GetBlockIdUnsafe/SetBlockUnsafe calls. Uses chunksizeLog2 for bit-shift operations (equivalent to division/multiplication by 32).
++                int chunkY = (stratum.GenDir == EnumStratumGenDir.BottomUp) ? (ylower >> chunksizeLog2) : (yupper >> chunksizeLog2); // Stratum: right shift instead of division by chunksize.
++                int localY = (stratum.GenDir == EnumStratumGenDir.BottomUp) ? (ylower - (chunkY << chunksizeLog2)) : (yupper - (chunkY << chunksizeLog2)); // Stratum: left shift and subtract instead of modulo operation.
++                int localIndex3D = (((localY << chunksizeLog2) + lz) << chunksizeLog2) + lx; // Stratum: bit-shift based index calculation.
+ 
+-                if (stratum.GenDir == EnumStratumGenDir.BottomUp)
++                if (stratumBlockSnapshot[chunkY][localIndex3D] == rockBlockId) // Stratum: check snapshot instead of calling GetBlockIdUnsafe.
+                 {
+-                    int chunkY = ylower / chunksize;
+-                    int lY = ylower - chunkY * chunksize;
+-                    int localIndex3D = (chunksize * lY + lz) * chunksize + lx;
+-
+-                    IChunkBlocks chunkBlockData = chunks[chunkY].Data;
+-                    if (chunkBlockData.GetBlockIdUnsafe(localIndex3D) == rockBlockId)
+-                    {
+-                        chunkBlockData.SetBlockUnsafe(localIndex3D, stratum.BlockId);
+-                    }
+-
+-                    ylower++;
+-
++                    stratumBlockSnapshot[chunkY][localIndex3D] = stratum.BlockId; // Stratum: write to snapshot instead of SetBlockUnsafe.
+                 }
+-                else
+-                {
++                // Stratum end
+ 
+-                    int chunkY = yupper / chunksize;
+-                    int lY = yupper - chunkY * chunksize;
+-                    int localIndex3D = (chunksize * lY + lz) * chunksize + lx;
+-
+-                    IChunkBlocks chunkBlockData = chunks[chunkY].Data;
+-                    if (chunkBlockData.GetBlockIdUnsafe(localIndex3D) == rockBlockId)      // Even if we found rock already in this column, it could be overhang or something, so have to keep checking
+-                    {
+-                        chunkBlockData.SetBlockUnsafe(localIndex3D, stratum.BlockId);
+-                    }
+-
+-                    yupper--;
+-                }
++                if (stratum.GenDir == EnumStratumGenDir.BottomUp) ylower++; else yupper--;
+             }
          }
-
+ 
++        /// <summary>Stratum: wrapper for Prospecting Pick (ProPickWorkSpace), which bypasses the full GenChunkColumn request pipeline and only needs a single column generated. Takes care of snapshotting the initial dummy state and flushing the mutated snapshot back into the DummyChunk so the caller reads the correct strata.</summary>
++        public void GenRockColumnForProPick(IServerChunk[] chunks, int chunkX, int chunkZ, int lx, int lz)
++        {
++            preLoad(chunks, chunkX, chunkZ);
++            StratumEnsureBuffers(chunks.Length);
++            StratumSnapshotBlocks(chunks);
++            genBlockColumn(chunks, chunkX, chunkZ, lx, lz);
++            StratumFlushPendingWrites(chunks);
++        }
++
+         LerpedWeightedIndex2DMap GetOrLoadLerpedProvinceMap(IMapChunk mapchunk, int chunkX, int chunkZ)
+         {
+             int index2d = chunkZ / regionChunkSize * regionMapSize + chunkX / regionChunkSize;
+ 
+             ProvinceMapByRegion.TryGetValue(index2d, out LerpedWeightedIndex2DMap map);
+@@ -322,11 +423,12 @@ namespace Vintagestory.ServerMods
+ 
          LerpedWeightedIndex2DMap CreateLerpedProvinceMap(IntDataMap2D geoMap, int regionX, int regionZ)
          {
              int index2d = regionZ * regionMapSize + regionX;
-
+ 
 -            return ProvinceMapByRegion[index2d] = new LerpedWeightedIndex2DMap(geoMap.Data, geoMap.Size, TerraGenConfig.geoProvSmoothingRadius, geoMap.TopLeftPadding, geoMap.BottomRightPadding);
-+            // Stratum: keep one expensive map across workers while preserving their vanilla cache field.
++            // Stratum: keep one expensive map across workers while preserving their vanilla cache field. Uses ConcurrentDictionary for thread-safe access from multiple worker threads.
 +            return ProvinceMapByRegion[index2d] = stratumProvinceMapsByRegion.GetOrAdd(index2d, _ => new LerpedWeightedIndex2DMap(geoMap.Data, geoMap.Size, TerraGenConfig.geoProvSmoothingRadius, geoMap.TopLeftPadding, geoMap.BottomRightPadding));
          }
-
-
+ 
+ 
      }
  }

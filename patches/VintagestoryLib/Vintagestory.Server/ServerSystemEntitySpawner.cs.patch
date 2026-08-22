@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
-index 52a073b..3c68d39 100644
+index 52a073b..34b2679 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
 @@ -65,10 +65,19 @@ public class ServerSystemEntitySpawner : ServerSystem
@@ -64,7 +64,7 @@ index 52a073b..3c68d39 100644
  			if (!(value5.Code == null))
  			{
  				string text = value5.Attributes.GetString("originaltype");
-@@ -658,11 +670,12 @@ public class ServerSystemEntitySpawner : ServerSystem
+@@ -658,34 +670,39 @@ public class ServerSystemEntitySpawner : ServerSystem
  					dictionary.TryGetValue(quantityByGroup.Code, out value);
  					dictionary[quantityByGroup.Code] = value + 1;
  				}
@@ -78,7 +78,22 @@ index 52a073b..3c68d39 100644
  		foreach (EntityProperties entityType in server.EntityTypes)
  		{
  			RuntimeSpawnConditions runtimeSpawnConditions = entityType.Server.SpawnConditions?.Runtime;
-@@ -681,11 +694,14 @@ public class ServerSystemEntitySpawner : ServerSystem
+-			if (runtimeSpawnConditions == null || runtimeSpawnConditions.MaxQuantity == 0 || (num > 0.0 && runtimeSpawnConditions.Group == "hostile") || random.NextDouble() >= 1.0 * runtimeSpawnConditions.Chance)
++			float stratumSpawnMultiplier = runtimeSpawnConditions == null ? 0f : Vintagestory.API.Server.StratumMobSpawningHook.GetNaturalSpawnMultiplier(runtimeSpawnConditions.Group); // Stratum: issue #216 group control
++			if (runtimeSpawnConditions == null || stratumSpawnMultiplier <= 0f || runtimeSpawnConditions.MaxQuantity == 0 || (num > 0.0 && runtimeSpawnConditions.Group == "hostile") || random.NextDouble() >= 1.0 * runtimeSpawnConditions.Chance)
+ 			{
+ 				continue;
+ 			}
+ 			dictionary.TryGetValue(entityType.Code, out var value2);
+ 			float num3 = 1f + Math.Max(0f, (float)(num2 - 1) * server.Config.SpawnCapPlayerScaling * runtimeSpawnConditions.SpawnCapPlayerScaling);
+-			int num4 = (int)((float)runtimeSpawnConditions.MaxQuantity * num3 - (float)value2);
++			int num4 = (int)((float)runtimeSpawnConditions.MaxQuantity * num3 * stratumSpawnMultiplier - (float)value2); // Stratum: issue #216 lower natural spawn caps
+ 			if (runtimeSpawnConditions.MaxQuantityByGroup != null)
+ 			{
+ 				dictionary.TryGetValue(runtimeSpawnConditions.MaxQuantityByGroup.Code, out var value3);
+-				num4 = Math.Min(num4, (int)((float)runtimeSpawnConditions.MaxQuantityByGroup.MaxQuantity * num3) - value3);
++				num4 = Math.Min(num4, (int)((float)runtimeSpawnConditions.MaxQuantityByGroup.MaxQuantity * num3 * stratumSpawnMultiplier) - value3); // Stratum: issue #216 lower grouped caps
+ 			}
  			if (num4 <= 0)
  			{
  				continue;

@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs b/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs
-index fba8acc..c9c311a 100644
+index fba8acc..d7e922b 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerEventAPI.cs
-@@ -449,10 +449,13 @@ internal class ServerEventAPI : ServerAPIComponentBase, IServerEventAPI, IEventA
+@@ -449,10 +449,14 @@ internal class ServerEventAPI : ServerAPIComponentBase, IServerEventAPI, IEventA
  	}
  
  	public ServerEventAPI(ServerMain server)
@@ -10,13 +10,16 @@ index fba8acc..c9c311a 100644
  	{
 +		// Stratum: route API registrations into the server's compatibility-aware Terrain split.
 +		StratumTerrainSplit.RegisterLate = (handler, worldType) => StratumWorldgenCompat.RegisterTerrainLate(server, handler, worldType);
++		StratumGeneratorCompat.IsMethodBodyPatchedByMod = StratumModCompat.IsMethodBodyPatchedByMod;
 +		StratumTerrainSplit.RegisterLateOptimized = (vanillaHandler, optimizedHandler, worldType) => StratumWorldgenCompat.RegisterTerrainLate(server, vanillaHandler, optimizedHandler, worldType);
  	}
  
  	public void Trigger<T>(Delegate[] delegates, string eventName, Action<T> onDele, Action onException = null) where T : Delegate
  	{
  		if (delegates == null)
-@@ -677,6 +680,9 @@ internal class ServerEventAPI : ServerAPIComponentBase, IServerEventAPI, IEventA
+@@ -675,10 +679,13 @@ internal class ServerEventAPI : ServerAPIComponentBase, IServerEventAPI, IEventA
+ 				server.api.Logger.Error("Error during Init worldgen for " + item.Target.GetType().FullName);
+ 				server.api.Logger.Error(e);
  			}
  		}
  		server.api.Logger.VerboseDebug("Done all worldgens");
@@ -26,3 +29,5 @@ index fba8acc..c9c311a 100644
  		return value;
  	}
  
+ 	public void WorldgenHook(WorldGenHookDelegate handler, string worldType, string hook)
+ 	{

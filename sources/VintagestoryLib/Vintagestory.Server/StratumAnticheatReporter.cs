@@ -41,7 +41,7 @@ internal static class StratumAnticheatReporter
 		}
 
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, BlockEntityOutOfRangeType, FormatBlockPos(pos), config, config.BlockEntityOutOfRange);
+		ViolationRecordResult result = RecordViolation(player, now, BlockEntityOutOfRangeType, FormatBlockPos(pos), config, config.BlockEntityOutOfRange, server);
 
 		if (result.ShouldAlert)
 		{
@@ -66,7 +66,7 @@ internal static class StratumAnticheatReporter
 
 		string detail = action + " at " + FormatBlockPos(pos) + " distance=" + distance.ToString("0.##", CultureInfo.InvariantCulture) + "/" + maxRange.ToString("0.##", CultureInfo.InvariantCulture);
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, BlockInteractionOutOfRangeType, detail, config, config.BlockInteractionOutOfRange);
+		ViolationRecordResult result = RecordViolation(player, now, BlockInteractionOutOfRangeType, detail, config, config.BlockInteractionOutOfRange, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "survival block reach", pos, result.RollingCount, result.TotalCount, config.BlockInteractionOutOfRange.AlertWindowSeconds);
@@ -102,7 +102,7 @@ internal static class StratumAnticheatReporter
 		string who = target.Code?.ToString() ?? target.EntityId.ToString(CultureInfo.InvariantCulture);
 		string detail = "entity " + who + " at " + FormatBlockPos(pos) + " distance=" + distance.ToString("0.##", CultureInfo.InvariantCulture) + "/" + maxRange.ToString("0.##", CultureInfo.InvariantCulture);
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, EntityInteractionOutOfRangeType, detail, config, config.EntityInteractionOutOfRange);
+		ViolationRecordResult result = RecordViolation(player, now, EntityInteractionOutOfRangeType, detail, config, config.EntityInteractionOutOfRange, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "survival entity reach", pos, result.RollingCount, result.TotalCount, config.EntityInteractionOutOfRange.AlertWindowSeconds);
@@ -141,7 +141,7 @@ internal static class StratumAnticheatReporter
 		}
 
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, MovementAuthorityType, detail, config, config.MovementAuthority);
+		ViolationRecordResult result = RecordViolation(player, now, MovementAuthorityType, detail, config, config.MovementAuthority, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "movement authority", pos, result.RollingCount, result.TotalCount, config.MovementAuthority.AlertWindowSeconds);
@@ -175,7 +175,7 @@ internal static class StratumAnticheatReporter
 
 		string detail = "broke " + breaksInWindow.ToString(CultureInfo.InvariantCulture) + " blocks in " + config.MultiBreak.WindowMs.ToString(CultureInfo.InvariantCulture) + "ms" + (fingerprinted ? " (all dead-centre hits)" : "") + (pos != null ? " near " + FormatBlockPos(pos) : "");
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, MultiBreakType, detail, config, config.MultiBreak);
+		ViolationRecordResult result = RecordViolation(player, now, MultiBreakType, detail, config, config.MultiBreak, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "multi-break", pos, result.RollingCount, result.TotalCount, config.MultiBreak.AlertWindowSeconds);
@@ -213,7 +213,7 @@ internal static class StratumAnticheatReporter
 
 		string detail = "fell " + fallBlocks.ToString("0.#", CultureInfo.InvariantCulture) + " blocks with no fall damage" + (pos != null ? " at " + FormatBlockPos(pos) : "");
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, NoFallType, detail, config, config.NoFall);
+		ViolationRecordResult result = RecordViolation(player, now, NoFallType, detail, config, config.NoFall, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "no-fall", pos, result.RollingCount, result.TotalCount, config.NoFall.AlertWindowSeconds);
@@ -247,7 +247,7 @@ internal static class StratumAnticheatReporter
 
 		string detail = string.IsNullOrWhiteSpace(reason) ? FormatBlockPos(pos) : reason;
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, BlockBreakProgressType, detail, config, config.BlockBreakProgress);
+		ViolationRecordResult result = RecordViolation(player, now, BlockBreakProgressType, detail, config, config.BlockBreakProgress, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "block break progress", pos, result.RollingCount, result.TotalCount, config.BlockBreakProgress.AlertWindowSeconds);
@@ -281,7 +281,7 @@ internal static class StratumAnticheatReporter
 
 		string detail = string.IsNullOrWhiteSpace(reason) ? (pos != null ? FormatBlockPos(pos) : "movement") : reason;
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, MovementType, detail, config, config.Movement);
+		ViolationRecordResult result = RecordViolation(player, now, MovementType, detail, config, config.Movement, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "suspicious movement", pos, result.RollingCount, result.TotalCount, config.Movement.AlertWindowSeconds);
@@ -315,7 +315,7 @@ internal static class StratumAnticheatReporter
 
 		string detail = string.IsNullOrWhiteSpace(reason) ? "combat" : reason;
 		DateTime now = DateTime.UtcNow;
-		ViolationRecordResult result = RecordViolation(player, now, CombatType, detail, config, config.Combat);
+		ViolationRecordResult result = RecordViolation(player, now, CombatType, detail, config, config.Combat, server);
 		if (result.ShouldAlert)
 		{
 			SendStaffAlert(server, player, "combat", pos, result.RollingCount, result.TotalCount, config.Combat.AlertWindowSeconds);
@@ -332,7 +332,7 @@ internal static class StratumAnticheatReporter
 		return false;
 	}
 
-	public static string BuildReport(string playerFilter, int maxEvents = 12)
+	public static string BuildReport(ServerMain server, string playerFilter, int maxEvents = 12)
 	{
 		StratumRuntime.Config.EnsurePopulated();
 		DateTime now = DateTime.UtcNow;
@@ -375,7 +375,7 @@ internal static class StratumAnticheatReporter
 			return output.ToString();
 		}
 
-		AppendPlayerReport(output, players[0], now);
+		AppendPlayerReport(output, server, players[0], now);
 		output.Append(StratumCommandText.Row("Overview", "/stratum ac"));
 		return output.ToString();
 	}
@@ -404,11 +404,12 @@ internal static class StratumAnticheatReporter
 		}
 	}
 
-	private static void AppendPlayerReport(StringBuilder output, PlayerViolationSnapshot player, DateTime now)
+	private static void AppendPlayerReport(StringBuilder output, ServerMain server, PlayerViolationSnapshot player, DateTime now)
 	{
 		output.Append("\n").Append(StratumCommandText.Title("Player: " + player.PlayerName));
 		output.Append(StratumCommandText.Row("Total", player.TotalCount.ToString(CultureInfo.InvariantCulture) + " recorded violations"));
 		output.Append(StratumCommandText.Row("Last seen", FormatAge(now - player.LastSeenUtc) + " ago"));
+		AppendPunishmentStanding(output, server, player.PlayerKey);
 
 		output.Append("\n").Append(StratumCommandText.Title("Breakdown"));
 		foreach (ViolationTypeCount entry in player.TypeCounts.OrderByDescending(entry => entry.Count))
@@ -423,6 +424,52 @@ internal static class StratumAnticheatReporter
 				FriendlyTypeName(entry.Type),
 				StratumCommandText.Escape(FormatAge(now - entry.Utc) + " ago, " + FriendlyDetail(entry))));
 		}
+	}
+
+	// Cross-session standing, separate from the in-memory TotalCount above: that count resets when
+	// a player is pruned for inactivity, this one is what StratumAnticheatPunishments actually
+	// judges against and survives relogs and restarts.
+	private static void AppendPunishmentStanding(StringBuilder output, ServerMain server, string playerKey)
+	{
+		StratumAnticheatPunishmentConfig config = StratumRuntime.Config.Anticheat.Punishments;
+		if (!config.Enabled || server == null || string.IsNullOrWhiteSpace(playerKey))
+		{
+			return;
+		}
+
+		ServerPlayerData target = server.PlayerDataManager.GetServerPlayerData(playerKey) ?? server.PlayerDataManager.GetServerPlayerDataByLastKnownPlayername(playerKey);
+		if (target == null)
+		{
+			return;
+		}
+
+		StratumAnticheatHistoryRecord history = StratumAnticheatHistory.Load(target);
+		output.Append(StratumCommandText.Row("Punishment standing", history.TotalFlags.ToString(CultureInfo.InvariantCulture) + " accumulated flags, " + DescribeNextTier(config, history)));
+	}
+
+	private static string DescribeNextTier(StratumAnticheatPunishmentConfig config, StratumAnticheatHistoryRecord history)
+	{
+		if (history.TotalFlags < config.DropInventoryAfterFlags && history.HighestPunishmentApplied < 1)
+		{
+			return "next: " + (config.WipeInsteadOfDrop ? "wipe inventory" : "drop inventory") + " at " + config.DropInventoryAfterFlags.ToString(CultureInfo.InvariantCulture);
+		}
+
+		if (history.TotalFlags < config.FreezeAfterFlags && history.HighestPunishmentApplied < 2)
+		{
+			return "next: freeze at " + config.FreezeAfterFlags.ToString(CultureInfo.InvariantCulture);
+		}
+
+		if (history.TotalFlags < config.JailAfterFlags && history.HighestPunishmentApplied < 3)
+		{
+			return "next: jail at " + config.JailAfterFlags.ToString(CultureInfo.InvariantCulture);
+		}
+
+		if (history.TotalFlags < config.BanAfterFlags && history.HighestPunishmentApplied < 4)
+		{
+			return "next: ban at " + config.BanAfterFlags.ToString(CultureInfo.InvariantCulture);
+		}
+
+		return history.HighestPunishmentApplied >= 4 ? "already banned" : "no further tier configured";
 	}
 
 	private static string FriendlyTypeName(string type)
@@ -497,7 +544,7 @@ internal static class StratumAnticheatReporter
 		return detail;
 	}
 
-	private static ViolationRecordResult RecordViolation(ServerPlayer player, DateTime now, string type, string detail, StratumAnticheatConfig config, StratumAnticheatRuleConfig rule)
+	private static ViolationRecordResult RecordViolation(ServerPlayer player, DateTime now, string type, string detail, StratumAnticheatConfig config, StratumAnticheatRuleConfig rule, ServerMain server)
 	{
 		int rollingCount;
 		int totalCount;
@@ -541,6 +588,11 @@ internal static class StratumAnticheatReporter
 			}
 		}
 
+		// Outside the lock on purpose: this is where StaffAlerts and KickConfirmedCheats already run
+		// for every caller above (see the DisconnectPlayer calls at each Record*Violation call site),
+		// so punishment escalation belongs at the exact same place, not behind a separate queue.
+		StratumAnticheatPunishments.Evaluate(server, player);
+
 		return new ViolationRecordResult(rollingCount, totalCount, shouldAlert);
 	}
 
@@ -577,7 +629,7 @@ internal static class StratumAnticheatReporter
 		}
 	}
 
-	private static bool ShouldReceiveStaffAlert(ConnectedClient client)
+	internal static bool ShouldReceiveStaffAlert(ConnectedClient client)
 	{
 		if (client == null || !client.State.IsAdmitted() || client.Player == null)
 		{

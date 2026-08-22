@@ -22,15 +22,19 @@ internal sealed class StratumPregenManager
 	private int maxChunkX;
 	private int minChunkZ;
 	private int maxChunkZ;
-	private int nextChunkX;
-	private int nextChunkZ;
+
+	// Block-major cursor: the area is traversed as NxN chunk blocks,
+	// row of blocks by row of blocks; inside a block the N*N chunks go together.
+	private int nextBlockX;
+	private int nextBlockZ;
+	private int blockInner; // 0..(N*N-1) position inside the current block
 
 	// fields to support the circle shape
 	private int centerX;
 	private int centerZ;
 	private long radiusSq;
 
-	// Storing original TTL values ​​for restoring them after pregen
+	// Storing original TTL values for restoring them after pregen
 	private int originalUncompressedChunkTTL;
 	private long originalCompressedChunkTTL;
 	private bool ttlBoosted = false;
@@ -52,6 +56,14 @@ internal sealed class StratumPregenManager
 	private float columnBudgetAccumulator;
 	private float scanBudgetAccumulator;
 
+	/// <summary>
+	/// Size of a block-major processing unit: N x N chunks processed together.
+	/// </summary>
+	private const int BlockSize = 3; // N x N chunks per block
+
+	/// <summary>
+	/// Returns the current short status string (one of: "idle", "running", "paused", "complete").
+	/// </summary>
 	public string ShortStatus
 	{
 		get
@@ -65,6 +77,9 @@ internal sealed class StratumPregenManager
 		}
 	}
 
+	/// <summary>
+	/// Handles a /stratum pregen command, dispatching to status/start/pause/resume/stop.
+	/// </summary>
 	public TextCommandResult HandleCommand(ServerMain server, TextCommandCallingArgs args)
 	{
 		string action = args[1] as string;
@@ -117,7 +132,12 @@ internal sealed class StratumPregenManager
 		return TextCommandResult.Error(Usage);
 	}
 
-
+	/// <summary>
+	/// Temporarily reduces chunk TTL to speed up unloading during pregen.
+	/// Original values are saved for later restoration.
+	/// Divides by 5, but never below 1000 ms (1 second) to prevent the server from going crazy,
+	// trying to dump chunks to disk every tick.
+	/// </summary>
 	private void ApplyTtlBoost()
 	{
 		if (ttlBoosted) return;
@@ -125,8 +145,6 @@ internal sealed class StratumPregenManager
 		originalUncompressedChunkTTL = MagicNum.UncompressedChunkTTL;
 		originalCompressedChunkTTL = MagicNum.CompressedChunkTTL;
 
-		// Divide by 5, but not less than 1000 ms (1 second) to prevent the server from going crazy,
-		// trying to dump chunks to disk every tick
 		int newUncompressed = Math.Max(1000, originalUncompressedChunkTTL / 5);
 		long newCompressed = Math.Max(1000, originalCompressedChunkTTL / 5);
 
@@ -137,6 +155,10 @@ internal sealed class StratumPregenManager
 		StratumRuntime.LogInfo($"Chunk TTL boosted for faster unload: Uncompressed {originalUncompressedChunkTTL} -> {newUncompressed}ms, Compressed {originalCompressedChunkTTL} -> {newCompressed}ms");
 	}
 
+	/// <summary>
+	/// Restores the original chunk TTL values that were saved before boosting.
+	/// No-op if no boost was ever applied.
+	/// </summary>
 	private void RestoreTtl()
 	{
 		if (!ttlBoosted) return;
@@ -148,8 +170,11 @@ internal sealed class StratumPregenManager
 		StratumRuntime.LogInfo($"Chunk TTL restored: Uncompressed {originalUncompressedChunkTTL}ms, Compressed {originalCompressedChunkTTL}ms");
 	}
 
-
-
+	/// <summary>
+	/// Main tick handler for the pregen manager. Accumulates per-tick budgets for column
+	/// inspections and scans, respects pressure-based pauses (players online, low TPS,
+	/// queue saturation), applies TTL boost while running, and drives chunk generation.
+	/// </summary>
 	public void Tick(ServerMain server)
 	{
 		if (!running)
@@ -168,12 +193,12 @@ internal sealed class StratumPregenManager
 			return;
 		}
 
-		// We calculate the real dt
+		// Calculate the real elapsed time since last tick.
 		long now = server.ElapsedMilliseconds;
 		float dtSeconds;
 		if (lastTickMilliseconds < 0)
 		{
-			// First tick after start/resume - we take the nominal 50 ms
+			// First tick after start/resume: use a nominal 50 ms to avoid huge jumps.
 			dtSeconds = 0.05f;
 		}
 		else
@@ -182,7 +207,7 @@ internal sealed class StratumPregenManager
 		}
 		lastTickMilliseconds = now;
 
-		// Anomaly protection (sleep mode, debugger, GC pause > 2 s)
+		// Anomaly protection: clamp dt to prevent huge budgets after sleep, debugger attach, or GC pause > 2 s.
 		dtSeconds = Math.Clamp(dtSeconds, 0.001f, 2.0f);
 
 		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
@@ -212,20 +237,20 @@ internal sealed class StratumPregenManager
 
 		lastPauseReason = "none";
 
-		// Time-scaled budget for this tick
+		// Time-scaled budget for this tick.
 		columnBudgetAccumulator += config.MaxColumnsPerSecond * dtSeconds;
 		scanBudgetAccumulator += config.MaxScansPerSecond * dtSeconds;
 
 		int maxColumnsThisTick = (int)columnBudgetAccumulator;
 		int maxScansThisTick = (int)scanBudgetAccumulator;
 
-		// We don't let the budget grow indefinitely (long-pause protection)
+		// Consume the accumulated budget and cap remaining float to prevent unbounded growth.
 		columnBudgetAccumulator -= maxColumnsThisTick;
 		scanBudgetAccumulator -= maxScansThisTick;
 		columnBudgetAccumulator = Math.Min(columnBudgetAccumulator, config.MaxColumnsPerSecond);
 		scanBudgetAccumulator = Math.Min(scanBudgetAccumulator, config.MaxScansPerSecond);
 
-		// If no full unit has accumulated, skip work this tick
+		// If no full unit has accumulated yet, skip work this tick.
 		if (maxColumnsThisTick <= 0 || maxScansThisTick <= 0)
 		{
 			MaybeLogProgress(server);
@@ -235,8 +260,8 @@ internal sealed class StratumPregenManager
 		int queuedThisTick = 0;
 		int scannedThisTick = 0;
 		while (queuedThisTick < maxColumnsThisTick
-		       && scannedThisTick < maxScansThisTick
-		       && HasMoreColumns())
+			   && scannedThisTick < maxScansThisTick
+			   && HasMoreColumns())
 		{
 			if (IsQueuePressureHigh(server, config))
 			{
@@ -265,6 +290,9 @@ internal sealed class StratumPregenManager
 		MaybeLogProgress(server);
 	}
 
+	/// <summary>
+	/// Parses the /stratum pregen start command and dispatches to StartRadius or StartRect based on shape.
+	/// </summary>
 	private TextCommandResult HandleStart(ServerMain server, TextCommandCallingArgs args)
 	{
 		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
@@ -298,6 +326,10 @@ internal sealed class StratumPregenManager
 		return TextCommandResult.Error(Usage);
 	}
 
+	/// <summary>
+	/// Starts a circular pregen job with the given radius. The center defaults to the caller's position
+	/// (if available) or the world centre.
+	/// </summary>
 	private TextCommandResult StartRadius(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config)
 	{
 		if (!TryParseInt(args[3] as string, out int radiusChunks) || radiusChunks < 1)
@@ -337,6 +369,9 @@ internal sealed class StratumPregenManager
 		return Start(server, "radius", minChunkX, minChunkZ, maxChunkX, maxChunkZ, config, centerChunkX, centerChunkZ, radiusChunks);
 	}
 
+	/// <summary>
+	/// Starts a rectangular pregen job defined by two corner chunk coordinates.
+	/// </summary>
 	private TextCommandResult StartRect(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config)
 	{
 		if (!TryParseInt(args[3] as string, out int x1) || !TryParseInt(args[4] as string, out int z1) || !TryParseInt(args[5] as string, out int x2) || !TryParseInt(args[6] as string, out int z2))
@@ -347,6 +382,10 @@ internal sealed class StratumPregenManager
 		return Start(server, "rect", x1, z1, x2, z2, config);
 	}
 
+	/// <summary>
+	/// Initializes and starts a pregen job with the given boundaries, shape mode, and optional circle parameters.
+	/// Normalizes coordinates so that (x1,z1) may be supplied in any order.
+	/// </summary>
 	private TextCommandResult Start(ServerMain server, string newMode, int x1, int z1, int x2, int z2, StratumPregenConfig config, int centerX = 0, int centerZ = 0, int radius = 0)
 	{
 		int normalizedMinX = Math.Min(x1, x2);
@@ -366,10 +405,13 @@ internal sealed class StratumPregenManager
 		maxChunkX = normalizedMaxX;
 		minChunkZ = normalizedMinZ;
 		maxChunkZ = normalizedMaxZ;
-		nextChunkX = minChunkX;
-		nextChunkZ = minChunkZ;
 
-		// Accurate calculation of the number of chunks depending on the shape
+		// Block-major cursor initialization.
+		nextBlockX = normalizedMinX;
+		nextBlockZ = normalizedMinZ;
+		blockInner = 0;
+
+		// Accurate chunk count based on the selected shape.
 		if (newMode == "radius")
 		{
 			this.centerX = centerX;
@@ -382,7 +424,7 @@ internal sealed class StratumPregenManager
 				long rem = this.radiusSq - (long)dx * dx;
 				int maxDz = (int)Math.Sqrt(rem);
 
-				// Correction of possible inaccuracies Math.Sqrt (protection against floating point errors)
+				// Correction for potential floating-point precision issues in Math.Sqrt.
 				while ((long)(maxDz + 1) * (maxDz + 1) <= rem) maxDz++;
 				while ((long)maxDz * maxDz > rem) maxDz--;
 
@@ -411,11 +453,14 @@ internal sealed class StratumPregenManager
 		completed = false;
 		paused = false;
 		running = true;
-		StratumRuntime.LogInfo($"pregen started: {mode} chunks {minChunkX},{minChunkZ} to {maxChunkX},{maxChunkZ} ({totalColumns} columns)");
+		StratumRuntime.LogInfo($"pregen started: {mode} chunks {minChunkX},{minChunkZ} to {maxChunkX},{maxChunkZ} ({totalColumns} columns, {BlockSize}x{BlockSize} blocks)");
 		ApplyTtlBoost();    // reduce TTL
 		return TextCommandResult.Success(BuildStatus(server));
 	}
 
+	/// <summary>
+	/// Stops the current pregen job and marks it as non-running. The provided reason is recorded in logs.
+	/// </summary>
 	private void Stop(ServerMain server, string reason)
 	{
 		if (!running)
@@ -434,6 +479,9 @@ internal sealed class StratumPregenManager
 		StratumRuntime.LogInfo("pregen stopped: " + reason);
 	}
 
+	/// <summary>
+	/// Marks the current pregen job as completed, records timing statistics and per-stage breakdown.
+	/// </summary>
 	private void Complete(ServerMain server)
 	{
 		running = false;
@@ -444,7 +492,7 @@ internal sealed class StratumPregenManager
 
 		RestoreTtl();   // restore TTL
 
-		// calculate the time spent
+		// Calculate the time spent.
 		long elapsedMilliseconds = Math.Max(0, finishedAtMilliseconds - startedAtMilliseconds);
 		string duration = FormatDuration(elapsedMilliseconds);
 
@@ -459,22 +507,34 @@ internal sealed class StratumPregenManager
 		}
 	}
 
+	/// <summary>
+	/// Inspects the next column according to the block-major cursor. Skips chunks outside
+	/// the configured shape, those already loaded or queued, and queues new ones when possible.
+	/// Returns true if a column was inspected during this call (or false if no more columns remain).
+	/// </summary>
 	private bool TryInspectNextColumn(ServerMain server, out bool queued)
 	{
 		queued = false;
 
-		// Loop to skip chunks that are not included in the circle
+		// Iterate through chunks, skipping those outside the configured shape.
 		while (HasMoreColumns())
 		{
-			int chunkX = nextChunkX;
-			int chunkZ = nextChunkZ;
+			int chunkX = nextBlockX + (blockInner % BlockSize);
+			int chunkZ = nextBlockZ + (blockInner / BlockSize);
 			AdvanceCursor();
+
+			// Partial block at the right/bottom edge of a rect:
+			// inner cells beyond the area are silently skipped.
+			if (chunkX > maxChunkX || chunkZ > maxChunkZ)
+			{
+				continue;
+			}
 
 			if (mode == "radius")
 			{
 				long dx = chunkX - centerX;
 				long dz = chunkZ - centerZ;
-				// If a chunk is outside the radius, skip it (do not count it in inspectedColumns)
+				// If a chunk is outside the radius, skip it (do not count it in inspectedColumns).
 				if (dx * dx + dz * dz > radiusSq)
 				{
 					continue;
@@ -519,6 +579,10 @@ internal sealed class StratumPregenManager
 		return false;
 	}
 
+	/// <summary>
+	/// Attempts to enqueue a chunk column for generation. Returns true on success, false if the
+	/// column is already requested or an exception occurs during enqueue (in which case it rolls back).
+	/// </summary>
 	private bool TryQueueColumn(ServerMain server, long mapChunkIndex)
 	{
 		if (!server.ChunkColumnRequested.TryAdd(mapChunkIndex, 1))
@@ -542,6 +606,10 @@ internal sealed class StratumPregenManager
 		}
 	}
 
+	/// <summary>
+	/// Removes completed column requests from the active-requests set and increments the completed-columns counter.
+	/// A request is considered complete when it no longer appears in either the server-side queue or the worker thread's pending set.
+	/// </summary>
 	private void UpdateActiveRequests(ServerMain server)
 	{
 		if (activeRequests.Count == 0)
@@ -570,6 +638,10 @@ internal sealed class StratumPregenManager
 		}
 	}
 
+	/// <summary>
+	/// Checks whether a given chunk column is currently queued for generation either on the server-side
+	/// or inside the worker thread's requested set.
+	/// </summary>
 	private bool IsColumnQueuedOrGenerating(ServerMain server, long mapChunkIndex)
 	{
 		lock (server.requestedChunkColumnsLock)
@@ -583,6 +655,11 @@ internal sealed class StratumPregenManager
 		return server.chunkThread?.requestedChunkColumns.GetByIndex(mapChunkIndex) != null;
 	}
 
+	/// <summary>
+	/// Determines whether pregen should be paused due to server pressure conditions.
+	/// Checks (in order): players online, TPS below threshold, chunk queue saturation, and loaded-chunk count.
+	/// Returns true with a descriptive reason if any condition is met.
+	/// </summary>
 	private bool TryGetPressureReason(ServerMain server, StratumPregenConfig config, out string reason)
 	{
 		if (config.PauseWhenPlayersOnline && server.Clients.Values.Count(client => client.State == EnumClientState.Playing || client.State == EnumClientState.Queued) > 0)
@@ -614,6 +691,10 @@ internal sealed class StratumPregenManager
 		return false;
 	}
 
+	/// <summary>
+	/// Returns true if the chunk-generation queue is under high pressure — i.e. pending columns exceed configured limits,
+	/// or worker-side columns approach physical capacity (minus a safety margin for competing player requests).
+	/// </summary>
 	private bool IsQueuePressureHigh(ServerMain server, StratumPregenConfig config)
 	{
 		int pendingColumns;
@@ -626,7 +707,7 @@ internal sealed class StratumPregenManager
 		int workerColumns = workerQueue?.Count ?? 0;
 		int workerCapacity = workerQueue?.Capacity ?? int.MaxValue;
 
-		// We leave a reserve for competitive requests from players (the same 200 as in moveRequestsToGeneratingQueue)
+		// Leave a reserve for competitive requests from players (the same 200 as in moveRequestsToGeneratingQueue).
 		int safetyMargin = 300;
 
 		return pendingColumns >= config.MaxPendingColumnQueue
@@ -634,6 +715,9 @@ internal sealed class StratumPregenManager
 			   || workerColumns >= workerCapacity - safetyMargin;   // real physical limit
 	}
 
+	/// <summary>
+	/// Reads the recent TPS (ticks per second) from the stats collector. Returns false if no valid stats are available.
+	/// </summary>
 	private static bool TryGetRecentTps(ServerMain server, out decimal tps)
 	{
 		StatsCollection stats = server.StatsCollector[GameMath.Mod(server.StatsCollectorIndex - 1, server.StatsCollector.Length)];
@@ -647,21 +731,36 @@ internal sealed class StratumPregenManager
 		return true;
 	}
 
+	/// <summary>
+	/// Returns true if there are still unchecked column positions remaining in the block-major cursor.
+	/// </summary>
 	private bool HasMoreColumns()
 	{
-		return nextChunkZ <= maxChunkZ;
+		return nextBlockZ <= maxChunkZ;
 	}
 
+	/// <summary>
+	/// Advances the block-major cursor by one chunk position. When a full NxN block is exhausted, wraps
+	/// to the next row (incrementing nextBlockZ) or rolls back to the left edge and increments the Z-row.
+	/// </summary>
 	private void AdvanceCursor()
 	{
-		nextChunkX++;
-		if (nextChunkX > maxChunkX)
+		blockInner++;
+		if (blockInner >= BlockSize * BlockSize)
 		{
-			nextChunkX = minChunkX;
-			nextChunkZ++;
+			blockInner = 0;
+			nextBlockX += BlockSize;
+			if (nextBlockX > maxChunkX)
+			{
+				nextBlockX = minChunkX;
+				nextBlockZ += BlockSize;
+			}
 		}
 	}
 
+	/// <summary>
+	/// Logs a one-line progress snapshot if the configured progress-log interval has elapsed since the last log.
+	/// </summary>
 	private void MaybeLogProgress(ServerMain server)
 	{
 		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
@@ -674,6 +773,9 @@ internal sealed class StratumPregenManager
 		StratumRuntime.LogInfo("pregen progress: " + BuildOneLineStatus(server));
 	}
 
+	/// <summary>
+	/// Builds a multi-line human-readable status report for the /stratum pregen status command.
+	/// </summary>
 	private string BuildStatus(ServerMain server)
 	{
 		StringBuilder output = new StringBuilder("Stratum Pregen\n");
@@ -687,6 +789,9 @@ internal sealed class StratumPregenManager
 		return output.ToString();
 	}
 
+	/// <summary>
+	/// Builds a single-line status string containing short status, progress percentage, elapsed time, and ETA.
+	/// </summary>
 	private string BuildOneLineStatus(ServerMain server)
 	{
 		long elapsedMilliseconds = (running || completed) ? Math.Max(0, (finishedAtMilliseconds >= 0 ? finishedAtMilliseconds : server.ElapsedMilliseconds) - startedAtMilliseconds) : 0;
@@ -695,6 +800,10 @@ internal sealed class StratumPregenManager
 		return $"{ShortStatus} {percent}% elapsed={FormatDuration(elapsedMilliseconds)} eta={eta}";
 	}
 
+	/// <summary>
+	/// Estimates the remaining time until pregen completes based on current throughput.
+	/// Returns "n/a" when no progress has been made or the job is not running.
+	/// </summary>
 	private string FormatEta(long elapsedMilliseconds)
 	{
 		if (!running || inspectedColumns <= 0 || totalColumns <= 0)
@@ -708,6 +817,9 @@ internal sealed class StratumPregenManager
 		return FormatDuration(etaMilliseconds);
 	}
 
+	/// <summary>
+	/// Formats a duration in milliseconds into a human-readable string such as "2h 30m", "5m 12s", or "45s".
+	/// </summary>
 	private static string FormatDuration(long milliseconds)
 	{
 		TimeSpan time = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
@@ -724,6 +836,9 @@ internal sealed class StratumPregenManager
 		return time.Seconds.ToString(CultureInfo.InvariantCulture) + "s";
 	}
 
+	/// <summary>
+	/// Safely parses a string to an int using invariant culture (no thousands separators, no locale quirks).
+	/// </summary>
 	private static bool TryParseInt(string value, out int result)
 	{
 		return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);

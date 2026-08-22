@@ -1,0 +1,268 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/ChunkData.cs b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
+index af79143..bd887b3 100644
+--- a/VintagestoryLib/Vintagestory.Common/ChunkData.cs
++++ b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
+@@ -99,41 +99,41 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+ 
+ 	public int GetBlockId(int index, int layer)
+ 	{
+ 		switch (layer)
+ 		{
+-		default:
+-		{
+-			int solidBlock = GetSolidBlock(index);
+-			if (solidBlock != 0)
+-			{
+-				return solidBlock;
+-			}
+-			return GetFluid(index);
+-		}
+-		case 1:
+-			return GetSolidBlock(index);
+-		case 2:
+-			return GetFluid(index);
+-		case 3:
+-		{
+-			int fluid = GetFluid(index);
+-			if (fluid != 0)
+-			{
+-				return fluid;
+-			}
+-			return GetSolidBlock(index);
+-		}
+-		case 4:
+-		{
+-			int num = GetFluid(index);
+-			if (num == 0 || !pool.Game.Blocks[num].SideSolid.Any)
+-			{
+-				num = GetSolidBlock(index);
+-			}
+-			return num;
+-		}
++			default:
++				{
++					int solidBlock = GetSolidBlock(index);
++					if (solidBlock != 0)
++					{
++						return solidBlock;
++					}
++					return GetFluid(index);
++				}
++			case 1:
++				return GetSolidBlock(index);
++			case 2:
++				return GetFluid(index);
++			case 3:
++				{
++					int fluid = GetFluid(index);
++					if (fluid != 0)
++					{
++						return fluid;
++					}
++					return GetSolidBlock(index);
++				}
++			case 4:
++				{
++					int num = GetFluid(index);
++					if (num == 0 || !pool.Game.Blocks[num].SideSolid.Any)
++					{
++						num = GetSolidBlock(index);
++					}
++					return num;
++				}
+ 		}
+ 	}
+ 
+ 	public int GetSolidBlock(int index3d)
+ 	{
+@@ -166,45 +166,59 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+ 	public int GetBlockIdUnsafe(int index3d)
+ 	{
+ 		return blocksLayer?.GetUnsafe(index3d) ?? 0;
+ 	}
+ 
+-	public int GetBlockIdUnsafe(int index3d, int layer)
++
++	// Stratum start: Added new public method to copy block data into a flat int array using unsafe fast path.
++	// Replaces the inner-loop zero-filling with Array.Clear when layer/palette is null for better performance.
++	public void CopyBlocksToUnsafe(int[] blocksOut)
+ 	{
+-		switch (layer)
+-		{
+-		default:
+-		{
+-			int num2 = blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
+-			if (num2 != 0)
+-			{
+-				return num2;
+-			}
+-			return fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
+-		}
+-		case 1:
+-			return blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
+-		case 2:
+-			return fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
+-		case 3:
++		if (blocksLayer == null || blocksLayer.palette == null)
+ 		{
+-			int num3 = fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
+-			if (num3 != 0)
+-			{
+-				return num3;
+-			}
+-			return blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++			Array.Clear(blocksOut, 0, blocksOut.Length);
++			return;
+ 		}
+-		case 4:
++		blocksLayer.CopyBlocksToUnsafe(blocksOut);
++	}
++	// Stratum end
++
++	public int GetBlockIdUnsafe(int index3d, int layer)
++	{
++		switch (layer)
+ 		{
+-			int num = fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
+-			if (num == 0 || !pool.Game.Blocks[num].SideSolid.Any)
+-			{
+-				num = blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
+-			}
+-			return num;
+-		}
++			default:
++				{
++					int num2 = blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++					if (num2 != 0)
++					{
++						return num2;
++					}
++					return fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++				}
++			case 1:
++				return blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++			case 2:
++				return fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++			case 3:
++				{
++					int num3 = fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++					if (num3 != 0)
++					{
++						return num3;
++					}
++					return blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++				}
++			case 4:
++				{
++					int num = fluidsLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++					if (num == 0 || !pool.Game.Blocks[num].SideSolid.Any)
++					{
++						num = blocksLayer?.GetUnsafe_PaletteCheck(index3d) ?? 0;
++					}
++					return num;
++				}
+ 		}
+ 	}
+ 
+ 	public void TakeBulkReadLock()
+ 	{
+@@ -220,21 +234,18 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+ 		bulkBlocksTmp?.readWriteLock.ReleaseReadLock();
+ 		bulkFluidsTmp = null;
+ 		bulkBlocksTmp = null;
+ 	}
+ 
++	/// <summary>Stratum: bulk-fill a rectangular region with one block value, taking the write lock once.</summary>
+ 	public void SetBlockBulk(int index3d, int lenX, int lenZ, int value)
+ 	{
+-		if (blocksLayer == null)
++		if (blocksLayer == null && value != 0)
+ 		{
+-			if (value == 0)
+-			{
+-				return;
+-			}
+ 			blocksLayer = new BlockChunkDataLayer(pool);
+ 		}
+-		blocksLayer.SetBulk(index3d, lenX, lenZ, value);
++		blocksLayer?.SetBulk(index3d, lenX, lenZ, value);
+ 	}
+ 
+ 	public void SetBlockUnsafe(int index3d, int value)
+ 	{
+ 		if (blocksLayer == null)
+@@ -246,10 +257,65 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+ 			blocksLayer = new BlockChunkDataLayer(pool);
+ 		}
+ 		blocksLayer.SetUnsafe(index3d, value);
+ 	}
+ 
++	/// <summary>
++	/// Stratum: bulk variant of SetBlockUnsafe. Forwards a buffered batch of
++	/// (index3d, value) pairs to the blocks layer's SetManyUnsafe, taking the
++	/// layer's write lock once for the whole batch instead of once per block.
++	/// </summary>
++	public void SetBlocksUnsafe(List<int> indices, List<int> values)
++	{
++		if (indices.Count == 0)
++		{
++			return;
++		}
++		if (blocksLayer == null)
++		{
++			blocksLayer = new BlockChunkDataLayer(pool);
++		}
++		blocksLayer.SetManyUnsafe(indices, values);
++	}
++
++	/// <summary>
++	/// Stratum: bulk-write an entire block array back into the chunk in one pass.
++	/// Takes the layer's write lock once, rebuilds the palette optimally.
++	/// </summary>
++	public void SetBlocksBulkUnsafe(int[] blocksIn)
++	{
++		if (blocksIn == null || blocksIn.Length != length) return;
++
++		if (blocksLayer == null)
++		{
++			blocksLayer = new BlockChunkDataLayer(pool);
++		}
++		blocksLayer.SetBlocksBulkUnsafe(blocksIn);
++	}
++
++
++	// Stratum start: Added new public method to copy light data into a flat int array using unsafe fast path.
++	// Uses Array.Clear for null/empty case instead of manual loop for better performance.
++	public void CopyLightToUnsafe(int[] lightOut)
++	{
++		if (lightOut == null) return;
++		if (lightLayer == null) Array.Clear(lightOut, 0, lightOut.Length);
++		else lightLayer.CopyLightToUnsafe(lightOut);
++	}
++	// Stratum end
++
++	// Stratum start: Added new public method to bulk-write an entire light array into the chunk in one pass.
++	// Lazily creates the light layer if it doesn't exist, then delegates to layer's unsafe bulk setter.
++	public void SetLightBulkUnsafe(int[] lightIn)
++	{
++		if (lightIn == null) return;
++		if (lightLayer == null) lightLayer = new ChunkDataLayer(pool);
++		lightLayer.SetLightBulkUnsafe(lightIn);
++	}
++	// Stratum end
++
++
+ 	public void SetBlockAir(int index3d)
+ 	{
+ 		blocksLayer?.SetZero(index3d);
+ 	}
+ 
+@@ -685,6 +751,6 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+ 
+ 	public void FuzzyListBlockIds(List<int> reusableList)
+ 	{
+ 		blocksLayer?.ListAllPaletteValues(reusableList);
+ 	}
+-}
++}
+\ No newline at end of file
