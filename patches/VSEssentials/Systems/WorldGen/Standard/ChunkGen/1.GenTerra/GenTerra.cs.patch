@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
-index 5f759f1..8253a1a 100644
+index 5f759f1..c717b90 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 @@ -1,7 +1,8 @@
@@ -162,7 +162,7 @@ index 5f759f1..8253a1a 100644
              borderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
              borderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
              borderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
-@@ -166,118 +230,173 @@ namespace Vintagestory.ServerMods
+@@ -166,118 +230,168 @@ namespace Vintagestory.ServerMods
          }
  
  
@@ -181,9 +181,6 @@ index 5f759f1..8253a1a 100644
 -                var neibHeightMaps = request.NeighbourTerrainHeight;
 +            ColumnBuffers buf = RentColumnBuffers();
 +            Stack<StratumColumnBufferFrame> frames = stratumColumnBufferFrames ??= new Stack<StratumColumnBufferFrame>();
-+            StratumColumnBufferFrame frame = new StratumColumnBufferFrame { StratumOwner = this, StratumBuffers = buf };
-+            frames.Push(frame);
-+            stratumPublishColumnBuffers(buf);
  
 -                // Ignore diagonals if direct adjacent faces are available, otherwise the corners get weighted too strongly
 -                if (neibHeightMaps[Cardinal.North] != null)
@@ -206,29 +203,41 @@ index 5f759f1..8253a1a 100644
 -                    neibHeightMaps[Cardinal.SouthWest] = null;
 -                    neibHeightMaps[Cardinal.NorthWest] = null;
 -                }
--
++            int[] currentBorderIndicesByCardinal = new int[8];
++            currentBorderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
++            currentBorderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
++            currentBorderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
++            currentBorderIndicesByCardinal[Cardinal.NorthWest] = (chunksize - 1) * chunksize + chunksize - 1;
+ 
 -                for (int dx = 0; dx < chunksize; dx++)
-+            try
-+            {
-+                int[] currentBorderIndicesByCardinal = new int[8]; // Stratum: call-local, cheap enough not to pool
-+                borderIndicesByCardinal = currentBorderIndicesByCardinal; // Stratum: keep the vanilla field current for mod code
-+
-+                // Diagonal corner indices never depend on dx/dz, so they used to be set once in initWorldGen();
-+                // now that this array is call-local they get set fresh here instead, once per column rather than
-+                // once per generator lifetime.
-+                currentBorderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
-+                currentBorderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
-+                currentBorderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
-+                currentBorderIndicesByCardinal[Cardinal.NorthWest] = (chunksize - 1) * chunksize + chunksize - 1;
-+
-+                if (request.RequiresChunkBorderSmoothing && !PreventSmoothing(request.ChunkX, request.ChunkZ))
-                 {
+-                {
 -                    borderIndicesByCardinal[Cardinal.North] = (chunksize - 1) * chunksize + dx;
 -                    borderIndicesByCardinal[Cardinal.South] = 0 + dx;
-+                    var neibHeightMaps = request.NeighbourTerrainHeight;
++            // Stratum: save previous state BEFORE pushing, so we can restore it after Pop.
++            // This makes the stack a proper snapshot/restore mechanism for nested calls.
++            bool hadPrevious = frames.Count > 0;
++            StratumColumnBufferFrame previousFrame = hadPrevious ? frames.Peek() : default;
  
 -                    for (int dz = 0; dz < chunksize; dz++)
-+                    // Ignore diagonals if direct adjacent faces are available, otherwise the corners get weighted too strongly
++            StratumColumnBufferFrame frame = new StratumColumnBufferFrame
++            {
++                StratumOwner = this,
++                StratumBuffers = buf,
++                StratumBorderIndices = currentBorderIndicesByCardinal
++            };
++            frames.Push(frame);
++
++            // Publish this frame's state for the compatibility path (vanilla generate()) and for
++            // mods that read through instance fields. stratumGenerate reads from the stack directly
++            // and does not depend on these publishes.
++            stratumPublishColumnBuffers(buf);
++            borderIndicesByCardinal = currentBorderIndicesByCardinal;
++
++            try
++            {
++                if (request.RequiresChunkBorderSmoothing && !PreventSmoothing(request.ChunkX, request.ChunkZ))
++                {
++                    var neibHeightMaps = request.NeighbourTerrainHeight;
 +                    if (neibHeightMaps[Cardinal.North] != null)
 +                    {
 +                        neibHeightMaps[Cardinal.NorthEast] = null;
@@ -304,33 +313,16 @@ index 5f759f1..8253a1a 100644
 +                                if (neibMap == null) continue;
 +
 +                                float distToEdge = 0;
-+
 +                                switch (i)
 +                                {
-+                                    case 0: // N: Negative Z
-+                                        distToEdge = (float)dz / chunksize;
-+                                        break;
-+                                    case 1: // NE: Positive X, negative Z
-+                                        distToEdge = 1 - (dx + 1f) / chunksize + (float)dz / chunksize;
-+                                        break;
-+                                    case 2: // E: Positive X
-+                                        distToEdge = 1 - (dx + 1f) / chunksize;
-+                                        break;
-+                                    case 3: // SE: Positive X, positive Z
-+                                        distToEdge = 1 - (dx + 1f) / chunksize + 1 - (dz + 1f) / chunksize;
-+                                        break;
-+                                    case 4: // S: Positive Z
-+                                        distToEdge = 1 - (dz + 1f) / chunksize;
-+                                        break;
-+                                    case 5: // SW: Negative X, positive Z
-+                                        distToEdge = (float)dx / chunksize + 1 - (dz + 1f) / chunksize;
-+                                        break;
-+                                    case 6: // W: Negative X
-+                                        distToEdge = (float)dx / chunksize;
-+                                        break;
-+                                    case 7: // Negative X, negative Z
-+                                        distToEdge = (float)dx / chunksize + (float)dz / chunksize;
-+                                        break;
++                                    case 0: distToEdge = (float)dz / chunksize; break;
++                                    case 1: distToEdge = 1 - (dx + 1f) / chunksize + (float)dz / chunksize; break;
++                                    case 2: distToEdge = 1 - (dx + 1f) / chunksize; break;
++                                    case 3: distToEdge = 1 - (dx + 1f) / chunksize + 1 - (dz + 1f) / chunksize; break;
++                                    case 4: distToEdge = 1 - (dz + 1f) / chunksize; break;
++                                    case 5: distToEdge = (float)dx / chunksize + 1 - (dz + 1f) / chunksize; break;
++                                    case 6: distToEdge = (float)dx / chunksize; break;
++                                    case 7: distToEdge = (float)dx / chunksize + (float)dz / chunksize; break;
 +                                }
 +
 +                                float baseWeight = Math.Max(0, 1 - distToEdge);
@@ -349,54 +341,57 @@ index 5f759f1..8253a1a 100644
 -                            ypos += neibYPos * Math.Max(0.0001, cardinalWeight);
 -                            sumWeight += cardinalWeight;
 -                            maxWeight = Math.Max(maxWeight, cardinalWeight);
-+                            buf.TaperMap[dz * chunksize + dx] = new WeightedTaper() { TerrainYPos = (float)(ypos / Math.Max(0.0001, sumWeight)), Weight = maxWeight }; // Stratum: write into the rented buffer instead of the shared taperMap
++                            buf.TaperMap[dz * chunksize + dx] = new WeightedTaper()
++                            {
++                                TerrainYPos = (float)(ypos / Math.Max(0.0001, sumWeight)),
++                                Weight = maxWeight
++                            };
                          }
 +                    }
 +                }
  
 -                        taperMap[dz * chunksize + dx] = new WeightedTaper() { TerrainYPos = (float)(ypos / Math.Max(0.0001, sumWeight)), Weight = maxWeight };
-+                if (landforms == null)    // This only needs to be done once, but cannot be done during initWorldGen() because NoiseLandforms.landforms is sometimes not yet setup at that point (depends on random order of ModSystems registering to events)
++                if (landforms == null)
 +                {
-+                    // Stratum: double-checked lock. Low-severity race even before this commit (both racing threads would compute the same result from the same static NoiseLandforms.landforms), closed properly while this file was already open for the concurrency work.
 +                    lock (stratumLandformsInitLock)
 +                    {
 +                        if (landforms == null)
 +                        {
 +                            landforms = NoiseLandforms.landforms;
 +                            terrainYThresholds = new float[landforms.LandFormsByIndex.Length][];
-+                            for (int i = 0; i < landforms.LandFormsByIndex.Length; i++) terrainYThresholds[i] = landforms.LandFormsByIndex[i].TerrainYThresholds;
++                            for (int i = 0; i < landforms.LandFormsByIndex.Length; i++)
++                                terrainYThresholds[i] = landforms.LandFormsByIndex[i].TerrainYThresholds;
 +                        }
                      }
                  }
 -            }
  
 -            if (landforms == null)    // This only needs to be done once, but cannot be done during initWorldGen() because NoiseLandforms.landforms is sometimes not yet setup at that point (depends on random order of ModSystems registering to events)
-+                stratumPublishColumnBuffers(buf);
-+                borderIndicesByCardinal = currentBorderIndicesByCardinal;
-+
-+                try
-+                {
-+                    // Stratum: use the vanilla body when a mod patched it, so its changes take effect.
-+                    if (stratumUseFastGenerate) stratumGenerate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
-+                    else generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
-+                }
-+                finally
-+                {
-+                    // Stratum: a same-thread nested call may have published another frame; restore this column's view.
-+                    stratumPublishColumnBuffers(buf);
-+                    borderIndicesByCardinal = currentBorderIndicesByCardinal;
-+                }
-+            }
-+            finally
-             {
+-            {
 -                landforms = NoiseLandforms.landforms;
 -                terrainYThresholds = new float[landforms.LandFormsByIndex.Length][];
 -                for (int i = 0; i < landforms.LandFormsByIndex.Length; i++) terrainYThresholds[i] = landforms.LandFormsByIndex[i].TerrainYThresholds;
++                // No inner finally needed — restoration happens in the outer finally after Pop.
++                if (stratumUseFastGenerate)
++                    stratumGenerate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
++                else
++                    generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
+             }
++            finally
++            {
 +                frames.Pop();
 +                ReturnColumnBuffers(buf);
-             }
--
+ 
 -            generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
++                // Stratum: restore the previous frame's state to the instance fields.
++                // If this was the outermost call, the instance fields are left stale until the next call,
++                // which is fine because nobody reads them between calls.
++                if (hadPrevious)
++                {
++                    stratumPublishColumnBuffers(previousFrame.StratumBuffers);
++                    borderIndicesByCardinal = previousFrame.StratumBorderIndices;
++                }
++            }
          }
 +        // Stratum end
  
@@ -414,7 +409,7 @@ index 5f759f1..8253a1a 100644
              IMapChunk mapchunk = chunks[0].MapChunk;
              const int chunksize = GlobalConstants.ChunkSize;
  
-@@ -297,21 +416,21 @@ namespace Vintagestory.ServerMods
+@@ -297,21 +411,21 @@ namespace Vintagestory.ServerMods
              int climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * cfac), (int)(rlZ * cfac));
              int climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * cfac + cfac), (int)(rlZ * cfac));
              int climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * cfac), (int)(rlZ * cfac + cfac));
@@ -435,14 +430,14 @@ index 5f759f1..8253a1a 100644
                  oceanUpRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac));
 -                oceanBotLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac + ofac));
 -                oceanBotRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac + ofac));
-+                oceanBotLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac + cfac));
-+                oceanBotRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac + cfac));
++                oceanBotLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac + ofac));        // было cfac
++                oceanBotRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac + ofac)); // было cfac
              }
  
              IntDataMap2D upheavalMap = chunks[0].MapChunk.MapRegion.UpheavelMap;
              if (upheavalMap != null)
              {
-@@ -426,11 +545,11 @@ namespace Vintagestory.ServerMods
+@@ -426,11 +540,11 @@ namespace Vintagestory.ServerMods
                          double th = posY > wtaper.TerrainYPos ? 1 : -1;
  
                          var ydiff = Math.Abs(posY - wtaper.TerrainYPos);
@@ -455,7 +450,7 @@ index 5f759f1..8253a1a 100644
                      }
  
                      // Often we don't need to calculate the noise.
-@@ -564,20 +683,466 @@ namespace Vintagestory.ServerMods
+@@ -564,20 +678,467 @@ namespace Vintagestory.ServerMods
  
              chunks[0].MapChunk.YMax = ymax;
          }
@@ -480,6 +475,7 @@ index 5f759f1..8253a1a 100644
 +        {
 +            public GenTerra StratumOwner;
 +            public ColumnBuffers StratumBuffers;
++            public int[] StratumBorderIndices;  // Stratum: also save border indices per frame
 +        }
 +
 +        [ThreadStatic] private static Stack<StratumColumnBufferFrame> stratumColumnBufferFrames; // Stratum: per-thread stack of buffer frames, used to support nested OnChunkColumnGen calls
@@ -584,8 +580,8 @@ index 5f759f1..8253a1a 100644
 +                float ofac = (float)oceanMap.InnerSize / regionChunkSize;
 +                oceanUpLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac));
 +                oceanUpRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac));
-+                oceanBotLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac + cfac));
-+                oceanBotRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac + cfac));
++                oceanBotLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac + ofac));        // было cfac
++                oceanBotRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac + ofac)); // было cfac
 +            }
 +
 +            IntDataMap2D upheavalMap = chunks[0].MapChunk.MapRegion.UpheavelMap;
@@ -928,7 +924,7 @@ index 5f759f1..8253a1a 100644
          }
  
  
-@@ -692,6 +1257,87 @@ namespace Vintagestory.ServerMods
+@@ -692,6 +1253,88 @@ namespace Vintagestory.ServerMods
          {
              public double X, Z;
              public static VectorXZ operator *(VectorXZ a, double b) => new VectorXZ { X = a.X * b, Z = a.Z * b };
@@ -991,11 +987,12 @@ index 5f759f1..8253a1a 100644
 +
 +        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued)
 +        {
-+            // Don't steal already-queued tasks — workers pick those up.
-+            // Non-queued tasks (Parallel.For tries to run a replica on the calling thread) — execute inline:
-+            // the worldgen thread participates in work rather than just scheduling.
-+            if (taskWasPreviouslyQueued) return false;
-+            return TryExecuteTask(task);
++            // Disable inline execution to enforce the global cap.
++            // All tasks go through the queue and execute only on worker threads.
++            // The calling worldgen thread will wait on Task.Wait rather than participate in work.
++            // Trade-off: slightly higher latency (caller waits instead of helping), but guarantees
++            // that active bodies never exceed MaximumConcurrencyLevel, preserving the reserved CPU budget.
++            return false;
 +        }
 +
 +        protected override IEnumerable<Task> GetScheduledTasks()
