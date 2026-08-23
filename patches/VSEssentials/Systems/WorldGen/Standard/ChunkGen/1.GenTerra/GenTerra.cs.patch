@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
-index 5f759f1..c717b90 100644
+index 5f759f1..8618e8c 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 @@ -1,7 +1,8 @@
@@ -450,7 +450,7 @@ index 5f759f1..c717b90 100644
                      }
  
                      // Often we don't need to calculate the noise.
-@@ -564,20 +678,467 @@ namespace Vintagestory.ServerMods
+@@ -564,20 +678,472 @@ namespace Vintagestory.ServerMods
  
              chunks[0].MapChunk.YMax = ymax;
          }
@@ -526,9 +526,7 @@ index 5f759f1..c717b90 100644
 +        //      wB=w*slide, and direct pointers to each landform's threshold array. This removes the
 +        //      per-poy scan over zero-weight entries and one level of jagged-array indirection from
 +        //      the inner loop, reducing it to two multiply-adds per nonzero landform.
-+        //   3) Inlined StartSampleDisplacedYThreshold / ContinueSampleDisplacedYThreshold into the body:
-+        //      since posY is an int, floor(posY + distY) == posY + floor(distY), so we compute the
-+        //      base index once per column and skip both helper calls.
++
 +        //   4) Uses Parallel.For with localInit/body/localFinally to run thread-local setup/merge
 +        //      exactly once per worker, eliminating allocations inside the hot body.
 +        private void stratumGenerate(IServerChunk[] chunks, int chunkX, int chunkZ, bool requiresChunkBorderSmoothing)
@@ -718,12 +716,19 @@ index 5f759f1..c717b90 100644
 +
 +                    for (int posY = 1; posY <= mapsizeYm2; posY++)
 +                    {
-+                        // Stratum (А): same clamp range as the old StartSampleDisplacedYThreshold.
-+                        int b = posY + floorDistY;
++                        // Stratum: recompute b exactly like vanilla's StartSampleDisplacedYThreshold — a single
++                        // single-precision add (posY promoted to float) then floor in double — instead of
++                        // posY + floorDistY (pure int math). Mathematically identical for real numbers, but NOT
++                        // bit-identical in floating point: for large posY, rounding the direct sum in single
++                        // precision can consume distY's fractional bits differently than pre-flooring distY on its
++                        // own, occasionally landing on a different integer index near a boundary. This costs one
++                        // extra float add + double floor per posY (negligible vs. the per-landform loop below) and
++                        // restores bit-parity with generate().
++                        float distortedPosY = posY + distY;
++                        int b = (int)Math.Floor((double)distortedPosY);
 +                        if (b < 0) b = 0;
 +                        else if (b > mapsizeYm2) b = mapsizeYm2;
 +
-+                        // Value starts as the landform Y threshold: Σ w·Lerp(a,b,slide) == Σ a·wA + b·wB.
 +                        double threshold = 0;
 +                        for (int k = 0; k < nzCount; k++)
 +                        {
@@ -924,7 +929,7 @@ index 5f759f1..c717b90 100644
          }
  
  
-@@ -692,6 +1253,88 @@ namespace Vintagestory.ServerMods
+@@ -692,6 +1258,88 @@ namespace Vintagestory.ServerMods
          {
              public double X, Z;
              public static VectorXZ operator *(VectorXZ a, double b) => new VectorXZ { X = a.X * b, Z = a.Z * b };
