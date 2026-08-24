@@ -1,11 +1,21 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..3cdcce8 100644
+index 30f034d..0583e33 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-@@ -12,17 +12,37 @@ namespace Vintagestory.ServerMods
+@@ -10,19 +10,47 @@ namespace Vintagestory.ServerMods
+ {
+     public class GenCaves : GenPartial
      {
          protected override int chunkRange { get { return 5; } }
  
++        // Stratum: when true (only set for the isolated /dev gencaves instance), buffered writes
++        // go through the readWriteLock-locked Set() path instead of the batched SetManyUnsafe. The
++        // command runs against live/published chunks any player can be standing in, so a concurrent
++        // reader or the save/compression thread must never observe a torn bit-plane update; SetManyUnsafe's
++        // stratumWriteLock alone does not exclude readers. Normal worldgen keeps the fast batched path
++        // because its chunks are not published until generation finishes.
++        bool stratumLockedWrites;
++
          public override double ExecuteOrder() { return 0.3; }
  
 +        // Stratum: plain field, vanilla shape, because mods look it up by name.
@@ -40,7 +50,7 @@ index 30f034d..3cdcce8 100644
              base.StartServerSide(api);
  
              if (TerraGenConfig.DoDecorationPass)
-@@ -30,18 +50,18 @@ namespace Vintagestory.ServerMods
+@@ -30,18 +58,18 @@ namespace Vintagestory.ServerMods
                  api.Event.GetWorldgenBlockAccessor(OnWorldGenBlockAccessor);
  
                  api.ChatCommands.GetOrCreate("dev")
@@ -61,7 +71,7 @@ index 30f034d..3cdcce8 100644
          }
  
  
-@@ -51,10 +71,44 @@ namespace Vintagestory.ServerMods
+@@ -51,10 +79,44 @@ namespace Vintagestory.ServerMods
              caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
              basaltNoise = NormalizedSimplexNoise.FromDefaultOctaves(2, 1f / 3.5f, 0.9f, api.World.Seed + 12);
              heightvarNoise = NormalizedSimplexNoise.FromDefaultOctaves(3, 1f / 20f, 0.9f, api.World.Seed + 12);
@@ -106,7 +116,7 @@ index 30f034d..3cdcce8 100644
  
          private void OnMapChunkGen(IMapChunk mapChunk, int chunkX, int chunkZ)
          {
-@@ -72,68 +126,96 @@ namespace Vintagestory.ServerMods
+@@ -72,68 +134,98 @@ namespace Vintagestory.ServerMods
                      mapChunk.CaveHeightDistort[dz * chunksize + dx] = (byte)(128 * val + 127);
                  }
              }
@@ -141,33 +151,35 @@ index 30f034d..3cdcce8 100644
  
 -            int baseChunkX = api.World.BlockAccessor.MapSizeX / 2 / chunksize;
 -            int baseChunkZ = api.World.BlockAccessor.MapSizeZ / 2 / chunksize;
-+                // replace the air block with granite to generate inverted caves
-+                cmd.airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
++                cmd.stratumLockedWrites = true; // Stratum: dev command touches live chunks -> locked writes
  
 -            for (int dx = -5; dx <= 5; dx++)
 -            {
 -                for (int dz = -5; dz <= 5; dz++)
+-                {
+-                    int chunkX = baseChunkX + dx;
+-                    int chunkZ = baseChunkZ + dz;
++                // replace the air block with granite to generate inverted caves
++                cmd.airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
+ 
+-                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
 +                // take the player as the center
 +                var player = args.Caller.Player as IServerPlayer;
 +                int baseChunkX = (int)player.Entity.Pos.X / chunksize;
 +                int baseChunkZ = (int)player.Entity.Pos.Z / chunksize;
-+
-+                // first check that all chunks are loaded
-+                for (int dx = -5; dx <= 5; dx++)
-                 {
--                    int chunkX = baseChunkX + dx;
--                    int chunkZ = baseChunkZ + dz;
-+                    for (int dz = -5; dz <= 5; dz++)
-+                    {
-+                        int chunkX = baseChunkX + dx;
-+                        int chunkZ = baseChunkZ + dz;
- 
--                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
-+                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
  
 -                    for (int i = 0; i < chunks.Length; i++)
--                    {
++                // first check that all chunks are loaded
++                for (int dx = -5; dx <= 5; dx++)
++                {
++                    for (int dz = -5; dz <= 5; dz++)
+                     {
 -                        if (chunks[i] == null)
++                        int chunkX = baseChunkX + dx;
++                        int chunkZ = baseChunkZ + dz;
++
++                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++
 +                        for (int i = 0; i < chunks.Length; i++)
                          {
 -                            return TextCommandResult.Success( "Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
@@ -183,8 +195,8 @@ index 30f034d..3cdcce8 100644
 +                    }
                  }
 -            }
- 
 -
+ 
 -            for (int dx = -5; dx <= 5; dx++)
 -            {
 -                for (int dz = -5; dz <= 5; dz++)
@@ -239,7 +251,7 @@ index 30f034d..3cdcce8 100644
          }
  
          private IServerChunk[] GetChunkColumn(int chunkX, int chunkZ)
-@@ -148,11 +230,12 @@ namespace Vintagestory.ServerMods
+@@ -148,11 +240,12 @@ namespace Vintagestory.ServerMods
              return chunks;
          }
  
@@ -253,7 +265,7 @@ index 30f034d..3cdcce8 100644
              }
          }
  
-@@ -183,11 +266,15 @@ namespace Vintagestory.ServerMods
+@@ -183,11 +276,15 @@ namespace Vintagestory.ServerMods
                  return;
              }
  
@@ -270,7 +282,7 @@ index 30f034d..3cdcce8 100644
              while (quantityCaves-- > 0)
              {
                  int rnd = chunkRand.NextInt(rndSize);
-@@ -229,11 +316,88 @@ namespace Vintagestory.ServerMods
+@@ -229,11 +326,83 @@ namespace Vintagestory.ServerMods
  
                  caveRand.SetWorldSeed(chunkRand.NextInt(10000000));
                  caveRand.InitPositionSeed(chunkX + cdx, chunkZ + cdz);
@@ -324,31 +336,26 @@ index 30f034d..3cdcce8 100644
 +
 +                IChunkBlocks data = chunks[cy].Data;
 +
-+                // Stratum: SetManyUnsafe is a fast path that assumes an initialized layer
-+                // (palette + bit planes). A never-written subchunk (empty sky, or cleared
-+                // by the dev command) has no palette and would NRE inside SetUnsafeCore.
-+                // ClearBlocksAndPrepare() initializes palette/planes without destroying
-+                // the fluids/light layers.
-+                if (!data.HasBlocksLayer)
++                if (stratumLockedWrites)
 +                {
-+                    // Writing air into a subchunk that never had blocks changes nothing: skip.
-+                    bool anyNonZero = false;
-+                    for (int i = 0; i < val.Count; i++)
++                    // Locked path: one readWriteLock per block, safe on live/published chunks. The
++                    // indexer setter lazily creates the blocks layer and wraps each SetCore in
++                    // readWriteLock.AcquireWriteLock()/ReleaseWriteLock() - exactly like the old
++                    // chunkBlockData[index] = value path. Does NOT null out fluids/light layers, so lava
++                    // written earlier this command run survives.
++                    for (int i = 0; i < idx.Count; i++)
 +                    {
-+                        if (val[i] != 0) { anyNonZero = true; break; }
++                        data[idx[i]] = val[i];
 +                    }
-+                    if (!anyNonZero)
-+                    {
-+                        idx.Clear();
-+                        val.Clear();
-+                        continue;
-+                    }
-+
-+                    // Real blocks into an empty subchunk: initialize palette lazily.
-+                    data.ClearBlocksAndPrepare();
++                }
++                else
++                {
++                    // Batched path: one lock per touched subchunk, only used during generation where
++                    // chunks are not yet published. Self-initialises an empty blocks layer via
++                    // PopulateWithAir without touching fluids/light layers (see ChunkData.SetBlocksUnsafe).
++                    data.SetBlocksUnsafe(idx, val);
 +                }
 +
-+                data.SetBlocksUnsafe(idx, val);
 +                idx.Clear();
 +                val.Clear();
 +            }
@@ -359,7 +366,7 @@ index 30f034d..3cdcce8 100644
          {
              LCGRandom caveRand = this.caveRand;
  
-@@ -289,14 +453,14 @@ namespace Vintagestory.ServerMods
+@@ -289,14 +458,14 @@ namespace Vintagestory.ServerMods
                  vertAngle *= 0.8f;
  
                  int rrnd = caveRand.NextInt(800000);
@@ -376,7 +383,7 @@ index 30f034d..3cdcce8 100644
                  // 1/330 * 10k = 30
                  // 1/130 * 10k = 76
                  // 1/100 * 10k = 100
-@@ -305,48 +469,55 @@ namespace Vintagestory.ServerMods
+@@ -305,48 +474,55 @@ namespace Vintagestory.ServerMods
  
                  // Rarely change direction
                  if ((rnd -= 30) <= 0)
@@ -439,7 +446,7 @@ index 30f034d..3cdcce8 100644
                  {
                      if (posY < 19)
                      {
-@@ -418,11 +589,11 @@ namespace Vintagestory.ServerMods
+@@ -418,11 +594,11 @@ namespace Vintagestory.ServerMods
                          horAngle + (caveRand.NextFloat() + caveRand.NextFloat() - 1) + GameMath.PI,
                          -GameMath.PI / 2 - 0.1f + 0.2f * caveRand.NextFloat(),
                          Math.Min(3.5f, horRadius - 1),
@@ -452,7 +459,7 @@ index 30f034d..3cdcce8 100644
  
                      branchLevel++;
                  }
-@@ -506,155 +677,220 @@ namespace Vintagestory.ServerMods
+@@ -506,155 +682,220 @@ namespace Vintagestory.ServerMods
  
  
  
@@ -624,28 +631,28 @@ index 30f034d..3cdcce8 100644
 +                        if (dxSq / checkHorRadiusSq + checkYDistSq + dzSq / checkHorRadiusSq <= 1.0)
                          {
 -                            if (basaltNoise.Noise(chunkX * chunksize + lx, chunkZ * chunksize + lz) > 0.65)
+-                            {
+-                                chunkBlockData[index3d] = gcfg.basaltBlockId;
+-                                terrainheightmap[lz * chunksize + lx] = Math.Max(terrainheightmap[lz * chunksize + lx], (ushort)11);
+-                                rainheightmap[lz * chunksize + lx] = Math.Max(rainheightmap[lz * chunksize + lx], (ushort)11);
+-                            }
+-                            else
 +                            // Fluid check — reads from live chunk data.
 +                            // Correctness: caves only modify the blocks layer (air/basalt/lava),
 +                            // never the fluids layer, so deferred block writes do not affect
 +                            // fluid state visibility.
 +                            if (!hasLiquidInCheckRadius && y >= 1 && y < worldheight)
                              {
--                                chunkBlockData[index3d] = gcfg.basaltBlockId;
--                                terrainheightmap[lz * chunksize + lx] = Math.Max(terrainheightmap[lz * chunksize + lx], (ushort)11);
--                                rainheightmap[lz * chunksize + lx] = Math.Max(rainheightmap[lz * chunksize + lx], (ushort)11);
--                            }
--                            else
--                            {
 -                                chunkBlockData[index3d] = 0;
 -                                if (y > yLavaStart)
+-                                {
+-                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
+-                                } else
 +                                int chunkY = y / chunksize;
 +                                int localY = y % chunksize;
 +                                var block = api.World.Blocks[chunks[chunkY].Data.GetFluid((localY * chunksize + lz) * chunksize + lx)];
 +                                if (block.LiquidCode != null)
                                  {
--                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
--                                } else
--                                {
 -                                    chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
 +                                    return false; // Found fluid - exit immediately
                                  }
@@ -653,13 +660,13 @@ index 30f034d..3cdcce8 100644
 -                                if (y <= yLavaStart) worldgenBlockAccessor.ScheduleBlockLightUpdate(new BlockPos(chunkX * chunksize + lx, y, chunkZ * chunksize + lz), airBlockId, gcfg.lavaBlockId);
                              }
 +                        }
-+
+ 
 +                        // Check inclusion in generation radius (for setting blocks)
 +                        if (!needsGenInGenRadius)
 +                        {
 +                            double heightOffFac = dy > 0 ? heightrnd * heightrnd * Math.Min(1, Math.Abs(y - surfaceY) / 10.0) : 0;
 +                            double genYDistSq = dySq / (genVertRadiusSq + heightOffFac);
- 
++
 +                            if (dxSq / genHorRadiusSq + genYDistSq + dzSq / genHorRadiusSq <= 1.0 && y < worldheight)
 +                            {
 +                                needsGenInGenRadius = true;
