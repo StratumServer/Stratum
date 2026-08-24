@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..0583e33 100644
+index 30f034d..47dc4ad 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-@@ -10,19 +10,47 @@ namespace Vintagestory.ServerMods
+@@ -10,19 +10,60 @@ namespace Vintagestory.ServerMods
  {
      public class GenCaves : GenPartial
      {
@@ -45,12 +45,25 @@ index 30f034d..0583e33 100644
 +        // Stratum: reusable province weights buffer. Per-instance, never shared.
 +        float[] stratumIndicesBuf;
 +
++        // Stratum start: serializes access to the shared worldgenBlockAccessor. Multiple
++        // TerrainLate workers can run GeneratePartial on neighboring chunks concurrently, so we
++        // must not let them concurrently mutate the shared accessor's cached state or the
++        // per-chunk light update lists.
++        private static readonly object accessorLock = new object();
++
++        // Stratum: buffer light updates to flush them under accessorLock at the end of
++        // GeneratePartial, avoiding concurrent List<T> mutations on the shared accessor.
++        List<BlockPos> stratumPendLightPos;
++        List<int> stratumPendLightOld;
++        List<int> stratumPendLightNew;
++        // Stratum end
++
          public override void StartServerSide(ICoreServerAPI api)
          {
              base.StartServerSide(api);
  
              if (TerraGenConfig.DoDecorationPass)
-@@ -30,18 +58,18 @@ namespace Vintagestory.ServerMods
+@@ -30,18 +71,18 @@ namespace Vintagestory.ServerMods
                  api.Event.GetWorldgenBlockAccessor(OnWorldGenBlockAccessor);
  
                  api.ChatCommands.GetOrCreate("dev")
@@ -71,7 +84,7 @@ index 30f034d..0583e33 100644
          }
  
  
-@@ -51,10 +79,44 @@ namespace Vintagestory.ServerMods
+@@ -51,10 +92,47 @@ namespace Vintagestory.ServerMods
              caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
              basaltNoise = NormalizedSimplexNoise.FromDefaultOctaves(2, 1f / 3.5f, 0.9f, api.World.Seed + 12);
              heightvarNoise = NormalizedSimplexNoise.FromDefaultOctaves(3, 1f / 20f, 0.9f, api.World.Seed + 12);
@@ -110,13 +123,16 @@ index 30f034d..0583e33 100644
 +            stratumPendIdx = null;
 +            stratumPendVal = null;
 +            stratumIndicesBuf = null;
++            stratumPendLightPos = null;
++            stratumPendLightOld = null;
++            stratumPendLightNew = null;
 +            // Stratum end
          }
  
  
          private void OnMapChunkGen(IMapChunk mapChunk, int chunkX, int chunkZ)
          {
-@@ -72,68 +134,98 @@ namespace Vintagestory.ServerMods
+@@ -72,68 +150,102 @@ namespace Vintagestory.ServerMods
                      mapChunk.CaveHeightDistort[dz * chunksize + dx] = (byte)(128 * val + 127);
                  }
              }
@@ -205,38 +221,41 @@ index 30f034d..0583e33 100644
                  {
 -                    int chunkX = baseChunkX + dx;
 -                    int chunkZ = baseChunkZ + dz;
--
--                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
--                    ClearChunkColumn(chunks);
 +                    for (int dz = -5; dz <= 5; dz++)
 +                    {
 +                        int chunkX = baseChunkX + dx;
 +                        int chunkZ = baseChunkZ + dz;
  
+-                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
+-                    ClearChunkColumn(chunks);
 +                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
 +                        ClearChunkColumn(chunks);
  
--                    for (int gdx = -chunkRange; gdx <= chunkRange; gdx++)
--                    {
--                        for (int gdz = -chunkRange; gdz <= chunkRange; gdz++)
 +                        for (int gdx = -chunkRange; gdx <= chunkRange; gdx++)
-                         {
--                            chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
--                            GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
++                        {
 +                            for (int gdz = -chunkRange; gdz <= chunkRange; gdz++)
 +                            {
 +                                cmd.chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
 +                                cmd.GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
 +                            }
++                        }
+ 
+-                    for (int gdx = -chunkRange; gdx <= chunkRange; gdx++)
+-                    {
+-                        for (int gdz = -chunkRange; gdz <= chunkRange; gdz++)
++                        // Run lighting recalculation (like in GenLightSurvival)
++                        // Stratum: wrap in accessorLock to exclude concurrent worldgen workers from mutating the shared accessor.
++                        lock (accessorLock)
+                         {
+-                            chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
+-                            GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
++                            cmd.worldgenBlockAccessor.BeginColumn();
++                            api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
++                            cmd.worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
                          }
 -                    }
  
 -                    MarkDirty(chunkX, chunkZ, chunks);
-+                        // Run lighting recalculation (like in GenLightSurvival)
-+                        cmd.worldgenBlockAccessor.BeginColumn();
-+                        api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
-+                        cmd.worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
-+
 +                        MarkDirty(chunkX, chunkZ, chunks);
 +                    }
                  }
@@ -251,7 +270,7 @@ index 30f034d..0583e33 100644
          }
  
          private IServerChunk[] GetChunkColumn(int chunkX, int chunkZ)
-@@ -148,11 +240,12 @@ namespace Vintagestory.ServerMods
+@@ -148,11 +260,12 @@ namespace Vintagestory.ServerMods
              return chunks;
          }
  
@@ -265,11 +284,15 @@ index 30f034d..0583e33 100644
              }
          }
  
-@@ -183,11 +276,15 @@ namespace Vintagestory.ServerMods
+@@ -181,13 +294,18 @@ namespace Vintagestory.ServerMods
+             if (GetIntersectingStructure(chunkX * chunksize + chunksize / 2, chunkZ * chunksize + chunksize / 2, CavesHashCode) != null)
+             {
                  return;
              }
  
-             worldgenBlockAccessor.BeginColumn();
+-            worldgenBlockAccessor.BeginColumn();
++            // Stratum: removed worldgenBlockAccessor.BeginColumn() from here. The shared accessor's
++            // cached state is now only mutated under accessorLock when flushing buffered light updates.
              LCGRandom chunkRand = this.chunkRand;
 -            int quantityCaves = chunkRand.NextInt(100) < TerraGenConfig.CavesPerChunkColumn*100 ? 1 : 0;
 +            int quantityCaves = chunkRand.NextInt(100) < TerraGenConfig.CavesPerChunkColumn * 100 ? 1 : 0;
@@ -282,7 +305,7 @@ index 30f034d..0583e33 100644
              while (quantityCaves-- > 0)
              {
                  int rnd = chunkRand.NextInt(rndSize);
-@@ -229,11 +326,83 @@ namespace Vintagestory.ServerMods
+@@ -229,11 +347,109 @@ namespace Vintagestory.ServerMods
  
                  caveRand.SetWorldSeed(chunkRand.NextInt(10000000));
                  caveRand.InitPositionSeed(chunkX + cdx, chunkZ + cdz);
@@ -291,6 +314,23 @@ index 30f034d..0583e33 100644
 +
 +            // Stratum start: apply buffered writes; one batched lock per touched subchunk.
 +            StratumFlushPendingWrites(chunks);
++
++            // Stratum: flush buffered light updates. We batched them to avoid locking the
++            // shared worldgenBlockAccessor inside the hot carving loop, and we flush them
++            // now under accessorLock. This ensures BeginColumn() sets the correct cached
++            // chunk right before ScheduleBlockLightUpdate mutates its List<Vec4i>, completely
++            // eliminating the race condition between neighboring workers.
++            if (stratumPendLightPos != null && stratumPendLightPos.Count > 0)
++            {
++                lock (accessorLock)
++                {
++                    worldgenBlockAccessor.BeginColumn();
++                    for (int i = 0; i < stratumPendLightPos.Count; i++)
++                    {
++                        worldgenBlockAccessor.ScheduleBlockLightUpdate(stratumPendLightPos[i], stratumPendLightOld[i], stratumPendLightNew[i]);
++                    }
++                }
++            }
 +            // Stratum end
 +        }
 +
@@ -307,12 +347,21 @@ index 30f034d..0583e33 100644
 +                    stratumPendIdx[i] = new List<int>(1024);
 +                    stratumPendVal[i] = new List<int>(1024);
 +                }
++                stratumPendLightPos = new List<BlockPos>(256);
++                stratumPendLightOld = new List<int>(256);
++                stratumPendLightNew = new List<int>(256);
 +                return;
 +            }
 +            for (int i = 0; i < numSubchunks; i++)
 +            {
 +                stratumPendIdx[i].Clear();
 +                stratumPendVal[i].Clear();
++            }
++            if (stratumPendLightPos != null)
++            {
++                stratumPendLightPos.Clear();
++                stratumPendLightOld.Clear();
++                stratumPendLightNew.Clear();
 +            }
 +        }
 +
@@ -366,7 +415,7 @@ index 30f034d..0583e33 100644
          {
              LCGRandom caveRand = this.caveRand;
  
-@@ -289,14 +458,14 @@ namespace Vintagestory.ServerMods
+@@ -289,14 +505,14 @@ namespace Vintagestory.ServerMods
                  vertAngle *= 0.8f;
  
                  int rrnd = caveRand.NextInt(800000);
@@ -383,7 +432,7 @@ index 30f034d..0583e33 100644
                  // 1/330 * 10k = 30
                  // 1/130 * 10k = 76
                  // 1/100 * 10k = 100
-@@ -305,48 +474,55 @@ namespace Vintagestory.ServerMods
+@@ -305,48 +521,55 @@ namespace Vintagestory.ServerMods
  
                  // Rarely change direction
                  if ((rnd -= 30) <= 0)
@@ -446,7 +495,7 @@ index 30f034d..0583e33 100644
                  {
                      if (posY < 19)
                      {
-@@ -418,11 +594,11 @@ namespace Vintagestory.ServerMods
+@@ -418,11 +641,11 @@ namespace Vintagestory.ServerMods
                          horAngle + (caveRand.NextFloat() + caveRand.NextFloat() - 1) + GameMath.PI,
                          -GameMath.PI / 2 - 0.1f + 0.2f * caveRand.NextFloat(),
                          Math.Min(3.5f, horRadius - 1),
@@ -459,7 +508,7 @@ index 30f034d..0583e33 100644
  
                      branchLevel++;
                  }
-@@ -506,155 +682,220 @@ namespace Vintagestory.ServerMods
+@@ -506,155 +729,224 @@ namespace Vintagestory.ServerMods
  
  
  
@@ -645,14 +694,14 @@ index 30f034d..0583e33 100644
                              {
 -                                chunkBlockData[index3d] = 0;
 -                                if (y > yLavaStart)
--                                {
--                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
--                                } else
 +                                int chunkY = y / chunksize;
 +                                int localY = y % chunksize;
 +                                var block = api.World.Blocks[chunks[chunkY].Data.GetFluid((localY * chunksize + lz) * chunksize + lx)];
 +                                if (block.LiquidCode != null)
                                  {
+-                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
+-                                } else
+-                                {
 -                                    chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
 +                                    return false; // Found fluid - exit immediately
                                  }
@@ -660,13 +709,13 @@ index 30f034d..0583e33 100644
 -                                if (y <= yLavaStart) worldgenBlockAccessor.ScheduleBlockLightUpdate(new BlockPos(chunkX * chunksize + lx, y, chunkZ * chunksize + lz), airBlockId, gcfg.lavaBlockId);
                              }
 +                        }
- 
++
 +                        // Check inclusion in generation radius (for setting blocks)
 +                        if (!needsGenInGenRadius)
 +                        {
 +                            double heightOffFac = dy > 0 ? heightrnd * heightrnd * Math.Min(1, Math.Abs(y - surfaceY) / 10.0) : 0;
 +                            double genYDistSq = dySq / (genVertRadiusSq + heightOffFac);
-+
+ 
 +                            if (dxSq / genHorRadiusSq + genYDistSq + dzSq / genHorRadiusSq <= 1.0 && y < worldheight)
 +                            {
 +                                needsGenInGenRadius = true;
@@ -749,9 +798,13 @@ index 30f034d..0583e33 100644
 +                                        }
 +
 +                                        if (y <= yLavaStart)
-+                                            worldgenBlockAccessor.ScheduleBlockLightUpdate(
-+                                                new BlockPos(chunkX * chunksize + lx, y, chunkZ * chunksize + lz),
-+                                                airBlockId, gcfg.lavaBlockId);
++                                        {
++                                            // Stratum: buffer light updates to flush them under accessorLock at the
++                                            // end of GeneratePartial, avoiding concurrent List<T> mutations.
++                                            stratumPendLightPos.Add(new BlockPos(chunkX * chunksize + lx, y, chunkZ * chunksize + lz));
++                                            stratumPendLightOld.Add(airBlockId);
++                                            stratumPendLightNew.Add(gcfg.lavaBlockId);
++                                        }
 +                                    }
 +                                }
 +                                else if (y < 12)

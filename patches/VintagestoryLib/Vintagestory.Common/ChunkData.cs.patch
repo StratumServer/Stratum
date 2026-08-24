@@ -1,4 +1,4 @@
-﻿diff --git a/VintagestoryLib/Vintagestory.Common/ChunkData.cs b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
+diff --git a/VintagestoryLib/Vintagestory.Common/ChunkData.cs b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
 index af79143..1f0127e 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkData.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
@@ -7,7 +7,7 @@ index af79143..1f0127e 100644
  	public int GetBlockId(int index, int layer)
  	{
  		switch (layer)
-{
+ 		{
 -		default:
 -		{
 -			int solidBlock = GetSolidBlock(index);

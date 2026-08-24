@@ -1,10 +1,10 @@
-﻿diff --git a/VintagestoryApi/Common/API/IWorldChunk.cs b/VintagestoryApi/Common/API/IWorldChunk.cs
+diff --git a/VintagestoryApi/Common/API/IWorldChunk.cs b/VintagestoryApi/Common/API/IWorldChunk.cs
 index 1016d62..8a471eb 100644
 --- a/VintagestoryApi/Common/API/IWorldChunk.cs
 +++ b/VintagestoryApi/Common/API/IWorldChunk.cs
 @@ -10,11 +10,11 @@ namespace Vintagestory.API.Common
      public interface IChunkBlocks
-{
+     {
          /// <summary>
          /// Retrieves the first solid block, if that one is empty, retrieves the first fluid block
          /// </summary>
