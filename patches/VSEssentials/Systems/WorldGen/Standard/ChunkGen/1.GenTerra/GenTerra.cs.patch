@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
-index 5f759f1..6939284 100644
+index 5f759f1..4a8987f 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 @@ -1,7 +1,8 @@
@@ -71,7 +71,7 @@ index 5f759f1..6939284 100644
          bool[] layerFullyEmpty;
          int[] borderIndicesByCardinal;
  
-@@ -86,26 +111,56 @@ namespace Vintagestory.ServerMods
+@@ -86,26 +111,62 @@ namespace Vintagestory.ServerMods
              Climate.Sealevel = TerraGenConfig.seaLevel;
          }
  
@@ -118,9 +118,15 @@ index 5f759f1..6939284 100644
 +            maxThreads = reservedThreadsBudget;
              if (api.Server.ReducedServerThreads && maxThreads > 1) maxThreads = 2;
  
-+            stratumScheduler?.Dispose();
-+            stratumScheduler = new StratumColumnScheduler(maxThreads);
-+            stratumParallelOptions = new ParallelOptions { TaskScheduler = stratumScheduler };
++            // Stratum: reuse the scheduler if the thread budget hasn't changed to avoid
++            // unnecessary thread churn on /wgen regen.
++            if (stratumScheduler == null || stratumScheduler.MaximumConcurrencyLevel != maxThreads)
++            {
++                stratumScheduler?.Dispose();
++                stratumScheduler = new StratumColumnScheduler(maxThreads);
++                stratumParallelOptions = new ParallelOptions { TaskScheduler = stratumScheduler };
++            }
++
 +            // MaxDegreeOfParallelism is intentionally not set: the scheduler already caps
 +            // concurrency, setting it here too would just impose a redundant double limit.
 +
@@ -129,7 +135,7 @@ index 5f759f1..6939284 100644
              terrainGenOctaves = TerraGenConfig.GetTerrainOctaveCount(api.WorldManager.MapSizeY);
  
              terrainNoise = NewNormalizedSimplexFractalNoise.FromDefaultOctaves(
-@@ -136,17 +191,26 @@ namespace Vintagestory.ServerMods
+@@ -136,17 +197,26 @@ namespace Vintagestory.ServerMods
  
              tempDataThreadLocal = new ThreadLocal<ThreadLocalTempData>(() => new ThreadLocalTempData
              {
@@ -162,7 +168,7 @@ index 5f759f1..6939284 100644
              borderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
              borderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
              borderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
-@@ -166,118 +230,177 @@ namespace Vintagestory.ServerMods
+@@ -166,118 +236,182 @@ namespace Vintagestory.ServerMods
          }
  
  
@@ -215,7 +221,8 @@ index 5f759f1..6939284 100644
 -                    borderIndicesByCardinal[Cardinal.South] = 0 + dx;
 +            bool hadPrevious = frames.Count > 0;
 +            StratumColumnBufferFrame previousFrame = hadPrevious ? frames.Peek() : default;
-+
+ 
+-                    for (int dz = 0; dz < chunksize; dz++)
 +            StratumColumnBufferFrame frame = new StratumColumnBufferFrame
 +            {
 +                StratumOwner = this,
@@ -223,8 +230,7 @@ index 5f759f1..6939284 100644
 +                StratumBorderIndices = currentBorderIndicesByCardinal
 +            };
 +            frames.Push(frame);
- 
--                    for (int dz = 0; dz < chunksize; dz++)
++
 +            try
 +            {
 +                // Smoothing writes to buf.TaperMap via local currentBorderIndicesByCardinal —
@@ -233,7 +239,10 @@ index 5f759f1..6939284 100644
 +                {
 +                    var neibHeightMaps = request.NeighbourTerrainHeight;
 +                    if (neibHeightMaps[Cardinal.North] != null)
-+                    {
+                     {
+-                        double sumWeight = 0;
+-                        double ypos = 0;
+-                        float maxWeight = 0;
 +                        neibHeightMaps[Cardinal.NorthEast] = null;
 +                        neibHeightMaps[Cardinal.NorthWest] = null;
 +                    }
@@ -248,10 +257,7 @@ index 5f759f1..6939284 100644
 +                        neibHeightMaps[Cardinal.SouthEast] = null;
 +                    }
 +                    if (neibHeightMaps[Cardinal.West] != null)
-                     {
--                        double sumWeight = 0;
--                        double ypos = 0;
--                        float maxWeight = 0;
++                    {
 +                        neibHeightMaps[Cardinal.SouthWest] = null;
 +                        neibHeightMaps[Cardinal.NorthWest] = null;
 +                    }
@@ -361,11 +367,13 @@ index 5f759f1..6939284 100644
 +                // No inner finally needed — restoration happens in the outer finally after Pop.
 +                if (stratumUseFastGenerate)
 +                {
-+                    // stratumGenerate reads its buffer from the frame stack directly, NOT from
-+                    // instance fields. The old unlocked publish at lines ~260-265 wrote to instance
-+                    // fields that nobody on this path ever reads — it was a dead write with a latent
-+                    // race condition (two concurrent calls overwriting each other's taperMap/layer
-+                    // references). Since the data is never consumed, we simply removed the publish.
++                    // stratumGenerate reads its buffer from the frame stack directly when called
++                    // from the registered handler, so publishing to instance fields here is unnecessary
++                    // and would introduce a race condition between concurrent fast-path calls.
++                    // Note: stratumGenerate does have a fallback that reads these instance fields if
++                    // called without a frame (e.g., via reflection), and borderIndicesByCardinal will
++                    // remain stale on this path, but that is acceptable since the registered handler
++                    // always pushes a frame and no internal code relies on the stale instance fields.
 +                    stratumGenerate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
 +                }
 +                else
@@ -394,10 +402,13 @@ index 5f759f1..6939284 100644
 +                ReturnColumnBuffers(buf);
  
 -            generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
-+                if (hadPrevious)
++                if (hadPrevious && !stratumUseFastGenerate)
 +                {
-+                    stratumPublishColumnBuffers(previousFrame.StratumBuffers);
-+                    borderIndicesByCardinal = previousFrame.StratumBorderIndices;
++                    lock (stratumVanillaGenerateLock)
++                    {
++                        stratumPublishColumnBuffers(previousFrame.StratumBuffers);
++                        borderIndicesByCardinal = previousFrame.StratumBorderIndices;
++                    }
 +                }
 +            }
          }
@@ -417,7 +428,7 @@ index 5f759f1..6939284 100644
              IMapChunk mapchunk = chunks[0].MapChunk;
              const int chunksize = GlobalConstants.ChunkSize;
  
-@@ -297,14 +420,14 @@ namespace Vintagestory.ServerMods
+@@ -297,14 +431,14 @@ namespace Vintagestory.ServerMods
              int climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * cfac), (int)(rlZ * cfac));
              int climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * cfac + cfac), (int)(rlZ * cfac));
              int climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * cfac), (int)(rlZ * cfac + cfac));
@@ -436,7 +447,7 @@ index 5f759f1..6939284 100644
                  float ofac = (float)oceanMap.InnerSize / regionChunkSize;
                  oceanUpLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac));
                  oceanUpRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac));
-@@ -426,11 +549,11 @@ namespace Vintagestory.ServerMods
+@@ -426,11 +560,11 @@ namespace Vintagestory.ServerMods
                          double th = posY > wtaper.TerrainYPos ? 1 : -1;
  
                          var ydiff = Math.Abs(posY - wtaper.TerrainYPos);
@@ -449,7 +460,7 @@ index 5f759f1..6939284 100644
                      }
  
                      // Often we don't need to calculate the noise.
-@@ -564,20 +687,480 @@ namespace Vintagestory.ServerMods
+@@ -564,20 +698,480 @@ namespace Vintagestory.ServerMods
  
              chunks[0].MapChunk.YMax = ymax;
          }
@@ -936,7 +947,7 @@ index 5f759f1..6939284 100644
          }
  
  
-@@ -692,6 +1275,93 @@ namespace Vintagestory.ServerMods
+@@ -692,6 +1286,109 @@ namespace Vintagestory.ServerMods
          {
              public double X, Z;
              public static VectorXZ operator *(VectorXZ a, double b) => new VectorXZ { X = a.X * b, Z = a.Z * b };
@@ -995,10 +1006,26 @@ index 5f759f1..6939284 100644
 +
 +        protected override void QueueTask(Task task)
 +        {
++            bool executeInline = false;
 +            lock (gate)
 +            {
-+                queue.Enqueue(task);
-+                Monitor.Pulse(gate);   // one task wakes one sleeping worker
++                if (disposed)
++                {
++                    // If the scheduler is disposed, workers are gone or exiting.
++                    // Execute inline to prevent the caller from hanging indefinitely
++                    // on Task.Wait, since the concurrency budget is already moot.
++                    executeInline = true;
++                }
++                else
++                {
++                    queue.Enqueue(task);
++                    Monitor.Pulse(gate);   // one task wakes one sleeping worker
++                }
++            }
++
++            if (executeInline)
++            {
++                TryExecuteTask(task);
 +            }
 +        }
 +
