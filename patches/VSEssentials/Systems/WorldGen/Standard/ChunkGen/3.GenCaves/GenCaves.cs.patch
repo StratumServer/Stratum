@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..827cc28 100644
+index 30f034d..3cdcce8 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-@@ -12,13 +12,18 @@ namespace Vintagestory.ServerMods
+@@ -12,17 +12,37 @@ namespace Vintagestory.ServerMods
      {
          protected override int chunkRange { get { return 5; } }
  
@@ -11,17 +11,36 @@ index 30f034d..827cc28 100644
 +        // Stratum: plain field, vanilla shape, because mods look it up by name.
 +        // Each worldgen thread gets its own GenCaves, so two columns never share it.
          internal LCGRandom caveRand;
++
++        // Stratum: set once via OnWorldGenBlockAccessor; workers get it copied in StratumCopyStateFrom.
          IWorldGenBlockAccessor worldgenBlockAccessor;
  
 +        // Stratum: one GenCaves per worldgen thread, made on first use.
 +        StratumWorkerInstances<GenCaves> stratumWorkers;
 +
++        // Immutable after initWorldGen(): safe to share between all workers.
          NormalizedSimplexNoise basaltNoise;
          NormalizedSimplexNoise heightvarNoise;
          int regionsize;
  
++        // Stratum start: sparse deferred writes. Instead of snapshotting 32768 ints and
++        // re-encoding the whole subchunk, we buffer (index3d, value) pairs and apply them
++        // with one batched SetBlocksUnsafe per touched subchunk at the end of each
++        // GeneratePartial. Per-instance => per-worker thread-confined. Lists are reused
++        // between calls.
++        List<int>[] stratumPendIdx;
++        List<int>[] stratumPendVal;
++        // Stratum end
++
++        // Stratum: reusable province weights buffer. Per-instance, never shared.
++        float[] stratumIndicesBuf;
++
          public override void StartServerSide(ICoreServerAPI api)
-@@ -30,18 +35,18 @@ namespace Vintagestory.ServerMods
+         {
+             base.StartServerSide(api);
+ 
+             if (TerraGenConfig.DoDecorationPass)
+@@ -30,18 +50,18 @@ namespace Vintagestory.ServerMods
                  api.Event.GetWorldgenBlockAccessor(OnWorldGenBlockAccessor);
  
                  api.ChatCommands.GetOrCreate("dev")
@@ -42,7 +61,7 @@ index 30f034d..827cc28 100644
          }
  
  
-@@ -51,10 +56,38 @@ namespace Vintagestory.ServerMods
+@@ -51,10 +71,44 @@ namespace Vintagestory.ServerMods
              caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
              basaltNoise = NormalizedSimplexNoise.FromDefaultOctaves(2, 1f / 3.5f, 0.9f, api.World.Seed + 12);
              heightvarNoise = NormalizedSimplexNoise.FromDefaultOctaves(3, 1f / 20f, 0.9f, api.World.Seed + 12);
@@ -64,8 +83,8 @@ index 30f034d..827cc28 100644
 +            return worker;
 +        }
 +
-+        // Stratum: the noise fields and the block accessor are set once and never written again, so workers share them.
-+        // caveRand is per-column scratch, so each worker gets its own on the same seed.
++        // Stratum: copy immutable state and the accessor from source to worker.
++        // All mutable scratch (caveRand, pending write lists) is recreated per worker.
 +        protected override void StratumCopyStateFrom(GenPartial source)
 +        {
 +            base.StratumCopyStateFrom(source);
@@ -76,89 +95,364 @@ index 30f034d..827cc28 100644
 +            heightvarNoise = origin.heightvarNoise;
 +            regionsize = origin.regionsize;
 +            caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
++
++            // Stratum start: reset per-worker mutable state.
++            stratumPendIdx = null;
++            stratumPendVal = null;
++            stratumIndicesBuf = null;
++            // Stratum end
          }
  
  
          private void OnMapChunkGen(IMapChunk mapChunk, int chunkX, int chunkZ)
          {
-@@ -74,19 +107,25 @@ namespace Vintagestory.ServerMods
+@@ -72,68 +126,96 @@ namespace Vintagestory.ServerMods
+                     mapChunk.CaveHeightDistort[dz * chunksize + dx] = (byte)(128 * val + 127);
+                 }
              }
          }
  
++        // Stratum: prevents two concurrent command invocations from racing each other.
++        private static readonly object cmdLock = new object();
++
          private TextCommandResult CmdCaveGenTest(TextCommandCallingArgs args)
          {
 -            caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
 -            initWorldGen();
-+            initWorldGen(); // Stratum: this already reseeds caveRand with the same formula, no need to do it twice
++            // Stratum: do NOT call initWorldGen() here — it would rebuild stratumWorkers and
++            // noise fields while worldgen threads may already be reading them. The command runs
++            // on a dedicated thread-confined copy instead, leaving all shared state untouched.
++            if (heightvarNoise == null)
++            {
++                return TextCommandResult.Error("Worldgen is not initialized yet.");
++            }
  
-+            // Stratum start:
-+            // Adding light recalculation for caves
-+            // The cave generation command now works based on the player's coordinates.
++            lock (cmdLock)
++            {
++                // Stratum start:
++                // Adding light recalculation for caves
++                // The cave generation command now works based on the player's coordinates.
  
-+            // replace the air block with granite to generate inverted caves
-             airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
+-            airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
++                // Dedicated instance for this command invocation: all mutable state (airBlockId,
++                // caveRand, chunkRand, pending write lists) stays confined to the calling thread.
++                GenCaves cmd = new GenCaves();
++                cmd.StratumCopyStateFrom(this);
  
 -            int baseChunkX = api.World.BlockAccessor.MapSizeX / 2 / chunksize;
 -            int baseChunkZ = api.World.BlockAccessor.MapSizeZ / 2 / chunksize;
-+            // take the player as the center
-+            var player = args.Caller.Player as IServerPlayer;
-+            int baseChunkX = (int)player.Entity.Pos.X / chunksize;
-+            int baseChunkZ = (int)player.Entity.Pos.Z / chunksize;
++                // replace the air block with granite to generate inverted caves
++                cmd.airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
  
-+            // first check that all chunks are loaded
-             for (int dx = -5; dx <= 5; dx++)
-             {
-                 for (int dz = -5; dz <= 5; dz++)
+-            for (int dx = -5; dx <= 5; dx++)
+-            {
+-                for (int dz = -5; dz <= 5; dz++)
++                // take the player as the center
++                var player = args.Caller.Player as IServerPlayer;
++                int baseChunkX = (int)player.Entity.Pos.X / chunksize;
++                int baseChunkZ = (int)player.Entity.Pos.Z / chunksize;
++
++                // first check that all chunks are loaded
++                for (int dx = -5; dx <= 5; dx++)
                  {
-                     int chunkX = baseChunkX + dx;
-@@ -96,19 +135,19 @@ namespace Vintagestory.ServerMods
+-                    int chunkX = baseChunkX + dx;
+-                    int chunkZ = baseChunkZ + dz;
++                    for (int dz = -5; dz <= 5; dz++)
++                    {
++                        int chunkX = baseChunkX + dx;
++                        int chunkZ = baseChunkZ + dz;
  
-                     for (int i = 0; i < chunks.Length; i++)
-                     {
-                         if (chunks[i] == null)
+-                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
+ 
+-                    for (int i = 0; i < chunks.Length; i++)
+-                    {
+-                        if (chunks[i] == null)
++                        for (int i = 0; i < chunks.Length; i++)
                          {
 -                            return TextCommandResult.Success( "Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
-+                            return TextCommandResult.Success("Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
++                            if (chunks[i] == null)
++                            {
++                                return TextCommandResult.Success("Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
++                            }
                          }
-                     }
+-                    }
  
-                     OnMapChunkGen(chunks[0].MapChunk, chunkX, chunkZ);
+-                    OnMapChunkGen(chunks[0].MapChunk, chunkX, chunkZ);
++                        cmd.OnMapChunkGen(chunks[0].MapChunk, chunkX, chunkZ);
++                    }
                  }
-             }
+-            }
  
 -
-+            // clear all chunks and start cave generation
-             for (int dx = -5; dx <= 5; dx++)
-             {
-                 for (int dz = -5; dz <= 5; dz++)
+-            for (int dx = -5; dx <= 5; dx++)
+-            {
+-                for (int dz = -5; dz <= 5; dz++)
++                // clear all chunks and start cave generation
++                for (int dx = -5; dx <= 5; dx++)
                  {
-                     int chunkX = baseChunkX + dx;
-@@ -125,15 +164,24 @@ namespace Vintagestory.ServerMods
-                             chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
-                             GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
+-                    int chunkX = baseChunkX + dx;
+-                    int chunkZ = baseChunkZ + dz;
+-
+-                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
+-                    ClearChunkColumn(chunks);
++                    for (int dz = -5; dz <= 5; dz++)
++                    {
++                        int chunkX = baseChunkX + dx;
++                        int chunkZ = baseChunkZ + dz;
+ 
++                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++                        ClearChunkColumn(chunks);
+ 
+-                    for (int gdx = -chunkRange; gdx <= chunkRange; gdx++)
+-                    {
+-                        for (int gdz = -chunkRange; gdz <= chunkRange; gdz++)
++                        for (int gdx = -chunkRange; gdx <= chunkRange; gdx++)
+                         {
+-                            chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
+-                            GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
++                            for (int gdz = -chunkRange; gdz <= chunkRange; gdz++)
++                            {
++                                cmd.chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
++                                cmd.GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
++                            }
                          }
-                     }
+-                    }
  
-+                    // Run lighting recalculation (like in GenLightSurvival)
-+                    worldgenBlockAccessor.BeginColumn();
-+                    api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
-+                    worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
+-                    MarkDirty(chunkX, chunkZ, chunks);
++                        // Run lighting recalculation (like in GenLightSurvival)
++                        cmd.worldgenBlockAccessor.BeginColumn();
++                        api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
++                        cmd.worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
 +
-+
-                     MarkDirty(chunkX, chunkZ, chunks);
++                        MarkDirty(chunkX, chunkZ, chunks);
++                    }
                  }
-             }
+-            }
  
-+
-+            // restore the air block id back
-             airBlockId = 0;
-+            // Stratum end
+-            airBlockId = 0;
++                // no need to restore airBlockId: it lived on the local copy only
++                // Stratum end
++            }
  
              return TextCommandResult.Success("Generated and chunks force resend flags set");
          }
  
          private IServerChunk[] GetChunkColumn(int chunkX, int chunkZ)
-@@ -506,160 +554,225 @@ namespace Vintagestory.ServerMods
+@@ -148,11 +230,12 @@ namespace Vintagestory.ServerMods
+             return chunks;
+         }
+ 
+         private void MarkDirty(int chunkX, int chunkZ, IServerChunk[] chunks)
+         {
+-            for (int chunkY = 0; chunkY < chunks.Length; chunkY++) {
++            for (int chunkY = 0; chunkY < chunks.Length; chunkY++)
++            {
+                 chunks[chunkY].MarkModified();
+                 api.WorldManager.BroadcastChunk(chunkX, chunkY, chunkZ, true);
+             }
+         }
+ 
+@@ -183,11 +266,15 @@ namespace Vintagestory.ServerMods
+                 return;
+             }
+ 
+             worldgenBlockAccessor.BeginColumn();
+             LCGRandom chunkRand = this.chunkRand;
+-            int quantityCaves = chunkRand.NextInt(100) < TerraGenConfig.CavesPerChunkColumn*100 ? 1 : 0;
++            int quantityCaves = chunkRand.NextInt(100) < TerraGenConfig.CavesPerChunkColumn * 100 ? 1 : 0;
++
++            // Stratum start: clear pending-write buffers. No copying, no allocations.
++            StratumBeginColumn(chunks.Length);
++            // Stratum end
+ 
+             int rndSize = chunksize * chunksize * (worldheight - 20);
+             while (quantityCaves-- > 0)
+             {
+                 int rnd = chunkRand.NextInt(rndSize);
+@@ -229,11 +316,88 @@ namespace Vintagestory.ServerMods
+ 
+                 caveRand.SetWorldSeed(chunkRand.NextInt(10000000));
+                 caveRand.InitPositionSeed(chunkX + cdx, chunkZ + cdz);
+                 CarveTunnel(chunks, chunkX, chunkZ, posX, posY, posZ, horAngle, vertAngle, horizontalSize, verticalSize, 0, maxIterations, 0, extraBranchy, curviness, largeNearLavaLayer);
+             }
++
++            // Stratum start: apply buffered writes; one batched lock per touched subchunk.
++            StratumFlushPendingWrites(chunks);
++            // Stratum end
++        }
++
++        // Stratum start: (re)allocates the pending-write lists to match this column's chunk
++        // count and clears them. Cheap no-op after the first call for a given worker.
++        private void StratumBeginColumn(int numSubchunks)
++        {
++            if (stratumPendIdx == null || stratumPendIdx.Length != numSubchunks)
++            {
++                stratumPendIdx = new List<int>[numSubchunks];
++                stratumPendVal = new List<int>[numSubchunks];
++                for (int i = 0; i < numSubchunks; i++)
++                {
++                    stratumPendIdx[i] = new List<int>(1024);
++                    stratumPendVal[i] = new List<int>(1024);
++                }
++                return;
++            }
++            for (int i = 0; i < numSubchunks; i++)
++            {
++                stratumPendIdx[i].Clear();
++                stratumPendVal[i].Clear();
++            }
++        }
++
++        // Stratum start: buffer one block write; applied at the end of GeneratePartial.
++        private void StratumAppend(int chunkY, int index3D, int value)
++        {
++            stratumPendIdx[chunkY].Add(index3D);
++            stratumPendVal[chunkY].Add(value);
++        }
++
++        // Stratum start: one bulk write per touched subchunk; untouched ones cost nothing.
++        // Pairs are applied sequentially, so duplicate writes to the same cell fold into
++        // last-write-wins automatically.
++        private void StratumFlushPendingWrites(IServerChunk[] chunks)
++        {
++            for (int cy = 0; cy < stratumPendIdx.Length; cy++)
++            {
++                List<int> idx = stratumPendIdx[cy];
++                List<int> val = stratumPendVal[cy];
++                if (idx.Count == 0) continue;
++
++                IChunkBlocks data = chunks[cy].Data;
++
++                // Stratum: SetManyUnsafe is a fast path that assumes an initialized layer
++                // (palette + bit planes). A never-written subchunk (empty sky, or cleared
++                // by the dev command) has no palette and would NRE inside SetUnsafeCore.
++                // ClearBlocksAndPrepare() initializes palette/planes without destroying
++                // the fluids/light layers.
++                if (!data.HasBlocksLayer)
++                {
++                    // Writing air into a subchunk that never had blocks changes nothing: skip.
++                    bool anyNonZero = false;
++                    for (int i = 0; i < val.Count; i++)
++                    {
++                        if (val[i] != 0) { anyNonZero = true; break; }
++                    }
++                    if (!anyNonZero)
++                    {
++                        idx.Clear();
++                        val.Clear();
++                        continue;
++                    }
++
++                    // Real blocks into an empty subchunk: initialize palette lazily.
++                    data.ClearBlocksAndPrepare();
++                }
++
++                data.SetBlocksUnsafe(idx, val);
++                idx.Clear();
++                val.Clear();
++            }
+         }
++        // Stratum end
+ 
+         private void CarveTunnel(IServerChunk[] chunks, int chunkX, int chunkZ, double posX, double posY, double posZ, float horAngle, float vertAngle, float horizontalSize, float verticalSize, int currentIteration, int maxIterations, int branchLevel, bool extraBranchy = false, float curviness = 0.1f, bool largeNearLavaLayer = false)
+         {
+             LCGRandom caveRand = this.caveRand;
+ 
+@@ -289,14 +453,14 @@ namespace Vintagestory.ServerMods
+                 vertAngle *= 0.8f;
+ 
+                 int rrnd = caveRand.NextInt(800000);
+                 if (rrnd / 10000 == 0)   // chance 1/80
+                 {
+-                    sizeChangeSpeedGain = (caveRand.NextFloat() * caveRand.NextFloat())/2;
++                    sizeChangeSpeedGain = (caveRand.NextFloat() * caveRand.NextFloat()) / 2;
+                 }
+ 
+-                bool genHotSpring=false;
++                bool genHotSpring = false;
+ 
+                 int rnd = rrnd % 10000; // Calls to caveRand are not too cheap, so lets just use one for all those random variation changes
+                 // 1/330 * 10k = 30
+                 // 1/130 * 10k = 76
+                 // 1/100 * 10k = 100
+@@ -305,48 +469,55 @@ namespace Vintagestory.ServerMods
+ 
+                 // Rarely change direction
+                 if ((rnd -= 30) <= 0)
+                 {
+                     horAngle = caveRand.NextFloat() * GameMath.TWOPI;
+-                } else
++                }
++                else
+                 // Rarely change direction somewhat
+                 if ((rnd -= 76) <= 0)
+                 {
+                     horAngle += caveRand.NextFloat() * GameMath.PI - GameMath.PIHALF;
+-                } else
++                }
++                else
+                 // Rarely go pretty wide
+                 if ((rnd -= 60) <= 0)
+                 {
+                     horRadiusGain = caveRand.NextFloat() * caveRand.NextFloat() * 3.5f;
+-                } else
++                }
++                else
+                 // Rarely go thin
+                 if ((rnd -= 60) <= 0)
+                 {
+                     horRadiusLoss = caveRand.NextFloat() * caveRand.NextFloat() * 10;
+-                } else
++                }
++                else
+                 // Rarely go flat
+                 if ((rnd -= 50) <= 0)
+                 {
+                     if (posY < TerraGenConfig.seaLevel - 10)
+                     {
+                         verHeightLoss = caveRand.NextFloat() * caveRand.NextFloat() * 12f;
+                         horRadiusGain = Math.Max(horRadiusGain, caveRand.NextFloat() * caveRand.NextFloat() * 3f);
+                     }
+-                } else
++                }
++                else
+                 // Very rarely go really wide
+                 if ((rnd -= 9) <= 0)
+                 {
+                     if (posY < TerraGenConfig.seaLevel - 20)
+                     {
+                         horRadiusGain = 1 + caveRand.NextFloat() * caveRand.NextFloat() * 5f;
+                     }
+-                } else
++                }
++                else
+                 // Very rarely go really tall
+                 if ((rnd -= 9) <= 0)
+                 {
+                     verHeightGain = 2 + caveRand.NextFloat() * caveRand.NextFloat() * 7;
+-                } else
++                }
++                else
+                 // Rarely large lava caverns
+                 if ((rnd -= 100) <= 0)
+                 {
+                     if (posY < 19)
+                     {
+@@ -418,11 +589,11 @@ namespace Vintagestory.ServerMods
+                         horAngle + (caveRand.NextFloat() + caveRand.NextFloat() - 1) + GameMath.PI,
+                         -GameMath.PI / 2 - 0.1f + 0.2f * caveRand.NextFloat(),
+                         Math.Min(3.5f, horRadius - 1),
+                         verticalSize + verHeightGainAccum,
+                         currentIteration,
+-                        maxIterations - (int)(caveRand.NextFloat() * 0.5 * maxIterations) + (int)((posY/5) * (0.5f + 0.5f * caveRand.NextFloat())),
++                        maxIterations - (int)(caveRand.NextFloat() * 0.5 * maxIterations) + (int)((posY / 5) * (0.5f + 0.5f * caveRand.NextFloat())),
+                         branchLevel
+                     );
+ 
+                     branchLevel++;
+                 }
+@@ -506,155 +677,220 @@ namespace Vintagestory.ServerMods
  
  
  
@@ -169,11 +463,7 @@ index 30f034d..827cc28 100644
 -            // One extra size for checking if we run into water
 -            horRadius++;
 -            vertRadius+=2;
-+            // Stratum start:
-+            // Fixing incorrect cave generation in the /dev gencaves command mode
-+            // We sped up the algorithm, filtered out blocks that weren't within the ellipsoid's dimensions,
-+            // and checked for liquid in the same cycle as everything else.
- 
+-
 -            int mindx = (int)GameMath.Clamp(centerX - horRadius, 0, chunksize - 1);
 -            int maxdx = (int)GameMath.Clamp(centerX + horRadius + 1, 0, chunksize - 1);
 -            int mindy = (int)GameMath.Clamp(centerY - vertRadius * 0.7f, 1, worldheight - 1);
@@ -214,8 +504,10 @@ index 30f034d..827cc28 100644
 -                    }
 -                }
 -            }
-+            // Testing on 10,200 generation chunks:
-+            // Total method execution time: decreased from 9.2 s to 6.3 s;
++            // Stratum start:
++            // Fixing incorrect cave generation in the /dev gencaves command mode
++            // We sped up the algorithm, filtered out blocks that weren't within the ellipsoid's dimensions,
++            // and checked for liquid in the same cycle as everything else.
  
 +            IMapChunk mapchunk = chunks[0].MapChunk;
  
@@ -332,15 +624,18 @@ index 30f034d..827cc28 100644
 +                        if (dxSq / checkHorRadiusSq + checkYDistSq + dzSq / checkHorRadiusSq <= 1.0)
                          {
 -                            if (basaltNoise.Noise(chunkX * chunksize + lx, chunkZ * chunksize + lz) > 0.65)
--                            {
++                            // Fluid check — reads from live chunk data.
++                            // Correctness: caves only modify the blocks layer (air/basalt/lava),
++                            // never the fluids layer, so deferred block writes do not affect
++                            // fluid state visibility.
++                            if (!hasLiquidInCheckRadius && y >= 1 && y < worldheight)
+                             {
 -                                chunkBlockData[index3d] = gcfg.basaltBlockId;
 -                                terrainheightmap[lz * chunksize + lx] = Math.Max(terrainheightmap[lz * chunksize + lx], (ushort)11);
 -                                rainheightmap[lz * chunksize + lx] = Math.Max(rainheightmap[lz * chunksize + lx], (ushort)11);
 -                            }
 -                            else
-+                            // Fluid check
-+                            if (!hasLiquidInCheckRadius && y >= 1 && y < worldheight)
-                             {
+-                            {
 -                                chunkBlockData[index3d] = 0;
 -                                if (y > yLavaStart)
 +                                int chunkY = y / chunksize;
@@ -399,7 +694,9 @@ index 30f034d..827cc28 100644
 +                            int genMindy = (int)Math.Max(mindy, centerY - maxGenYDist);
 +                            int genMaxdy = (int)Math.Min(maxdy, centerY + maxGenYDist);
 +
-+                            // Generate blocks in the column
++                            // Generate blocks in the column — Stratum: writes are buffered as
++                            // (index3d, value) pairs and applied once per subchunk at the end of
++                            // GeneratePartial via SetBlocksUnsafe (one lock per batch).
 +                            for (int y = genMaxdy; y >= genMindy; y--)
                              {
 -                                chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
@@ -413,7 +710,7 @@ index 30f034d..827cc28 100644
 +
 +                                if (y > worldheight - 1) continue;
 +
-+                                // Update heightmaps
++                                // Update heightmaps — these are local arrays, unchanged by Stratum pattern.
 +                                if (surfaceY == y)
 +                                {
 +                                    terrainheightmap[idx2d] = (ushort)(y - 1);
@@ -422,15 +719,13 @@ index 30f034d..827cc28 100644
 +
 +                                int chunkY = y / chunksize;
 +                                int localY = y % chunksize;
-+                                IChunkBlocks chunkBlockData = chunks[chunkY].Data;
-+                                int index3d = localY * chunksizeSq + idx2d;
++                                int index3D = (localY * chunksize + lz) * chunksize + lx;
 +
-+                                // Set block
 +                                if (y == 11)
 +                                {
 +                                    if (basaltNoise.Noise(chunkX * chunksize + lx, chunkZ * chunksize + lz) > 0.65)
 +                                    {
-+                                        chunkBlockData[index3d] = gcfg.basaltBlockId;
++                                        StratumAppend(chunkY, index3D, gcfg.basaltBlockId);
 +                                        terrainheightmap[idx2d] = Math.Max(terrainheightmap[idx2d], (ushort)11);
 +                                        rainheightmap[idx2d] = Math.Max(rainheightmap[idx2d], (ushort)11);
 +                                    }
@@ -438,11 +733,12 @@ index 30f034d..827cc28 100644
 +                                    {
 +                                        if (y > yLavaStart)
 +                                        {
-+                                            chunkBlockData[index3d] = gcfg.basaltBlockId;
++                                            StratumAppend(chunkY, index3D, gcfg.basaltBlockId);
 +                                        }
 +                                        else
 +                                        {
-+                                            chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
++                                            // Stratum: fluids are NOT buffered — they remain live.
++                                            chunks[chunkY].Data.SetFluid(index3D, gcfg.lavaBlockId);
 +                                        }
 +
 +                                        if (y <= yLavaStart)
@@ -455,17 +751,18 @@ index 30f034d..827cc28 100644
 +                                {
 +                                    if (y > yLavaStart)
 +                                    {
-+                                        chunkBlockData[index3d] = gcfg.basaltBlockId;
++                                        StratumAppend(chunkY, index3D, gcfg.basaltBlockId);
 +                                    }
 +                                    else
 +                                    {
-+                                        chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
++                                        chunks[chunkY].Data.SetFluid(index3D, gcfg.lavaBlockId);
 +                                    }
 +                                }
 +                                else
 +                                {
-+                                    chunkBlockData[index3d] = airBlockId != 0 ? (ushort)airBlockId : (ushort)0;
++                                    StratumAppend(chunkY, index3D, airBlockId != 0 ? airBlockId : 0);
 +                                }
++                                // Stratum end
                              }
                          }
 -                        else
@@ -477,10 +774,3 @@ index 30f034d..827cc28 100644
              }
  
              return true;
-+
-+            // Stratum end
-         }
- 
-         private int getGeologicActivity(int posx, int posz)
-         {
-             var climateMap = worldgenBlockAccessor.GetMapRegion(posx / regionsize, posz / regionsize)?.ClimateMap;

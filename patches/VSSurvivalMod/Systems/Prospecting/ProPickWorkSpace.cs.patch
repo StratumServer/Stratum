@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs b/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
-index 3fe5096..6bc906d 100644
+index 3fe5096..7c6da6d 100644
 --- a/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
 +++ b/VSSurvivalMod/Systems/Prospecting/ProPickWorkSpace.cs
 @@ -122,12 +122,14 @@ namespace Vintagestory.GameContent
@@ -19,7 +19,7 @@ index 3fe5096..6bc906d 100644
              {
                  // Wait for off-thread initialisation to finish (should be well finished by the time any player is able to use a ProPick, but let's make sure)
                  int timeOutCount = 100;
-@@ -216,10 +218,65 @@ namespace Vintagestory.GameContent
+@@ -216,10 +218,69 @@ namespace Vintagestory.GameContent
                  public void SetBlockUnsafe(int index3d, int value)
                  {
                      this[index3d] = value;
@@ -37,6 +37,10 @@ index 3fe5096..6bc906d 100644
 +                {
 +                    Array.Copy(blocks, blocksOut, blocks.Length);
 +                }
++
++
++                public bool HasBlocksLayer { get; }
++
 +
 +                /// <summary>
 +                /// Stratum: bulk variant of SetBlockUnsafe for interface compatibility. DummyChunkData is a plain int[] with no locking or palette, so there's no batching benefit — this simply applies each index/value pair directly via the indexer, equivalent to calling SetBlockUnsafe in a loop but matching the IChunkBlocks contract signature.
@@ -85,7 +89,7 @@ index 3fe5096..6bc906d 100644
  
                  }
  
-@@ -251,13 +308,13 @@ namespace Vintagestory.GameContent
+@@ -251,13 +312,13 @@ namespace Vintagestory.GameContent
              public string GameVersionCreated => throw new NotImplementedException();
  
              public bool Disposed => throw new NotImplementedException();
@@ -101,7 +105,7 @@ index 3fe5096..6bc906d 100644
  
              IChunkBlocks IWorldChunk.Blocks => throw new NotImplementedException();
  
-@@ -301,22 +358,22 @@ namespace Vintagestory.GameContent
+@@ -301,22 +362,22 @@ namespace Vintagestory.GameContent
              }
              public void Unpack()
              {
@@ -136,7 +140,7 @@ index 3fe5096..6bc906d 100644
                  throw new NotImplementedException();
              }
  
-@@ -334,19 +391,19 @@ namespace Vintagestory.GameContent
+@@ -334,19 +395,19 @@ namespace Vintagestory.GameContent
              public BlockEntity GetLocalBlockEntityAtBlockPos(BlockPos pos)
              {
                  throw new NotImplementedException();
@@ -164,7 +168,7 @@ index 3fe5096..6bc906d 100644
              {
                  throw new NotImplementedException();
              }
-@@ -355,35 +412,35 @@ namespace Vintagestory.GameContent
+@@ -355,35 +416,35 @@ namespace Vintagestory.GameContent
              {
                  throw new NotImplementedException();
              }
@@ -216,7 +220,7 @@ index 3fe5096..6bc906d 100644
              }
  
              public void BreakAllDecorFast(IWorldAccessor world, BlockPos pos, int index3d, bool callOnBrokenAsDecor = true)
-@@ -394,16 +451,16 @@ namespace Vintagestory.GameContent
+@@ -394,16 +455,16 @@ namespace Vintagestory.GameContent
              public Dictionary<int, Block> GetDecors(IBlockAccessor blockAccessor, BlockPos pos)
              {
                  throw new NotImplementedException();

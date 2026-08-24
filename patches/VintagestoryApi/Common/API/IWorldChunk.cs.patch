@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/API/IWorldChunk.cs b/VintagestoryApi/Common/API/IWorldChunk.cs
-index 1016d62..4826fd5 100644
+index 1016d62..1ac1fc9 100644
 --- a/VintagestoryApi/Common/API/IWorldChunk.cs
 +++ b/VintagestoryApi/Common/API/IWorldChunk.cs
 @@ -10,11 +10,11 @@ namespace Vintagestory.API.Common
@@ -15,7 +15,7 @@ index 1016d62..4826fd5 100644
  
          int Length { get; }
  
-@@ -29,29 +29,94 @@ namespace Vintagestory.API.Common
+@@ -29,29 +29,102 @@ namespace Vintagestory.API.Common
          /// </summary>
          void SetBlockBulk(int index3d, int lenX, int lenZ, int value);
          /// <summary>
@@ -26,6 +26,14 @@ index 1016d62..4826fd5 100644
 +        /// <param name="index3d"></param</param>
 +        /// <param name="value"></param</param>
          void SetBlockUnsafe(int index3d, int value);
++
++        /// <summary>
++        /// Stratum: true iff the blocks layer exists AND has an initialized palette,
++        /// so SetBlockUnsafe / SetBlocksUnsafe can be called safely. Used by worldgen
++        /// to detect subchunks that need ClearBlocksAndPrepare() before the first
++        /// unsafe write.
++        /// </summary>
++        bool HasBlocksLayer { get; }
 +
 +        // Stratum start: Added bulk block write variant that takes a flat int[] buffer of length Length.
 +        // Each contiguous chunk of 4 ints encodes one (x, y, z) position followed by the target block id,
@@ -115,7 +123,7 @@ index 1016d62..4826fd5 100644
          /// </summary>
          void TakeBulkReadLock();
  
-@@ -95,11 +160,11 @@ namespace Vintagestory.API.Common
+@@ -95,11 +168,11 @@ namespace Vintagestory.API.Common
          bool LoadedFromServer { get; }
  
          /// <summary>
@@ -128,7 +136,7 @@ index 1016d62..4826fd5 100644
  
  
      public interface IWorldChunk
-@@ -195,58 +260,58 @@ namespace Vintagestory.API.Common
+@@ -195,58 +268,58 @@ namespace Vintagestory.API.Common
          bool Disposed { get; }
  
          /// <summary>
@@ -197,7 +205,7 @@ index 1016d62..4826fd5 100644
  
          /// <summary>
          /// Can be used to store non-serialized mod data that is only serialized into the standard moddata dictionary on unload. This prevents the need for constant serializing/deserializing. Useful when storing large amounts of data. Is not populated on chunk load, you need to populate it with stored data yourself using GetModData()
-@@ -256,101 +321,101 @@ namespace Vintagestory.API.Common
+@@ -256,101 +329,101 @@ namespace Vintagestory.API.Common
  
  
          /// <summary>
@@ -327,7 +335,7 @@ index 1016d62..4826fd5 100644
  
          /// <summary>
          /// Only to be implemented client side
-@@ -358,13 +423,13 @@ namespace Vintagestory.API.Common
+@@ -358,13 +431,13 @@ namespace Vintagestory.API.Common
          void FinishLightDoubleBuffering();
  
          /// <summary>

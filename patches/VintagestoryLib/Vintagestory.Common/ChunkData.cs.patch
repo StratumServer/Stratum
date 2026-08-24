@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkData.cs b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
-index af79143..bd887b3 100644
+index af79143..6298501 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkData.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
 @@ -99,41 +99,41 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
@@ -75,7 +75,7 @@ index af79143..bd887b3 100644
  
  	public int GetSolidBlock(int index3d)
  	{
-@@ -166,45 +166,59 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -166,45 +166,63 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  	public int GetBlockIdUnsafe(int index3d)
  	{
  		return blocksLayer?.GetUnsafe(index3d) ?? 0;
@@ -118,6 +118,10 @@ index af79143..bd887b3 100644
 +		blocksLayer.CopyBlocksToUnsafe(blocksOut);
 +	}
 +	// Stratum end
++
++	// Stratum: fast probe for worldgen. True iff the unsafe write path is safe to call.
++	public bool HasBlocksLayer => blocksLayer != null && blocksLayer.palette != null;
++
 +
 +	public int GetBlockIdUnsafe(int index3d, int layer)
 +	{
@@ -166,7 +170,7 @@ index af79143..bd887b3 100644
  
  	public void TakeBulkReadLock()
  	{
-@@ -220,21 +234,18 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -220,21 +238,18 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  		bulkBlocksTmp?.readWriteLock.ReleaseReadLock();
  		bulkFluidsTmp = null;
  		bulkBlocksTmp = null;
@@ -191,7 +195,7 @@ index af79143..bd887b3 100644
  	public void SetBlockUnsafe(int index3d, int value)
  	{
  		if (blocksLayer == null)
-@@ -246,10 +257,65 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -246,10 +261,65 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  			blocksLayer = new BlockChunkDataLayer(pool);
  		}
  		blocksLayer.SetUnsafe(index3d, value);
@@ -257,7 +261,7 @@ index af79143..bd887b3 100644
  		blocksLayer?.SetZero(index3d);
  	}
  
-@@ -685,6 +751,6 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -685,6 +755,6 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  
  	public void FuzzyListBlockIds(List<int> reusableList)
  	{
