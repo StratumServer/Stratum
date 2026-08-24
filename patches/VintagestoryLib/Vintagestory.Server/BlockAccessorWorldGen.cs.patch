@@ -1,26 +1,65 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
-index 33c394d..500bad6 100644
+index 33c394d..597891f 100644
 --- a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
 +++ b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
-@@ -54,38 +54,32 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
- 			serverMapChunk.ScheduledBlockLightUpdates = new List<Vec4i>();
+@@ -27,10 +27,15 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+ 	private static ServerMapChunk mapchunkCached;
+ 
+ 	[ThreadStatic]
+ 	private static long cachedChunkIndex2d;
+ 
++	// Stratum start: protects ScheduledBlockLightUpdates from concurrent
++	// Schedule/Run across all worldgen stages (TerrainLate caves + Vegetation light).
++	private static readonly object lightUpdatesLock = new object();
++	// Stratum end
++
+ 	private IServerWorldAccessor worldgenWorldAccessor;
+ 
+ 	public IServerWorldAccessor WorldgenWorldAccessor => worldgenWorldAccessor ?? (worldgenWorldAccessor = new WorldgenWorldAccessor((IServerWorldAccessor)worldAccessor, this));
+ 
+ 	public BlockAccessorWorldGen(ServerMain server, WorldMap worldmap, ChunkServerThread chunkdbthread)
+@@ -47,44 +52,48 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+ 		if (serverMapChunk == null)
+ 		{
+ 			ServerMain.Logger.Worldgen("Mapchunk was null when scheduling a blocklight update at " + pos);
+ 			return;
  		}
- 		serverMapChunk.ScheduledBlockLightUpdates.Add(new Vec4i(pos, newBlockId));
+-		if (serverMapChunk.ScheduledBlockLightUpdates == null)
++		// Stratum start: serialize access to the shared list
++		lock (lightUpdatesLock)
+ 		{
+-			serverMapChunk.ScheduledBlockLightUpdates = new List<Vec4i>();
++			if (serverMapChunk.ScheduledBlockLightUpdates == null)
++			{
++				serverMapChunk.ScheduledBlockLightUpdates = new List<Vec4i>();
++			}
++			serverMapChunk.ScheduledBlockLightUpdates.Add(new Vec4i(pos, newBlockId));
+ 		}
+-		serverMapChunk.ScheduledBlockLightUpdates.Add(new Vec4i(pos, newBlockId));
++		// Stratum end
  	}
  
--	public void RunScheduledBlockLightUpdates(int chunkx, int chunkz)
--	{
--		ServerMapChunk serverMapChunk = (ServerMapChunk)GetMapChunk(chunkx, chunkz);
--		if (serverMapChunk == null)
--		{
--			ServerMain.Logger.Worldgen("Mapchunk was null when attempting scheduled blocklight updates at " + chunkx + "," + chunkz);
--			return;
--		}
+ 	public void RunScheduledBlockLightUpdates(int chunkx, int chunkz)
+ 	{
+ 		ServerMapChunk serverMapChunk = (ServerMapChunk)GetMapChunk(chunkx, chunkz);
+ 		if (serverMapChunk == null)
+ 		{
+ 			ServerMain.Logger.Worldgen("Mapchunk was null when attempting scheduled blocklight updates at " + chunkx + "," + chunkz);
+ 			return;
+ 		}
 -		List<Vec4i> scheduledBlockLightUpdates = serverMapChunk.ScheduledBlockLightUpdates;
 -		if (scheduledBlockLightUpdates == null || scheduledBlockLightUpdates.Count == 0)
--		{
++
++		List<Vec4i> scheduledBlockLightUpdates;
++		// Stratum start: serialize access to the shared list
++		lock (lightUpdatesLock)
+ 		{
 -			return;
--		}
++			scheduledBlockLightUpdates = serverMapChunk.ScheduledBlockLightUpdates;
++			if (scheduledBlockLightUpdates == null || scheduledBlockLightUpdates.Count == 0)
++				return;
++			serverMapChunk.ScheduledBlockLightUpdates = null;
+ 		}
 -		BlockPos blockPos = new BlockPos(0);
 -		foreach (Vec4i item in scheduledBlockLightUpdates)
 -		{
@@ -34,36 +73,20 @@ index 33c394d..500bad6 100644
 -		}
 -		serverMapChunk.ScheduledBlockLightUpdates = null;
 -	}
--
--	public void ScheduleBlockUpdate(BlockPos pos)
-+    public void RunScheduledBlockLightUpdates(int chunkx, int chunkz)
-+    {
-+        ServerMapChunk serverMapChunk = (ServerMapChunk)GetMapChunk(chunkx, chunkz);
-+        if (serverMapChunk == null)
-+        {
-+            ServerMain.Logger.Worldgen("Mapchunk was null when attempting scheduled blocklight updates at " + chunkx + "," + chunkz);
-+            return;
-+        }
-+        // Stratum start:
-+        // We move the processing of light sources inside the chunilluminator method
-+
-+        List<Vec4i> scheduledBlockLightUpdates = serverMapChunk.ScheduledBlockLightUpdates;
-+        if (scheduledBlockLightUpdates == null || scheduledBlockLightUpdates.Count == 0)
-+            return;
-+
-+        server.WorldMap.chunkIlluminatorWorldGen.ProcessScheduledBlockLightUpdates(scheduledBlockLightUpdates);
-+
-+        // Stratum end.
-+        serverMapChunk.ScheduledBlockLightUpdates = null;
-+    } 
-+    
-+    public void ScheduleBlockUpdate(BlockPos pos)
++		// Stratum end
+ 
++		// Stratum start:
++		// We move the processing of light sources inside the chunilluminator method
++		server.WorldMap.chunkIlluminatorWorldGen.ProcessScheduledBlockLightUpdates(scheduledBlockLightUpdates);
++		// Stratum end.
++	}
++	
+ 	public void ScheduleBlockUpdate(BlockPos pos)
  	{
  		ChunkColumnLoadRequest chunkRequestAtPos = chunkdbthread.GetChunkRequestAtPos(pos.X, pos.Z);
  		if (chunkRequestAtPos?.MapChunk != null)
  		{
- 			chunkRequestAtPos.MapChunk.ScheduledBlockUpdates.Add(pos.Copy());
-@@ -133,22 +127,25 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -133,22 +142,25 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		return chunkdbthread.GetMapRegion(regionX, regionZ);
  	}
  
@@ -92,7 +115,7 @@ index 33c394d..500bad6 100644
  			{
  				serverChunk.Unpack();
  				cachedChunkIndex3d = num;
-@@ -159,11 +156,11 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -159,11 +171,11 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		{
  			return serverChunk.Data.GetBlockId(worldmap.ChunkSizedIndex3D(posX & MagicNum.ServerChunkSizeMask, posY & MagicNum.ServerChunkSizeMask, posZ & MagicNum.ServerChunkSizeMask), layer);
  		}
@@ -105,7 +128,7 @@ index 33c394d..500bad6 100644
  		else
  		{
  			ServerMain.Logger.Notification("Tried to get block outside generating chunks! Set RuntimeEnv.DebugOutOfRangeBlockAccess to debug.");
-@@ -220,21 +217,26 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -220,21 +232,26 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  	}
  
  	protected int SetSolidBlock(ServerChunk chunk, BlockPos pos, Block newBlock, int blockId)
@@ -137,7 +160,7 @@ index 33c394d..500bad6 100644
  		return blockId2;
  	}
  
-@@ -308,11 +310,17 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -308,11 +325,17 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  			Block localBlockAtBlockPos = generatingChunkAtPos.GetLocalBlockAtBlockPos(server, position);
  			blockEntity.CreateBehaviors(localBlockAtBlockPos, server);
  			blockEntity.Pos = position.Copy();
