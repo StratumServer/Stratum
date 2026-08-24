@@ -1,0 +1,171 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemHeartbeat.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemHeartbeat.cs
+index a7ee63f..176e7e1 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemHeartbeat.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemHeartbeat.cs
+@@ -1,8 +1,10 @@
+ using System;
+ using System.Linq;
+ using System.Net.Http;
++using System.Net.Http.Headers;
++using System.Text;
+ using System.Threading.Tasks;
+ using Newtonsoft.Json;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Server;
+@@ -12,10 +14,13 @@ namespace Vintagestory.Server;
+ 
+ public class ServerSystemHeartbeat : ServerSystem
+ {
+ 	private string? token;
+ 
++	// Stratum: keep one process identity so the advertised key always matches registration signatures.
++	private readonly StratumServerListIdentity stratumServerListIdentity;
++
+ 	private bool upnpComplete;
+ 
+ 	private PlaystylePacket? playstylePacket;
+ 
+ 	private ModPacket[]? mods;
+@@ -23,10 +28,13 @@ public class ServerSystemHeartbeat : ServerSystem
+ 	private bool heartbeatTaskRunning;
+ 
+ 	public ServerSystemHeartbeat(ServerMain server)
+ 		: base(server)
+ 	{
++		// Stratum: publish the same key used to sign registration requests.
++		stratumServerListIdentity = new StratumServerListIdentity();
++		StratumServerListQuery.Instance.SetPublicKey(stratumServerListIdentity.PublicKey);
+ 	}
+ 
+ 	public void StandbyLaunch()
+ 	{
+ 		if (server.Config.AdvertiseServer && server.IsDedicatedServer)
+@@ -150,10 +158,12 @@ public class ServerSystemHeartbeat : ServerSystem
+ 	}
+ 
+ 	public override void OnBeginShutdown()
+ 	{
+ 		SendUnregister();
++		// Stratum: release the process identity after its final request has been signed.
++		stratumServerListIdentity.Dispose();
+ 	}
+ 
+ 	public void SendHeartbeat()
+ 	{
+ 		if (string.IsNullOrEmpty(token) || !server.Config.VerifyPlayerAuth)
+@@ -178,15 +188,17 @@ public class ServerSystemHeartbeat : ServerSystem
+ 
+ 	public void SendUnregister()
+ 	{
+ 		if (!string.IsNullOrEmpty(token))
+ 		{
++			// Stratum: keep the token alive until the unregister request is serialized.
++			string currentToken = token;
+ 			token = null;
+ 			ServerMain.Logger.Notification("Unregistering from master server...");
+ 			SendRequestAsync(server.Config.MasterserverUrl + "unregister", new UnregisterPacket
+ 			{
+-				token = token
++				token = currentToken
+ 			}, delegate
+ 			{
+ 			});
+ 		}
+ 	}
+@@ -215,22 +227,31 @@ public class ServerSystemHeartbeat : ServerSystem
+ 			gameDescription = server.Config.ServerDescription,
+ 			hasPassword = server.Config.IsPasswordProtected(),
+ 			playstyle = playstylePacket,
+ 			port = (ushort)server.CurrentPort,
+ 			Mods = mods,
+-			whitelisted = whitelisted
++			whitelisted = whitelisted,
++			// Stratum: prove control of an existing listing or request a new identity token.
++			token = server.Config.StratumServerToken,
++			_nonce = stratumServerListIdentity.CreateNonce()
+ 		};
+ 		SendRequestAsync(server.Config.MasterserverUrl + "register", packet, delegate(ResponsePacket response)
+ 		{
+ 			ServerMain.Logger.Notification("Master server response status: {0}", response.status);
+ 			if (response.status == "blacklisted")
+ 			{
+ 				ServerMain.Logger.Warning("Your server has been blacklisted from the public server list. Likely due to inappropriate naming. Other players can still connect however. You may request to be removed from the blacklist through a support ticket on the official site.");
+ 			}
+-			if (response.status == "ok")
++			if (response.status == "ok" && !string.IsNullOrEmpty(response.data))
+ 			{
+ 				token = response.data;
++				// Stratum: retain the returned identity token across server restarts.
++				if (server.Config.StratumServerToken != token)
++				{
++					server.Config.StratumServerToken = token;
++					server.ConfigNeedsSaving = true;
++				}
+ 				server.SendMessageToGroup(GlobalConstants.ServerInfoChatGroup, "Successfully registered to master server", EnumChatType.Notification, null, "masterserverstatus:ok");
+ 				if (!heartbeatTaskRunning)
+ 				{
+ 					heartbeatTaskRunning = true;
+ 					TyronThreadPool.QueueTask((Func<Task>)Tick, "ServerHeartbeat");
+@@ -240,11 +261,11 @@ public class ServerSystemHeartbeat : ServerSystem
+ 			{
+ 				string message = "Could not register to master server, master server says: " + response.data;
+ 				ServerMain.Logger.Notification(message);
+ 				server.SendMessageToGroup(GlobalConstants.ServerInfoChatGroup, message, EnumChatType.Notification, null, "masterserverstatus:fail");
+ 			}
+-		});
++		}, stratumServerListIdentity);
+ 	}
+ 
+ 	private async Task Tick()
+ 	{
+ 		while (!server.ShuttingDown)
+@@ -252,18 +273,31 @@ public class ServerSystemHeartbeat : ServerSystem
+ 			SendHeartbeat();
+ 			await Task.Delay(120000);
+ 		}
+ 	}
+ 
+-	private static async void SendRequestAsync<T>(string url, T packet, Action<ResponsePacket> onComplete)
++	// Stratum: sign the exact UTF-8 bytes sent so query field 8 can verify registration.
++	private static async void SendRequestAsync<T>(string url, T packet, Action<ResponsePacket> onComplete, StratumServerListIdentity signingIdentity = null)
+ 	{
+-		string json = string.Empty;
+ 		try
+ 		{
+-			json = JsonConvert.SerializeObject((object)packet);
+-			StringContent content = new StringContent(json, null, "application/json");
+-			HttpResponseMessage httpResponseMessage = await VSWebClient.Inst.PostAsync(url, content);
++			string json = JsonConvert.SerializeObject((object)packet);
++			byte[] jsonBytes = Encoding.UTF8.GetBytes(json);
++			using ByteArrayContent content = new ByteArrayContent(jsonBytes);
++			content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
++			{
++				CharSet = "utf-8"
++			};
++			using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, url)
++			{
++				Content = content
++			};
++			if (signingIdentity != null)
++			{
++				request.Headers.Add("X-Signature", signingIdentity.Sign(jsonBytes));
++			}
++			using HttpResponseMessage httpResponseMessage = await VSWebClient.Inst.SendAsync(request);
+ 			ResponsePacket responsePacket = JsonConvert.DeserializeObject<ResponsePacket>(await httpResponseMessage.Content.ReadAsStringAsync());
+ 			if (responsePacket == null)
+ 			{
+ 				onComplete(new ResponsePacket
+ 				{
+@@ -285,10 +319,10 @@ public class ServerSystemHeartbeat : ServerSystem
+ 				status = "timeout"
+ 			});
+ 		}
+ 		catch (Exception e)
+ 		{
+-			ServerMain.Logger.Error("Failed request to master server url {0}.\nSent Json data: {1}", url, json);
++			ServerMain.Logger.Error("Failed request to master server url {0}", url);
+ 			ServerMain.Logger.Error(e);
+ 		}
+ 	}
+ }

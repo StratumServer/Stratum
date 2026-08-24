@@ -1,0 +1,16 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/RegisterRequestPacket.cs b/VintagestoryLib/Vintagestory.Server/RegisterRequestPacket.cs
+index 793b72b..b16ee90 100644
+--- a/VintagestoryLib/Vintagestory.Server/RegisterRequestPacket.cs
++++ b/VintagestoryLib/Vintagestory.Server/RegisterRequestPacket.cs
+@@ -23,6 +23,11 @@ public class RegisterRequestPacket
+ 	public string gameDescription;
+ 
+ 	public bool whitelisted;
+ 
+ 	public string vhIdentifier;
++
++	// Stratum: authenticate listing updates without changing the public registration payload names.
++	public string token;
++
++	public ulong _nonce;
+ }
