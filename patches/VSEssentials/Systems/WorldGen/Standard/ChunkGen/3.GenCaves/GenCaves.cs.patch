@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..3a7bbf3 100644
+index 30f034d..44e6a76 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 @@ -10,19 +10,54 @@ namespace Vintagestory.ServerMods
@@ -124,7 +124,7 @@ index 30f034d..3a7bbf3 100644
          {
              if (heightvarNoise == null) return;
  
-@@ -72,70 +137,85 @@ namespace Vintagestory.ServerMods
+@@ -72,70 +137,90 @@ namespace Vintagestory.ServerMods
                      mapChunk.CaveHeightDistort[dz * chunksize + dx] = (byte)(128 * val + 127);
                  }
              }
@@ -156,25 +156,29 @@ index 30f034d..3a7bbf3 100644
 -            for (int dx = -5; dx <= 5; dx++)
 -            {
 -                for (int dz = -5; dz <= 5; dz++)
-+                var player = args.Caller.Player as IServerPlayer;
-+                int baseChunkX = (int)player.Entity.Pos.X / chunksize;
-+                int baseChunkZ = (int)player.Entity.Pos.Z / chunksize;
-+
-+                for (int dx = -5; dx <= 5; dx++)
++                IServerPlayer player = args.Caller.Player as IServerPlayer;
++                if (player == null)
                  {
 -                    int chunkX = baseChunkX + dx;
 -                    int chunkZ = baseChunkZ + dz;
-+                    for (int dz = -5; dz <= 5; dz++)
-+                    {
-+                        int chunkX = baseChunkX + dx;
-+                        int chunkZ = baseChunkZ + dz;
++                    return TextCommandResult.Error("This command can only be run by an in-game player, not the server console.");
++                }
  
 -                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
-+                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++                int baseChunkX = (int)player.Entity.Pos.X / chunksize;
++                int baseChunkZ = (int)player.Entity.Pos.Z / chunksize;
  
 -                    for (int i = 0; i < chunks.Length; i++)
--                    {
++                for (int dx = -5; dx <= 5; dx++)
++                {
++                    for (int dz = -5; dz <= 5; dz++)
+                     {
 -                        if (chunks[i] == null)
++                        int chunkX = baseChunkX + dx;
++                        int chunkZ = baseChunkZ + dz;
++
++                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++
 +                        for (int i = 0; i < chunks.Length; i++)
                          {
 -                            return TextCommandResult.Success( "Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
@@ -190,8 +194,8 @@ index 30f034d..3a7bbf3 100644
 +                    }
                  }
 -            }
- 
 -
+ 
 -            for (int dx = -5; dx <= 5; dx++)
 -            {
 -                for (int dz = -5; dz <= 5; dz++)
@@ -248,7 +252,7 @@ index 30f034d..3a7bbf3 100644
          private IServerChunk[] GetChunkColumn(int chunkX, int chunkZ)
          {
              int size = api.World.BlockAccessor.MapSizeY / chunksize;
-@@ -148,11 +228,12 @@ namespace Vintagestory.ServerMods
+@@ -148,11 +233,12 @@ namespace Vintagestory.ServerMods
              return chunks;
          }
  
@@ -262,7 +266,7 @@ index 30f034d..3a7bbf3 100644
              }
          }
  
-@@ -181,13 +262,16 @@ namespace Vintagestory.ServerMods
+@@ -181,13 +267,16 @@ namespace Vintagestory.ServerMods
              if (GetIntersectingStructure(chunkX * chunksize + chunksize / 2, chunkZ * chunksize + chunksize / 2, CavesHashCode) != null)
              {
                  return;
@@ -281,7 +285,7 @@ index 30f034d..3a7bbf3 100644
              while (quantityCaves-- > 0)
              {
                  int rnd = chunkRand.NextInt(rndSize);
-@@ -201,38 +285,108 @@ namespace Vintagestory.ServerMods
+@@ -201,38 +290,112 @@ namespace Vintagestory.ServerMods
                  float vertAngle = (chunkRand.NextFloat() - 0.5f) * 0.25f;
                  float horizontalSize = chunkRand.NextFloat() * 2 + chunkRand.NextFloat();
                  float verticalSize = 0.75f + chunkRand.NextFloat() * 0.4f;
@@ -347,6 +351,10 @@ index 30f034d..3a7bbf3 100644
 +                    stratumPendIdx[i] = new List<int>(1024);
 +                    stratumPendVal[i] = new List<int>(1024);
 +                }
++
++                // Stratum: initialize the light buffer on the first column too, before returning.
++                if (stratumPendLight == null)
++                    stratumPendLight = new List<Vec4i>(256);
 +                return;
 +            }
 +            for (int i = 0; i < numSubchunks; i++)
@@ -354,12 +362,12 @@ index 30f034d..3a7bbf3 100644
 +                stratumPendIdx[i].Clear();
 +                stratumPendVal[i].Clear();
 +            }
++
 +            // Stratum: the previous batch may have been handed over to the chunk.
 +            if (stratumPendLight == null)
 +                stratumPendLight = new List<Vec4i>(256);
 +            else
 +                stratumPendLight.Clear();
-+
 +        }
 +
 +        private void StratumAppend(int chunkY, int index3D, int value)
@@ -398,7 +406,7 @@ index 30f034d..3a7bbf3 100644
          private void CarveTunnel(IServerChunk[] chunks, int chunkX, int chunkZ, double posX, double posY, double posZ, float horAngle, float vertAngle, float horizontalSize, float verticalSize, int currentIteration, int maxIterations, int branchLevel, bool extraBranchy = false, float curviness = 0.1f, bool largeNearLavaLayer = false)
          {
              LCGRandom caveRand = this.caveRand;
-@@ -264,17 +418,16 @@ namespace Vintagestory.ServerMods
+@@ -264,17 +427,16 @@ namespace Vintagestory.ServerMods
                  relPos = (float)currentIteration / maxIterations;
  
                  float horRadius = 1.5f + GameMath.FastSin(relPos * GameMath.PI) * horizontalSize + horRadiusGainAccum;
@@ -417,7 +425,7 @@ index 30f034d..3a7bbf3 100644
                      float factor = 1f + Math.Max(0f, 1f - (float)Math.Abs(posY - 12d) / 10f);
                      horRadius *= factor;
                      vertRadius *= factor;
-@@ -287,67 +440,61 @@ namespace Vintagestory.ServerMods
+@@ -287,67 +449,61 @@ namespace Vintagestory.ServerMods
                  posZ += GameMath.FastSin(horAngle) * advanceHor;
  
                  vertAngle *= 0.8f;
@@ -503,7 +511,7 @@ index 30f034d..3a7bbf3 100644
                      if (posY < 19)
                      {
                          verHeightGain = 2 + caveRand.NextFloat() * caveRand.NextFloat() * 5;
-@@ -376,22 +523,19 @@ namespace Vintagestory.ServerMods
+@@ -376,22 +532,19 @@ namespace Vintagestory.ServerMods
                  verHeightLoss -= 0.4f;
  
                  horAngle += curviness * horAngleChange;
@@ -527,7 +535,7 @@ index 30f034d..3a7bbf3 100644
                      CarveTunnel(
                          chunks,
                          chunkX,
-@@ -405,11 +549,10 @@ namespace Vintagestory.ServerMods
+@@ -405,11 +558,10 @@ namespace Vintagestory.ServerMods
                          maxIterations - (int)(caveRand.NextFloat() * 0.5 * maxIterations),
                          branchLevel + 1
                      );
@@ -539,7 +547,7 @@ index 30f034d..3a7bbf3 100644
                      CarveShaft(
                          chunks,
                          chunkX,
-@@ -418,31 +561,25 @@ namespace Vintagestory.ServerMods
+@@ -418,31 +570,25 @@ namespace Vintagestory.ServerMods
                          horAngle + (caveRand.NextFloat() + caveRand.NextFloat() - 1) + GameMath.PI,
                          -GameMath.PI / 2 - 0.1f + 0.2f * caveRand.NextFloat(),
                          Math.Min(3.5f, horRadius - 1),
@@ -572,7 +580,7 @@ index 30f034d..3a7bbf3 100644
              float vertAngleChange = 0;
  
              ushort[] terrainheightmap = chunks[0].MapChunk.WorldGenTerrainHeightMap;
-@@ -468,11 +605,10 @@ namespace Vintagestory.ServerMods
+@@ -468,11 +614,10 @@ namespace Vintagestory.ServerMods
                  posZ += GameMath.FastSin(horAngle) * advanceHor;
  
                  vertAngle += 0.1f * vertAngleChange;
@@ -584,7 +592,7 @@ index 30f034d..3a7bbf3 100644
                      int num = 3 + caveRand.NextInt(4);
                      for (int i = 0; i < num; i++)
                      {
-@@ -493,168 +629,196 @@ namespace Vintagestory.ServerMods
+@@ -493,168 +638,196 @@ namespace Vintagestory.ServerMods
                      return;
                  }
  
@@ -639,7 +647,9 @@ index 30f034d..3a7bbf3 100644
 -                        ydistRel = yDist * yDist / (vRadiusSq + heightOffFac);
 -
 -                        if (xdistRel + ydistRel + zdistRel > 1.0 || y > worldheight - 1) continue;
--
++            float genHorRadius = horRadius;
++            float genVertRadius = vertRadius;
+ 
 -                        int ly = y % chunksize;
 -                        var block = api.World.Blocks[chunks[y / chunksize].Data.GetFluid((ly * chunksize + lz) * chunksize + lx)];
 -                        if (block.LiquidCode != null)
@@ -649,27 +659,25 @@ index 30f034d..3a7bbf3 100644
 -                    }
 -                }
 -            }
--
--
--            horRadius--;
--            vertRadius-=2;
-+            float genHorRadius = horRadius;
-+            float genVertRadius = vertRadius;
- 
--            mindx = (int)GameMath.Clamp(centerX - horRadius, 0, chunksize - 1);
--            maxdx = (int)GameMath.Clamp(centerX + horRadius + 1, 0, chunksize - 1);
--            mindz = (int)GameMath.Clamp(centerZ - horRadius, 0, chunksize - 1);
--            maxdz = (int)GameMath.Clamp(centerZ + horRadius + 1, 0, chunksize - 1);
 +            float checkHorRadius = horRadius + 1;
 +            float checkVertRadius = vertRadius + 2;
  
--            mindy = (int)GameMath.Clamp(centerY - vertRadius * 0.7f, 1, worldheight - 1);
--            maxdy = (int)GameMath.Clamp(centerY + vertRadius + 1, 1, worldheight - 1);
 +            int mindx = (int)GameMath.Clamp(centerX - checkHorRadius, 0, chunksize - 1);
 +            int maxdx = (int)GameMath.Clamp(centerX + checkHorRadius + 1, 0, chunksize - 1);
 +            int mindz = (int)GameMath.Clamp(centerZ - checkHorRadius, 0, chunksize - 1);
 +            int maxdz = (int)GameMath.Clamp(centerZ + checkHorRadius + 1, 0, chunksize - 1);
  
+-            horRadius--;
+-            vertRadius-=2;
+-
+-            mindx = (int)GameMath.Clamp(centerX - horRadius, 0, chunksize - 1);
+-            maxdx = (int)GameMath.Clamp(centerX + horRadius + 1, 0, chunksize - 1);
+-            mindz = (int)GameMath.Clamp(centerZ - horRadius, 0, chunksize - 1);
+-            maxdz = (int)GameMath.Clamp(centerZ + horRadius + 1, 0, chunksize - 1);
+-
+-            mindy = (int)GameMath.Clamp(centerY - vertRadius * 0.7f, 1, worldheight - 1);
+-            maxdy = (int)GameMath.Clamp(centerY + vertRadius + 1, 1, worldheight - 1);
+-
 -            hRadiusSq = horRadius * horRadius;
 -            vRadiusSq = vertRadius * vertRadius;
 +            int mindy = (int)GameMath.Clamp(centerY - checkVertRadius * 0.7f, 1, worldheight - 1);
@@ -887,7 +895,7 @@ index 30f034d..3a7bbf3 100644
              }
  
              return true;
-@@ -669,8 +833,7 @@ namespace Vintagestory.ServerMods
+@@ -669,8 +842,7 @@ namespace Vintagestory.ServerMods
              int rlX = (posx / chunksize) % regionChunkSize;
              int rlZ = (posz / chunksize) % regionChunkSize;
  
