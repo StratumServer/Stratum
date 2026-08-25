@@ -1,43 +1,50 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
-index 33c394d..597891f 100644
+index 33c394d..18c7503 100644
 --- a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
 +++ b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
-@@ -27,10 +27,15 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -27,10 +27,12 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  	private static ServerMapChunk mapchunkCached;
  
  	[ThreadStatic]
  	private static long cachedChunkIndex2d;
  
-+	// Stratum start: protects ScheduledBlockLightUpdates from concurrent
-+	// Schedule/Run across all worldgen stages (TerrainLate caves + Vegetation light).
-+	private static readonly object lightUpdatesLock = new object();
-+	// Stratum end
++
 +
  	private IServerWorldAccessor worldgenWorldAccessor;
  
  	public IServerWorldAccessor WorldgenWorldAccessor => worldgenWorldAccessor ?? (worldgenWorldAccessor = new WorldgenWorldAccessor((IServerWorldAccessor)worldAccessor, this));
  
  	public BlockAccessorWorldGen(ServerMain server, WorldMap worldmap, ChunkServerThread chunkdbthread)
-@@ -47,44 +52,48 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -47,42 +49,55 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		if (serverMapChunk == null)
  		{
  			ServerMain.Logger.Worldgen("Mapchunk was null when scheduling a blocklight update at " + pos);
  			return;
  		}
 -		if (serverMapChunk.ScheduledBlockLightUpdates == null)
-+		// Stratum start: serialize access to the shared list
-+		lock (lightUpdatesLock)
++		// Stratum: singular path (SetBlock on live chunks) wraps into a one-item batch
++		// and hands ownership to the map chunk. Lock-free.
++		serverMapChunk.stratumLightUpdateBatches.Push(new List<Vec4i>(1) { new Vec4i(pos, newBlockId) });
++	}
++
++	// Stratum start: batch handoff used by GenCaves' column flush. Zero-copy, zero-lock:
++	// ownership of the caller's list transfers to the map chunk; the caller must not
++	// touch it afterwards.
++	public void ScheduleBlockLightUpdates(int chunkX, int chunkZ, List<Vec4i> updates)
++	{
++		if (updates == null || updates.Count == 0) return;
++
++		ServerMapChunk serverMapChunk = (ServerMapChunk)GetMapChunk(chunkX, chunkZ);
++		if (serverMapChunk == null)
  		{
 -			serverMapChunk.ScheduledBlockLightUpdates = new List<Vec4i>();
-+			if (serverMapChunk.ScheduledBlockLightUpdates == null)
-+			{
-+				serverMapChunk.ScheduledBlockLightUpdates = new List<Vec4i>();
-+			}
-+			serverMapChunk.ScheduledBlockLightUpdates.Add(new Vec4i(pos, newBlockId));
++			ServerMain.Logger.Worldgen("Mapchunk was null when scheduling blocklight updates at " + chunkX + "," + chunkZ);
++			return;
  		}
 -		serverMapChunk.ScheduledBlockLightUpdates.Add(new Vec4i(pos, newBlockId));
-+		// Stratum end
++		serverMapChunk.stratumLightUpdateBatches.Push(updates);
  	}
++	// Stratum end
  
  	public void RunScheduledBlockLightUpdates(int chunkx, int chunkz)
  	{
@@ -49,20 +56,19 @@ index 33c394d..597891f 100644
  		}
 -		List<Vec4i> scheduledBlockLightUpdates = serverMapChunk.ScheduledBlockLightUpdates;
 -		if (scheduledBlockLightUpdates == null || scheduledBlockLightUpdates.Count == 0)
-+
-+		List<Vec4i> scheduledBlockLightUpdates;
-+		// Stratum start: serialize access to the shared list
-+		lock (lightUpdatesLock)
- 		{
+-		{
 -			return;
-+			scheduledBlockLightUpdates = serverMapChunk.ScheduledBlockLightUpdates;
-+			if (scheduledBlockLightUpdates == null || scheduledBlockLightUpdates.Count == 0)
-+				return;
-+			serverMapChunk.ScheduledBlockLightUpdates = null;
- 		}
+-		}
 -		BlockPos blockPos = new BlockPos(0);
 -		foreach (Vec4i item in scheduledBlockLightUpdates)
--		{
++
++		// Stratum start: lock-free drain = snapshot before iterating. Batches pushed
++		// while the drain runs stay queued for the next pass; the illuminator receives
++		// a private list no other thread can mutate, and no lock is held anywhere on
++		// this path.
++		List<Vec4i> merged = null;
++		while (serverMapChunk.stratumLightUpdateBatches.TryPop(out List<Vec4i> batch))
+ 		{
 -			Block block = server.Blocks[item.W];
 -			blockPos.SetAndCorrectDimension(item.X, item.Y, item.Z);
 -			byte[] lightHsv = block.GetLightHsv(this, blockPos);
@@ -70,23 +76,20 @@ index 33c394d..597891f 100644
 -			{
 -				server.WorldMap.chunkIlluminatorWorldGen.PlaceBlockLight(lightHsv, blockPos.X, blockPos.InternalY, blockPos.Z);
 -			}
--		}
++			if (merged == null) merged = batch;  // common case: one batch, zero-copy
++			else merged.AddRange(batch);         // order irrelevant: entries are light sources
+ 		}
 -		serverMapChunk.ScheduledBlockLightUpdates = null;
--	}
++		if (merged == null || merged.Count == 0) return;
++
++		server.WorldMap.chunkIlluminatorWorldGen.ProcessScheduledBlockLightUpdates(merged);
 +		// Stratum end
+ 	}
  
-+		// Stratum start:
-+		// We move the processing of light sources inside the chunilluminator method
-+		server.WorldMap.chunkIlluminatorWorldGen.ProcessScheduledBlockLightUpdates(scheduledBlockLightUpdates);
-+		// Stratum end.
-+	}
-+	
  	public void ScheduleBlockUpdate(BlockPos pos)
  	{
  		ChunkColumnLoadRequest chunkRequestAtPos = chunkdbthread.GetChunkRequestAtPos(pos.X, pos.Z);
- 		if (chunkRequestAtPos?.MapChunk != null)
- 		{
-@@ -133,22 +142,25 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -133,22 +148,25 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		return chunkdbthread.GetMapRegion(regionX, regionZ);
  	}
  
@@ -115,7 +118,7 @@ index 33c394d..597891f 100644
  			{
  				serverChunk.Unpack();
  				cachedChunkIndex3d = num;
-@@ -159,11 +171,11 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -159,11 +177,11 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		{
  			return serverChunk.Data.GetBlockId(worldmap.ChunkSizedIndex3D(posX & MagicNum.ServerChunkSizeMask, posY & MagicNum.ServerChunkSizeMask, posZ & MagicNum.ServerChunkSizeMask), layer);
  		}
@@ -128,7 +131,7 @@ index 33c394d..597891f 100644
  		else
  		{
  			ServerMain.Logger.Notification("Tried to get block outside generating chunks! Set RuntimeEnv.DebugOutOfRangeBlockAccess to debug.");
-@@ -220,21 +232,26 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -220,38 +238,43 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  	}
  
  	protected int SetSolidBlock(ServerChunk chunk, BlockPos pos, Block newBlock, int blockId)
@@ -160,7 +163,32 @@ index 33c394d..597891f 100644
  		return blockId2;
  	}
  
-@@ -308,11 +325,17 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+ 	public override void SetBlock(int blockId, BlockPos pos, int layer)
+ 	{
+ 		switch (layer)
+ 		{
+-		case 2:
+-			SetFluidBlock(blockId, pos);
+-			break;
+-		case 1:
+-			SetBlock(blockId, pos);
+-			break;
+-		default:
+-			throw new ArgumentException("Layer must be solid or fluid");
++			case 2:
++				SetFluidBlock(blockId, pos);
++				break;
++			case 1:
++				SetBlock(blockId, pos);
++				break;
++			default:
++				throw new ArgumentException("Layer must be solid or fluid");
+ 		}
+ 	}
+ 
+ 	public void SetFluidBlock(int blockId, BlockPos pos)
+ 	{
+@@ -308,11 +331,17 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  			Block localBlockAtBlockPos = generatingChunkAtPos.GetLocalBlockAtBlockPos(server, position);
  			blockEntity.CreateBehaviors(localBlockAtBlockPos, server);
  			blockEntity.Pos = position.Copy();
