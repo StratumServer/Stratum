@@ -1,34 +1,67 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..827cc28 100644
+index 30f034d..9630057 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-@@ -12,13 +12,18 @@ namespace Vintagestory.ServerMods
+@@ -10,19 +10,51 @@ namespace Vintagestory.ServerMods
+ {
+     public class GenCaves : GenPartial
      {
          protected override int chunkRange { get { return 5; } }
  
++        // Stratum: when true (only set for the isolated /dev gencaves instance), buffered writes
++        // go through the readWriteLock-locked Set() path instead of the batched SetManyUnsafe. The
++        // command runs against live/published chunks any player can be standing in, so a concurrent
++        // reader or the save/compression thread must never observe a torn bit-plane update; SetManyUnsafe's
++        // stratumWriteLock alone does not exclude readers. Normal worldgen keeps the fast batched path
++        // because its chunks are not published until generation finishes.
++        bool stratumLockedWrites;
++
          public override double ExecuteOrder() { return 0.3; }
  
 +        // Stratum: plain field, vanilla shape, because mods look it up by name.
 +        // Each worldgen thread gets its own GenCaves, so two columns never share it.
          internal LCGRandom caveRand;
++
++        // Stratum: set once via OnWorldGenBlockAccessor; workers get it copied in StratumCopyStateFrom.
          IWorldGenBlockAccessor worldgenBlockAccessor;
  
 +        // Stratum: one GenCaves per worldgen thread, made on first use.
 +        StratumWorkerInstances<GenCaves> stratumWorkers;
 +
++        // Immutable after initWorldGen(): safe to share between all workers.
          NormalizedSimplexNoise basaltNoise;
          NormalizedSimplexNoise heightvarNoise;
          int regionsize;
  
++        // Stratum start: sparse deferred writes. Instead of snapshotting 32768 ints and
++        // re-encoding the whole subchunk, we buffer (index3d, value) pairs and apply them
++        // with one batched SetBlocksUnsafe per touched subchunk at the end of each
++        // GeneratePartial. Per-instance => per-worker thread-confined. Lists are reused
++        // between calls.
++        List<int>[] stratumPendIdx;
++        List<int>[] stratumPendVal;
++        // Stratum end
++
++        // Stratum start: buffered lava light updates for this column, packed exactly in
++        // the storage format (Vec4i = xyz + newBlockId). Old block id is not used by
++        // BlockAccessorWorldGen, so it is not buffered. Flushed in one batched call at
++        // the end of GeneratePartial.
++        List<Vec4i> stratumPendLight;
++        // Stratum end   
++
          public override void StartServerSide(ICoreServerAPI api)
-@@ -30,18 +35,18 @@ namespace Vintagestory.ServerMods
+         {
+             base.StartServerSide(api);
+ 
+             if (TerraGenConfig.DoDecorationPass)
+@@ -30,33 +62,62 @@ namespace Vintagestory.ServerMods
                  api.Event.GetWorldgenBlockAccessor(OnWorldGenBlockAccessor);
  
                  api.ChatCommands.GetOrCreate("dev")
                      .BeginSubCommand("gencaves")
                      .WithDescription(
 -                        "Cave generator test tool. Deletes all chunks in the area and generates inverse caves around the world middle")
-+                        "Cave generator test tool. Deletes all chunks in the area 10х10 and generates inverse caves around the player.") // Stratum:
++                        "Cave generator test tool. Deletes all chunks in the area 10х10 and generates inverse caves around the player.")
                      .RequiresPrivilege(Privilege.controlserver)
                      .HandleWith(CmdCaveGenTest)
                      .EndSubCommand();
@@ -36,22 +69,23 @@ index 30f034d..827cc28 100644
                  api.Event.MapChunkGeneration(OnMapChunkGen, "standard");
                  api.Event.MapChunkGeneration(OnMapChunkGen, "superflat");
 -                api.Event.ChunkColumnGeneration(GenChunkColumn, EnumWorldGenPass.Terrain, "standard");
-+                StratumTerrainSplit.Register(api, GenChunkColumn, StratumGenChunkColumnOnWorker, "standard"); // Stratum: expose vanilla topology until the worker path is safe
++                StratumTerrainSplit.Register(api, GenChunkColumn, StratumGenChunkColumnOnWorker, "standard");
                  api.Event.InitWorldGenerator(initWorldGen, "superflat");
              }
          }
  
- 
-@@ -51,10 +56,38 @@ namespace Vintagestory.ServerMods
+-
+         public override void initWorldGen()
+         {
+             base.initWorldGen();
              caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
              basaltNoise = NormalizedSimplexNoise.FromDefaultOctaves(2, 1f / 3.5f, 0.9f, api.World.Seed + 12);
              heightvarNoise = NormalizedSimplexNoise.FromDefaultOctaves(3, 1f / 20f, 0.9f, api.World.Seed + 12);
  
              regionsize = api.World.BlockAccessor.RegionSize;
-+            stratumWorkers = new StratumWorkerInstances<GenCaves>(StratumCreateWorker); // Stratum
-+        }
-+
-+        // Stratum: the registered handler. Runs on this thread's copy, never the shared one.
++            stratumWorkers = new StratumWorkerInstances<GenCaves>(StratumCreateWorker);
+         }
+ 
 +        private void StratumGenChunkColumnOnWorker(IChunkColumnGenerateRequest request)
 +        {
 +            stratumWorkers.Current.GenChunkColumn(request);
@@ -64,8 +98,6 @@ index 30f034d..827cc28 100644
 +            return worker;
 +        }
 +
-+        // Stratum: the noise fields and the block accessor are set once and never written again, so workers share them.
-+        // caveRand is per-column scratch, so each worker gets its own on the same seed.
 +        protected override void StratumCopyStateFrom(GenPartial source)
 +        {
 +            base.StratumCopyStateFrom(source);
@@ -76,104 +108,524 @@ index 30f034d..827cc28 100644
 +            heightvarNoise = origin.heightvarNoise;
 +            regionsize = origin.regionsize;
 +            caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
-         }
- 
++
++            // Stratum start: reset per-worker mutable state.
++            stratumPendIdx = null;
++            stratumPendVal = null;
++            stratumPendLight = null;
++            // Stratum end
++        }
  
          private void OnMapChunkGen(IMapChunk mapChunk, int chunkX, int chunkZ)
          {
-@@ -74,19 +107,25 @@ namespace Vintagestory.ServerMods
+             if (heightvarNoise == null) return;
+ 
+@@ -72,70 +133,94 @@ namespace Vintagestory.ServerMods
+                     mapChunk.CaveHeightDistort[dz * chunksize + dx] = (byte)(128 * val + 127);
+                 }
              }
          }
  
++        private static readonly object cmdLock = new object();
++
          private TextCommandResult CmdCaveGenTest(TextCommandCallingArgs args)
          {
 -            caveRand = new LCGRandom(api.WorldManager.Seed + 123128);
 -            initWorldGen();
-+            initWorldGen(); // Stratum: this already reseeds caveRand with the same formula, no need to do it twice
++            if (heightvarNoise == null)
++            {
++                return TextCommandResult.Error("Worldgen is not initialized yet.");
++            }
  
-+            // Stratum start:
-+            // Adding light recalculation for caves
-+            // The cave generation command now works based on the player's coordinates.
++            lock (cmdLock)
++            {
++                GenCaves cmd = new GenCaves();
++                cmd.StratumCopyStateFrom(this);
  
-+            // replace the air block with granite to generate inverted caves
-             airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
+-            airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
++                cmd.stratumLockedWrites = true;
  
 -            int baseChunkX = api.World.BlockAccessor.MapSizeX / 2 / chunksize;
 -            int baseChunkZ = api.World.BlockAccessor.MapSizeZ / 2 / chunksize;
-+            // take the player as the center
-+            var player = args.Caller.Player as IServerPlayer;
-+            int baseChunkX = (int)player.Entity.Pos.X / chunksize;
-+            int baseChunkZ = (int)player.Entity.Pos.Z / chunksize;
++                cmd.airBlockId = api.World.GetBlock(new AssetLocation("rock-granite")).BlockId;
  
-+            // first check that all chunks are loaded
-             for (int dx = -5; dx <= 5; dx++)
-             {
-                 for (int dz = -5; dz <= 5; dz++)
+-            for (int dx = -5; dx <= 5; dx++)
+-            {
+-                for (int dz = -5; dz <= 5; dz++)
++                IServerPlayer player = args.Caller.Player as IServerPlayer;
++                if (player == null)
                  {
-                     int chunkX = baseChunkX + dx;
-@@ -96,19 +135,19 @@ namespace Vintagestory.ServerMods
+-                    int chunkX = baseChunkX + dx;
+-                    int chunkZ = baseChunkZ + dz;
++                    return TextCommandResult.Error("This command can only be run by an in-game player, not the server console.");
++                }
  
-                     for (int i = 0; i < chunks.Length; i++)
+-                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++                int baseChunkX = (int)player.Entity.Pos.X / chunksize;
++                int baseChunkZ = (int)player.Entity.Pos.Z / chunksize;
+ 
+-                    for (int i = 0; i < chunks.Length; i++)
++                for (int dx = -5; dx <= 5; dx++)
++                {
++                    for (int dz = -5; dz <= 5; dz++)
                      {
-                         if (chunks[i] == null)
+-                        if (chunks[i] == null)
++                        int chunkX = baseChunkX + dx;
++                        int chunkZ = baseChunkZ + dz;
++
++                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++
++                        for (int i = 0; i < chunks.Length; i++)
                          {
 -                            return TextCommandResult.Success( "Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
-+                            return TextCommandResult.Success("Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
++                            if (chunks[i] == null)
++                            {
++                                return TextCommandResult.Success("Cannot generate 10x10 area of caves, chunks are not loaded that far yet.");
++                            }
                          }
-                     }
+-                    }
  
-                     OnMapChunkGen(chunks[0].MapChunk, chunkX, chunkZ);
+-                    OnMapChunkGen(chunks[0].MapChunk, chunkX, chunkZ);
++                        cmd.OnMapChunkGen(chunks[0].MapChunk, chunkX, chunkZ);
++                    }
                  }
-             }
+-            }
  
 -
-+            // clear all chunks and start cave generation
-             for (int dx = -5; dx <= 5; dx++)
-             {
-                 for (int dz = -5; dz <= 5; dz++)
+-            for (int dx = -5; dx <= 5; dx++)
+-            {
+-                for (int dz = -5; dz <= 5; dz++)
++                for (int dx = -5; dx <= 5; dx++)
                  {
-                     int chunkX = baseChunkX + dx;
-@@ -125,15 +164,24 @@ namespace Vintagestory.ServerMods
-                             chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
-                             GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
+-                    int chunkX = baseChunkX + dx;
+-                    int chunkZ = baseChunkZ + dz;
+-
+-                    IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
+-                    ClearChunkColumn(chunks);
++                    for (int dz = -5; dz <= 5; dz++)
++                    {
++                        int chunkX = baseChunkX + dx;
++                        int chunkZ = baseChunkZ + dz;
+ 
++                        IServerChunk[] chunks = GetChunkColumn(chunkX, chunkZ);
++                        ClearChunkColumn(chunks);
+ 
+-                    for (int gdx = -chunkRange; gdx <= chunkRange; gdx++)
+-                    {
+-                        for (int gdz = -chunkRange; gdz <= chunkRange; gdz++)
++                        for (int gdx = -chunkRange; gdx <= chunkRange; gdx++)
+                         {
+-                            chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
+-                            GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
++                            for (int gdz = -chunkRange; gdz <= chunkRange; gdz++)
++                            {
++                                cmd.chunkRand.InitPositionSeed(chunkX + gdx, chunkZ + gdz);
++                                cmd.GeneratePartial(chunks, chunkX, chunkZ, gdx, gdz);
++                            }
                          }
-                     }
+-                    }
  
-+                    // Run lighting recalculation (like in GenLightSurvival)
-+                    worldgenBlockAccessor.BeginColumn();
-+                    api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
-+                    worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
-+
-+
-                     MarkDirty(chunkX, chunkZ, chunks);
-                 }
-             }
+-                    MarkDirty(chunkX, chunkZ, chunks);
+-                }
+-            }
++                        // Stratum: reset the accessor's [ThreadStatic] chunk lookup cache before this
++                        // worker touches GetMapChunk again for lighting, mirroring GeneratePartial.
++                        cmd.worldgenBlockAccessor.BeginColumn();
  
-+
-+            // restore the air block id back
-             airBlockId = 0;
-+            // Stratum end
+-            airBlockId = 0;
++                        // Stratum: ScheduleBlockLightUpdate and RunScheduledBlockLightUpdates are
++                        // thread-safe via a lock-free ConcurrentStack on the map chunk (the drain
++                        // merges into a freshly allocated list, so it never aliases a batch another
++                        // thread can enumerate). No external locking needed.
++                        api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
++                        cmd.worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
  
-             return TextCommandResult.Success("Generated and chunks force resend flags set");
+-            return TextCommandResult.Success("Generated and chunks force resend flags set");
++                        MarkDirty(chunkX, chunkZ, chunks);
++                    }
++                }
++
++                return TextCommandResult.Success("Generated and chunks force resend flags set");
++            }
          }
  
          private IServerChunk[] GetChunkColumn(int chunkX, int chunkZ)
-@@ -506,160 +554,225 @@ namespace Vintagestory.ServerMods
+         {
+             int size = api.World.BlockAccessor.MapSizeY / chunksize;
+@@ -148,11 +233,12 @@ namespace Vintagestory.ServerMods
+             return chunks;
+         }
  
+         private void MarkDirty(int chunkX, int chunkZ, IServerChunk[] chunks)
+         {
+-            for (int chunkY = 0; chunkY < chunks.Length; chunkY++) {
++            for (int chunkY = 0; chunkY < chunks.Length; chunkY++)
++            {
+                 chunks[chunkY].MarkModified();
+                 api.WorldManager.BroadcastChunk(chunkX, chunkY, chunkZ, true);
+             }
+         }
  
+@@ -176,18 +262,25 @@ namespace Vintagestory.ServerMods
+             worldgenBlockAccessor = chunkProvider.GetBlockAccessor(false);
+         }
  
+         public override void GeneratePartial(IServerChunk[] chunks, int chunkX, int chunkZ, int cdx, int cdz)
+         {
++            // Stratum: reset the accessor's [ThreadStatic] chunk lookup cache before this worker
++            // touches GetMapChunk again (see ScheduleBlockLightUpdates / RunScheduledBlockLightUpdates).
++            worldgenBlockAccessor.BeginColumn();
++
+             if (GetIntersectingStructure(chunkX * chunksize + chunksize / 2, chunkZ * chunksize + chunksize / 2, CavesHashCode) != null)
+             {
+                 return;
+             }
+ 
+-            worldgenBlockAccessor.BeginColumn();
+             LCGRandom chunkRand = this.chunkRand;
+-            int quantityCaves = chunkRand.NextInt(100) < TerraGenConfig.CavesPerChunkColumn*100 ? 1 : 0;
++            int quantityCaves = chunkRand.NextInt(100) < TerraGenConfig.CavesPerChunkColumn * 100 ? 1 : 0;
++
++            // Stratum start: clear pending-write buffers. No copying, no allocations.
++            StratumBeginColumn(chunks.Length);
++            // Stratum end
+ 
+             int rndSize = chunksize * chunksize * (worldheight - 20);
+             while (quantityCaves-- > 0)
+             {
+                 int rnd = chunkRand.NextInt(rndSize);
+@@ -201,38 +294,112 @@ namespace Vintagestory.ServerMods
+                 float vertAngle = (chunkRand.NextFloat() - 0.5f) * 0.25f;
+                 float horizontalSize = chunkRand.NextFloat() * 2 + chunkRand.NextFloat();
+                 float verticalSize = 0.75f + chunkRand.NextFloat() * 0.4f;
+ 
+                 rnd = chunkRand.NextInt(100 * 50 * 1000 * 100);
+-                if (rnd % 100 < 4)    // 4% chance
++                if (rnd % 100 < 4)
+                 {
+                     horizontalSize = chunkRand.NextFloat() * 2 + chunkRand.NextFloat() + chunkRand.NextFloat();
+                     verticalSize = 0.25f + chunkRand.NextFloat() * 0.2f;
+                 }
+                 else
+-                if (rnd % 100 == 4)   // 1% chance
++                if (rnd % 100 == 4)
+                 {
+                     horizontalSize = 0.75f + chunkRand.NextFloat();
+                     verticalSize = chunkRand.NextFloat() * 2 + chunkRand.NextFloat();
+                 }
+-                rnd /= 100;   // range of rnd is now 0 - 4,999,999
++                rnd /= 100;
+ 
+-                bool extraBranchy = (posY < TerraGenConfig.seaLevel / 2) ? rnd % 50 == 0 : false;     // 2% chance
+-                rnd /= 50;   // range of rnd is now 0 - 99,999
++                bool extraBranchy = (posY < TerraGenConfig.seaLevel / 2) ? rnd % 50 == 0 : false;
++                rnd /= 50;
+                 int rnd1000 = rnd % 1000;
+-                rnd /= 1000;  // range of rnd is  now 0 - 99
+-                bool largeNearLavaLayer = rnd1000 % 10 < 3;   // 0.3 chance
++                rnd /= 1000;
++                bool largeNearLavaLayer = rnd1000 % 10 < 3;
+ 
+-                float curviness = rnd == 0 ? 0.035f : (rnd1000 < 30 ? 0.5f : 0.1f);    // 0.01 chance;  0.03 chance)
++                float curviness = rnd == 0 ? 0.035f : (rnd1000 < 30 ? 0.5f : 0.1f);
+ 
+                 int maxIterations = chunkRange * chunksize - chunksize / 2;
+                 maxIterations = maxIterations - chunkRand.NextInt(maxIterations / 4);
+ 
+                 caveRand.SetWorldSeed(chunkRand.NextInt(10000000));
+                 caveRand.InitPositionSeed(chunkX + cdx, chunkZ + cdz);
+                 CarveTunnel(chunks, chunkX, chunkZ, posX, posY, posZ, horAngle, vertAngle, horizontalSize, verticalSize, 0, maxIterations, 0, extraBranchy, curviness, largeNearLavaLayer);
+             }
++
++            // Stratum start: apply buffered writes; one batched lock per touched subchunk.
++            StratumFlushPendingWrites(chunks);
++
++            if (stratumPendLight != null && stratumPendLight.Count > 0)
++            {
++                // Stratum: ownership of the batch transfers to the map chunk (lock-free
++                // push). Never touch this list again.
++                worldgenBlockAccessor.ScheduleBlockLightUpdates(chunkX, chunkZ, stratumPendLight);
++                stratumPendLight = null;
++            }
++        }
++
++        private void StratumBeginColumn(int numSubchunks)
++        {
++            if (stratumPendIdx == null || stratumPendIdx.Length != numSubchunks)
++            {
++                stratumPendIdx = new List<int>[numSubchunks];
++                stratumPendVal = new List<int>[numSubchunks];
++                for (int i = 0; i < numSubchunks; i++)
++                {
++                    stratumPendIdx[i] = new List<int>(1024);
++                    stratumPendVal[i] = new List<int>(1024);
++                }
++
++                // Stratum: initialize the light buffer on the first column too, before returning.
++                if (stratumPendLight == null)
++                    stratumPendLight = new List<Vec4i>(256);
++                return;
++            }
++            for (int i = 0; i < numSubchunks; i++)
++            {
++                stratumPendIdx[i].Clear();
++                stratumPendVal[i].Clear();
++            }
++
++            // Stratum: the previous batch may have been handed over to the chunk.
++            if (stratumPendLight == null)
++                stratumPendLight = new List<Vec4i>(256);
++            else
++                stratumPendLight.Clear();
++        }
++
++        private void StratumAppend(int chunkY, int index3D, int value)
++        {
++            stratumPendIdx[chunkY].Add(index3D);
++            stratumPendVal[chunkY].Add(value);
++        }
++
++        private void StratumFlushPendingWrites(IServerChunk[] chunks)
++        {
++            for (int cy = 0; cy < stratumPendIdx.Length; cy++)
++            {
++                List<int> idx = stratumPendIdx[cy];
++                List<int> val = stratumPendVal[cy];
++                if (idx.Count == 0) continue;
++
++                IChunkBlocks data = chunks[cy].Data;
++
++                if (stratumLockedWrites)
++                {
++                    for (int i = 0; i < idx.Count; i++)
++                    {
++                        data[idx[i]] = val[i];
++                    }
++                }
++                else
++                {
++                    data.SetBlocksUnsafe(idx, val);
++                }
++
++                idx.Clear();
++                val.Clear();
++            }
+         }
+ 
+         private void CarveTunnel(IServerChunk[] chunks, int chunkX, int chunkZ, double posX, double posY, double posZ, float horAngle, float vertAngle, float horizontalSize, float verticalSize, int currentIteration, int maxIterations, int branchLevel, bool extraBranchy = false, float curviness = 0.1f, bool largeNearLavaLayer = false)
+         {
+             LCGRandom caveRand = this.caveRand;
+@@ -264,17 +431,16 @@ namespace Vintagestory.ServerMods
+                 relPos = (float)currentIteration / maxIterations;
+ 
+                 float horRadius = 1.5f + GameMath.FastSin(relPos * GameMath.PI) * horizontalSize + horRadiusGainAccum;
+                 horRadius = Math.Min(horRadius, Math.Max(1, horRadius - horRadiusLossAccum));
+ 
+-                float vertRadius = 1.5f + GameMath.FastSin(relPos * GameMath.PI) * (verticalSize + horRadiusLossAccum / 4f) + verHeightGainAccum; // - horRadiusGainAccum / 2
++                float vertRadius = 1.5f + GameMath.FastSin(relPos * GameMath.PI) * (verticalSize + horRadiusLossAccum / 4f) + verHeightGainAccum;
+                 vertRadius = Math.Min(vertRadius, Math.Max(0.6f, vertRadius - verHeightLossAccum));
+ 
+                 float advanceHor = GameMath.FastCos(vertAngle);
+                 float advanceVer = GameMath.FastSin(vertAngle);
+ 
+-                // Caves get bigger near y=12
+                 if (largeNearLavaLayer)
+                 {
+                     float factor = 1f + Math.Max(0f, 1f - (float)Math.Abs(posY - 12d) / 10f);
+                     horRadius *= factor;
+                     vertRadius *= factor;
+@@ -287,67 +453,61 @@ namespace Vintagestory.ServerMods
+                 posZ += GameMath.FastSin(horAngle) * advanceHor;
+ 
+                 vertAngle *= 0.8f;
+ 
+                 int rrnd = caveRand.NextInt(800000);
+-                if (rrnd / 10000 == 0)   // chance 1/80
++                if (rrnd / 10000 == 0)
+                 {
+-                    sizeChangeSpeedGain = (caveRand.NextFloat() * caveRand.NextFloat())/2;
++                    sizeChangeSpeedGain = (caveRand.NextFloat() * caveRand.NextFloat()) / 2;
+                 }
+ 
+-                bool genHotSpring=false;
++                bool genHotSpring = false;
+ 
+-                int rnd = rrnd % 10000; // Calls to caveRand are not too cheap, so lets just use one for all those random variation changes
+-                // 1/330 * 10k = 30
+-                // 1/130 * 10k = 76
+-                // 1/100 * 10k = 100
+-                // 1/120 * 10k = 83
+-                // 1/800 * 10k = 12
++                int rnd = rrnd % 10000;
+ 
+-                // Rarely change direction
+                 if ((rnd -= 30) <= 0)
+                 {
+                     horAngle = caveRand.NextFloat() * GameMath.TWOPI;
+-                } else
+-                // Rarely change direction somewhat
++                }
++                else
+                 if ((rnd -= 76) <= 0)
+                 {
+                     horAngle += caveRand.NextFloat() * GameMath.PI - GameMath.PIHALF;
+-                } else
+-                // Rarely go pretty wide
++                }
++                else
+                 if ((rnd -= 60) <= 0)
+                 {
+                     horRadiusGain = caveRand.NextFloat() * caveRand.NextFloat() * 3.5f;
+-                } else
+-                // Rarely go thin
++                }
++                else
+                 if ((rnd -= 60) <= 0)
+                 {
+                     horRadiusLoss = caveRand.NextFloat() * caveRand.NextFloat() * 10;
+-                } else
+-                // Rarely go flat
++                }
++                else
+                 if ((rnd -= 50) <= 0)
+                 {
+                     if (posY < TerraGenConfig.seaLevel - 10)
+                     {
+                         verHeightLoss = caveRand.NextFloat() * caveRand.NextFloat() * 12f;
+                         horRadiusGain = Math.Max(horRadiusGain, caveRand.NextFloat() * caveRand.NextFloat() * 3f);
+                     }
+-                } else
+-                // Very rarely go really wide
++                }
++                else
+                 if ((rnd -= 9) <= 0)
+                 {
+                     if (posY < TerraGenConfig.seaLevel - 20)
+                     {
+                         horRadiusGain = 1 + caveRand.NextFloat() * caveRand.NextFloat() * 5f;
+                     }
+-                } else
+-                // Very rarely go really tall
++                }
++                else
+                 if ((rnd -= 9) <= 0)
+                 {
+                     verHeightGain = 2 + caveRand.NextFloat() * caveRand.NextFloat() * 7;
+-                } else
+-                // Rarely large lava caverns
++                }
++                else
+                 if ((rnd -= 100) <= 0)
+                 {
+                     if (posY < 19)
+                     {
+                         verHeightGain = 2 + caveRand.NextFloat() * caveRand.NextFloat() * 5;
+@@ -376,22 +536,19 @@ namespace Vintagestory.ServerMods
+                 verHeightLoss -= 0.4f;
+ 
+                 horAngle += curviness * horAngleChange;
+                 vertAngle += curviness * vertAngleChange;
+ 
+-
+-                // somewhat costly
+                 vertAngleChange = 0.9f * vertAngleChange + caveRand.NextFloatMinusToPlusOne() * caveRand.NextFloat() * 3f;
+                 horAngleChange = 0.9f * horAngleChange + caveRand.NextFloatMinusToPlusOne() * caveRand.NextFloat();
+ 
+                 if (rrnd % 140 == 0)
+                 {
+                     horAngleChange *= caveRand.NextFloat() * 6;
+                 }
+ 
+-                // Horizontal branch
+-                int brand = branchRand + 2 * Math.Max(0, (int)posY - (TerraGenConfig.seaLevel - 20)); // Lower chance of branches above sealevel because Saraty does not like strongly cut out mountains
++                int brand = branchRand + 2 * Math.Max(0, (int)posY - (TerraGenConfig.seaLevel - 20));
+                 if (branchLevel < 3 && (vertRadius > 1f || horRadius > 1f) && caveRand.NextInt(brand) == 0)
+                 {
+                     CarveTunnel(
+                         chunks,
+                         chunkX,
+@@ -405,11 +562,10 @@ namespace Vintagestory.ServerMods
+                         maxIterations - (int)(caveRand.NextFloat() * 0.5 * maxIterations),
+                         branchLevel + 1
+                     );
+                 }
+ 
+-                // Vertical branch
+                 if (branchLevel < 1 && horRadius > 3f && posY > 60 && caveRand.NextInt(60) == 0)
+                 {
+                     CarveShaft(
+                         chunks,
+                         chunkX,
+@@ -418,31 +574,25 @@ namespace Vintagestory.ServerMods
+                         horAngle + (caveRand.NextFloat() + caveRand.NextFloat() - 1) + GameMath.PI,
+                         -GameMath.PI / 2 - 0.1f + 0.2f * caveRand.NextFloat(),
+                         Math.Min(3.5f, horRadius - 1),
+                         verticalSize + verHeightGainAccum,
+                         currentIteration,
+-                        maxIterations - (int)(caveRand.NextFloat() * 0.5 * maxIterations) + (int)((posY/5) * (0.5f + 0.5f * caveRand.NextFloat())),
++                        maxIterations - (int)(caveRand.NextFloat() * 0.5 * maxIterations) + (int)((posY / 5) * (0.5f + 0.5f * caveRand.NextFloat())),
+                         branchLevel
+                     );
+ 
+                     branchLevel++;
+                 }
+ 
+-
+-
+                 if (horRadius >= 2 && rrnd % 5 == 0) continue;
+ 
+-                // Check just to prevent unnecessary calculations
+-                // As long as we are outside the currently generating chunk, we don't need to generate anything
+                 if (posX <= -horRadius * 2 || posX >= chunksize + horRadius * 2 || posZ <= -horRadius * 2 || posZ >= chunksize + horRadius * 2) continue;
+ 
+                 SetBlocks(chunks, horRadius, vertRadius + verHeightGainAccum, posX, posY + verHeightGainAccum / 2, posZ, terrainheightmap, rainheightmap, chunkX, chunkZ, genHotSpring);
+             }
+         }
+ 
+-
+-
+         private void CarveShaft(IServerChunk[] chunks, int chunkX, int chunkZ, double posX, double posY, double posZ, float horAngle, float vertAngle, float horizontalSize, float verticalSize, int caveCurrentIteration, int maxIterations, int branchLevel)
+         {
+             float vertAngleChange = 0;
+ 
+             ushort[] terrainheightmap = chunks[0].MapChunk.WorldGenTerrainHeightMap;
+@@ -468,11 +618,10 @@ namespace Vintagestory.ServerMods
+                 posZ += GameMath.FastSin(horAngle) * advanceHor;
+ 
+                 vertAngle += 0.1f * vertAngleChange;
+                 vertAngleChange = 0.9f * vertAngleChange + (caveRand.NextFloat() - caveRand.NextFloat()) * caveRand.NextFloat() / 3;
+ 
+-                // Horizontal branch
+                 if (maxIterations - currentIteration < 10)
+                 {
+                     int num = 3 + caveRand.NextInt(4);
+                     for (int i = 0; i < num; i++)
+                     {
+@@ -493,168 +642,196 @@ namespace Vintagestory.ServerMods
+                     return;
+                 }
+ 
+                 if (caveRand.NextInt(5) == 0 && horRadius >= 2) continue;
+ 
+-                // Check just to prevent unnecessary calculations
+-                // As long as we are outside the currently generating chunk, we don't need to generate anything
+                 if (posX <= -horRadius * 2 || posX >= chunksize + horRadius * 2 || posZ <= -horRadius * 2 || posZ >= chunksize + horRadius * 2) continue;
+ 
+                 SetBlocks(chunks, horRadius, vertRadius, posX, posY, posZ, terrainheightmap, rainheightmap, chunkX, chunkZ, false);
+             }
+         }
+ 
+-
+-
+-
          private bool SetBlocks(IServerChunk[] chunks, float horRadius, float vertRadius, double centerX, double centerY, double centerZ, ushort[] terrainheightmap, ushort[] rainheightmap, int chunkX, int chunkZ, bool genHotSpring)
          {
--            IMapChunk mapchunk = chunks[0].MapChunk;
--
+             IMapChunk mapchunk = chunks[0].MapChunk;
+ 
 -            // One extra size for checking if we run into water
 -            horRadius++;
 -            vertRadius+=2;
-+            // Stratum start:
-+            // Fixing incorrect cave generation in the /dev gencaves command mode
-+            // We sped up the algorithm, filtered out blocks that weren't within the ellipsoid's dimensions,
-+            // and checked for liquid in the same cycle as everything else.
- 
+-
 -            int mindx = (int)GameMath.Clamp(centerX - horRadius, 0, chunksize - 1);
 -            int maxdx = (int)GameMath.Clamp(centerX + horRadius + 1, 0, chunksize - 1);
 -            int mindy = (int)GameMath.Clamp(centerY - vertRadius * 0.7f, 1, worldheight - 1);
@@ -202,9 +654,13 @@ index 30f034d..827cc28 100644
 -                        double heightOffFac = yDist > 0 ? heightrnd * heightrnd : 0;
 -
 -                        ydistRel = yDist * yDist / (vRadiusSq + heightOffFac);
--
++            float genHorRadius = horRadius;
++            float genVertRadius = vertRadius;
+ 
 -                        if (xdistRel + ydistRel + zdistRel > 1.0 || y > worldheight - 1) continue;
--
++            float checkHorRadius = horRadius + 1;
++            float checkVertRadius = vertRadius + 2;
+ 
 -                        int ly = y % chunksize;
 -                        var block = api.World.Blocks[chunks[y / chunksize].Data.GetFluid((ly * chunksize + lz) * chunksize + lx)];
 -                        if (block.LiquidCode != null)
@@ -214,46 +670,33 @@ index 30f034d..827cc28 100644
 -                    }
 -                }
 -            }
-+            // Testing on 10,200 generation chunks:
-+            // Total method execution time: decreased from 9.2 s to 6.3 s;
- 
-+            IMapChunk mapchunk = chunks[0].MapChunk;
- 
--            horRadius--;
--            vertRadius-=2;
-+            // Regular generation radius
-+            float genHorRadius = horRadius;
-+            float genVertRadius = vertRadius;
- 
--            mindx = (int)GameMath.Clamp(centerX - horRadius, 0, chunksize - 1);
--            maxdx = (int)GameMath.Clamp(centerX + horRadius + 1, 0, chunksize - 1);
--            mindz = (int)GameMath.Clamp(centerZ - horRadius, 0, chunksize - 1);
--            maxdz = (int)GameMath.Clamp(centerZ + horRadius + 1, 0, chunksize - 1);
-+            // Increased radius for fluid checks
-+            float checkHorRadius = horRadius + 1;
-+            float checkVertRadius = vertRadius + 2;
- 
--            mindy = (int)GameMath.Clamp(centerY - vertRadius * 0.7f, 1, worldheight - 1);
--            maxdy = (int)GameMath.Clamp(centerY + vertRadius + 1, 1, worldheight - 1);
-+            // Compute common bounds for both radii
 +            int mindx = (int)GameMath.Clamp(centerX - checkHorRadius, 0, chunksize - 1);
 +            int maxdx = (int)GameMath.Clamp(centerX + checkHorRadius + 1, 0, chunksize - 1);
 +            int mindz = (int)GameMath.Clamp(centerZ - checkHorRadius, 0, chunksize - 1);
 +            int maxdz = (int)GameMath.Clamp(centerZ + checkHorRadius + 1, 0, chunksize - 1);
  
--            hRadiusSq = horRadius * horRadius;
--            vRadiusSq = vertRadius * vertRadius;
-+            // For Y use the check radius because it is larger
 +            int mindy = (int)GameMath.Clamp(centerY - checkVertRadius * 0.7f, 1, worldheight - 1);
 +            int maxdy = (int)GameMath.Clamp(centerY + checkVertRadius + 1, 1, worldheight - 1);
  
-+            // Precompute squared radii for fast comparisons
+-            horRadius--;
+-            vertRadius-=2;
+-
+-            mindx = (int)GameMath.Clamp(centerX - horRadius, 0, chunksize - 1);
+-            maxdx = (int)GameMath.Clamp(centerX + horRadius + 1, 0, chunksize - 1);
+-            mindz = (int)GameMath.Clamp(centerZ - horRadius, 0, chunksize - 1);
+-            maxdz = (int)GameMath.Clamp(centerZ + horRadius + 1, 0, chunksize - 1);
+-
+-            mindy = (int)GameMath.Clamp(centerY - vertRadius * 0.7f, 1, worldheight - 1);
+-            maxdy = (int)GameMath.Clamp(centerY + vertRadius + 1, 1, worldheight - 1);
+-
+-            hRadiusSq = horRadius * horRadius;
+-            vRadiusSq = vertRadius * vertRadius;
+-
 +            double genHorRadiusSq = genHorRadius * genHorRadius;
 +            double genVertRadiusSq = genVertRadius * genVertRadius;
 +            double checkHorRadiusSq = checkHorRadius * checkHorRadius;
 +            double checkVertRadiusSq = checkVertRadius * checkVertRadius;
  
-+            // Get geologic activity once
              int geoActivity = getGeologicActivity(chunkX * chunksize + (int)centerX, chunkZ * chunksize + (int)centerZ);
              genHotSpring &= geoActivity > 128;
  
@@ -267,10 +710,8 @@ index 30f034d..827cc28 100644
              }
  
              int yLavaStart = (geoActivity * 16) / 128;
-+            int chunksizeSq = chunksize * chunksize;
  
 -
-+            // Main loop - single pass
              for (int lx = mindx; lx <= maxdx; lx++)
              {
 -                xdistRel = (lx - centerX) * (lx - centerX) / hRadiusSq;
@@ -291,18 +732,15 @@ index 30f034d..827cc28 100644
 -                    {
 -                        double yDist = y - centerY;
 -                        double heightOffFac = yDist > 0 ? heightrnd * heightrnd * Math.Min(1, Math.Abs(y - surfaceY) /10.0) : 0;
-+                    // Compute distortion once for the column
 +                    double distortStrength = GameMath.Clamp(genVertRadius / 4.0, 0, 0.1);
 +                    double heightrnd = (mapchunk.CaveHeightDistort[idx2d] - 127) * distortStrength;
 +                    int surfaceY = terrainheightmap[idx2d];
  
 -                        ydistRel = yDist * yDist / (vRadiusSq + heightOffFac);
-+                    // Compute maximum XZ distance for the check radius
 +                    double checkXZDist = dxSq / checkHorRadiusSq + dzSq / checkHorRadiusSq;
 +                    if (checkXZDist > 1.0) continue;
  
 -                        if (y > worldheight - 1 || xdistRel + ydistRel + zdistRel > 1.0) continue;
-+                    // Compute Y range for the check radius
 +                    double maxCheckDist = 1.0 - checkXZDist;
 +                    double maxCheckYDist = Math.Sqrt(maxCheckDist * checkVertRadiusSq);
 +                    int checkMindy = (int)Math.Max(mindy, centerY - maxCheckYDist);
@@ -313,21 +751,18 @@ index 30f034d..827cc28 100644
 -                            terrainheightmap[lz * chunksize + lx] = (ushort)(y - 1);
 -                            rainheightmap[lz * chunksize + lx]--;
 -                        }
-+                    // Variables for tracking state
 +                    bool hasLiquidInCheckRadius = false;
 +                    bool needsGenInGenRadius = false;
 +                    int firstGenY = -1;
  
 -                        IChunkBlocks chunkBlockData = chunks[y / chunksize].Data;
 -                        int index3d = ((y % chunksize) * chunksize + lz) * chunksize + lx;
-+                    // Walk Y once from top down
 +                    for (int y = checkMaxdy; y >= checkMindy; y--)
 +                    {
 +                        double dy = y - centerY;
 +                        double dySq = dy * dy;
  
 -                        if (y == 11)
-+                        // Check inclusion in check radius (for fluids)
 +                        double checkYDistSq = dySq / checkVertRadiusSq;
 +                        if (dxSq / checkHorRadiusSq + checkYDistSq + dzSq / checkHorRadiusSq <= 1.0)
                          {
@@ -338,28 +773,26 @@ index 30f034d..827cc28 100644
 -                                rainheightmap[lz * chunksize + lx] = Math.Max(rainheightmap[lz * chunksize + lx], (ushort)11);
 -                            }
 -                            else
-+                            // Fluid check
 +                            if (!hasLiquidInCheckRadius && y >= 1 && y < worldheight)
                              {
 -                                chunkBlockData[index3d] = 0;
 -                                if (y > yLavaStart)
+-                                {
+-                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
+-                                } else
 +                                int chunkY = y / chunksize;
 +                                int localY = y % chunksize;
 +                                var block = api.World.Blocks[chunks[chunkY].Data.GetFluid((localY * chunksize + lz) * chunksize + lx)];
 +                                if (block.LiquidCode != null)
                                  {
--                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
--                                } else
--                                {
 -                                    chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
-+                                    return false; // Found fluid - exit immediately
++                                    return false;
                                  }
 -
 -                                if (y <= yLavaStart) worldgenBlockAccessor.ScheduleBlockLightUpdate(new BlockPos(chunkX * chunksize + lx, y, chunkZ * chunksize + lz), airBlockId, gcfg.lavaBlockId);
                              }
 +                        }
 +
-+                        // Check inclusion in generation radius (for setting blocks)
 +                        if (!needsGenInGenRadius)
 +                        {
 +                            double heightOffFac = dy > 0 ? heightrnd * heightrnd * Math.Min(1, Math.Abs(y - surfaceY) / 10.0) : 0;
@@ -374,10 +807,8 @@ index 30f034d..827cc28 100644
 -                        else if (y < 12)
 +                    }
 +
-+                    // If we need to generate in this column
 +                    if (needsGenInGenRadius)
 +                    {
-+                        // Compute precise range for generation
 +                        double genXZDist = dxSq / genHorRadiusSq + dzSq / genHorRadiusSq;
 +                        double maxGenDist = 1.0 - genXZDist;
 +
@@ -385,7 +816,6 @@ index 30f034d..827cc28 100644
                          {
 -                            chunkBlockData[index3d] = 0;
 -                            if (y > yLavaStart)
-+                            // For positive Y account for distortion
 +                            double vertRadiusSqWithDistort = genVertRadiusSq;
 +                            if (firstGenY > centerY)
                              {
@@ -399,21 +829,18 @@ index 30f034d..827cc28 100644
 +                            int genMindy = (int)Math.Max(mindy, centerY - maxGenYDist);
 +                            int genMaxdy = (int)Math.Min(maxdy, centerY + maxGenYDist);
 +
-+                            // Generate blocks in the column
 +                            for (int y = genMaxdy; y >= genMindy; y--)
                              {
 -                                chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
 +                                double dy = y - centerY;
 +                                double dySq = dy * dy;
 +
-+                                // Check inclusion in ellipsoid with distortion
 +                                double heightOffFac = dy > 0 ? heightrnd * heightrnd * Math.Min(1, Math.Abs(y - surfaceY) / 10.0) : 0;
 +                                if (dxSq / genHorRadiusSq + dySq / (genVertRadiusSq + heightOffFac) + dzSq / genHorRadiusSq > 1.0)
 +                                    continue;
 +
 +                                if (y > worldheight - 1) continue;
 +
-+                                // Update heightmaps
 +                                if (surfaceY == y)
 +                                {
 +                                    terrainheightmap[idx2d] = (ushort)(y - 1);
@@ -422,15 +849,13 @@ index 30f034d..827cc28 100644
 +
 +                                int chunkY = y / chunksize;
 +                                int localY = y % chunksize;
-+                                IChunkBlocks chunkBlockData = chunks[chunkY].Data;
-+                                int index3d = localY * chunksizeSq + idx2d;
++                                int index3D = (localY * chunksize + lz) * chunksize + lx;
 +
-+                                // Set block
 +                                if (y == 11)
 +                                {
 +                                    if (basaltNoise.Noise(chunkX * chunksize + lx, chunkZ * chunksize + lz) > 0.65)
 +                                    {
-+                                        chunkBlockData[index3d] = gcfg.basaltBlockId;
++                                        StratumAppend(chunkY, index3D, gcfg.basaltBlockId);
 +                                        terrainheightmap[idx2d] = Math.Max(terrainheightmap[idx2d], (ushort)11);
 +                                        rainheightmap[idx2d] = Math.Max(rainheightmap[idx2d], (ushort)11);
 +                                    }
@@ -438,33 +863,35 @@ index 30f034d..827cc28 100644
 +                                    {
 +                                        if (y > yLavaStart)
 +                                        {
-+                                            chunkBlockData[index3d] = gcfg.basaltBlockId;
++                                            StratumAppend(chunkY, index3D, gcfg.basaltBlockId);
 +                                        }
 +                                        else
 +                                        {
-+                                            chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
++                                            chunks[chunkY].Data.SetFluid(index3D, gcfg.lavaBlockId);
 +                                        }
 +
 +                                        if (y <= yLavaStart)
-+                                            worldgenBlockAccessor.ScheduleBlockLightUpdate(
-+                                                new BlockPos(chunkX * chunksize + lx, y, chunkZ * chunksize + lz),
-+                                                airBlockId, gcfg.lavaBlockId);
++                                        {
++                                            // Stratum: buffer as Vec4i (storage format); flushed in one
++                                            // batched, single-lock call at the end of GeneratePartial.
++                                            stratumPendLight.Add(new Vec4i(new BlockPos(chunkX * chunksize + lx, y, chunkZ * chunksize + lz), gcfg.lavaBlockId));
++                                        }
 +                                    }
 +                                }
 +                                else if (y < 12)
 +                                {
 +                                    if (y > yLavaStart)
 +                                    {
-+                                        chunkBlockData[index3d] = gcfg.basaltBlockId;
++                                        StratumAppend(chunkY, index3D, gcfg.basaltBlockId);
 +                                    }
 +                                    else
 +                                    {
-+                                        chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
++                                        chunks[chunkY].Data.SetFluid(index3D, gcfg.lavaBlockId);
 +                                    }
 +                                }
 +                                else
 +                                {
-+                                    chunkBlockData[index3d] = airBlockId != 0 ? (ushort)airBlockId : (ushort)0;
++                                    StratumAppend(chunkY, index3D, airBlockId != 0 ? airBlockId : 0);
 +                                }
                              }
                          }
@@ -477,10 +904,12 @@ index 30f034d..827cc28 100644
              }
  
              return true;
-+
-+            // Stratum end
-         }
+@@ -669,8 +846,7 @@ namespace Vintagestory.ServerMods
+             int rlX = (posx / chunksize) % regionChunkSize;
+             int rlZ = (posz / chunksize) % regionChunkSize;
  
-         private int getGeologicActivity(int posx, int posz)
-         {
-             var climateMap = worldgenBlockAccessor.GetMapRegion(posx / regionsize, posz / regionsize)?.ClimateMap;
+             return climateMap.GetUnpaddedInt((int)(rlX * fac), (int)(rlZ * fac)) & 0xff;
+         }
+-
+     }
+ }

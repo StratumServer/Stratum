@@ -1,0 +1,28 @@
+diff --git a/VintagestoryApi/Server/Worldgen/IWorldGenBlockAccessor.cs b/VintagestoryApi/Server/Worldgen/IWorldGenBlockAccessor.cs
+index 2709658..9656163 100644
+--- a/VintagestoryApi/Server/Worldgen/IWorldGenBlockAccessor.cs
++++ b/VintagestoryApi/Server/Worldgen/IWorldGenBlockAccessor.cs
+@@ -1,8 +1,9 @@
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.MathTools;
++using System.Collections.Generic;
+ 
+ #nullable disable
+ 
+ namespace Vintagestory.API.Server
+ {
+@@ -17,10 +18,13 @@ namespace Vintagestory.API.Server
+         /// Tells the server to produce a block update at this given position once the chunk is fully generated and world ticking has begun
+         /// </summary>
+         /// <param name="pos"></param>
+         void ScheduleBlockUpdate(BlockPos pos);
+ 
++        // Stratum: batch variant of ScheduleBlockLightUpdate, used by GenCaves' column flush.
++        void ScheduleBlockLightUpdates(int chunkX, int chunkZ, List<Vec4i> updates);
++
+         /// <summary>
+         /// Tells the server to relight this position once RunScheduledBlockLightUpdates() is called
+         /// </summary>
+         /// <param name="pos"></param>
+         /// <param name="oldBlockid">currently unused but might be used in the future to make sure old light is removed properly</param>
