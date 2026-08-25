@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..44e6a76 100644
+index 30f034d..c034eed 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-@@ -10,19 +10,54 @@ namespace Vintagestory.ServerMods
+@@ -10,19 +10,51 @@ namespace Vintagestory.ServerMods
  {
      public class GenCaves : GenPartial
      {
@@ -42,9 +42,6 @@ index 30f034d..44e6a76 100644
 +        List<int>[] stratumPendVal;
 +        // Stratum end
 +
-+        // Stratum: reusable province weights buffer. Per-instance, never shared.
-+        float[] stratumIndicesBuf;
-+
 +        // Stratum start: buffered lava light updates for this column, packed exactly in
 +        // the storage format (Vec4i = xyz + newBlockId). Old block id is not used by
 +        // BlockAccessorWorldGen, so it is not buffered. Flushed in one batched call at
@@ -57,7 +54,7 @@ index 30f034d..44e6a76 100644
              base.StartServerSide(api);
  
              if (TerraGenConfig.DoDecorationPass)
-@@ -30,33 +65,63 @@ namespace Vintagestory.ServerMods
+@@ -30,33 +62,62 @@ namespace Vintagestory.ServerMods
                  api.Event.GetWorldgenBlockAccessor(OnWorldGenBlockAccessor);
  
                  api.ChatCommands.GetOrCreate("dev")
@@ -87,8 +84,8 @@ index 30f034d..44e6a76 100644
  
              regionsize = api.World.BlockAccessor.RegionSize;
 +            stratumWorkers = new StratumWorkerInstances<GenCaves>(StratumCreateWorker);
-+        }
-+
+         }
+ 
 +        private void StratumGenChunkColumnOnWorker(IChunkColumnGenerateRequest request)
 +        {
 +            stratumWorkers.Current.GenChunkColumn(request);
@@ -99,8 +96,8 @@ index 30f034d..44e6a76 100644
 +            GenCaves worker = new GenCaves();
 +            worker.StratumCopyStateFrom(this);
 +            return worker;
-         }
- 
++        }
++
 +        protected override void StratumCopyStateFrom(GenPartial source)
 +        {
 +            base.StratumCopyStateFrom(source);
@@ -115,7 +112,6 @@ index 30f034d..44e6a76 100644
 +            // Stratum start: reset per-worker mutable state.
 +            stratumPendIdx = null;
 +            stratumPendVal = null;
-+            stratumIndicesBuf = null;
 +            stratumPendLight = null;
 +            // Stratum end
 +        }
@@ -124,7 +120,7 @@ index 30f034d..44e6a76 100644
          {
              if (heightvarNoise == null) return;
  
-@@ -72,70 +137,90 @@ namespace Vintagestory.ServerMods
+@@ -72,70 +133,94 @@ namespace Vintagestory.ServerMods
                      mapChunk.CaveHeightDistort[dz * chunksize + dx] = (byte)(128 * val + 127);
                  }
              }
@@ -194,8 +190,8 @@ index 30f034d..44e6a76 100644
 +                    }
                  }
 -            }
--
  
+-
 -            for (int dx = -5; dx <= 5; dx++)
 -            {
 -                for (int dz = -5; dz <= 5; dz++)
@@ -232,6 +228,11 @@ index 30f034d..44e6a76 100644
 -                    MarkDirty(chunkX, chunkZ, chunks);
 -                }
 -            }
++                        // Stratum: reset the accessor's [ThreadStatic] chunk lookup cache before this
++                        // worker touches GetMapChunk again for lighting, mirroring GeneratePartial.
++                        cmd.worldgenBlockAccessor.BeginColumn();
+ 
+-            airBlockId = 0;
 +                        // Run lighting recalculation (like in GenLightSurvival)
 +                        // Stratum: ScheduleBlockLightUpdate and RunScheduledBlockLightUpdates are now
 +                        // thread-safe (protected by lightUpdatesLock inside BlockAccessorWorldGen),
@@ -239,12 +240,11 @@ index 30f034d..44e6a76 100644
 +                        api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
 +                        cmd.worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
  
--            airBlockId = 0;
+-            return TextCommandResult.Success("Generated and chunks force resend flags set");
 +                        MarkDirty(chunkX, chunkZ, chunks);
 +                    }
 +                }
- 
--            return TextCommandResult.Success("Generated and chunks force resend flags set");
++
 +                return TextCommandResult.Success("Generated and chunks force resend flags set");
 +            }
          }
@@ -266,7 +266,16 @@ index 30f034d..44e6a76 100644
              }
          }
  
-@@ -181,13 +267,16 @@ namespace Vintagestory.ServerMods
+@@ -176,18 +262,25 @@ namespace Vintagestory.ServerMods
+             worldgenBlockAccessor = chunkProvider.GetBlockAccessor(false);
+         }
+ 
+         public override void GeneratePartial(IServerChunk[] chunks, int chunkX, int chunkZ, int cdx, int cdz)
+         {
++            // Stratum: reset the accessor's [ThreadStatic] chunk lookup cache before this worker
++            // touches GetMapChunk again (see ScheduleBlockLightUpdates / RunScheduledBlockLightUpdates).
++            worldgenBlockAccessor.BeginColumn();
++
              if (GetIntersectingStructure(chunkX * chunksize + chunksize / 2, chunkZ * chunksize + chunksize / 2, CavesHashCode) != null)
              {
                  return;
@@ -285,7 +294,7 @@ index 30f034d..44e6a76 100644
              while (quantityCaves-- > 0)
              {
                  int rnd = chunkRand.NextInt(rndSize);
-@@ -201,38 +290,112 @@ namespace Vintagestory.ServerMods
+@@ -201,38 +294,112 @@ namespace Vintagestory.ServerMods
                  float vertAngle = (chunkRand.NextFloat() - 0.5f) * 0.25f;
                  float horizontalSize = chunkRand.NextFloat() * 2 + chunkRand.NextFloat();
                  float verticalSize = 0.75f + chunkRand.NextFloat() * 0.4f;
@@ -406,7 +415,7 @@ index 30f034d..44e6a76 100644
          private void CarveTunnel(IServerChunk[] chunks, int chunkX, int chunkZ, double posX, double posY, double posZ, float horAngle, float vertAngle, float horizontalSize, float verticalSize, int currentIteration, int maxIterations, int branchLevel, bool extraBranchy = false, float curviness = 0.1f, bool largeNearLavaLayer = false)
          {
              LCGRandom caveRand = this.caveRand;
-@@ -264,17 +427,16 @@ namespace Vintagestory.ServerMods
+@@ -264,17 +431,16 @@ namespace Vintagestory.ServerMods
                  relPos = (float)currentIteration / maxIterations;
  
                  float horRadius = 1.5f + GameMath.FastSin(relPos * GameMath.PI) * horizontalSize + horRadiusGainAccum;
@@ -425,7 +434,7 @@ index 30f034d..44e6a76 100644
                      float factor = 1f + Math.Max(0f, 1f - (float)Math.Abs(posY - 12d) / 10f);
                      horRadius *= factor;
                      vertRadius *= factor;
-@@ -287,67 +449,61 @@ namespace Vintagestory.ServerMods
+@@ -287,67 +453,61 @@ namespace Vintagestory.ServerMods
                  posZ += GameMath.FastSin(horAngle) * advanceHor;
  
                  vertAngle *= 0.8f;
@@ -511,7 +520,7 @@ index 30f034d..44e6a76 100644
                      if (posY < 19)
                      {
                          verHeightGain = 2 + caveRand.NextFloat() * caveRand.NextFloat() * 5;
-@@ -376,22 +532,19 @@ namespace Vintagestory.ServerMods
+@@ -376,22 +536,19 @@ namespace Vintagestory.ServerMods
                  verHeightLoss -= 0.4f;
  
                  horAngle += curviness * horAngleChange;
@@ -535,7 +544,7 @@ index 30f034d..44e6a76 100644
                      CarveTunnel(
                          chunks,
                          chunkX,
-@@ -405,11 +558,10 @@ namespace Vintagestory.ServerMods
+@@ -405,11 +562,10 @@ namespace Vintagestory.ServerMods
                          maxIterations - (int)(caveRand.NextFloat() * 0.5 * maxIterations),
                          branchLevel + 1
                      );
@@ -547,7 +556,7 @@ index 30f034d..44e6a76 100644
                      CarveShaft(
                          chunks,
                          chunkX,
-@@ -418,31 +570,25 @@ namespace Vintagestory.ServerMods
+@@ -418,31 +574,25 @@ namespace Vintagestory.ServerMods
                          horAngle + (caveRand.NextFloat() + caveRand.NextFloat() - 1) + GameMath.PI,
                          -GameMath.PI / 2 - 0.1f + 0.2f * caveRand.NextFloat(),
                          Math.Min(3.5f, horRadius - 1),
@@ -580,7 +589,7 @@ index 30f034d..44e6a76 100644
              float vertAngleChange = 0;
  
              ushort[] terrainheightmap = chunks[0].MapChunk.WorldGenTerrainHeightMap;
-@@ -468,11 +614,10 @@ namespace Vintagestory.ServerMods
+@@ -468,11 +618,10 @@ namespace Vintagestory.ServerMods
                  posZ += GameMath.FastSin(horAngle) * advanceHor;
  
                  vertAngle += 0.1f * vertAngleChange;
@@ -592,7 +601,7 @@ index 30f034d..44e6a76 100644
                      int num = 3 + caveRand.NextInt(4);
                      for (int i = 0; i < num; i++)
                      {
-@@ -493,168 +638,196 @@ namespace Vintagestory.ServerMods
+@@ -493,168 +642,196 @@ namespace Vintagestory.ServerMods
                      return;
                  }
  
@@ -645,10 +654,12 @@ index 30f034d..44e6a76 100644
 -                        double heightOffFac = yDist > 0 ? heightrnd * heightrnd : 0;
 -
 -                        ydistRel = yDist * yDist / (vRadiusSq + heightOffFac);
--
--                        if (xdistRel + ydistRel + zdistRel > 1.0 || y > worldheight - 1) continue;
 +            float genHorRadius = horRadius;
 +            float genVertRadius = vertRadius;
+ 
+-                        if (xdistRel + ydistRel + zdistRel > 1.0 || y > worldheight - 1) continue;
++            float checkHorRadius = horRadius + 1;
++            float checkVertRadius = vertRadius + 2;
  
 -                        int ly = y % chunksize;
 -                        var block = api.World.Blocks[chunks[y / chunksize].Data.GetFluid((ly * chunksize + lz) * chunksize + lx)];
@@ -659,13 +670,13 @@ index 30f034d..44e6a76 100644
 -                    }
 -                }
 -            }
-+            float checkHorRadius = horRadius + 1;
-+            float checkVertRadius = vertRadius + 2;
- 
 +            int mindx = (int)GameMath.Clamp(centerX - checkHorRadius, 0, chunksize - 1);
 +            int maxdx = (int)GameMath.Clamp(centerX + checkHorRadius + 1, 0, chunksize - 1);
 +            int mindz = (int)GameMath.Clamp(centerZ - checkHorRadius, 0, chunksize - 1);
 +            int maxdz = (int)GameMath.Clamp(centerZ + checkHorRadius + 1, 0, chunksize - 1);
+ 
++            int mindy = (int)GameMath.Clamp(centerY - checkVertRadius * 0.7f, 1, worldheight - 1);
++            int maxdy = (int)GameMath.Clamp(centerY + checkVertRadius + 1, 1, worldheight - 1);
  
 -            horRadius--;
 -            vertRadius-=2;
@@ -680,9 +691,7 @@ index 30f034d..44e6a76 100644
 -
 -            hRadiusSq = horRadius * horRadius;
 -            vRadiusSq = vertRadius * vertRadius;
-+            int mindy = (int)GameMath.Clamp(centerY - checkVertRadius * 0.7f, 1, worldheight - 1);
-+            int maxdy = (int)GameMath.Clamp(centerY + checkVertRadius + 1, 1, worldheight - 1);
- 
+-
 +            double genHorRadiusSq = genHorRadius * genHorRadius;
 +            double genVertRadiusSq = genVertRadius * genVertRadius;
 +            double checkHorRadiusSq = checkHorRadius * checkHorRadius;
@@ -768,14 +777,14 @@ index 30f034d..44e6a76 100644
                              {
 -                                chunkBlockData[index3d] = 0;
 -                                if (y > yLavaStart)
+-                                {
+-                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
+-                                } else
 +                                int chunkY = y / chunksize;
 +                                int localY = y % chunksize;
 +                                var block = api.World.Blocks[chunks[chunkY].Data.GetFluid((localY * chunksize + lz) * chunksize + lx)];
 +                                if (block.LiquidCode != null)
                                  {
--                                    chunkBlockData[index3d] = gcfg.basaltBlockId;
--                                } else
--                                {
 -                                    chunkBlockData.SetFluid(index3d, gcfg.lavaBlockId);
 +                                    return false;
                                  }
@@ -895,7 +904,7 @@ index 30f034d..44e6a76 100644
              }
  
              return true;
-@@ -669,8 +842,7 @@ namespace Vintagestory.ServerMods
+@@ -669,8 +846,7 @@ namespace Vintagestory.ServerMods
              int rlX = (posx / chunksize) % regionChunkSize;
              int rlZ = (posz / chunksize) % regionChunkSize;
  
