@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
-index 5f759f1..4a8987f 100644
+index 5f759f1..fac1da0 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerra.cs
 @@ -1,7 +1,8 @@
@@ -168,7 +168,7 @@ index 5f759f1..4a8987f 100644
              borderIndicesByCardinal[Cardinal.NorthEast] = (chunksize - 1) * chunksize + 0;
              borderIndicesByCardinal[Cardinal.SouthEast] = 0 + 0;
              borderIndicesByCardinal[Cardinal.SouthWest] = 0 + chunksize - 1;
-@@ -166,118 +236,182 @@ namespace Vintagestory.ServerMods
+@@ -166,118 +236,195 @@ namespace Vintagestory.ServerMods
          }
  
  
@@ -219,10 +219,6 @@ index 5f759f1..4a8987f 100644
 -                {
 -                    borderIndicesByCardinal[Cardinal.North] = (chunksize - 1) * chunksize + dx;
 -                    borderIndicesByCardinal[Cardinal.South] = 0 + dx;
-+            bool hadPrevious = frames.Count > 0;
-+            StratumColumnBufferFrame previousFrame = hadPrevious ? frames.Peek() : default;
- 
--                    for (int dz = 0; dz < chunksize; dz++)
 +            StratumColumnBufferFrame frame = new StratumColumnBufferFrame
 +            {
 +                StratumOwner = this,
@@ -230,7 +226,8 @@ index 5f759f1..4a8987f 100644
 +                StratumBorderIndices = currentBorderIndicesByCardinal
 +            };
 +            frames.Push(frame);
-+
+ 
+-                    for (int dz = 0; dz < chunksize; dz++)
 +            try
 +            {
 +                // Smoothing writes to buf.TaperMap via local currentBorderIndicesByCardinal —
@@ -239,15 +236,15 @@ index 5f759f1..4a8987f 100644
 +                {
 +                    var neibHeightMaps = request.NeighbourTerrainHeight;
 +                    if (neibHeightMaps[Cardinal.North] != null)
-                     {
--                        double sumWeight = 0;
--                        double ypos = 0;
--                        float maxWeight = 0;
++                    {
 +                        neibHeightMaps[Cardinal.NorthEast] = null;
 +                        neibHeightMaps[Cardinal.NorthWest] = null;
 +                    }
 +                    if (neibHeightMaps[Cardinal.East] != null)
-+                    {
+                     {
+-                        double sumWeight = 0;
+-                        double ypos = 0;
+-                        float maxWeight = 0;
 +                        neibHeightMaps[Cardinal.NorthEast] = null;
 +                        neibHeightMaps[Cardinal.SouthEast] = null;
 +                    }
@@ -400,14 +397,30 @@ index 5f759f1..4a8987f 100644
 -            }
 +                frames.Pop();
 +                ReturnColumnBuffers(buf);
++
++                // Walk the remaining stack for the nearest frame still owned by this instance and restore
++                // its buffers only if one exists. Comparing against just the immediate previous frame was
++                // insufficient under deeper same-thread nesting (e.g. X inside Y inside X): that would leave
++                // a paused outer generate() of this instance reading a buffer already returned to the pool.
++                ColumnBuffers restoreBuffers = null;
++                int[] restoreBorderIndices = null;
++                foreach (StratumColumnBufferFrame f in frames)
++                {
++                    if (f.StratumOwner == this)
++                    {
++                        restoreBuffers = f.StratumBuffers;
++                        restoreBorderIndices = f.StratumBorderIndices;
++                        break;
++                    }
++                }
  
 -            generate(request.Chunks, request.ChunkX, request.ChunkZ, request.RequiresChunkBorderSmoothing);
-+                if (hadPrevious && !stratumUseFastGenerate)
++                if (restoreBuffers != null && !stratumUseFastGenerate)
 +                {
 +                    lock (stratumVanillaGenerateLock)
 +                    {
-+                        stratumPublishColumnBuffers(previousFrame.StratumBuffers);
-+                        borderIndicesByCardinal = previousFrame.StratumBorderIndices;
++                        stratumPublishColumnBuffers(restoreBuffers);
++                        borderIndicesByCardinal = restoreBorderIndices;
 +                    }
 +                }
 +            }
@@ -428,7 +441,7 @@ index 5f759f1..4a8987f 100644
              IMapChunk mapchunk = chunks[0].MapChunk;
              const int chunksize = GlobalConstants.ChunkSize;
  
-@@ -297,14 +431,14 @@ namespace Vintagestory.ServerMods
+@@ -297,14 +444,14 @@ namespace Vintagestory.ServerMods
              int climateUpLeft = climateMap.GetUnpaddedInt((int)(rlX * cfac), (int)(rlZ * cfac));
              int climateUpRight = climateMap.GetUnpaddedInt((int)(rlX * cfac + cfac), (int)(rlZ * cfac));
              int climateBotLeft = climateMap.GetUnpaddedInt((int)(rlX * cfac), (int)(rlZ * cfac + cfac));
@@ -447,7 +460,7 @@ index 5f759f1..4a8987f 100644
                  float ofac = (float)oceanMap.InnerSize / regionChunkSize;
                  oceanUpLeft = oceanMap.GetUnpaddedInt((int)(rlX * ofac), (int)(rlZ * ofac));
                  oceanUpRight = oceanMap.GetUnpaddedInt((int)(rlX * ofac + ofac), (int)(rlZ * ofac));
-@@ -426,11 +560,11 @@ namespace Vintagestory.ServerMods
+@@ -426,11 +573,11 @@ namespace Vintagestory.ServerMods
                          double th = posY > wtaper.TerrainYPos ? 1 : -1;
  
                          var ydiff = Math.Abs(posY - wtaper.TerrainYPos);
@@ -460,7 +473,7 @@ index 5f759f1..4a8987f 100644
                      }
  
                      // Often we don't need to calculate the noise.
-@@ -564,20 +698,480 @@ namespace Vintagestory.ServerMods
+@@ -564,20 +711,480 @@ namespace Vintagestory.ServerMods
  
              chunks[0].MapChunk.YMax = ymax;
          }
@@ -947,7 +960,7 @@ index 5f759f1..4a8987f 100644
          }
  
  
-@@ -692,6 +1286,109 @@ namespace Vintagestory.ServerMods
+@@ -692,6 +1299,109 @@ namespace Vintagestory.ServerMods
          {
              public double X, Z;
              public static VectorXZ operator *(VectorXZ a, double b) => new VectorXZ { X = a.X * b, Z = a.Z * b };
