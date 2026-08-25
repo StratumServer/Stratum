@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
-index 30f034d..c034eed 100644
+index 30f034d..9630057 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/3.GenCaves/GenCaves.cs
 @@ -10,19 +10,51 @@ namespace Vintagestory.ServerMods
@@ -233,10 +233,10 @@ index 30f034d..c034eed 100644
 +                        cmd.worldgenBlockAccessor.BeginColumn();
  
 -            airBlockId = 0;
-+                        // Run lighting recalculation (like in GenLightSurvival)
-+                        // Stratum: ScheduleBlockLightUpdate and RunScheduledBlockLightUpdates are now
-+                        // thread-safe (protected by lightUpdatesLock inside BlockAccessorWorldGen),
-+                        // so no external locking needed.
++                        // Stratum: ScheduleBlockLightUpdate and RunScheduledBlockLightUpdates are
++                        // thread-safe via a lock-free ConcurrentStack on the map chunk (the drain
++                        // merges into a freshly allocated list, so it never aliases a batch another
++                        // thread can enumerate). No external locking needed.
 +                        api.WorldManager.SunFloodChunkColumnForWorldGen(chunks, chunkX, chunkZ);
 +                        cmd.worldgenBlockAccessor.RunScheduledBlockLightUpdates(chunkX, chunkZ);
  

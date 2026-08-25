@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
-index 33c394d..18c7503 100644
+index 33c394d..55eb54f 100644
 --- a/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
 +++ b/VintagestoryLib/Vintagestory.Server/BlockAccessorWorldGen.cs
 @@ -27,10 +27,12 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
@@ -15,7 +15,7 @@ index 33c394d..18c7503 100644
  	public IServerWorldAccessor WorldgenWorldAccessor => worldgenWorldAccessor ?? (worldgenWorldAccessor = new WorldgenWorldAccessor((IServerWorldAccessor)worldAccessor, this));
  
  	public BlockAccessorWorldGen(ServerMain server, WorldMap worldmap, ChunkServerThread chunkdbthread)
-@@ -47,42 +49,55 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -47,42 +49,56 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		if (serverMapChunk == null)
  		{
  			ServerMain.Logger.Worldgen("Mapchunk was null when scheduling a blocklight update at " + pos);
@@ -65,7 +65,8 @@ index 33c394d..18c7503 100644
 +		// Stratum start: lock-free drain = snapshot before iterating. Batches pushed
 +		// while the drain runs stay queued for the next pass; the illuminator receives
 +		// a private list no other thread can mutate, and no lock is held anywhere on
-+		// this path.
++		// this path. The merged list is always freshly allocated so it never aliases an
++		// entry FastSerialize may still be enumerating (that would be concurrent mutation).
 +		List<Vec4i> merged = null;
 +		while (serverMapChunk.stratumLightUpdateBatches.TryPop(out List<Vec4i> batch))
  		{
@@ -76,8 +77,8 @@ index 33c394d..18c7503 100644
 -			{
 -				server.WorldMap.chunkIlluminatorWorldGen.PlaceBlockLight(lightHsv, blockPos.X, blockPos.InternalY, blockPos.Z);
 -			}
-+			if (merged == null) merged = batch;  // common case: one batch, zero-copy
-+			else merged.AddRange(batch);         // order irrelevant: entries are light sources
++			if (merged == null) merged = new List<Vec4i>(batch);   // fresh list; never alias a stack entry FastSerialize may enumerate
++			else merged.AddRange(batch);                            // order irrelevant: entries are light sources
  		}
 -		serverMapChunk.ScheduledBlockLightUpdates = null;
 +		if (merged == null || merged.Count == 0) return;
@@ -89,7 +90,7 @@ index 33c394d..18c7503 100644
  	public void ScheduleBlockUpdate(BlockPos pos)
  	{
  		ChunkColumnLoadRequest chunkRequestAtPos = chunkdbthread.GetChunkRequestAtPos(pos.X, pos.Z);
-@@ -133,22 +148,25 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -133,22 +149,25 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		return chunkdbthread.GetMapRegion(regionX, regionZ);
  	}
  
@@ -118,7 +119,7 @@ index 33c394d..18c7503 100644
  			{
  				serverChunk.Unpack();
  				cachedChunkIndex3d = num;
-@@ -159,11 +177,11 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -159,11 +178,11 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  		{
  			return serverChunk.Data.GetBlockId(worldmap.ChunkSizedIndex3D(posX & MagicNum.ServerChunkSizeMask, posY & MagicNum.ServerChunkSizeMask, posZ & MagicNum.ServerChunkSizeMask), layer);
  		}
@@ -131,7 +132,7 @@ index 33c394d..18c7503 100644
  		else
  		{
  			ServerMain.Logger.Notification("Tried to get block outside generating chunks! Set RuntimeEnv.DebugOutOfRangeBlockAccess to debug.");
-@@ -220,38 +238,43 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -220,38 +239,43 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  	}
  
  	protected int SetSolidBlock(ServerChunk chunk, BlockPos pos, Block newBlock, int blockId)
@@ -188,7 +189,7 @@ index 33c394d..18c7503 100644
  
  	public void SetFluidBlock(int blockId, BlockPos pos)
  	{
-@@ -308,11 +331,17 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
+@@ -308,11 +332,17 @@ public class BlockAccessorWorldGen : BlockAccessorBase, IWorldGenBlockAccessor,
  			Block localBlockAtBlockPos = generatingChunkAtPos.GetLocalBlockAtBlockPos(server, position);
  			blockEntity.CreateBehaviors(localBlockAtBlockPos, server);
  			blockEntity.Pos = position.Copy();
