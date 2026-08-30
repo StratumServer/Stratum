@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
-index 79c481d..02503c7 100644
+index 79c481d..a18724e 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/1.GenTerra/GenTerraPostProcess.cs
-@@ -16,10 +16,41 @@ namespace Vintagestory.ServerMods
+@@ -16,10 +16,45 @@ namespace Vintagestory.ServerMods
          IWorldGenBlockAccessor blockAccessor;
  
          HashSet<int> chunkVisitedNodes = new HashSet<int>();
@@ -17,6 +17,10 @@ index 79c481d..02503c7 100644
 +        [ThreadStatic] private static GenTerraPostProcess stratumStateOwner;
 +        [ThreadStatic] private static GenTerraPostProcess stratumActiveOwner;
 +        [ThreadStatic] private static int stratumActiveDepth;
++
++        // Stratum: thread-local snapshot arrays for the entire chunk column (subchunks).
++        // Replaces millions of slow GetBlockIdUnsafe calls with fast array indexing during scanning.
++        [ThreadStatic] private static int[][] stratumChunkData;
 +
 +        // Stratum: clear active TLS state on every handler exit without allocating on the hot path.
 +        private readonly struct StratumPostProcessCallScope : IDisposable
@@ -44,12 +48,18 @@ index 79c481d..02503c7 100644
              return side == EnumAppSide.Server;
          }
  
-@@ -56,10 +87,23 @@ namespace Vintagestory.ServerMods
+@@ -55,22 +90,77 @@ namespace Vintagestory.ServerMods
+             int seaLevel = TerraGenConfig.seaLevel - 1;
              const int chunksize = GlobalConstants.ChunkSize;
              const int chunksizeSquared = chunksize * chunksize;
              int chunkY = seaLevel / chunksize;
              int yMax = chunks[0].MapChunk.YMax;
++
++            // Stratum: limit cyMax to the actual length of the chunks array,
++            // to avoid an IndexOutOfRangeException when accessing chunks[cy]
              int cyMax = Math.Min(yMax / chunksize + 1, api.World.BlockAccessor.MapSizeY / chunksize);
++            if (cyMax > chunks.Length) cyMax = chunks.Length;
++
 +            if (stratumStateOwner != this)
 +            {
 +                stratumStateOwner = this;
@@ -58,17 +68,113 @@ index 79c481d..02503c7 100644
 +                stratumBfsQueue = new QueueOfInt();
 +                stratumCurrentVisited = new int[ARRAYSIZE * ARRAYSIZE * ARRAYSIZE];
 +                stratumIteration = 0;
++
++                // Stratum: allocate thread-local snapshot arrays for the entire column height.
++                stratumChunkData = new int[cyMax][];
++            }
++            // Stratum: if the thread was already used previously, but for a column with a smaller height,
++            // reallocate the array to accommodate the current cyMax
++            else if (stratumChunkData == null || stratumChunkData.Length < cyMax)
++            {
++                var oldData = stratumChunkData;
++                stratumChunkData = new int[cyMax][];
++                if (oldData != null)
++                {
++                    int copyLen = Math.Min(oldData.Length, cyMax);
++                    Array.Copy(oldData, stratumChunkData, copyLen);
++                }
++            }
++
++            // Stratum: snapshot phase - copy all subchunk block data into thread-local arrays ONCE.
++            // This is the key optimization: we read from these flat int[] arrays during scanning
++            // instead of calling GetBlockIdUnsafe (palette decode + lock checks) millions of times.
++            for (int cy = 0; cy < cyMax; cy++)
++            {
++                if (stratumChunkData[cy] == null)
++                {
++                    stratumChunkData[cy] = new int[chunksize * chunksize * chunksize];
++                }
++
++                // Stratum: protect against NRE if chunks[cy] or its Data is null
++                if (chunks[cy]?.Data != null)
++                {
++                    chunks[cy].Data.CopyBlocksToUnsafe(stratumChunkData[cy]);
++                }
++                else
++                {
++                    Array.Clear(stratumChunkData[cy], 0, stratumChunkData[cy].Length);
++                }
 +            }
 +
 +            using StratumPostProcessCallScope stratumCallScope = new StratumPostProcessCallScope(this);
++
 +            HashSet<int> chunkVisitedNodes = stratumChunkVisitedNodes;
-+            this.chunkVisitedNodes = chunkVisitedNodes; // Stratum: publish the active set through the vanilla field.
++            this.chunkVisitedNodes = chunkVisitedNodes; // publish the active set through the vanilla field.
              chunkVisitedNodes.Clear();
  
              for (int cy = chunkY; cy < cyMax; cy++)
              {
-                 IChunkBlocks chunkdata = chunks[cy].Data;
-@@ -116,18 +160,29 @@ namespace Vintagestory.ServerMods
+-                IChunkBlocks chunkdata = chunks[cy].Data;
++                int[] subchunkData = stratumChunkData[cy]; // Stratum: fast-path reference to snapshot array.
+ 
+-                int yStart = cy == 0 ? 1 : 0;  // Prevents attempts to get a blockbelow with y == -1 - impossible unless seaLeavel is set to 0
++                int yStart = cy == 0 ? 1 : 0;
+                 int baseY = cy * chunksize;
+                 if (baseY < seaLevel)
+                 {
+-                    yStart = seaLevel - baseY;  // Can't be more than chunksize below seaLevel, because of chunkY's initial value
++                    yStart = seaLevel - baseY;
+                 }
+                 int yEnd = chunksize - 1;
+                 if (baseY + yEnd > yMax)
+                 {
+                     yEnd = yMax - baseY;
+@@ -81,28 +171,40 @@ namespace Vintagestory.ServerMods
+                     int blockIdBelow;
+                     int index3d = baseindex3d + (yStart - 1) * chunksizeSquared;
+ 
+                     if (yStart == 0)
+                     {
+-                        blockIdBelow = chunks[cy - 1].Data.GetBlockIdUnsafe(index3d + chunksize * chunksizeSquared);
++                        // Stratum: read from previous subchunk's snapshot at local y=31.
++                        // Equivalent to original: chunks[cy-1].Data.GetBlockIdUnsafe(index3d + chunksize*chunksizeSquared)
++                        // Stratum fix #4: protect against accessing cy-1 when cy == 0 (although yStart==0 shouldn't happen when cy==0,
++                        // it's better to be safe against an incorrect seaLevel)
++                        if (cy > 0 && stratumChunkData[cy - 1] != null)
++                        {
++                            blockIdBelow = stratumChunkData[cy - 1][baseindex3d + 31 * chunksizeSquared];
++                        }
++                        else
++                        {
++                            blockIdBelow = 0;
++                        }
+                     }
+                     else
+                     {
+-                        blockIdBelow = chunkdata.GetBlockIdUnsafe(index3d);
++                        blockIdBelow = subchunkData[index3d];
+                     }
+ 
+                     for (int y = yStart; y <= yEnd; y++)
+                     {
+                         index3d += chunksizeSquared;
+-                        int blockId = chunkdata.GetBlockIdUnsafe(index3d);
++                        int blockId = subchunkData[index3d]; // Stratum: read from snapshot array instead of GetUnsafe.
++
+                         if (blockId != 0 && blockIdBelow == 0)
+                         {
+                             int x = baseindex3d % chunksize;
+                             int z = baseindex3d / chunksize;
+                             if (!chunkVisitedNodes.Contains(index3d)) deletePotentialFloatingBlocks(chunkX * chunksize + x, baseY + y, chunkZ * chunksize + z);
+                         }
+-                        blockIdBelow = blockId;  // ready for the next iteration in the loop
++                        blockIdBelow = blockId;
+                     }
+                 }
+             }
+         }
+ 
+@@ -116,18 +218,29 @@ namespace Vintagestory.ServerMods
          /// <summary>
          /// Very similar to RoomRegistry room search code: we will search for contiguous islands of blocks, surrounded by air on all sides
          /// </summary>
@@ -99,7 +205,7 @@ index 79c481d..02503c7 100644
  
              int baseX = X - halfSize;
              int baseY = Y - halfSize;
-@@ -225,11 +280,18 @@ namespace Vintagestory.ServerMods
+@@ -225,11 +338,18 @@ namespace Vintagestory.ServerMods
              if (((nposZ ^ origZ) & chunkMask) != 0) return;
              if (((nposY ^ origY) & chunkMask) != 0) return;
  
