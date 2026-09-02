@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/Model/Animation/AnimationManager.cs b/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
-index 573ec12..de0f300 100644
+index 573ec12..74acb9a 100644
 --- a/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
 +++ b/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
 @@ -27,11 +27,23 @@ namespace Vintagestory.API.Common
@@ -314,7 +314,7 @@ index 573ec12..de0f300 100644
                      val.Value.StartFrameOnce = anim.CurrentFrame;
                  }
  
-@@ -446,14 +595,16 @@ namespace Vintagestory.API.Common
+@@ -446,15 +595,28 @@ namespace Vintagestory.API.Common
          /// The event fired at each server tick.
          /// </summary>
          /// <param name="dt"></param>
@@ -327,14 +327,27 @@ index 573ec12..de0f300 100644
              {
 -                Animator.CalculateMatrices = !entity.Alive || entity.requirePosesOnServer;
 -                Animator.OnFrame(ActiveAnimationsByAnimCode, dt);
+-                AdjustCollisionBoxToAnimation = ActiveAnimationsByAnimCode.Any(anim => anim.Value.AdjustCollisionBox);
 +                stratumAnimator.CalculateMatrices = !entity.Alive || entity.requirePosesOnServer;
 +                stratumAnimator.OnFrame(ActiveAnimationsByAnimCode, dt);
-                 AdjustCollisionBoxToAnimation = ActiveAnimationsByAnimCode.Any(anim => anim.Value.AdjustCollisionBox);
++                // Stratum start: plain loop, the LINQ Any allocated an enumerator and a closure per entity per tick
++                bool stratumAdjustCollisionBox = false;
++                foreach (KeyValuePair<string, AnimationMetaData> stratumAnim in ActiveAnimationsByAnimCode)
++                {
++                    if (stratumAnim.Value.AdjustCollisionBox)
++                    {
++                        stratumAdjustCollisionBox = true;
++                        break;
++                    }
++                }
++                AdjustCollisionBoxToAnimation = stratumAdjustCollisionBox;
++                // Stratum end
              }
  
              runTriggers();
          }
-@@ -495,10 +646,11 @@ namespace Vintagestory.API.Common
+ 
+@@ -495,10 +657,11 @@ namespace Vintagestory.API.Common
              }
          }
  
@@ -346,7 +359,7 @@ index 573ec12..de0f300 100644
          }
  
          private void runTriggers()
-@@ -537,11 +689,11 @@ namespace Vintagestory.API.Common
+@@ -537,11 +700,11 @@ namespace Vintagestory.API.Common
              }
          }
  

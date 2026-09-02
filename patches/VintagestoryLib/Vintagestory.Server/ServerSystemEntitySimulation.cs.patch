@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..7b3f2ad 100644
+index ea1d5c0..8c91c9d 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -500,7 +500,7 @@ index ea1d5c0..7b3f2ad 100644
  		SendEntityDespawns();
  		int count = server.DelayedSpawnQueue.Count;
  		if (count <= 0)
-@@ -185,19 +542,150 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -185,19 +542,151 @@ public class ServerSystemEntitySimulation : ServerSystem
  		}
  	}
  
@@ -512,6 +512,7 @@ index ea1d5c0..7b3f2ad 100644
 +		list.Clear();
 +		StratumEntityTickingConfig stratumEntityTicking = StratumRuntime.Config.Performance.EntityTicking;
 +		StratumRegionTickingConfig stratumRegionTicking = StratumRuntime.Config.Performance.RegionTicking;
++		ServerAnimator.StratumLazyPoses = stratumEntityTicking.LazyServerPoses; // Stratum: lazy server poses, hot-reloadable
 +		BuildStratumPlayerPositions();
 +		if (stratumRegionTicking.Enabled)
 +		{
@@ -654,7 +655,7 @@ index ea1d5c0..7b3f2ad 100644
  				{
  					if (value is EntityPlayer entityPlayer)
  					{
-@@ -209,12 +697,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -209,12 +698,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
  						ServerMain.Logger.Error(e);
  					}
@@ -672,7 +673,7 @@ index ea1d5c0..7b3f2ad 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +715,857 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +716,857 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -1534,7 +1535,7 @@ index ea1d5c0..7b3f2ad 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -257,10 +1580,16 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -257,10 +1581,16 @@ public class ServerSystemEntitySimulation : ServerSystem
  		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !player.IsInInteractionRangeOf(entity))
  		{
  			ServerMain.Logger.Audit("{0} tried to interact with an entity out of range.", player.PlayerName);
@@ -1551,7 +1552,7 @@ index ea1d5c0..7b3f2ad 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1608,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1609,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1600,7 +1601,7 @@ index ea1d5c0..7b3f2ad 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,16 +1745,24 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,16 +1746,24 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1627,7 +1628,7 @@ index ea1d5c0..7b3f2ad 100644
  			item.Entityplayer.DeadNotify = false;
  			item.WorldData.Deaths++;
  			server.EventManager.TriggerPlayerDeath(item.Player, item.Entityplayer.DeathReason);
-@@ -401,13 +1770,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -401,13 +1771,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  			{
  				Id = 45,
  				PlayerDeath = new Packet_PlayerDeath
@@ -1646,7 +1647,7 @@ index ea1d5c0..7b3f2ad 100644
  			string text = "";
  			if (num2)
  			{
-@@ -422,10 +1795,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1796,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

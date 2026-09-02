@@ -1,0 +1,54 @@
+diff --git a/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs b/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
+index c6363d0..f40583c 100644
+--- a/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
++++ b/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
+@@ -103,10 +103,49 @@ namespace Vintagestory.API.Common
+ 
+             LoadAttachmentPoints(RootPoses);
+             initFields();
+         }
+ 
++        // Stratum start: lazy server poses. Vanilla recomputes the whole skeleton every tick for
++        // every entity with requirePosesOnServer (that is every player) and for every dead entity,
++        // but the server only reads those poses through GetAttachmentPointPose and GetPosebyName,
++        // and only from a few places (boat seats, ropes, immersive first person eye position,
++        // pouring, fishing). Mark the poses stale each frame and recompute on the first read.
++        // With 40 seraph elements this is 5 to 7 microseconds per player per tick otherwise.
++        public static bool StratumLazyPoses = true;
++        private bool stratumPosesStale;
++        private float stratumLastDt;
++        private readonly object stratumPoseLock = new object();
++
++        protected override void calculateMatrices(float dt)
++        {
++            if (StratumLazyPoses && CalculateMatrices)
++            {
++                stratumPosesStale = true;
++                stratumLastDt = dt;
++                return;
++            }
++
++            base.calculateMatrices(dt);
++        }
++
++        protected override void StratumEnsurePosesFresh()
++        {
++            if (!stratumPosesStale) return;
++
++            // Readers can come from a physics thread while the main thread ticks the animation.
++            // Two readers must not recompute at the same time; the scratch matrices are thread
++            // static but jointsDone and the poses are shared.
++            lock (stratumPoseLock)
++            {
++                if (!stratumPosesStale) return;
++                base.calculateMatrices(stratumLastDt);
++                stratumPosesStale = false;
++            }
++        }
++        // Stratum end
++
+         protected override void LoadPosesAndAttachmentPoints(ShapeElement[] elements, List<ElementPose> intoPoses)
+         {
+             // Tyron Oct 3, 2024: We used to only load root poses and root attachment points here server side
+             // Its just not feasible anymore with the Center AP being at non-root elements and also its inconsistent with the Client side
+             // And also this optimization does not really help much i think. We only calculate matrices server side on dead creatures anyway
