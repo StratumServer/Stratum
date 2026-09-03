@@ -1,8 +1,8 @@
 diff --git a/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs b/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
-index c6363d0..e9f0c8b 100644
+index c6363d0..391ab4b 100644
 --- a/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
 +++ b/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
-@@ -103,10 +103,60 @@ namespace Vintagestory.API.Common
+@@ -103,10 +103,62 @@ namespace Vintagestory.API.Common
  
              LoadAttachmentPoints(RootPoses);
              initFields();
@@ -15,7 +15,9 @@ index c6363d0..e9f0c8b 100644
 +        // pouring, fishing). Mark the poses stale each frame and recompute on the first read.
 +        // With 40 seraph elements this is 5 to 7 microseconds per player per tick otherwise.
 +        public static bool StratumLazyPoses = true;
-+        private bool stratumPosesStale;
++        // Volatile: the first check in StratumEnsurePosesFresh runs outside the lock, and the
++        // writer sets this on the main thread while readers can be on physics threads.
++        private volatile bool stratumPosesStale;
 +        private float stratumLastDt;
 +        private readonly object stratumPoseLock = new object();
 +
