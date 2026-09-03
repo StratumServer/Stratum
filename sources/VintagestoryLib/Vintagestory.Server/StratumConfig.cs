@@ -1266,6 +1266,13 @@ internal class StratumEntityTickingConfig
 
 	public double MovingEntitySpeedThreshold { get; set; } = 0.01;
 
+	// Recompute server-side entity poses (skeleton matrices) only when something reads them
+	// instead of on every tick. Vanilla recomputes them every tick for every player and every
+	// dead entity; the server reads them rarely (boat seats, ropes, immersive first person eye
+	// position, pouring, fishing). Turn off if a mod reads animator poses directly from the
+	// RootPoses field on the server and misbehaves.
+	public bool LazyServerPoses { get; set; } = true;
+
 	// Hard cap on creature entities ticked per server tick (round-robin fairness via accumulated dt).
 	// 0 = unlimited. Recommended ~ (target tick ms) * (ticks-per-ms creature budget).
 	public int MaxCreatureTicksPerTick { get; set; } = 0;

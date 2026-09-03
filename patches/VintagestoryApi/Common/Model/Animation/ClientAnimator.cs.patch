@@ -1,0 +1,16 @@
+diff --git a/VintagestoryApi/Common/Model/Animation/ClientAnimator.cs b/VintagestoryApi/Common/Model/Animation/ClientAnimator.cs
+index 9636237..b9c0440 100644
+--- a/VintagestoryApi/Common/Model/Animation/ClientAnimator.cs
++++ b/VintagestoryApi/Common/Model/Animation/ClientAnimator.cs
+@@ -249,10 +249,11 @@ namespace Vintagestory.API.Common
+             return depth + 1;
+         }
+ 
+         public override ElementPose GetPosebyName(string name, StringComparison stringComparison = StringComparison.InvariantCultureIgnoreCase)
+         {
++            StratumEnsurePosesFresh(); // Stratum: lazy server poses, see ServerAnimator
+             return getPosebyName(RootPoses, name);
+         }
+ 
+         private ElementPose getPosebyName(List<ElementPose> poses, string name, StringComparison stringComparison = StringComparison.InvariantCultureIgnoreCase)
+         {
