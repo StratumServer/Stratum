@@ -1,8 +1,8 @@
 diff --git a/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs b/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
-index c6363d0..f40583c 100644
+index c6363d0..e9f0c8b 100644
 --- a/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
 +++ b/VintagestoryApi/Common/Model/Animation/ServerAnimator.cs
-@@ -103,10 +103,49 @@ namespace Vintagestory.API.Common
+@@ -103,10 +103,60 @@ namespace Vintagestory.API.Common
  
              LoadAttachmentPoints(RootPoses);
              initFields();
@@ -19,6 +19,17 @@ index c6363d0..f40583c 100644
 +        private float stratumLastDt;
 +        private readonly object stratumPoseLock = new object();
 +
++        // The frame update (animation progress, active list, CurAnims) and the lazy recompute
++        // share one lock. A reader on a physics thread can otherwise recompute from animation
++        // state the main thread is in the middle of advancing.
++        public override void OnFrame(Dictionary<string, AnimationMetaData> activeAnimationsByAnimCode, float dt)
++        {
++            lock (stratumPoseLock)
++            {
++                base.OnFrame(activeAnimationsByAnimCode, dt);
++            }
++        }
++
 +        protected override void calculateMatrices(float dt)
 +        {
 +            if (StratumLazyPoses && CalculateMatrices)
@@ -29,15 +40,15 @@ index c6363d0..f40583c 100644
 +            }
 +
 +            base.calculateMatrices(dt);
++            // Eager path computed fresh poses, so a getter must not redo the work. Matters when
++            // lazy poses is switched off at runtime while an entity is still marked stale.
++            stratumPosesStale = false;
 +        }
 +
 +        protected override void StratumEnsurePosesFresh()
 +        {
 +            if (!stratumPosesStale) return;
 +
-+            // Readers can come from a physics thread while the main thread ticks the animation.
-+            // Two readers must not recompute at the same time; the scratch matrices are thread
-+            // static but jointsDone and the poses are shared.
 +            lock (stratumPoseLock)
 +            {
 +                if (!stratumPosesStale) return;
