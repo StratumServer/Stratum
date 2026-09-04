@@ -10,6 +10,7 @@ set -euo pipefail
 #   SMOKE_TEST_PATIENCE - seconds without progress before declaring stall (default: 60)
 #   SMOKE_TEST_PORT     - server port (default: random ephemeral)
 #   SMOKE_TEST_DATA     - server dataPath (default: temp dir, cleaned on exit)
+#   SMOKE_TEST_PROBE    - set to 0 to skip the console command probe (default: 1)
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
@@ -31,6 +32,33 @@ fi
 patience="${SMOKE_TEST_PATIENCE:-60}"
 port="${SMOKE_TEST_PORT:-0}"
 
+# Console command probe. After the server reaches RunGame these lines are piped into
+# its stdin one at a time; the server runs them as console chat commands (a caller
+# that always passes Stratum's own access check, see StratumCommandAccessCatalog) and
+# writes each result to the log, so command registration and argument handling are
+# covered without a game client. probe_expect is index-matched; an empty entry only
+# asserts that the command was dispatched and did not trip the registration error.
+probe_commands=(
+  "/kitedit list"
+  "/kitedit create starter_kit 1"
+  "/kitedit create starter_kit"
+  "/kitedit preview starter_kit"
+  "/kitedit rename starter_kit"
+  "/kitedit list extra"
+  "/kitedit create starter_kit 1 2"
+  "/kit"
+)
+probe_expect=(
+  "No kits exist yet."
+  "/kitedit create takes 1 argument."
+  "Only a connected player can snapshot a kit from their own inventory."
+  "No kit named 'starter_kit'."
+  "Usage: /kitedit rename"
+  "/kitedit list takes no arguments."
+  ""
+  "Only a connected player can use /kit."
+)
+
 # Data path handling.
 own_data=1
 if [[ -n "${SMOKE_TEST_DATA:-}" ]]; then
@@ -42,6 +70,8 @@ fi
 mkdir -p "$data_path"
 
 cleanup() {
+  exec 3>&- 2>/dev/null || true
+  rm -f "$data_path/console.fifo" 2>/dev/null || true
   if [[ "$own_data" == "1" && -d "$data_path" ]]; then
     rm -rf "$data_path"
   fi
@@ -77,8 +107,19 @@ fi
 
 echo "Smoke test: port=$port patience=${patience}s data=$data_path"
 
+# The server's console reader executes whatever a single stdin read returns as one
+# command, so the probe needs a live pipe it can write to one line at a time.
+# Opened read-write so neither open() blocks on the other end.
+console_fifo="$data_path/console.fifo"
+mkfifo "$console_fifo"
+exec 3<>"$console_fifo"
+
 log_file="$data_path/smoke-test.log"
-"$server_bin" --dataPath "$data_path" --port "$port" >"$log_file" 2>&1 &
+# Run from the server's own directory, not repo_root: Mono.Cecil's default assembly
+# resolver searches the process's current directory, and modinfo scanning at boot
+# fails to resolve VintagestoryAPI (silently dropping every mod, "game" included)
+# when launched from anywhere else.
+(cd "$server_dir" && exec "$server_bin" --dataPath "$data_path" --port "$port" <"$console_fifo" >"$log_file" 2>&1) &
 server_pid=$!
 
 last_line_count=0
@@ -125,6 +166,43 @@ while true; do
   fi
 done
 
+log_contains() {
+  grep -qF -- "$1" "$log_file" 2>/dev/null
+}
+
+probe_failures=""
+probe_ran=0
+if [[ "${SMOKE_TEST_PROBE:-1}" == "1" ]] \
+  && kill -0 "$server_pid" 2>/dev/null \
+  && grep -q "Entering runphase RunGame" "$log_file" 2>/dev/null; then
+  probe_ran=1
+  echo "Probing ${#probe_commands[@]} console command(s)..."
+  for cmd in "${probe_commands[@]}"; do
+    printf '%s\n' "$cmd" >&3
+    # One second between writes: two lines that land in the same read would be
+    # submitted to the server as a single bogus command.
+    sleep 1
+  done
+  # Let the results reach the log before grepping.
+  sleep 5
+
+  for i in "${!probe_commands[@]}"; do
+    cmd="${probe_commands[$i]}"
+    if ! log_contains "Handling Console Command $cmd"; then
+      probe_failures+="    not dispatched: $cmd"$'\n'
+      continue
+    fi
+    expected="${probe_expect[$i]}"
+    if [[ -n "$expected" ]] && ! log_contains "$expected"; then
+      probe_failures+="    $cmd -> missing expected output: $expected"$'\n'
+    fi
+  done
+
+  if log_contains "Incomplete command"; then
+    probe_failures+="    command registration incomplete: \"Incomplete command\" appeared in the log"$'\n'
+  fi
+fi
+
 # Shut down.
 if kill -0 "$server_pid" 2>/dev/null; then
   kill -TERM "$server_pid" 2>/dev/null || true
@@ -142,8 +220,12 @@ if grep -qi "Fatal\|Unhandled exception" "$log_file" 2>/dev/null; then
   has_fatal=1
 fi
 
-if [[ "$reached_rungame" == "1" && "$has_fatal" == "0" ]]; then
-  echo "PASS: server reached RunGame, no fatal errors. (last phase: $last_phase)"
+if [[ "$reached_rungame" == "1" && "$has_fatal" == "0" && -z "$probe_failures" ]]; then
+  if [[ "$probe_ran" == "1" ]]; then
+    echo "PASS: server reached RunGame, no fatal errors, ${#probe_commands[@]} console command(s) verified. (last phase: $last_phase)"
+  else
+    echo "PASS: server reached RunGame, no fatal errors. (last phase: $last_phase)"
+  fi
   exit 0
 fi
 
@@ -154,6 +236,10 @@ fi
 if [[ "$has_fatal" == "1" ]]; then
   echo "  Fatal errors:" >&2
   grep -i "Fatal\|Unhandled exception" "$log_file" | head -3 | sed 's/^/    /' >&2
+fi
+if [[ -n "$probe_failures" ]]; then
+  echo "  Console command probe failures:" >&2
+  printf '%s' "$probe_failures" >&2
 fi
 echo "  Log: $log_file" >&2
 exit 1
