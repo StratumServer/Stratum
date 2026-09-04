@@ -27,7 +27,7 @@ internal class CmdStratumKits
 	// unknown-action message, and ActionShape below. Ordered the way an operator uses them.
 	private static readonly string[] KitEditActions =
 	{
-		"list", "create", "additem", "removeitem", "preview", "delete", "rename", "setrole", "setcooldown", "onrespawn", "oneperlife", "give"
+		"list", "create", "additem", "removeitem", "preview", "delete", "rename", "setrole", "setcooldown", "setscope", "onrespawn", "oneperlife", "give"
 	};
 
 	private readonly ServerMain server;
@@ -59,7 +59,7 @@ internal class CmdStratumKits
 		{
 			server.api.commandapi.Create("kitedit")
 				.WithDescription("Create and manage kits")
-				.WithAdditionalInformation("Actions: list, create &lt;name&gt;, additem &lt;name&gt;, removeitem &lt;name&gt; &lt;index&gt;, preview &lt;name&gt;, delete &lt;name&gt;, rename &lt;name&gt; &lt;newName&gt;, setrole &lt;name&gt; &lt;role&gt;, setcooldown &lt;name&gt; &lt;seconds&gt;, onrespawn &lt;name&gt; on|off, oneperlife &lt;name&gt; on|off, give &lt;name&gt; &lt;player&gt;. create snapshots your whole inventory, additem snapshots your active hotbar slot.")
+				.WithAdditionalInformation("Actions: list, create &lt;name&gt;, additem &lt;name&gt;, removeitem &lt;name&gt; &lt;index&gt;, preview &lt;name&gt;, delete &lt;name&gt;, rename &lt;name&gt; &lt;newName&gt;, setrole &lt;name&gt; &lt;role&gt;, setcooldown &lt;name&gt; &lt;seconds&gt;, setscope &lt;name&gt; all|hotbar, onrespawn &lt;name&gt; on|off, oneperlife &lt;name&gt; on|off, give &lt;name&gt; &lt;player&gt;. create snapshots your whole inventory (or only your hotbar and offhand, if scope is hotbar), additem snapshots your active hotbar slot.")
 				.WithArgs(
 					parsers.WordRange("action", KitEditActions),
 					parsers.OptionalWord("name"),
@@ -219,6 +219,7 @@ internal class CmdStratumKits
 			"rename" => RenameKit(name, value),
 			"setrole" => SetRole(name, value),
 			"setcooldown" => SetCooldown(name, value),
+			"setscope" => SetScope(name, value),
 			"onrespawn" => SetFlag(name, value, "onrespawn"),
 			"oneperlife" => SetFlag(name, value, "oneperlife"),
 			"preview" => PreviewKit(name),
@@ -244,6 +245,7 @@ internal class CmdStratumKits
 			"rename" => (2, "/kitedit rename &lt;name&gt; &lt;newName&gt;"),
 			"setrole" => (2, "/kitedit setrole &lt;name&gt; &lt;role&gt;"),
 			"setcooldown" => (2, "/kitedit setcooldown &lt;name&gt; &lt;seconds&gt;"),
+			"setscope" => (2, "/kitedit setscope &lt;name&gt; all|hotbar"),
 			"onrespawn" => (2, "/kitedit onrespawn &lt;name&gt; on|off"),
 			"oneperlife" => (2, "/kitedit oneperlife &lt;name&gt; on|off"),
 			"give" => (2, "/kitedit give &lt;name&gt; &lt;player&gt;"),
@@ -308,13 +310,16 @@ internal class CmdStratumKits
 			return TextCommandResult.Error("Only a connected player can snapshot a kit from their own inventory.");
 		}
 
-		List<StratumKitItem> items = SnapshotInventory(player);
+		StratumKitDefinition existing = StratumKitStore.Find(name);
+		// A re-create keeps whatever scope /kitedit setscope already put on the kit; a brand new
+		// kit defaults to "all", matching the snapshot behavior this command always had.
+		string scope = existing?.Scope ?? "all";
+		List<StratumKitItem> items = SnapshotInventory(player, scope);
 		if (items.Count == 0)
 		{
 			return TextCommandResult.Error("Your inventory is empty; nothing to snapshot.");
 		}
 
-		StratumKitDefinition existing = StratumKitStore.Find(name);
 		StratumKitDefinition kit = existing ?? new StratumKitDefinition
 		{
 			Name = name,
@@ -443,6 +448,27 @@ internal class CmdStratumKits
 		return TextCommandResult.Success(StratumCommandText.Confirm("Cooldown set", kit.Name + " = " + seconds + "s"));
 	}
 
+	// Changes what a future create/re-create captures; does not retroactively filter Items already
+	// stored on the kit. Re-run create afterward to apply the new scope to the item list itself.
+	private TextCommandResult SetScope(string name, string scope)
+	{
+		StratumKitDefinition kit = StratumKitStore.Find(name);
+		if (kit == null)
+		{
+			return TextCommandResult.Error("No kit named '" + name + "'.");
+		}
+
+		string normalized = scope?.ToLowerInvariant();
+		if (normalized != "all" && normalized != "hotbar")
+		{
+			return TextCommandResult.Error("Usage: /kitedit setscope &lt;name&gt; all|hotbar");
+		}
+
+		kit.Scope = normalized;
+		StratumKitStore.Save();
+		return TextCommandResult.Success(StratumCommandText.Confirm("Scope set", kit.Name + " = " + normalized + ". Run /kitedit create " + kit.Name + " again to apply it to the item list."));
+	}
+
 	private TextCommandResult SetFlag(string name, string onOff, string flag)
 	{
 		StratumKitDefinition kit = StratumKitStore.Find(name);
@@ -482,6 +508,7 @@ internal class CmdStratumKits
 
 		StringBuilder output = new StringBuilder(StratumCommandText.Title("Kit: " + kit.Name));
 		output.Append(StratumCommandText.Row("Assigned to", kit.AssignedTo.Count == 0 ? "everyone with stratum.kits" : string.Join(", ", kit.AssignedTo)));
+		output.Append(StratumCommandText.Row("Scope", string.IsNullOrEmpty(kit.Scope) ? "all" : kit.Scope));
 		output.Append(StratumCommandText.Row("Cooldown", kit.CooldownSeconds + "s"));
 		output.Append(StratumCommandText.Row("One per life", kit.OnePerLife ? "yes" : "no"));
 		output.Append(StratumCommandText.Row("Give on respawn", kit.GiveOnRespawn ? "yes" : "no"));
@@ -548,15 +575,21 @@ internal class CmdStratumKits
 			: TextCommandResult.Success(StratumCommandText.Warning("Kit '" + kit.Name + "' partially given: " + summary));
 	}
 
-	private static List<StratumKitItem> SnapshotInventory(IPlayer player)
+	// "all" walks hotbar and character (worn armor and a worn backpack's own stack included);
+	// "hotbar" walks only the hotbar, which already includes the offhand slot, so nothing worn or
+	// stored in a character equipment slot is captured. A worn backpack's contents are stored in
+	// the backpack stack itself, inside the character inventory; walking the backpack inventory
+	// too would add every content item a second time, so it is never walked directly here either
+	// way.
+	private static List<StratumKitItem> SnapshotInventory(IPlayer player, string scope)
 	{
+		bool hotbarOnly = string.Equals(scope, "hotbar", StringComparison.OrdinalIgnoreCase);
 		List<StratumKitItem> items = new List<StratumKitItem>();
 		foreach (InventoryBase inventory in player.InventoryManager.InventoriesOrdered)
 		{
-			// A worn backpack's contents are stored in the backpack stack in the character inventory.
-			// Walking the backpack inventory too would add every content item a second time.
-			if (inventory.ClassName != GlobalConstants.hotBarInvClassName
-				&& inventory.ClassName != GlobalConstants.characterInvClassName)
+			bool included = inventory.ClassName == GlobalConstants.hotBarInvClassName
+				|| (!hotbarOnly && inventory.ClassName == GlobalConstants.characterInvClassName);
+			if (!included)
 			{
 				continue;
 			}

@@ -44,6 +44,11 @@ internal sealed class StratumKitDefinition
 
 	public bool GiveOnRespawn { get; set; }
 
+	// "all" (default) snapshots hotbar and character inventory, worn armor and backpack included.
+	// "hotbar" snapshots only the hotbar (which already includes the offhand slot). Set with
+	// /kitedit setscope; applied on the next create, not retroactively to Items already stored.
+	public string Scope { get; set; } = "all";
+
 	public string CreatedByUid { get; set; }
 
 	public string CreatedByName { get; set; }

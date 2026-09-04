@@ -97,6 +97,7 @@ dropped, and failed.
 /kitedit rename <name> <newName>
 /kitedit setrole <name> <role>
 /kitedit setcooldown <name> <seconds>
+/kitedit setscope <name> all|hotbar
 /kitedit onrespawn <name> on|off
 /kitedit oneperlife <name> on|off
 /kitedit give <name> <player>
@@ -115,6 +116,7 @@ dropped, and failed.
 | `rename` | `<name> <newName>` | Renames a kit; fails if the new name is already taken. |
 | `setrole` | `<name> <role>` | Toggles a role assignment on the kit (see Assignment below). |
 | `setcooldown` | `<name> <seconds>` | Sets the per-kit redeem cooldown; `0` disables it. |
+| `setscope` | `<name> all\|hotbar` | Sets what a future `create` snapshots for this kit (see Item snapshot behavior below). |
 | `onrespawn` | `<name> on\|off` | Toggles give-on-respawn. |
 | `oneperlife` | `<name> on\|off` | Toggles the once-per-life redeem limit. |
 | `give` | `<name> <player>` | Gives the kit directly to an online player. |
@@ -124,15 +126,34 @@ Action words are lowercase and matched case-sensitively (the game's own
 
 ### Item snapshot behavior
 
-`create` walks only the hotbar and character inventories. A worn backpack's
-contents live inside the backpack's own item stack already, so walking the
-backpack's inventory too would capture its contents a second time; it is
-skipped deliberately. Each item is stored as a `JsonItemStack` (type, code,
+`create`'s scope controls which of your inventories it walks:
+
+- `all` (the default): hotbar and character inventory. This includes worn
+  armor and clothing, and a worn backpack (as a single item; see below) —
+  everything visually equipped on your character, not just what you are
+  holding.
+- `hotbar`: only the hotbar, which already includes the offhand slot.
+  Nothing worn or equipped is captured. Use this when a kit should only
+  ever hand out consumables or tools, never gear the recipient is
+  currently wearing.
+
+Set the scope with `/kitedit setscope <name> all|hotbar` before running
+`create`; scope is a property of the kit, not an argument to `create`
+itself, and it only affects what a *future* `create` captures — it does not
+retroactively filter a kit's existing item list. To reduce an existing
+`all`-scope kit down to `hotbar`, run `setscope` and then run `create`
+again.
+
+A worn backpack's contents (when scope is `all`) live inside the backpack's
+own item stack already, so walking the backpack's separate inventory too
+would capture its contents a second time; that inventory is always skipped
+regardless of scope. Each item is stored as a `JsonItemStack` (type, code,
 stack size, and attributes), with a human-readable code and quantity mirror
 kept alongside it. A kit is a point-in-time snapshot, not a live link to any
 item definition: running `create` again on an existing name replaces the
-item list but keeps the kit's assignment, cooldown, and flags. `additem`
-captures only the item currently in your active hotbar slot.
+item list but keeps the kit's assignment, cooldown, flags, and scope.
+`additem` always captures only the item currently in your active hotbar
+slot, regardless of scope.
 
 ### Assignment
 
@@ -165,8 +186,8 @@ Each action takes exactly the argument count in the table above:
   rejected by the game's own command parser before Stratum ever sees it.
 - An unknown action: `Unknown /kitedit action '<action>'. Actions: list,
   create, additem, removeitem, preview, delete, rename, setrole,
-  setcooldown, onrespawn, oneperlife, give. Run /kitedit list to see
-  existing kits.`
+  setcooldown, setscope, onrespawn, oneperlife, give. Run /kitedit list to
+  see existing kits.`
 
 ### Where changes are saved
 
@@ -176,7 +197,12 @@ Every mutating action writes `stratum-kits.json` immediately. `create` and
 ## Typical workflow
 
 1. Put the exact items you want in the kit into your inventory.
-2. `/kitedit create <name>` to snapshot them.
+2. `/kitedit create <name>` to snapshot them. `setscope` needs the kit to
+   already exist, so this first `create` always captures with the default
+   `all` scope.
+3. If the kit should never include worn armor or clothing, run `/kitedit
+   setscope <name> hotbar`, then run `/kitedit create <name>` again to
+   re-snapshot under the new scope.
 3. Use `additem` / `removeitem` to adjust the item list as needed.
 4. `/kitedit preview <name>` to verify the result.
 5. `/kitedit setrole <name> <role>` if the kit should be limited to a role.
@@ -232,7 +258,7 @@ edit:
 | Registration, privileges, in-game descriptions | `CmdStratumKits` constructor |
 | Action list and argument counts | `CmdStratumKits.KitEditActions`, `CmdStratumKits.ActionShape` |
 | Argument rejection wording | `CmdStratumKits.CheckActionArgs`, `CmdStratumKits.UnknownAction` |
-| Inventory snapshot scope | `CmdStratumKits.SnapshotInventory`, `CmdStratumKits.EncodeStack` |
+| Inventory snapshot scope | `CmdStratumKits.SnapshotInventory`, `CmdStratumKits.EncodeStack`, `CmdStratumKits.SetScope`, `StratumKitDefinition.Scope` |
 | Assignment matching | `CmdStratumKits.IsAssignedTo` |
 | Cooldown and staff bypass | `StratumCommandCooldowns.TryUse` |
 | Once per life | `CmdStratumKits.HasRedeemedThisLife`, `MarkRedeemedThisLife`, `OnPlayerRespawn` |
@@ -244,4 +270,10 @@ edit:
 `scripts/smoke-test.sh` asserts the exact usage and error strings documented
 above by piping the corresponding `/kitedit` and `/kit` commands into a
 running server's console. A wording change here that is not mirrored there
-(or vice versa) fails the smoke test.
+(or vice versa) fails the smoke test. The scope behavior specifically (a
+worn armor piece included under `all`, excluded under `hotbar`) is proven
+against a real connected player's real inventory by the private Atlas
+regression suite (`research/atlas-tests/stratum-pr-validation/KitScenarios.cs`,
+`Create_scope_all_includes_worn_armor_hotbar_excludes_it`), not by the public
+smoke test, since that requires a real player entity a console caller does
+not have.
