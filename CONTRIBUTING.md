@@ -149,7 +149,7 @@ Rules of thumb:
 Compilation is not enough. Before opening a PR:
 
 1. `dotnet build VintageStory.slnx -c Release` is green with zero warnings on files you touched.
-2. Run the smoke test: `make smoke` (or `bash scripts/smoke-test.sh` / `.\scripts\smoke-test.ps1`). It builds, boots the server, waits for RunGame, and checks for fatal errors.
+2. Run the smoke test: `make smoke` (or `bash scripts/smoke-test.sh` / `.\scripts\smoke-test.ps1`). It builds, boots the server, waits for RunGame, checks for fatal errors, and (bash only, set `SMOKE_TEST_PROBE=0` to skip) pipes a small set of console commands into the running server to cover command registration and argument handling end to end.
 3. If your change touches a hot path (entity ticking, chunk IO, packet handling), get a before/after measurement. Server timings, frame profiler output, or a sampling profiler are all fine. "Feels faster" is not.
 
 ## Commits

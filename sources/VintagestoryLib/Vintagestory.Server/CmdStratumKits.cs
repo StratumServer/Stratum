@@ -23,6 +23,13 @@ internal class CmdStratumKits
 {
 	private const string RedeemedThisLifeKey = "stratum.kit.redeemed-this-life.v1";
 
+	// Single source of truth for the /kitedit action words: drives the WordRange parser, the
+	// unknown-action message, and ActionShape below. Ordered the way an operator uses them.
+	private static readonly string[] KitEditActions =
+	{
+		"list", "create", "additem", "removeitem", "preview", "delete", "rename", "setrole", "setcooldown", "onrespawn", "oneperlife", "give"
+	};
+
 	private readonly ServerMain server;
 
 	public CmdStratumKits(ServerMain server)
@@ -40,7 +47,8 @@ internal class CmdStratumKits
 		if (StratumCommandRegistration.ShouldRegister(kitAccess, "/kit", "Commands.Kits"))
 		{
 			server.api.commandapi.Create("kit")
-				.WithDescription("Redeem a kit you have been assigned, or list the ones you can use: /kit [name]")
+				.WithDescription("Redeem a kit you have been assigned, or list the kits you can redeem")
+				.WithAdditionalInformation("/kit lists the kits assigned to you. /kit &lt;name&gt; redeems one. A kit with no role assignment is available to every player with kit access.")
 				.WithArgs(parsers.OptionalWord("name"))
 				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleKit);
@@ -50,11 +58,13 @@ internal class CmdStratumKits
 		if (StratumCommandRegistration.ShouldRegister(kitEditAccess, "/kitedit", "Commands.KitEdit"))
 		{
 			server.api.commandapi.Create("kitedit")
-				.WithDescription("Create and manage kits: /kitedit create|additem|removeitem|delete|rename|setrole|setcooldown|onrespawn|oneperlife|preview|give|list <...>")
+				.WithDescription("Create and manage kits")
+				.WithAdditionalInformation("Actions: list, create &lt;name&gt;, additem &lt;name&gt;, removeitem &lt;name&gt; &lt;index&gt;, preview &lt;name&gt;, delete &lt;name&gt;, rename &lt;name&gt; &lt;newName&gt;, setrole &lt;name&gt; &lt;role&gt;, setcooldown &lt;name&gt; &lt;seconds&gt;, onrespawn &lt;name&gt; on|off, oneperlife &lt;name&gt; on|off, give &lt;name&gt; &lt;player&gt;. create snapshots your whole inventory, additem snapshots your active hotbar slot.")
 				.WithArgs(
-					parsers.WordRange("action", "create", "additem", "removeitem", "delete", "rename", "setrole", "setcooldown", "onrespawn", "oneperlife", "preview", "give", "list"),
+					parsers.WordRange("action", KitEditActions),
 					parsers.OptionalWord("name"),
 					parsers.OptionalWord("value"))
+				.RequiresPrivilege(Privilege.chat)
 				.HandleWith(HandleKitEdit);
 		}
 	}
@@ -131,7 +141,7 @@ internal class CmdStratumKits
 		StratumKitDefinition kit = StratumKitStore.Find(name);
 		if (kit == null)
 		{
-			return TextCommandResult.Error("No kit named '" + name + "'.");
+			return TextCommandResult.Error("No kit named '" + name + "'. Run /kit to see the kits you can redeem.");
 		}
 
 		if (!IsAssignedTo(kit, caller.ServerData))
@@ -195,6 +205,11 @@ internal class CmdStratumKits
 		string name = args.Parsers[1].IsMissing ? null : args[1] as string;
 		string value = args.Parsers[2].IsMissing ? null : args[2] as string;
 
+		if (!CheckActionArgs(action, name, value, out TextCommandResult usage))
+		{
+			return usage;
+		}
+
 		return action switch
 		{
 			"create" => CreateKit(name, args.Caller),
@@ -209,15 +224,82 @@ internal class CmdStratumKits
 			"preview" => PreviewKit(name),
 			"give" => GiveKit(name, value),
 			"list" => ListAllKits(),
-			_ => TextCommandResult.Error("Unknown /kitedit action '" + action + "'.")
+			_ => UnknownAction(action)
 		};
+	}
+
+	// Argument shape per /kitedit action: how many words follow the action, and the usage line to
+	// show when the caller gets it wrong. Angle brackets are written escaped because command
+	// results render as VTML in chat, where a raw <name> is parsed as an unknown tag and dropped.
+	private static (int ArgCount, string Usage) ActionShape(string action)
+	{
+		return action switch
+		{
+			"list" => (0, "/kitedit list"),
+			"create" => (1, "/kitedit create &lt;name&gt;"),
+			"additem" => (1, "/kitedit additem &lt;name&gt;"),
+			"removeitem" => (2, "/kitedit removeitem &lt;name&gt; &lt;index&gt;"),
+			"preview" => (1, "/kitedit preview &lt;name&gt;"),
+			"delete" => (1, "/kitedit delete &lt;name&gt;"),
+			"rename" => (2, "/kitedit rename &lt;name&gt; &lt;newName&gt;"),
+			"setrole" => (2, "/kitedit setrole &lt;name&gt; &lt;role&gt;"),
+			"setcooldown" => (2, "/kitedit setcooldown &lt;name&gt; &lt;seconds&gt;"),
+			"onrespawn" => (2, "/kitedit onrespawn &lt;name&gt; on|off"),
+			"oneperlife" => (2, "/kitedit oneperlife &lt;name&gt; on|off"),
+			"give" => (2, "/kitedit give &lt;name&gt; &lt;player&gt;"),
+			_ => (-1, null)
+		};
+	}
+
+	// The command is registered with two optional word parsers, so vanilla only rejects a fourth
+	// word. An argument the action itself does not take has to be caught here or it is silently
+	// ignored, which is how /kitedit create starter_kit 1 in #293 looked like it had worked.
+	private static bool CheckActionArgs(string action, string name, string value, out TextCommandResult failure)
+	{
+		failure = null;
+		(int expected, string usage) = ActionShape(action);
+		if (usage == null)
+		{
+			failure = UnknownAction(action);
+			return false;
+		}
+
+		int provided = (string.IsNullOrWhiteSpace(name) ? 0 : 1) + (string.IsNullOrWhiteSpace(value) ? 0 : 1);
+		if (provided < expected)
+		{
+			failure = TextCommandResult.Error("Usage: " + usage);
+			return false;
+		}
+
+		if (provided > expected)
+		{
+			failure = TextCommandResult.Error("/kitedit " + action + " takes " + DescribeArgCount(expected) + ". Usage: " + usage);
+			return false;
+		}
+
+		return true;
+	}
+
+	private static string DescribeArgCount(int count)
+	{
+		return count switch
+		{
+			0 => "no arguments",
+			1 => "1 argument",
+			_ => count + " arguments"
+		};
+	}
+
+	private static TextCommandResult UnknownAction(string action)
+	{
+		return TextCommandResult.Error("Unknown /kitedit action '" + action + "'. Actions: " + string.Join(", ", KitEditActions) + ". Run /kitedit list to see existing kits.");
 	}
 
 	private TextCommandResult CreateKit(string name, Caller caller)
 	{
 		if (string.IsNullOrWhiteSpace(name))
 		{
-			return TextCommandResult.Error("Usage: /kitedit create <name>");
+			return TextCommandResult.Error("Usage: /kitedit create &lt;name&gt;");
 		}
 
 		IPlayer player = caller.Player;
@@ -277,7 +359,7 @@ internal class CmdStratumKits
 
 		if (!int.TryParse(indexText, out int index) || index < 1 || index > kit.Items.Count)
 		{
-			return TextCommandResult.Error("Usage: /kitedit removeitem <name> <index 1-" + kit.Items.Count + ">. See /kitedit preview " + kit.Name + ".");
+			return TextCommandResult.Error("Usage: /kitedit removeitem &lt;name&gt; &lt;index 1-" + kit.Items.Count + "&gt;. See /kitedit preview " + kit.Name + ".");
 		}
 
 		StratumKitItem removed = kit.Items[index - 1];
@@ -300,7 +382,7 @@ internal class CmdStratumKits
 	{
 		if (string.IsNullOrWhiteSpace(newName))
 		{
-			return TextCommandResult.Error("Usage: /kitedit rename <name> <newName>");
+			return TextCommandResult.Error("Usage: /kitedit rename &lt;name&gt; &lt;newName&gt;");
 		}
 
 		if (!StratumKitStore.Rename(name, newName))
@@ -324,7 +406,7 @@ internal class CmdStratumKits
 
 		if (string.IsNullOrWhiteSpace(roleCode))
 		{
-			return TextCommandResult.Error("Usage: /kitedit setrole <name> <role>");
+			return TextCommandResult.Error("Usage: /kitedit setrole &lt;name&gt; &lt;role&gt;");
 		}
 
 		if (!server.Config.RolesByCode.ContainsKey(roleCode))
@@ -353,7 +435,7 @@ internal class CmdStratumKits
 
 		if (!int.TryParse(secondsText, out int seconds) || seconds < 0)
 		{
-			return TextCommandResult.Error("Usage: /kitedit setcooldown <name> <seconds>=0");
+			return TextCommandResult.Error("Usage: /kitedit setcooldown &lt;name&gt; &lt;seconds&gt;, 0 disables the cooldown");
 		}
 
 		kit.CooldownSeconds = seconds;
@@ -374,7 +456,7 @@ internal class CmdStratumKits
 			: (bool?)null;
 		if (on == null)
 		{
-			return TextCommandResult.Error("Usage: /kitedit " + flag + " <name> on|off");
+			return TextCommandResult.Error("Usage: /kitedit " + flag + " &lt;name&gt; on|off");
 		}
 
 		if (flag == "onrespawn")
