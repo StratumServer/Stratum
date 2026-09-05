@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
-index 4d0bf91..7e52bfd 100644
+index 4d0bf91..8360927 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 @@ -1,9 +1,13 @@
@@ -297,8 +297,8 @@ index 4d0bf91..7e52bfd 100644
 +		int b3 = (Unsafe.Add(ref base3, arrayIndex) >> shift) & 1;
 +		int b4 = (Unsafe.Add(ref base4, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4)];
- 	}
- 
++	}
++
 +	/// <summary>Stratum: Fast-path read for bit depth of 6. Extracts the six least significant bits from the first six planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetFromBits6(int index3d)
@@ -393,8 +393,8 @@ index 4d0bf91..7e52bfd 100644
 +		int b7 = (Unsafe.Add(ref base7, arrayIndex) >> shift) & 1;
 +		int b8 = (Unsafe.Add(ref base8, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4) | (b5 << 5) | (b6 << 6) | (b7 << 7) | (b8 << 8)];
-+	}
-+
+ 	}
+ 
 +	/// <summary>Stratum: Fast-path read for bit depth of 10. Extracts the ten least significant bits from the first ten planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetFromBits10(int index3d)
@@ -757,7 +757,6 @@ index 4d0bf91..7e52bfd 100644
  		}
  	}
  
--	public int GetUnsafe_PaletteCheck(int index3d)
 +	/// <summary>
 +	/// Stratum: unsafe bulk-read variant of CopyBlocksTo — decodes every block ID in this
 +	/// layer into blocksOut without taking readWriteLock. Null-safe for uninitialized bit-planes.
@@ -765,29 +764,20 @@ index 4d0bf91..7e52bfd 100644
 +	/// scalar fallback for non-AVX2 machines.
 +	/// </summary>
 +	public unsafe void CopyBlocksToUnsafe(int[] blocksOut)
- 	{
--		if (palette == null)
++	{
 +		if (blocksOut == null) return;
 +
 +		if (palette == null || dataBits == null || bitsize == 0)
- 		{
--			return 0;
++		{
 +			Array.Clear(blocksOut, 0, blocksOut.Length);
 +			return;
- 		}
--		return GetUnsafe(index3d);
--	}
- 
--	public int GetUnsafe(int index3d)
--	{
--		try
++		}
++
 +		int num = bitsize > 15 ? 15 : bitsize;
 +
 +		// Stratum: AVX2 path — reuses the same bit-plane → palette decode as CopyBlocksToUnsafe.
 +		if (Avx512F.IsSupported)
- 		{
--			int num = index3d / 32;
--			switch (bitsize)
++		{
 +			DecodePlanesAvx512(blocksOut, dataBits, palette, num);
 +			return;
 +		}
@@ -804,44 +794,21 @@ index 4d0bf91..7e52bfd 100644
 +		for (int word = 0; word < 1024; word++)
 +		{
 +			for (int k = 0; k < num; k++)
- 			{
--			case 0:
--				return 0;
--			case 1:
--				return palette[(dataBit0[num] >> index3d) & 1];
--			case 2:
--				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1)];
--			case 3:
--				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1) + 4 * ((dataBit2[num] >> index3d) & 1)];
--			case 4:
--				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1) + 4 * ((dataBit2[num] >> index3d) & 1) + 8 * ((dataBit3[num] >> index3d) & 1)];
--			case 5:
--				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1) + 4 * ((dataBit2[num] >> index3d) & 1) + 8 * ((dataBit3[num] >> index3d) & 1) + 16 * ((dataBits[4][num] >> index3d) & 1)];
--			default:
++			{
 +				int[] plane = dataBits[k];
 +				words[k] = plane != null ? plane[word] : 0;
 +			}
 +
 +			for (int j = 0; j < 32; j++)
- 			{
--				int num2 = 1;
--				int num3 = (dataBit0[num] >> index3d) & 1;
--				for (int i = 1; i < bitsize; i++)
++			{
 +				int index = 0;
 +				for (int k = 0; k < num; k++)
- 				{
--					num2 *= 2;
--					num3 += ((dataBits[i][num] >> index3d) & 1) * num2;
++				{
 +					index |= ((words[k] >> j) & 1) << k;
- 				}
--				return palette[num3];
--			}
++				}
 +				blocksOut[outIdx++] = (index < palette.Length) ? palette[index] : 0;
- 			}
- 		}
--		catch (NullReferenceException)
--		{
--			if (palette == null)
++			}
++		}
 +	}
 +
 +	// ===== Stratum start: AVX512 decode (64 blocks/iter; vpermd or split-gather lookup) =====
@@ -860,16 +827,13 @@ index 4d0bf91..7e52bfd 100644
 +			// palLen is a power of two; <= 16 means bitsize <= 4, which is the typical terrain case.
 +			Vector512<int> palVec = Vector512<int>.Zero;
 +			if (palLen <= 16)
- 			{
--				throw new Exception("ChunkDataLayer: palette was null, bitsize is " + bitsize);
++			{
 +				for (int i = 0; i < palLen; i++) palVec = palVec.WithElement(i, pPalette[i]);
- 			}
--			if (bitsize > 0 && dataBit0 == null)
++			}
 +			bool perm = palLen <= 16;
 +
 +			for (; word + 1 < 1024; word += 2)
- 			{
--				throw new Exception("ChunkDataLayer: dataBit0 was null, bitsize is " + bitsize + ", dataBits[0] null:" + (dataBits[0] == null));
++			{
 +				long uniIdx;
 +				int mixed = LoadWordsAndClassify2(w0, w1, planes, num, word, out uniIdx);
 +				if (perm)
@@ -877,17 +841,14 @@ index 4d0bf91..7e52bfd 100644
 +				else
 +					DecodeWordAvx512_Gather(w0, w1, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
 +				outIdx += 64;
- 			}
--			if (bitsize > 1 && dataBit1 == null)
++			}
 +			if (word < 1024)
- 			{
--				throw new Exception("ChunkDataLayer: dataBit1 was null, bitsize is " + bitsize + ", dataBits[1] null:" + (dataBits[1] == null));
++			{
 +				// Tail: single word (32 blocks) — reuse scalar AVX2 decoder.
 +				int uniIdx;
 +				int mixed = LoadWordsAndClassify(w0, planes, num, word, out uniIdx);
 +				DecodeWordAvx2(w0, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
- 			}
--			if (bitsize > 2 && dataBit2 == null)
++			}
 +		}
 +	}
 +
@@ -946,14 +907,12 @@ index 4d0bf91..7e52bfd 100644
 +			Vector256<byte> Q0 = Vector256<byte>.Zero;
 +			Vector256<byte> Q1 = Vector256<byte>.Zero;
 +			for (int k = 8; k < num; k++)
- 			{
--				throw new Exception("ChunkDataLayer: dataBit2 was null, bitsize is " + bitsize + ", dataBits[2] null:" + (dataBits[2] == null));
++			{
 +				int v0 = w0[k];
 +				if (v0 != 0) Q0 = Avx2.Or(Q0, Avx2.Shuffle(Vector256.Create(v0).AsByte(), PackCtl[k - 8]));
 +				int v1 = w1[k];
 +				if (v1 != 0) Q1 = Avx2.Or(Q1, Avx2.Shuffle(Vector256.Create(v1).AsByte(), PackCtl[k - 8]));
- 			}
--			if (bitsize > 3 && dataBit3 == null)
++			}
 +
 +			Vector512<ulong> H512 = Transpose8x8_512(Vector512.Create(Q0, Q1).AsUInt64());
 +			Vector256<ulong> H0 = H512.GetLower();
@@ -1071,8 +1030,7 @@ index 4d0bf91..7e52bfd 100644
 +			int word = 0;
 +
 +			if (num <= 8)
- 			{
--				throw new Exception("ChunkDataLayer: dataBit3 was null, bitsize is " + bitsize + ", dataBits[3] null:" + (dataBits[3] == null));
++			{
 +				// Specialized path for bitsize <= 8.
 +				for (; word + 1 < 1024; word += 2)
 +				{
@@ -1092,11 +1050,9 @@ index 4d0bf91..7e52bfd 100644
 +					int mixed = LoadWordsAndClassify(w, planes, num, word, out uniIdx);
 +					DecodeWordAvx2_LE8(w, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
 +				}
- 			}
--			if (bitsize > 4 && dataBits[4] == null)
++			}
 +			else
- 			{
--				throw new Exception("ChunkDataLayer: dataBits[4] was null, bitsize is " + bitsize);
++			{
 +				// General path for bitsize > 8 (original code).
 +				for (; word + 1 < 1024; word += 2)
 +				{
@@ -1116,7 +1072,7 @@ index 4d0bf91..7e52bfd 100644
 +					int mixed = LoadWordsAndClassify(w, planes, num, word, out uniIdx);
 +					DecodeWordAvx2(w, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
 +				}
- 			}
++			}
 +		}
 +	}
 +
@@ -1308,24 +1264,49 @@ index 4d0bf91..7e52bfd 100644
 +	// ===== Stratum end =====
 +
 +	/// <summary>Gets the block value at a 3D index with palette null-check. Returns 0 if the palette is not initialized.</summary>
-+	public int GetUnsafe_PaletteCheck(int index3d)
-+	{
-+		if (palette == null)
-+		{
-+			return 0;
-+		}
-+		return GetUnsafe(index3d);
-+	}
-+
+ 	public int GetUnsafe_PaletteCheck(int index3d)
+ 	{
+ 		if (palette == null)
+ 		{
+ 			return 0;
+ 		}
+ 		return GetUnsafe(index3d);
+ 	}
+ 
 +	/// <summary>High-performance block value reader without additional palette check. Uses a switch on bit depth.</summary>
-+	public int GetUnsafe(int index3d)
-+	{
-+		try
-+		{
+ 	public int GetUnsafe(int index3d)
+ 	{
+ 		try
+ 		{
+-			int num = index3d / 32;
+-			switch (bitsize)
+-			{
+-			case 0:
+-				return 0;
+-			case 1:
+-				return palette[(dataBit0[num] >> index3d) & 1];
+-			case 2:
+-				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1)];
+-			case 3:
+-				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1) + 4 * ((dataBit2[num] >> index3d) & 1)];
+-			case 4:
+-				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1) + 4 * ((dataBit2[num] >> index3d) & 1) + 8 * ((dataBit3[num] >> index3d) & 1)];
+-			case 5:
+-				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1) + 4 * ((dataBit2[num] >> index3d) & 1) + 8 * ((dataBit3[num] >> index3d) & 1) + 16 * ((dataBits[4][num] >> index3d) & 1)];
+-			default:
 +			int num = index3d / 32;
 +
 +			switch (bitsize)
-+			{
+ 			{
+-				int num2 = 1;
+-				int num3 = (dataBit0[num] >> index3d) & 1;
+-				for (int i = 1; i < bitsize; i++)
+-				{
+-					num2 *= 2;
+-					num3 += ((dataBits[i][num] >> index3d) & 1) * num2;
+-				}
+-				return palette[num3];
+-			}
 +				case 0: return 0;
 +
 +				case 1: return palette[(dataBit0[num] >> index3d) & 1];
@@ -1367,10 +1348,34 @@ index 4d0bf91..7e52bfd 100644
 +						num3 |= (((dataBits[i][num] >> index3d) & 1)) << (i);
 +					}
 +					return palette[num3];
-+			}
-+		}
-+		catch (NullReferenceException)
-+		{
+ 			}
+ 		}
+ 		catch (NullReferenceException)
+ 		{
+-			if (palette == null)
+-			{
+-				throw new Exception("ChunkDataLayer: palette was null, bitsize is " + bitsize);
+-			}
+-			if (bitsize > 0 && dataBit0 == null)
+-			{
+-				throw new Exception("ChunkDataLayer: dataBit0 was null, bitsize is " + bitsize + ", dataBits[0] null:" + (dataBits[0] == null));
+-			}
+-			if (bitsize > 1 && dataBit1 == null)
+-			{
+-				throw new Exception("ChunkDataLayer: dataBit1 was null, bitsize is " + bitsize + ", dataBits[1] null:" + (dataBits[1] == null));
+-			}
+-			if (bitsize > 2 && dataBit2 == null)
+-			{
+-				throw new Exception("ChunkDataLayer: dataBit2 was null, bitsize is " + bitsize + ", dataBits[2] null:" + (dataBits[2] == null));
+-			}
+-			if (bitsize > 3 && dataBit3 == null)
+-			{
+-				throw new Exception("ChunkDataLayer: dataBit3 was null, bitsize is " + bitsize + ", dataBits[3] null:" + (dataBits[3] == null));
+-			}
+-			if (bitsize > 4 && dataBits[4] == null)
+-			{
+-				throw new Exception("ChunkDataLayer: dataBits[4] was null, bitsize is " + bitsize);
+-			}
 +			if (palette == null) throw new Exception("ChunkDataLayer: palette was null, bitsize is " + bitsize);
 +			if (bitsize > 0 && dataBit0 == null) throw new Exception("ChunkDataLayer: dataBit0 was null, bitsize is " + bitsize + ", dataBits[0] null:" + (dataBits[0] == null));
 +			if (bitsize > 1 && dataBit1 == null) throw new Exception("ChunkDataLayer: dataBit1 was null, bitsize is " + bitsize + ", dataBits[1] null:" + (dataBits[1] == null));
@@ -1759,7 +1764,7 @@ index 4d0bf91..7e52bfd 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -910,39 +1966,111 @@ public class ChunkDataLayer
+@@ -910,39 +1966,190 @@ public class ChunkDataLayer
  		{
  			pool.FreeArrays(this);
  		}
@@ -1781,12 +1786,6 @@ index 4d0bf91..7e52bfd 100644
 -				{
 +				if ((array[j] | array[j + 1] | array[j + 2] | array[j + 3]) != 0)
  					return true;
--				}
--				if (array[j + 1] != 0)
--				{
--					return true;
--				}
--				if (array[j + 2] != 0)
 +			}
 +		}
 +		return false;
@@ -1828,12 +1827,11 @@ index 4d0bf91..7e52bfd 100644
 +			{
 +				int index = 0;
 +				for (int k = 0; k < num; k++)
- 				{
--					return true;
++				{
 +					if (dataBits[k] != null && ((dataBits[k][word] >> j) & 1) != 0)
 +						index |= (1 << k);
  				}
--				if (array[j + 3] != 0)
+-				if (array[j + 1] != 0)
 +				lightOut[i + j] = index < palette.Length ? palette[index] : 0;
 +			}
 +		}
@@ -1842,14 +1840,55 @@ index 4d0bf91..7e52bfd 100644
 +	/// <summary>
 +	/// Stratum: Encodes a flat int array of light values back into bit-planes, rebuilding the palette.
 +	/// Takes the write lock ONCE for the entire chunk. Null-safe.
++	///
++	/// Rewritten to mirror SetBlocksBulkUnsafe: word-wise encode (32 values at once) instead of
++	/// 32768 individual SetUnsafeCore calls. Uniform words (the dominant case for light — large
++	/// flat-lit runs, e.g. open sky or a solid-dark cave interior) take a single palette lookup
++	/// and one mask store per plane; mixed words resolve 32 palette indices then transpose them
++	/// into plane words, one store per plane. Falls back to the original scalar path if the input
++	/// length doesn't match the standard chunk length (32768), to preserve prior tolerance for
++	/// odd-sized arrays without adding partial-word handling complexity to the fast path.
 +	/// </summary>
-+	public void SetLightBulkUnsafe(int[] lightIn)
++	public unsafe void SetLightBulkUnsafe(int[] lightIn)
 +	{
 +		if (lightIn == null) return;
 +
++		if (lightIn.Length != length)
++		{
++			// Non-standard length: keep the old, safe, fully scalar behaviour.
++			lock (stratumWriteLock)
++			{
++				palette = null;
++				paletteCount = 0;
++				bitsize = 0;
++				Get = GetFromBits0;
++				setBlockIndexCached = 0;
++				setBlockValueCached = 0;
++
++				if (dataBits == null) dataBits = new int[15][];
++				for (int i = 0; i < dataBits.Length; i++)
+ 				{
+-					return true;
++					if (dataBits[i] != null) Array.Clear(dataBits[i], 0, 1024);
+ 				}
+-				if (array[j + 2] != 0)
++
++				for (int i = 0; i < length && i < lightIn.Length; i++)
+ 				{
+-					return true;
++					int val = lightIn[i];
++					if (val != 0) SetUnsafeCore(i, val);
+ 				}
+-				if (array[j + 3] != 0)
++			}
++			return;
++		}
++
 +		lock (stratumWriteLock)
 +		{
-+			// Reset state.
++			// Reset state. Planes are NOT cleared here: every word below fully overwrites
++			// planes 0..bitsize-1, and a newly claimed plane is cleared at claim time
++			// (see PaletteIndexForBulk).
 +			palette = null;
 +			paletteCount = 0;
 +			bitsize = 0;
@@ -1858,21 +1897,63 @@ index 4d0bf91..7e52bfd 100644
 +			setBlockValueCached = 0;
 +
 +			if (dataBits == null) dataBits = new int[15][];
-+			for (int i = 0; i < dataBits.Length; i++)
-+			{
-+				if (dataBits[i] != null) Array.Clear(dataBits[i], 0, 1024);
-+			}
 +
-+			// Rebuild using the existing fast-path SetUnsafeCore.
-+			for (int i = 0; i < 32768 && i < lightIn.Length; i++)
++			bool sawNonZero = false;
++			int* idxBuf = stackalloc int[32];
++
++			fixed (int* pIn = lightIn)
 +			{
-+				int val = lightIn[i];
-+				if (val != 0)
++				for (int word = 0; word < 1024; word++)
  				{
 -					return true;
-+					SetUnsafeCore(i, val);
++					int baseIdx = word << 5;
++					int v0 = pIn[baseIdx];
++
++					if (IsUniformWord(pIn + baseIdx, v0))
++					{
++						if (v0 == 0)
++						{
++							// Nothing to encode. If the palette does not exist yet, the planes
++							// don't exist either and are cleared at claim time, so skipping is correct.
++							if (palette != null) WritePlaneWord(word, 0);
++							continue;
++						}
++						sawNonZero = true;
++						WritePlaneWord(word, PaletteIndexForBulk(v0));
++						continue;
++					}
++
++					// Mixed word: resolve palette indices first (the palette may grow during
++					// this), then transpose bits into plane words — one store per plane.
++					for (int j = 0; j < 32; j++)
++					{
++						int v = pIn[baseIdx + j];
++						if (v == 0) { idxBuf[j] = 0; continue; }
++						sawNonZero = true;
++						idxBuf[j] = PaletteIndexForBulk(v);
++					}
++
++					int bs = bitsize;
++					for (int k = 0; k < bs; k++)
++					{
++						int wv = 0;
++						for (int j = 0; j < 32; j++) wv |= ((idxBuf[j] >> k) & 1) << j;
++						dataBits[k][word] = wv;
++					}
  				}
  			}
++
++			if (!sawNonZero)
++			{
++				// All-dark/all-zero light layer: restore the canonical empty state.
++				palette = null;
++				paletteCount = 0;
++				bitsize = 0;
++				Get = GetFromBits0;
++				return;
++			}
++
++			Get = selectDelegate(bitsize);
  		}
 -		return false;
  	}
@@ -1884,7 +1965,7 @@ index 4d0bf91..7e52bfd 100644
  		readWriteLock.AcquireReadLock();
  		try
  		{
-@@ -950,54 +2078,48 @@ public class ChunkDataLayer
+@@ -950,54 +2157,48 @@ public class ChunkDataLayer
  			for (int i = 0; i < blocksOut.Length; i += 32)
  			{
  				int num2 = i / 32;
@@ -1952,7 +2033,7 @@ index 4d0bf91..7e52bfd 100644
  	{
  		int num = -1;
  		for (int i = 0; i < bitsize; i++)
-@@ -1005,10 +2127,11 @@ public class ChunkDataLayer
+@@ -1005,10 +2206,11 @@ public class ChunkDataLayer
  			num &= (((needle & (1 << i)) != 0) ? dataBits[i][intIndex] : (~dataBits[i][intIndex]));
  		}
  		return num;
@@ -1964,7 +2045,7 @@ index 4d0bf91..7e52bfd 100644
  		for (int i = 0; i < paletteCount; i++)
  		{
  			if (palette[i] != id)
-@@ -1025,18 +2148,20 @@ public class ChunkDataLayer
+@@ -1025,18 +2227,20 @@ public class ChunkDataLayer
  			return false;
  		}
  		return false;
@@ -1985,7 +2066,7 @@ index 4d0bf91..7e52bfd 100644
  		int num = ~mask;
  		readWriteLock.AcquireWriteLock();
  		for (int i = 0; i < bitsize; i++)
-@@ -1051,10 +2176,11 @@ public class ChunkDataLayer
+@@ -1051,10 +2255,11 @@ public class ChunkDataLayer
  			}
  		}
  		readWriteLock.ReleaseWriteLock();
@@ -1997,7 +2078,7 @@ index 4d0bf91..7e52bfd 100644
  		int num = paletteCount - 1;
  		readWriteLock.AcquireWriteLock();
  		int num2 = bitsize;
-@@ -1088,10 +2214,194 @@ public class ChunkDataLayer
+@@ -1088,10 +2293,194 @@ public class ChunkDataLayer
  		palette[deletePosition] = palette[num];
  		paletteCount--;
  		readWriteLock.ReleaseWriteLock();
@@ -2192,7 +2273,7 @@ index 4d0bf91..7e52bfd 100644
  		int[] array = palette;
  		if (array == null)
  		{
-@@ -1104,6 +2414,6 @@ public class ChunkDataLayer
+@@ -1104,6 +2493,6 @@ public class ChunkDataLayer
  			{
  				array[i] = 0;
  			}
