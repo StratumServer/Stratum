@@ -353,7 +353,36 @@ index 6b3cdd0..918da9e 100644
  		server.SendSetBlock(targetPlayer, server.WorldMap.RawRelaxedBlockAccess.GetBlockId(pos), pos.X, pos.InternalY, pos.Z);
  		BlockEntity blockEntity = server.WorldMap.RawRelaxedBlockAccess.GetBlockEntity(pos);
  		if (blockEntity != null)
-@@ -650,11 +909,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -573,11 +832,12 @@
+ 					server.BroadcastHotbarSlot(player);
+ 				}
+ 				activeHotbarSlot.MarkDirty();
+ 			}
+ 		}
+-		else
++		// Stratum: Unknown packet modes must not fall through to block breaking.
++		else if (cmd.Mode == Packet_BlockSetModeEnum.Break)
+ 		{
+ 			Block block3 = server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 2);
+ 			int index = ((!block3.SideSolid.Any) ? server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 1).Id : block3.BlockId);
+ 			Block block4 = (blockSelection.Block = server.Blocks[index]);
+ 			IItemStack itemstack = activeHotbarSlot.Itemstack;
+@@ -618,10 +878,14 @@
+ 			}
+ 			if (activeHotbarSlot.Itemstack == null && itemstack != null)
+ 			{
+ 				server.BroadcastHotbarSlot(player);
+ 			}
++		}
++		else
++		{
++			return false;
+ 		}
+ 		player.client.IsInventoryDirty = true;
+ 		return true;
+ 	}
+ 
+@@ -650,11 +914,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  		return false;
  	}
  
@@ -369,7 +398,7 @@ index 6b3cdd0..918da9e 100644
  	private void UpdateEvery100ms(float t1)
  	{
  		HandleDirtyAndUpdatedBlocks();
-@@ -778,12 +1040,20 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -778,12 +1045,20 @@ public class ServerSystemBlockSimulation : ServerSystem
  	{
  		if (server.RunPhase != EnumServerRunPhase.RunGame)
  		{
@@ -392,7 +421,7 @@ index 6b3cdd0..918da9e 100644
  			{
  				continue;
  			}
-@@ -812,22 +1082,37 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -812,22 +1087,37 @@ public class ServerSystemBlockSimulation : ServerSystem
  			catch (Exception e)
  			{
  				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
@@ -431,7 +460,7 @@ index 6b3cdd0..918da9e 100644
  			foreach (int clientId in clientIds)
  			{
  				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
-@@ -862,34 +1147,116 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -862,34 +1152,116 @@ public class ServerSystemBlockSimulation : ServerSystem
  						}
  					}
  				}
@@ -551,7 +580,7 @@ index 6b3cdd0..918da9e 100644
  		{
  			int num6 = rand.Next(32);
  			int num7 = rand.Next(32);
-@@ -905,29 +1272,73 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -905,29 +1277,73 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (fluid != 0)
  			{
  				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));
