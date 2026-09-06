@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..8c91c9d 100644
+index ea1d5c0..ea00cfd 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -673,7 +673,7 @@ index ea1d5c0..8c91c9d 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +716,857 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +716,855 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -1520,11 +1520,9 @@ index ea1d5c0..8c91c9d 100644
 +			}
 +			return;
 +		}
-+		EntityPos playerPos = player.Entity.Pos;
 +		double pickingRange = player.WorldData.PickingRange + 10f;
-+		double entityDx = entity.Pos.X - playerPos.X;
-+		double entityDz = entity.Pos.Z - playerPos.Z;
-+		if (entityDx * entityDx + entityDz * entityDz > pickingRange * pickingRange)
++		// Stratum: Interaction reach must include height and reject targets in another dimension.
++		if (entity.Pos.Dimension != player.Entity.Pos.Dimension || StratumReach.EntityDistance(player, entity) > pickingRange)
 +		{
 +			ServerMain.Logger.Debug("HandleEntityInteraction from " + client.PlayerName + " rejected: entity " + p.EntityId + " not in range!");
  			return;
@@ -1535,7 +1533,7 @@ index ea1d5c0..8c91c9d 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -257,10 +1581,16 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -257,10 +1579,16 @@ public class ServerSystemEntitySimulation : ServerSystem
  		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !player.IsInInteractionRangeOf(entity))
  		{
  			ServerMain.Logger.Audit("{0} tried to interact with an entity out of range.", player.PlayerName);
@@ -1552,7 +1550,7 @@ index ea1d5c0..8c91c9d 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1609,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1607,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1601,7 +1599,7 @@ index ea1d5c0..8c91c9d 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,16 +1746,24 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,16 +1744,24 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1628,7 +1626,7 @@ index ea1d5c0..8c91c9d 100644
  			item.Entityplayer.DeadNotify = false;
  			item.WorldData.Deaths++;
  			server.EventManager.TriggerPlayerDeath(item.Player, item.Entityplayer.DeathReason);
-@@ -401,13 +1771,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -401,13 +1769,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  			{
  				Id = 45,
  				PlayerDeath = new Packet_PlayerDeath
@@ -1647,7 +1645,7 @@ index ea1d5c0..8c91c9d 100644
  			string text = "";
  			if (num2)
  			{
-@@ -422,10 +1796,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1794,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));
