@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
-index 4d0bf91..8360927 100644
+index 4d0bf91..0fd873d 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 @@ -1,9 +1,13 @@
@@ -83,7 +83,7 @@ index 4d0bf91..8360927 100644
 +	// scheduler grows a real per-chunk ownership model, at which point option 2 makes
 +	// this deletable.
 +	private readonly object stratumWriteLock = new object();
-+	// Stratum end.
++	// Stratum end
 +
  	public Func<int, int> Get;
  
@@ -119,14 +119,14 @@ index 4d0bf91..8360927 100644
 +	protected int[] dataBit11;
 +	protected int[] dataBit12;
 +	protected int[] dataBit13;
-+	// Stratum end.
++	// Stratum end
 +
  	private int setBlockIndexCached;
  
  	private int setBlockValueCached;
  
  	protected ChunkDataPool pool;
-@@ -49,149 +142,533 @@ public class ChunkDataLayer
+@@ -49,149 +142,546 @@ public class ChunkDataLayer
  	private static int[] paletteBitmap;
  
  	[ThreadStatic]
@@ -145,7 +145,11 @@ index 4d0bf91..8360927 100644
  	protected int GetGeneralCase(int index3d)
  	{
 -		int num = (index3d & 0x7FFF) / 32;
-+		// Stratum: integer division by 32 replaced with a right shift by 5. Identical result for positive values, and the operation is negligible in cost.
++		// Stratum: (1) [MethodImpl(AggressiveInlining)] added on the method to encourage inlining on the read path;
++		// Stratum: (2) integer division `index3d / 32` → right shift `(index3d & 0x7FFF) >> 5` — identical result for positive indices, cheaper;
++		// Stratum: (3) removed the per-call read lock that vanilla held across the plane loop. Deliberate and consistent: every fast-path getter
++		//          (GetFromBits1..14) also dropped its read lock in this rewrite, so reads are now lock-free on the hot path — correctness is
++		//          provided by writers holding stratumWriteLock + the write lock whenever a plane changes.
 +		int num = (index3d & 0x7FFF) >> 5;
  		int num2 = 1;
  		int num3 = 0;
@@ -188,7 +192,7 @@ index 4d0bf91..8360927 100644
 +		ref int base0 = ref MemoryMarshal.GetArrayDataReference(dataBit0);
 +		return palette[(Unsafe.Add(ref base0, arrayIndex) >> index3d) & 1];
  	}
-+	// Stratum end.
++	// Stratum end
  
 +	/// <summary>Stratum: Fast-path read for bit depth of 2. Extracts the two least significant bits from the first two planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -297,8 +301,8 @@ index 4d0bf91..8360927 100644
 +		int b3 = (Unsafe.Add(ref base3, arrayIndex) >> shift) & 1;
 +		int b4 = (Unsafe.Add(ref base4, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4)];
-+	}
-+
+ 	}
+ 
 +	/// <summary>Stratum: Fast-path read for bit depth of 6. Extracts the six least significant bits from the first six planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetFromBits6(int index3d)
@@ -310,6 +314,7 @@ index 4d0bf91..8360927 100644
 +		ref int base2 = ref MemoryMarshal.GetArrayDataReference(dataBit2);
 +		ref int base3 = ref MemoryMarshal.GetArrayDataReference(dataBit3);
 +		ref int base4 = ref MemoryMarshal.GetArrayDataReference(dataBit4);
++		// Stratum: added dataBit5 — previously read through the array-of-arrays (dataBits[5][num]). Now hoisted to a dedicated field.
 +		ref int base5 = ref MemoryMarshal.GetArrayDataReference(dataBit5);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -332,6 +337,7 @@ index 4d0bf91..8360927 100644
 +		ref int base3 = ref MemoryMarshal.GetArrayDataReference(dataBit3);
 +		ref int base4 = ref MemoryMarshal.GetArrayDataReference(dataBit4);
 +		ref int base5 = ref MemoryMarshal.GetArrayDataReference(dataBit5);
++		// Stratum: added dataBit6 — previously read through the array-of-arrays (dataBits[6][num]). Now hoisted to a dedicated field.
 +		ref int base6 = ref MemoryMarshal.GetArrayDataReference(dataBit6);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -356,6 +362,7 @@ index 4d0bf91..8360927 100644
 +		ref int base4 = ref MemoryMarshal.GetArrayDataReference(dataBit4);
 +		ref int base5 = ref MemoryMarshal.GetArrayDataReference(dataBit5);
 +		ref int base6 = ref MemoryMarshal.GetArrayDataReference(dataBit6);
++		// Stratum: added dataBit7 — previously read through the array-of-arrays (dataBits[7][num]). Now hoisted to a dedicated field.
 +		ref int base7 = ref MemoryMarshal.GetArrayDataReference(dataBit7);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -382,6 +389,7 @@ index 4d0bf91..8360927 100644
 +		ref int base5 = ref MemoryMarshal.GetArrayDataReference(dataBit5);
 +		ref int base6 = ref MemoryMarshal.GetArrayDataReference(dataBit6);
 +		ref int base7 = ref MemoryMarshal.GetArrayDataReference(dataBit7);
++		// Stratum: added dataBit8 — previously read through the array-of-arrays (dataBits[8][num]). Now hoisted to a dedicated field.
 +		ref int base8 = ref MemoryMarshal.GetArrayDataReference(dataBit8);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -393,8 +401,8 @@ index 4d0bf91..8360927 100644
 +		int b7 = (Unsafe.Add(ref base7, arrayIndex) >> shift) & 1;
 +		int b8 = (Unsafe.Add(ref base8, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4) | (b5 << 5) | (b6 << 6) | (b7 << 7) | (b8 << 8)];
- 	}
- 
++	}
++
 +	/// <summary>Stratum: Fast-path read for bit depth of 10. Extracts the ten least significant bits from the first ten planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetFromBits10(int index3d)
@@ -410,6 +418,7 @@ index 4d0bf91..8360927 100644
 +		ref int base6 = ref MemoryMarshal.GetArrayDataReference(dataBit6);
 +		ref int base7 = ref MemoryMarshal.GetArrayDataReference(dataBit7);
 +		ref int base8 = ref MemoryMarshal.GetArrayDataReference(dataBit8);
++		// Stratum: added dataBit9 — previously read through the array-of-arrays (dataBits[9][num]). Now hoisted to a dedicated field.
 +		ref int base9 = ref MemoryMarshal.GetArrayDataReference(dataBit9);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -440,6 +449,7 @@ index 4d0bf91..8360927 100644
 +		ref int base7 = ref MemoryMarshal.GetArrayDataReference(dataBit7);
 +		ref int base8 = ref MemoryMarshal.GetArrayDataReference(dataBit8);
 +		ref int base9 = ref MemoryMarshal.GetArrayDataReference(dataBit9);
++		// Stratum: added dataBit10 — previously read through the array-of-arrays (dataBits[10][num]). Now hoisted to a dedicated field.
 +		ref int base10 = ref MemoryMarshal.GetArrayDataReference(dataBit10);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -472,6 +482,7 @@ index 4d0bf91..8360927 100644
 +		ref int base8 = ref MemoryMarshal.GetArrayDataReference(dataBit8);
 +		ref int base9 = ref MemoryMarshal.GetArrayDataReference(dataBit9);
 +		ref int base10 = ref MemoryMarshal.GetArrayDataReference(dataBit10);
++		// Stratum: added dataBit11 — previously read through the array-of-arrays (dataBits[11][num]). Now hoisted to a dedicated field.
 +		ref int base11 = ref MemoryMarshal.GetArrayDataReference(dataBit11);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -506,6 +517,7 @@ index 4d0bf91..8360927 100644
 +		ref int base9 = ref MemoryMarshal.GetArrayDataReference(dataBit9);
 +		ref int base10 = ref MemoryMarshal.GetArrayDataReference(dataBit10);
 +		ref int base11 = ref MemoryMarshal.GetArrayDataReference(dataBit11);
++		// Stratum: added dataBit12 — previously read through the array-of-arrays (dataBits[12][num]). Now hoisted to a dedicated field.
 +		ref int base12 = ref MemoryMarshal.GetArrayDataReference(dataBit12);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -542,6 +554,7 @@ index 4d0bf91..8360927 100644
 +		ref int base10 = ref MemoryMarshal.GetArrayDataReference(dataBit10);
 +		ref int base11 = ref MemoryMarshal.GetArrayDataReference(dataBit11);
 +		ref int base12 = ref MemoryMarshal.GetArrayDataReference(dataBit12);
++		// Stratum: added dataBit13 — previously read through the array-of-arrays (dataBits[13][num]). Now hoisted to a dedicated field.
 +		ref int base13 = ref MemoryMarshal.GetArrayDataReference(dataBit13);
 +		int b0 = (Unsafe.Add(ref base0, arrayIndex) >> shift) & 1;
 +		int b1 = (Unsafe.Add(ref base1, arrayIndex) >> shift) & 1;
@@ -751,7 +764,7 @@ index 4d0bf91..8360927 100644
  		readWriteLock.AcquireReadLock();
  		int[][] array = new int[bitsize][];
  		try
-@@ -215,82 +692,602 @@ public class ChunkDataLayer
+@@ -215,82 +705,591 @@ public class ChunkDataLayer
  		{
  			readWriteLock.ReleaseReadLock();
  		}
@@ -775,12 +788,14 @@ index 4d0bf91..8360927 100644
 +
 +		int num = bitsize > 15 ? 15 : bitsize;
 +
-+		// Stratum: AVX2 path — reuses the same bit-plane → palette decode as CopyBlocksToUnsafe.
++		// Stratum: AVX path — reuses the same bit-plane → palette decode as CopyBlocksToUnsafe.
++
 +		if (Avx512F.IsSupported)
 +		{
 +			DecodePlanesAvx512(blocksOut, dataBits, palette, num);
 +			return;
 +		}
++
 +		if (Avx2.IsSupported)
 +		{
 +			DecodePlanesAvx2(blocksOut, dataBits, palette, num);
@@ -886,21 +901,19 @@ index 4d0bf91..8360927 100644
 +		Vector256<byte> P1 = Vector256<byte>.Zero;
 +		for (int k = 0; k < nLow; k++)
 +		{
-+			int v0 = w0[k];
-+			if (v0 != 0) P0 = Avx2.Or(P0, Avx2.Shuffle(Vector256.Create(v0).AsByte(), PackCtl[k]));
-+			int v1 = w1[k];
-+			if (v1 != 0) P1 = Avx2.Or(P1, Avx2.Shuffle(Vector256.Create(v1).AsByte(), PackCtl[k]));
++			// Stratum: removed the `if (v != 0)` branch. Shuffling a zero vector by any mask (including PackCtl bytes of 0x80) yields zero, so OR-ing it in is a no-op. The branch was purely an optimization heuristic relying on data-dependent branch prediction, which is poor on mixed words — only mixed words reach here (mixed != 0). Replacing it with an unconditional shuffle+or gives the same result at a fixed, rather than probabilistic, cost per iteration.
++			P0 = Avx2.Or(P0, Avx2.Shuffle(Vector256.Create(w0[k]).AsByte(), PackCtl[k]));
++			P1 = Avx2.Or(P1, Avx2.Shuffle(Vector256.Create(w1[k]).AsByte(), PackCtl[k]));
 +		}
 +
 +		Vector512<ulong> L512 = Transpose8x8_512(Vector512.Create(P0, P1).AsUInt64());
 +		Vector256<ulong> L0 = L512.GetLower();
 +		Vector256<ulong> L1 = L512.GetUpper();
 +
-+		// Sequentially: first all of word 0, then all of word 1.
-+		idx0 = Vector512.Create(ExtractGroup(L0, 0), ExtractGroup(L0, 1)); // word0: 0..15
-+		idx1 = Vector512.Create(ExtractGroup(L0, 2), ExtractGroup(L0, 3)); // word0: 16..31
-+		idx2 = Vector512.Create(ExtractGroup(L1, 0), ExtractGroup(L1, 1)); // word1: 0..15
-+		idx3 = Vector512.Create(ExtractGroup(L1, 2), ExtractGroup(L1, 3)); // word1: 16..31
++		idx0 = Vector512.Create(ExtractGroup(L0, 0), ExtractGroup(L0, 1));
++		idx1 = Vector512.Create(ExtractGroup(L0, 2), ExtractGroup(L0, 3));
++		idx2 = Vector512.Create(ExtractGroup(L1, 0), ExtractGroup(L1, 1));
++		idx3 = Vector512.Create(ExtractGroup(L1, 2), ExtractGroup(L1, 3));
 +
 +		if (num > 8)
 +		{
@@ -908,10 +921,9 @@ index 4d0bf91..8360927 100644
 +			Vector256<byte> Q1 = Vector256<byte>.Zero;
 +			for (int k = 8; k < num; k++)
 +			{
-+				int v0 = w0[k];
-+				if (v0 != 0) Q0 = Avx2.Or(Q0, Avx2.Shuffle(Vector256.Create(v0).AsByte(), PackCtl[k - 8]));
-+				int v1 = w1[k];
-+				if (v1 != 0) Q1 = Avx2.Or(Q1, Avx2.Shuffle(Vector256.Create(v1).AsByte(), PackCtl[k - 8]));
++				// Stratum: same branchless simplification for the upper plane group (8..num-1).
++				Q0 = Avx2.Or(Q0, Avx2.Shuffle(Vector256.Create(w0[k]).AsByte(), PackCtl[k - 8]));
++				Q1 = Avx2.Or(Q1, Avx2.Shuffle(Vector256.Create(w1[k]).AsByte(), PackCtl[k - 8]));
 +			}
 +
 +			Vector512<ulong> H512 = Transpose8x8_512(Vector512.Create(Q0, Q1).AsUInt64());
@@ -1107,7 +1119,6 @@ index 4d0bf91..8360927 100644
 +	private static unsafe void DecodeWordAvx2_LE8(
 +		int* w, int num, int* pPalette, int palLen, int* pOut, int mixed, int uniIdx)
 +	{
-+		// Fast path: all planes are 0 or -1.
 +		if (mixed == 0)
 +		{
 +			uint ui = (uint)uniIdx;
@@ -1120,13 +1131,11 @@ index 4d0bf91..8360927 100644
 +			return;
 +		}
 +
-+		// Pack byte groups of 8 planes (num <= 8).
++		// Stratum: removed `if (v == 0) continue;` — same branchless argument as in BuildIndices512 (AVX512): shuffling a zero vector by PackCtl yields zero, so OR-ing it in is a no-op. The branch relied on data-dependent prediction, which is poor here since only mixed words reach this point (mixed != 0).
 +		Vector256<byte> P = Vector256<byte>.Zero;
 +		for (int k = 0; k < num; k++)
 +		{
-+			int v = w[k];
-+			if (v == 0) continue;
-+			P = Avx2.Or(P, Avx2.Shuffle(Vector256.Create(v).AsByte(), PackCtl[k]));
++			P = Avx2.Or(P, Avx2.Shuffle(Vector256.Create(w[k]).AsByte(), PackCtl[k]));
 +		}
 +		Vector256<ulong> L = Transpose8x8(P.AsUInt64());
 +
@@ -1135,7 +1144,6 @@ index 4d0bf91..8360927 100644
 +		Vector256<int> idx2 = ExtractGroup(L, 2);
 +		Vector256<int> idx3 = ExtractGroup(L, 3);
 +
-+		// Palette lookup via gather with mask.
 +		Vector256<int> palLenVec = Vector256.Create(palLen);
 +		Vector256<int> zero = Vector256<int>.Zero;
 +		Unsafe.WriteUnaligned(pOut, Avx2.GatherMaskVector256(zero, pPalette, idx0, Avx2.CompareGreaterThan(palLenVec, idx0), 4));
@@ -1205,7 +1213,6 @@ index 4d0bf91..8360927 100644
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static unsafe void DecodeWordAvx2(int* w, int num, int* pPalette, int palLen, int* pOut, int mixed, int uniIdx)
 +	{
-+		// Fast path: all planes are 0 or -1 => 32 identical blocks (covers fully-zero word too).
 +		if (mixed == 0)
 +		{
 +			uint ui = (uint)uniIdx;
@@ -1218,14 +1225,12 @@ index 4d0bf91..8360927 100644
 +			return;
 +		}
 +
-+		// Mixed: pack byte groups of 8 planes into 4x64-bit lanes + butterfly.
++		// Stratum: same branchless simplification for the lower plane group (0..7).
 +		int nLow = num < 8 ? num : 8;
 +		Vector256<byte> P = Vector256<byte>.Zero;
 +		for (int k = 0; k < nLow; k++)
 +		{
-+			int v = w[k];
-+			if (v == 0) continue;
-+			P = Avx2.Or(P, Avx2.Shuffle(Vector256.Create(v).AsByte(), PackCtl[k]));
++			P = Avx2.Or(P, Avx2.Shuffle(Vector256.Create(w[k]).AsByte(), PackCtl[k]));
 +		}
 +		Vector256<ulong> L = Transpose8x8(P.AsUInt64());
 +
@@ -1236,12 +1241,11 @@ index 4d0bf91..8360927 100644
 +
 +		if (num > 8)
 +		{
++			// Stratum: same branchless simplification for the upper plane group (8..num-1).
 +			Vector256<byte> Q = Vector256<byte>.Zero;
 +			for (int k = 8; k < num; k++)
 +			{
-+				int v = w[k];
-+				if (v == 0) continue;
-+				Q = Avx2.Or(Q, Avx2.Shuffle(Vector256.Create(v).AsByte(), PackCtl[k - 8]));
++				Q = Avx2.Or(Q, Avx2.Shuffle(Vector256.Create(w[k]).AsByte(), PackCtl[k - 8]));
 +			}
 +			Vector256<ulong> H = Transpose8x8(Q.AsUInt64());
 +			idx0 = Avx2.Or(idx0, Avx2.ShiftLeftLogical(ExtractGroup(H, 0), 8));
@@ -1250,8 +1254,6 @@ index 4d0bf91..8360927 100644
 +			idx3 = Avx2.Or(idx3, Avx2.ShiftLeftLogical(ExtractGroup(H, 3), 8));
 +		}
 +
-+		// Palette lookup: vpcmpgtd (palLen > idx == idx < palLen) + vpgatherdd with mask —
-+		// exact semantics of the old bounds check; does not read past palette.
 +		Vector256<int> palLenVec = Vector256.Create(palLen);
 +		Vector256<int> zero = Vector256<int>.Zero;
 +		Unsafe.WriteUnaligned(pOut, Avx2.GatherMaskVector256(zero, pPalette, idx0, Avx2.CompareGreaterThan(palLenVec, idx0), 4));
@@ -1278,7 +1280,7 @@ index 4d0bf91..8360927 100644
  	{
  		try
  		{
--			int num = index3d / 32;
+ 			int num = index3d / 32;
 -			switch (bitsize)
 -			{
 -			case 0:
@@ -1294,7 +1296,6 @@ index 4d0bf91..8360927 100644
 -			case 5:
 -				return palette[((dataBit0[num] >> index3d) & 1) + 2 * ((dataBit1[num] >> index3d) & 1) + 4 * ((dataBit2[num] >> index3d) & 1) + 8 * ((dataBit3[num] >> index3d) & 1) + 16 * ((dataBits[4][num] >> index3d) & 1)];
 -			default:
-+			int num = index3d / 32;
 +
 +			switch (bitsize)
  			{
@@ -1403,7 +1404,7 @@ index 4d0bf91..8360927 100644
  		{
  			int num;
  			if (palette != null)
-@@ -314,19 +1311,19 @@ public class ChunkDataLayer
+@@ -314,19 +1313,19 @@ public class ChunkDataLayer
  									break;
  								}
  								num++;
@@ -1430,13 +1431,13 @@ index 4d0bf91..8360927 100644
  						setBlockIndexCached = num;
  						setBlockValueCached = value;
  					}
-@@ -376,11 +1373,47 @@ public class ChunkDataLayer
+@@ -376,11 +1375,47 @@ public class ChunkDataLayer
  			return;
  		}
  		throw new IndexOutOfRangeException("Chunk blocks index3d must be between 0 and " + 32767 + ", was " + index3d);
  	}
  
-+	// Stratum end.
++	// Stratum end
 +
 +	// Stratum start: added lock (stratumWriteLock) wrapper — SetUnsafe previously had no synchronization at all, making concurrent palette growth a data race. Now serialized through stratumWriteLock alongside all other writers.
 +	/// <summary>Sets a block value without bounds-checking the index. Used for optimized paths.</summary>
@@ -1478,13 +1479,13 @@ index 4d0bf91..8360927 100644
  		index3d /= 32;
  		int num2 = ~num;
  		if (value != 0)
-@@ -449,11 +1482,24 @@ public class ChunkDataLayer
+@@ -449,11 +1484,24 @@ public class ChunkDataLayer
  				dataBits[j][index3d] &= num2;
  			}
  		}
  	}
  
-+	// Stratum end.
++	// Stratum end
 +
 +	// Stratum start: added lock (stratumWriteLock) wrapper — SetZero previously had no synchronization. Concurrent SetZero on a shared chunk could race with concurrent writes through Set/SetUnsafe. Now serialized through stratumWriteLock.
 +	/// <summary>Resets block bits at the index to zero, if the palette is initialized.</summary>
@@ -1503,13 +1504,13 @@ index 4d0bf91..8360927 100644
  		{
  			int num = 1 << index3d;
  			index3d /= 32;
-@@ -464,65 +1510,69 @@ public class ChunkDataLayer
+@@ -464,65 +1512,69 @@ public class ChunkDataLayer
  				dataBits[i][index3d] &= num2;
  			}
  		}
  	}
  
-+	// Stratum end.
++	// Stratum end
 +
 +	// Stratum start: added lock (stratumWriteLock) wrapper — SetBulk previously had no synchronization. Concurrent bulk writes on the same chunk could interleave palette growth and plane updates. Now serialized through stratumWriteLock.
 +	/// <summary>Bulk-sets a value for a lenX * lenZ block region starting at the given index.</summary>
@@ -1522,7 +1523,7 @@ index 4d0bf91..8360927 100644
 +		}
 +	}
 +
-+	// Stratum start: entire method body restructured — replaced per-plane for-loop that built masks incrementally with a single loop over all planes calling Array.Fill (which uses SIMD internally) to write each plane word in bulk. Also consolidated palette lookup logic into a local variable `paletteIndex` and added the same-value cache hit path at the top, reducing redundant lookups when consecutive calls set the same value.
++	// Stratum start: entire method body restructured — replaced per-plane for-loop that built masks incrementally with a single loop over all planes calling Array.Fill (which uses SIMD internally) to write each plane word in bulk. Also consolidated palette lookup logic into a local variable `paletteIndex` and kept the same-value cache hit path at the top, reducing redundant lookups when consecutive calls set the same value.
 +	// Bulk fill left using Array.Fill to leverage CPU SIMD instructions.
 +	/// <summary>SetBulk core. Fills bit-planes with the palette-index mask derived from the target value.</summary>
 +	private void SetBulkCore(int index3d, int lenX, int lenZ, int value)
@@ -1599,7 +1600,7 @@ index 4d0bf91..8360927 100644
 +			Array.Fill(dataBits[i], mask, arrayIndex, lenZ);
  		}
  	}
-+	// Stratum end.
++	// Stratum end
  
 +	/// <summary>Initializes the bit-plane structure and palette for holding the first non-zero value.</summary>
  	protected void NewDataBitsWithFirstValue(int value)
@@ -1607,7 +1608,7 @@ index 4d0bf91..8360927 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -535,10 +1585,11 @@ public class ChunkDataLayer
+@@ -535,10 +1587,11 @@ public class ChunkDataLayer
  		palette[1] = value;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1619,7 +1620,7 @@ index 4d0bf91..8360927 100644
  		if (bitsize > 6 && CleanUpPalette())
  		{
  			return paletteCount;
-@@ -555,10 +1606,11 @@ public class ChunkDataLayer
+@@ -555,10 +1608,11 @@ public class ChunkDataLayer
  		Get = selectDelegate(bitsize + 1);
  		bitsize++;
  		return num;
@@ -1631,7 +1632,7 @@ index 4d0bf91..8360927 100644
  		if (pool.server == null)
  		{
  			if (bitsize < 14)
-@@ -653,10 +1705,11 @@ public class ChunkDataLayer
+@@ -653,10 +1707,11 @@ public class ChunkDataLayer
  			}
  		}
  		return true;
@@ -1643,7 +1644,7 @@ index 4d0bf91..8360927 100644
  		if (paletteCount == 0)
  		{
  			return 0;
-@@ -668,10 +1721,11 @@ public class ChunkDataLayer
+@@ -668,10 +1723,11 @@ public class ChunkDataLayer
  			num2++;
  		}
  		return num2;
@@ -1655,7 +1656,7 @@ index 4d0bf91..8360927 100644
  		int num = paletteCount - 1;
  		for (int num2 = num / 32; num2 >= 0; num2--)
  		{
-@@ -698,23 +1752,18 @@ public class ChunkDataLayer
+@@ -698,23 +1754,18 @@ public class ChunkDataLayer
  				}
  			}
  		}
@@ -1682,7 +1683,7 @@ index 4d0bf91..8360927 100644
  		Get = GetFromBits0;
  		int num = bitsize;
  		bitsize = 0;
-@@ -731,10 +1780,11 @@ public class ChunkDataLayer
+@@ -731,10 +1782,11 @@ public class ChunkDataLayer
  		}
  		setBlockIndexCached = 0;
  		setBlockValueCached = 0;
@@ -1694,7 +1695,7 @@ index 4d0bf91..8360927 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -746,19 +1796,21 @@ public class ChunkDataLayer
+@@ -746,19 +1798,21 @@ public class ChunkDataLayer
  		paletteCount = 1;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1716,7 +1717,7 @@ index 4d0bf91..8360927 100644
  		int num = 0;
  		readWriteLock.AcquireReadLock();
  		try
-@@ -774,10 +1826,11 @@ public class ChunkDataLayer
+@@ -774,10 +1828,11 @@ public class ChunkDataLayer
  			readWriteLock.ReleaseReadLock();
  		}
  		return Compression.CompressAndCombine(arrayStatic, palette, paletteCount);
@@ -1728,7 +1729,7 @@ index 4d0bf91..8360927 100644
  		int num = 0;
  		lock (palette ?? ((object)readWriteLock))
  		{
-@@ -806,10 +1859,11 @@ public class ChunkDataLayer
+@@ -806,10 +1861,11 @@ public class ChunkDataLayer
  			paletteCompressed = Compression.Compress(palette, paletteCount, chunkdataVersion);
  		}
  		return Compression.Compress(arrayStatic, num, chunkdataVersion);
@@ -1740,7 +1741,7 @@ index 4d0bf91..8360927 100644
  		paletteCount = 0;
  		palette = Compression.DecompressCombined(layerCompressed, ref dataBits, ref paletteCount, pool.NewData);
  		if (palette != null)
-@@ -827,10 +1881,11 @@ public class ChunkDataLayer
+@@ -827,10 +1883,11 @@ public class ChunkDataLayer
  		{
  			bitsize = 0;
  		}
@@ -1752,7 +1753,7 @@ index 4d0bf91..8360927 100644
  		palette = Compression.DecompressToInts(paletteCompressed, ref paletteCount);
  		if (palette != null)
  		{
-@@ -872,10 +1927,11 @@ public class ChunkDataLayer
+@@ -872,10 +1929,11 @@ public class ChunkDataLayer
  			Get = GetFromBits0;
  			bitsize = 0;
  		}
@@ -1764,7 +1765,7 @@ index 4d0bf91..8360927 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -910,39 +1966,190 @@ public class ChunkDataLayer
+@@ -910,39 +1968,192 @@ public class ChunkDataLayer
  		{
  			pool.FreeArrays(this);
  		}
@@ -1808,11 +1809,13 @@ index 4d0bf91..8360927 100644
 +		int num = bitsize > 15 ? 15 : bitsize;
 +
 +		// Stratum: AVX path — reuses the same bit-plane → palette decode as CopyBlocksToUnsafe.
++
 +		if (Avx512F.IsSupported)
 +		{
 +			DecodePlanesAvx512(lightOut, dataBits, palette, num);
 +			return;
 +		}
++
 +		if (Avx2.IsSupported)
 +		{
 +			DecodePlanesAvx2(lightOut, dataBits, palette, num);
@@ -1965,7 +1968,7 @@ index 4d0bf91..8360927 100644
  		readWriteLock.AcquireReadLock();
  		try
  		{
-@@ -950,54 +2157,48 @@ public class ChunkDataLayer
+@@ -950,54 +2161,48 @@ public class ChunkDataLayer
  			for (int i = 0; i < blocksOut.Length; i += 32)
  			{
  				int num2 = i / 32;
@@ -2033,7 +2036,7 @@ index 4d0bf91..8360927 100644
  	{
  		int num = -1;
  		for (int i = 0; i < bitsize; i++)
-@@ -1005,10 +2206,11 @@ public class ChunkDataLayer
+@@ -1005,10 +2210,11 @@ public class ChunkDataLayer
  			num &= (((needle & (1 << i)) != 0) ? dataBits[i][intIndex] : (~dataBits[i][intIndex]));
  		}
  		return num;
@@ -2045,7 +2048,7 @@ index 4d0bf91..8360927 100644
  		for (int i = 0; i < paletteCount; i++)
  		{
  			if (palette[i] != id)
-@@ -1025,18 +2227,20 @@ public class ChunkDataLayer
+@@ -1025,18 +2231,20 @@ public class ChunkDataLayer
  			return false;
  		}
  		return false;
@@ -2066,7 +2069,7 @@ index 4d0bf91..8360927 100644
  		int num = ~mask;
  		readWriteLock.AcquireWriteLock();
  		for (int i = 0; i < bitsize; i++)
-@@ -1051,10 +2255,11 @@ public class ChunkDataLayer
+@@ -1051,10 +2259,11 @@ public class ChunkDataLayer
  			}
  		}
  		readWriteLock.ReleaseWriteLock();
@@ -2078,7 +2081,7 @@ index 4d0bf91..8360927 100644
  		int num = paletteCount - 1;
  		readWriteLock.AcquireWriteLock();
  		int num2 = bitsize;
-@@ -1088,10 +2293,194 @@ public class ChunkDataLayer
+@@ -1088,10 +2297,194 @@ public class ChunkDataLayer
  		palette[deletePosition] = palette[num];
  		paletteCount--;
  		readWriteLock.ReleaseWriteLock();
@@ -2273,7 +2276,7 @@ index 4d0bf91..8360927 100644
  		int[] array = palette;
  		if (array == null)
  		{
-@@ -1104,6 +2493,6 @@ public class ChunkDataLayer
+@@ -1104,6 +2497,6 @@ public class ChunkDataLayer
  			{
  				array[i] = 0;
  			}
