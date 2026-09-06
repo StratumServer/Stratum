@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs
-index 719a68b..d7e17c4 100644
+index 719a68b..a59d378 100644
 --- a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs
 +++ b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpNetwork.cs
 @@ -4,19 +4,36 @@ using System.IO;
@@ -329,7 +329,21 @@ index 719a68b..d7e17c4 100644
  	private void SendSinglePositionPacket(ServerPlayer player, Entity entity, int currentTick)
  	{
  		Packet_UdpPacket packet = new Packet_UdpPacket
-@@ -240,10 +482,16 @@ public class ServerUdpNetwork : ServerSystem
+@@ -228,11 +470,12 @@ public class ServerUdpNetwork : ServerSystem
+ 		{
+ 			return;
+ 		}
+ 		Entity entityById = server.api.World.GetEntityById(packet.EntityId);
+ 		IMountable mountable = entityById?.GetInterface<IMountable>();
+-		if (mountable == null || !mountable.IsMountedBy(player.Entity))
++		// Stratum: Passengers cannot submit movement or animations for the mount's controller.
++		if (mountable == null || mountable.Controller != player.Entity)
+ 		{
+ 			return;
+ 		}
+ 		int num = entityById.WatchedAttributes.GetInt("positionVersionNumber");
+ 		if (packet.PositionVersion < num)
+@@ -240,10 +483,16 @@ public class ServerUdpNetwork : ServerSystem
  			return;
  		}
  		int num2 = entityById.Attributes.GetInt("tick");
@@ -346,7 +360,7 @@ index 719a68b..d7e17c4 100644
  			entityById.Api.Logger.Audit("Rejected mount position update for " + player.PlayerName + ". Client sent " + packet.X / 16384 + "," + packet.Y / 16384 + "," + packet.Z / 16384 + ", server pos was " + entityById.Pos);
  			SendSinglePositionPacket(player, entityById, num2);
  			return;
-@@ -299,10 +547,11 @@ public class ServerUdpNetwork : ServerSystem
+@@ -299,10 +548,11 @@ public class ServerUdpNetwork : ServerSystem
  			IServerNetworkChannel animationsAndTagsChannel = physicsManager.AnimationsAndTagsChannel;
  			AnimationPacket message = animationPacket;
  			IServerPlayer[] players = list.ToArray();

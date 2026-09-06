@@ -1,0 +1,26 @@
+diff --git a/VintagestoryApi/Common/Model/Animation/AnimatorBase.cs b/VintagestoryApi/Common/Model/Animation/AnimatorBase.cs
+index d2d4a4e..565c9bb 100644
+--- a/VintagestoryApi/Common/Model/Animation/AnimatorBase.cs
++++ b/VintagestoryApi/Common/Model/Animation/AnimatorBase.cs
+@@ -273,14 +273,21 @@ namespace Vintagestory.API.Common
+         protected abstract void calculateMatrices(float dt);
+         
+ 
+         public AttachmentPointAndPose GetAttachmentPointPose(string code)
+         {
++            StratumEnsurePosesFresh(); // Stratum: lazy server poses, see ServerAnimator
+             AttachmentPointByCode.TryGetValue(code, out AttachmentPointAndPose apap);
+             return apap;
+         }
+ 
++        // Stratum: ServerAnimator overrides this to recompute stale poses on the first read
++        // of a frame instead of on every tick. No-op on the client.
++        protected virtual void StratumEnsurePosesFresh()
++        {
++        }
++
+         public virtual ElementPose GetPosebyName(string name, StringComparison stringComparison = StringComparison.InvariantCultureIgnoreCase)
+         {
+             throw new NotImplementedException();
+         }
+ 

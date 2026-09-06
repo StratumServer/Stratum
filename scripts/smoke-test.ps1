@@ -5,6 +5,10 @@ monitors progress through startup phases, and verifies it reaches RunGame
 without fatal errors. Detects stalls by checking log growth rather than a
 hard timeout.
 
+Does not yet pipe the console command probe scripts/smoke-test.sh runs on
+Linux/macOS (registration and argument-handling coverage for commands like
+/kitedit); this script is boot-only for now.
+
 .PARAMETER Patience
 Seconds without log output before declaring a stall. Default: 60.
 

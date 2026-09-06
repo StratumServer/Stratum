@@ -99,6 +99,11 @@ changes.
 
 Anything else is forwarded to the server, such as `--port` or `--dataPath`.
 
+## Commands
+
+Stratum adds a set of in-game commands on top of vanilla. See
+[docs/commands/kits.md](docs/commands/kits.md) for `/kit` and `/kitedit`.
+
 ## Build
 
 Requires the .NET 10 SDK and `git`. Linux/macOS also need `bash`, `python3`, and `curl`.

@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
-index 672877b..af91e6a 100644
+index 672877b..3ffd611 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMapChunk.cs
-@@ -36,10 +36,27 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -36,10 +36,40 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  	public List<BlockPos> ScheduledBlockUpdates = new List<BlockPos>();
  
  	[ProtoMember(9)]
@@ -25,12 +25,25 @@ index 672877b..af91e6a 100644
 +	// ProtoMember itself, so it is never serialized.
 +	internal readonly object stratumNewBlockEntitiesLock = new object();
 +
++
++	// Stratum: lock-free handoff queue of batched worldgen block-light updates.
++	// Producers (GenCaves TerrainLate workers, SetBlock) push whole batches they no
++	// longer need; the consumer (RunScheduledBlockLightUpdates, Vegetation pass)
++	// drains the stack and iterates a private list nobody else can mutate. Replaces
++	// the shared ScheduledBlockLightUpdates List<Vec4i> that a TerrainLate append
++	// could corrupt while the Vegetation pass read and cleared it. A ConcurrentStack
++	// rather than a lock on purpose: the previous global accessor lock serialized the
++	// whole light-processing critical section across all worldgen threads, and the
++	// Monitor.Enter slow path dominated the profile. Not a ProtoMember itself, so the
++	// on-disk shape is unchanged; persistence rides on field 17 via FastSerialize/FromBytes.
++	internal readonly ConcurrentStack<List<Vec4i>> stratumLightUpdateBatches = new ConcurrentStack<List<Vec4i>>();
++
  	[ProtoMember(10)]
  	public ushort YMax;
  
  	[ProtoMember(15)]
  	public ConcurrentDictionary<Vec2iStruct, float> snowAccumOld;
-@@ -63,24 +80,30 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -63,20 +93,26 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  
  	public SmallBoolArray NeighboursLoaded;
  
@@ -57,39 +70,52 @@ index 672877b..af91e6a 100644
  		}
  	}
  
--	[ProtoMember(11)]
-+    [ProtoMember(11)]
+ 	[ProtoMember(11)]
  	public byte[] CaveHeightDistort { get; set; }
- 
- 	[ProtoMember(12)]
- 	public ushort[] SedimentaryThicknessMap { get; set; }
- 
-@@ -148,11 +171,14 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+@@ -148,10 +184,13 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  	}
  
  	public static ServerMapChunk FromBytes(byte[] serializedChunk)
  	{
  		ServerMapChunk serverMapChunk = Serializer.Deserialize<ServerMapChunk>((Stream)new MemoryStream(serializedChunk));
--		if (serverMapChunk.WorldGenTerrainHeightMap == null)
-+        // Stratum: converting the vanilla stage to ours
-+        serverMapChunk.currentpass = StratumWorldGenStages.FromVanilla(serverMapChunk.currentpass);
++		// Stratum: converting the vanilla stage to ours
++		serverMapChunk.currentpass = StratumWorldGenStages.FromVanilla(serverMapChunk.currentpass);
 +
-+        if (serverMapChunk.WorldGenTerrainHeightMap == null)
+ 		if (serverMapChunk.WorldGenTerrainHeightMap == null)
  		{
  			serverMapChunk.WorldGenTerrainHeightMap = (ushort[])serverMapChunk.RainHeightMap.Clone();
  		}
  		if (serverMapChunk.TopRockIdMapOld != null)
+@@ -176,10 +215,20 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+ 		}
+ 		if (serverMapChunk.Moddata == null)
  		{
-@@ -282,15 +308,20 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
+ 			serverMapChunk.Moddata = new Dictionary<string, byte[]>();
+ 		}
++
++		// Stratum: migrate legacy pending updates (saved by vanilla or an older Stratum
++		// build mid-generation) onto the batch stack, so an interrupted column still
++		// gets its lava light when generation resumes.
++		if (serverMapChunk.ScheduledBlockLightUpdates != null)
++		{
++			serverMapChunk.stratumLightUpdateBatches.Push(serverMapChunk.ScheduledBlockLightUpdates);
++			serverMapChunk.ScheduledBlockLightUpdates = null;
++		}
++
+ 		return serverMapChunk;
+ 	}
+ 
+ 	public byte[] ToBytes()
+ 	{
+@@ -282,21 +331,47 @@ public class ServerMapChunk : IServerMapChunk, IMapChunk, IWithFastSerialize
  	public byte[] FastSerialize(FastMemoryStream ms)
  	{
  		ms.Reset();
  		FastSerializer.Write(ms, 1, Moddata);
  		FastSerializer.Write(ms, 3, RainHeightMap);
 -		FastSerializer.Write(ms, 4, currentpass);
--		FastSerializer.Write(ms, 6, TopRockIdMapOld);
-+        FastSerializer.Write(ms, 4, StratumWorldGenStages.ToVanilla(currentpass));   // Stratum: distilling our stages into vanilla
-+        FastSerializer.Write(ms, 6, TopRockIdMapOld);
++		FastSerializer.Write(ms, 4, StratumWorldGenStages.ToVanilla(currentpass));   // Stratum: distilling our stages into vanilla
+ 		FastSerializer.Write(ms, 6, TopRockIdMapOld);
  		FastSerializer.Write(ms, 7, WorldGenTerrainHeightMap);
  		FastSerializer.Write(ms, 8, ScheduledBlockUpdates);
 -		FastSerializer.Write(ms, 9, NewBlockEntities);
@@ -104,3 +130,31 @@ index 672877b..af91e6a 100644
  		FastSerializer.Write(ms, 12, SedimentaryThicknessMap);
  		FastSerializer.Write(ms, 13, TopRockIdMap);
  		FastSerializer.Write(ms, 15, snowAccumOld);
+ 		FastSerializer.Write(ms, 16, WorldGenVersion);
+-		FastSerializer.Write(ms, 17, ScheduledBlockLightUpdates);
++		// Stratum: save-path snapshot. The legacy field is dead at runtime (FromBytes
++		// moves it onto the stack and nulls it), but even in the (currently dead)
++		// non-null case we never hand a live reference to the serializer — copy it.
++		// Batches on the stack are immutable once pushed (producer nulls its reference
++		// after Push; Run only reads what it pops), so enumerating them here cannot
++		// race with anyone: the save thread is a reader, at worst concurrent with Run,
++		// which is also a reader. The serializer therefore never enumerates a list
++		// another thread mutates.
++		List<Vec4i> persistedLightUpdates = null;
++		if (ScheduledBlockLightUpdates != null && ScheduledBlockLightUpdates.Count > 0)
++		{
++			persistedLightUpdates = new List<Vec4i>(ScheduledBlockLightUpdates);
++		}
++		if (!stratumLightUpdateBatches.IsEmpty)
++		{
++			if (persistedLightUpdates == null) persistedLightUpdates = new List<Vec4i>();
++			foreach (List<Vec4i> batch in stratumLightUpdateBatches)
++			{
++				persistedLightUpdates.AddRange(batch);
++			}
++		}
++		FastSerializer.Write(ms, 17, persistedLightUpdates);
+ 		FastSerializer.Write(ms, 18, snowAccumArray);
+ 		return ms.ToArray();
+ 	}
+ }

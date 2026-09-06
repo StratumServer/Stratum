@@ -1,0 +1,62 @@
+diff --git a/VintagestoryLib/Vintagestory.Server.Systems/EntityPosExtensions.cs b/VintagestoryLib/Vintagestory.Server.Systems/EntityPosExtensions.cs
+index a5ba628..fe7193f 100644
+--- a/VintagestoryLib/Vintagestory.Server.Systems/EntityPosExtensions.cs
++++ b/VintagestoryLib/Vintagestory.Server.Systems/EntityPosExtensions.cs
+@@ -30,10 +30,21 @@ public static class EntityPosExtensions
+ 			if (Math.Abs(pos.Z - num3) > 128.0)
+ 			{
+ 				return false;
+ 			}
+ 		}
++		// Stratum: Validate motion before writing any part of a rejected position packet.
++		double stratumMotionX = CollectibleNet.DeserializeDoublePrecise(packet.MotionX);
++		double stratumMotionY = CollectibleNet.DeserializeDoublePrecise(packet.MotionY);
++		double stratumMotionZ = CollectibleNet.DeserializeDoublePrecise(packet.MotionZ);
++		Vec3d motion = pos.Motion;
++		if (sanityCheck && (Math.Abs(motion.X - stratumMotionX) > maxMotionChangePerPacket
++		                || Math.Abs(motion.Y - stratumMotionY) > maxMotionChangePerPacket
++		                || Math.Abs(motion.Z - stratumMotionZ) > maxMotionChangePerPacket))
++		{
++			return false;
++		}
+ 		pos.X = num;
+ 		pos.Y = num2;
+ 		pos.Z = num3;
+ 		float num4 = CollectibleNet.DeserializeFloatPrecise(packet.Yaw) % ((float)Math.PI * 2f);
+ 		float num5 = CollectibleNet.DeserializeFloatPrecise(packet.Pitch) % ((float)Math.PI * 2f);
+@@ -43,32 +54,13 @@ public static class EntityPosExtensions
+ 		pos.Roll = ((num6 < 0f) ? (num6 + (float)Math.PI * 2f) : num6);
+ 		num4 = CollectibleNet.DeserializeFloatPrecise(packet.HeadYaw) % ((float)Math.PI * 2f);
+ 		num5 = CollectibleNet.DeserializeFloatPrecise(packet.HeadPitch) % ((float)Math.PI * 2f);
+ 		pos.HeadYaw = ((num4 < 0f) ? (num4 + (float)Math.PI * 2f) : num4);
+ 		pos.HeadPitch = ((num5 < 0f) ? (num5 + (float)Math.PI * 2f) : num5);
+-		num = CollectibleNet.DeserializeDoublePrecise(packet.MotionX);
+-		num2 = CollectibleNet.DeserializeDoublePrecise(packet.MotionY);
+-		num3 = CollectibleNet.DeserializeDoublePrecise(packet.MotionZ);
+-		Vec3d motion = pos.Motion;
+-		if (sanityCheck)
+-		{
+-			if (Math.Abs(motion.X - num) > 64.0)
+-			{
+-				return false;
+-			}
+-			if (Math.Abs(motion.Y - num2) > 64.0)
+-			{
+-				return false;
+-			}
+-			if (Math.Abs(motion.Z - num3) > 64.0)
+-			{
+-				return false;
+-			}
+-		}
+-		motion.X = num;
+-		motion.Y = num2;
+-		motion.Z = num3;
++		motion.X = stratumMotionX;
++		motion.Y = stratumMotionY;
++		motion.Z = stratumMotionZ;
+ 		if (entity is EntityAgent entityAgent)
+ 		{
+ 			num4 = CollectibleNet.DeserializeFloatPrecise(packet.BodyYaw) % ((float)Math.PI * 2f);
+ 			entityAgent.BodyYawServer = ((num4 < 0f) ? (num4 + (float)Math.PI * 2f) : num4);
+ 		}

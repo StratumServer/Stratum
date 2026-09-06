@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkData.cs b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
-index af79143..bd887b3 100644
+index af79143..1f0127e 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkData.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkData.cs
 @@ -99,41 +99,41 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
@@ -75,7 +75,7 @@ index af79143..bd887b3 100644
  
  	public int GetSolidBlock(int index3d)
  	{
-@@ -166,45 +166,59 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -166,45 +166,60 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  	public int GetBlockIdUnsafe(int index3d)
  	{
  		return blocksLayer?.GetUnsafe(index3d) ?? 0;
@@ -118,6 +118,7 @@ index af79143..bd887b3 100644
 +		blocksLayer.CopyBlocksToUnsafe(blocksOut);
 +	}
 +	// Stratum end
++	
 +
 +	public int GetBlockIdUnsafe(int index3d, int layer)
 +	{
@@ -166,7 +167,7 @@ index af79143..bd887b3 100644
  
  	public void TakeBulkReadLock()
  	{
-@@ -220,21 +234,18 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -220,21 +235,18 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  		bulkBlocksTmp?.readWriteLock.ReleaseReadLock();
  		bulkFluidsTmp = null;
  		bulkBlocksTmp = null;
@@ -191,16 +192,19 @@ index af79143..bd887b3 100644
  	public void SetBlockUnsafe(int index3d, int value)
  	{
  		if (blocksLayer == null)
-@@ -246,10 +257,65 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -246,10 +258,70 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  			blocksLayer = new BlockChunkDataLayer(pool);
  		}
  		blocksLayer.SetUnsafe(index3d, value);
  	}
  
 +	/// <summary>
-+	/// Stratum: bulk variant of SetBlockUnsafe. Forwards a buffered batch of
-+	/// (index3d, value) pairs to the blocks layer's SetManyUnsafe, taking the
-+	/// layer's write lock once for the whole batch instead of once per block.
++	/// Stratum: bulk-write a batch of (index, value) pairs in one pass. When the blocks layer
++	/// does not exist yet it is created and initialised with an air-filled palette and bit-planes
++	/// via PopulateWithAir(). That initialisation touches ONLY the blocks layer - fluidsLayer and
++	/// lightLayer are left completely untouched (unlike ClearBlocksAndPrepare, which nulls all
++	/// three layers through pool.FreeArraysAndReset). SetManyUnsafe then has a valid target instead
++	/// of NRE-ing on the first write.
 +	/// </summary>
 +	public void SetBlocksUnsafe(List<int> indices, List<int> values)
 +	{
@@ -208,9 +212,11 @@ index af79143..bd887b3 100644
 +		{
 +			return;
 +		}
-+		if (blocksLayer == null)
++
++		if (blocksLayer == null || blocksLayer.palette == null)
 +		{
-+			blocksLayer = new BlockChunkDataLayer(pool);
++			if (blocksLayer == null) blocksLayer = new BlockChunkDataLayer(pool);
++			blocksLayer.PopulateWithAir();
 +		}
 +		blocksLayer.SetManyUnsafe(indices, values);
 +	}
@@ -257,7 +263,7 @@ index af79143..bd887b3 100644
  		blocksLayer?.SetZero(index3d);
  	}
  
-@@ -685,6 +751,6 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
+@@ -685,6 +757,6 @@ public class ChunkData : IChunkBlocks, IChunkLight, IEnumerable<int>, IEnumerabl
  
  	public void FuzzyListBlockIds(List<int> reusableList)
  	{

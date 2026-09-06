@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/API/IWorldChunk.cs b/VintagestoryApi/Common/API/IWorldChunk.cs
-index 1016d62..4826fd5 100644
+index 1016d62..8a471eb 100644
 --- a/VintagestoryApi/Common/API/IWorldChunk.cs
 +++ b/VintagestoryApi/Common/API/IWorldChunk.cs
 @@ -10,11 +10,11 @@ namespace Vintagestory.API.Common
@@ -27,7 +27,7 @@ index 1016d62..4826fd5 100644
 +        /// <param name="value"></param</param>
          void SetBlockUnsafe(int index3d, int value);
 +
-+        // Stratum start: Added bulk block write variant that takes a flat int[] buffer of length Length.
++// Stratum start: Added bulk block write variant that takes a flat int[] buffer of length Length.
 +        // Each contiguous chunk of 4 ints encodes one (x, y, z) position followed by the target block id,
 +        // enabling worldgen code to push pre-batched writes without per-position lock acquisition.
 +        /// <summary>
