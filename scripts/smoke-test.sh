@@ -47,6 +47,11 @@ probe_commands=(
   "/kitedit list extra"
   "/kitedit create starter_kit 1 2"
   "/kit"
+  "/friendlyfire"
+  "/friendlyfire off"
+  "/friendlyfire status"
+  "/friendlyfire toggle"
+  "/friendlyfire nonsense"
 )
 probe_expect=(
   "No kits exist yet."
@@ -57,6 +62,11 @@ probe_expect=(
   "/kitedit list takes no arguments."
   ""
   "Only a connected player can use /kit."
+  "Group friendly fire is on, players in the same group can damage each other."
+  "Group friendly fire disabled, players in the same group can no longer damage each other."
+  "Group friendly fire is off, players in the same group cannot damage each other."
+  "Group friendly fire enabled, players in the same group can damage each other again."
+  ""
 )
 
 # Data path handling.
