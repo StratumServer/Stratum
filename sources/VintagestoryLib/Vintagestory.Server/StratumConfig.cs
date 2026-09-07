@@ -56,6 +56,8 @@ internal class StratumConfig
 
 	public StratumCoopCombatConfig CoopCombat { get; set; } = new StratumCoopCombatConfig();
 
+	public StratumFriendlyFireConfig FriendlyFire { get; set; } = new StratumFriendlyFireConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
 	public void EnsurePopulated()
@@ -83,6 +85,7 @@ internal class StratumConfig
 		Announcements ??= new StratumAnnouncementsConfig();
 		CombatLog ??= new StratumCombatLogConfig();
 		CoopCombat ??= new StratumCoopCombatConfig();
+		FriendlyFire ??= new StratumFriendlyFireConfig();
 		ServerStats ??= new StratumServerStatsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
@@ -1601,6 +1604,8 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig CoopCombat { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
 
+	public StratumCommandAccessConfig FriendlyFire { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.friendlyfire");
+
 	public StratumCommandAccessConfig StaffBroadcast { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 
 	public StratumCommandAccessConfig InfoCommands { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.info");
@@ -1672,6 +1677,7 @@ internal class StratumCommandsConfig
 		StaffChat ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffchat");
 		ChatControl ??= StratumCommandAccessConfig.ForPrivilege("stratum.chatcontrol");
 		CoopCombat ??= StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
+		FriendlyFire ??= StratumCommandAccessConfig.ForPrivilege("stratum.friendlyfire");
 		StaffBroadcast ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 		InfoCommands ??= StratumCommandAccessConfig.ForPrivilege("stratum.info");
 		Vanish ??= StratumCommandAccessConfig.ForPrivilege("stratum.vanish");
@@ -1706,6 +1712,7 @@ internal class StratumCommandsConfig
 		StaffChat.EnsurePopulated("stratum.staffchat");
 		ChatControl.EnsurePopulated("stratum.chatcontrol");
 		CoopCombat.EnsurePopulated("stratum.coopcombat");
+		FriendlyFire.EnsurePopulated("stratum.friendlyfire");
 		StaffBroadcast.EnsurePopulated("stratum.staffbroadcast");
 		InfoCommands.EnsurePopulated("stratum.info");
 		Vanish.EnsurePopulated("stratum.vanish");

@@ -213,6 +213,7 @@ internal class CmdStratum
 		{
 			CmdStratumEssentials.RegisterConfiguredPrivileges(server);
 			StratumCoopCombatSystem.Apply(StratumRuntime.Config.CoopCombat);
+			StratumFriendlyFireSystem.Apply(StratumRuntime.Config.FriendlyFire);
 			StratumMobSpawning.Refresh(); // Stratum: issue #216 resync after config reload
 			// Stratum: clear region ticking fallback state on reload (#10)
 			var sim = server.Systems.OfType<ServerSystemEntitySimulation>().FirstOrDefault();
