@@ -1,8 +1,31 @@
 diff --git a/VSEssentials/Entities/EntityProjectileBase.cs b/VSEssentials/Entities/EntityProjectileBase.cs
-index 64c42af..0d724ce 100644
+index 64c42af..28917e7 100644
 --- a/VSEssentials/Entities/EntityProjectileBase.cs
 +++ b/VSEssentials/Entities/EntityProjectileBase.cs
-@@ -263,10 +263,17 @@ namespace Vintagestory.GameContent
+@@ -224,10 +224,22 @@ namespace Vintagestory.GameContent
+             ICoreServerAPI? serverApi = World.Api as ICoreServerAPI;
+             if (fromPlayer != null && serverApi != null)
+             {
+                 if (targetIsPlayer && (!serverApi.Server.Config.AllowPvP || !fromPlayer.HasPrivilege("attackplayers"))) canDamage = false;
+                 if (targetIsCreature && !fromPlayer.HasPrivilege("attackcreatures")) canDamage = false;
++
++                // Stratum: group friendly fire (#277). A shot at a group mate is dropped here,
++                // so ImpactOnEntity skips the impact sound, the damage, and the arrow durability
++                // hit, matching the vanilla PvP-off path. The shooter gets a throttled notice.
++                if (canDamage && targetIsPlayer && StratumFriendlyFireHook.BlockGroupDamage
++                    && target is EntityPlayer stratumTarget && stratumTarget.Player is IServerPlayer stratumTargetPlayer
++                    && stratumTargetPlayer.PlayerUID != fromPlayer.PlayerUID
++                    && StratumPlayerGroups.SharesGroup(fromPlayer, stratumTargetPlayer))
++                {
++                    canDamage = false;
++                    StratumFriendlyFireHook.OnBlockedAttack?.Invoke(fromPlayer.PlayerUID, stratumTargetPlayer.PlayerUID);
++                }
+             }
+ 
+             return canDamage;
+         }
+ 
+@@ -263,10 +275,17 @@ namespace Vintagestory.GameContent
                  DamageTier = DamageTier,
                  IgnoreInvFrames = IgnoreInvFrames,
                  KnockbackStrength = Weight * (float)Pos.Motion.Length() * knockbackFactor

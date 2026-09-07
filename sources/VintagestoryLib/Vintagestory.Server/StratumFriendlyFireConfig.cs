@@ -1,3 +1,5 @@
+using System;
+
 namespace Vintagestory.Server;
 
 // Group friendly fire. When AllowGroupDamage is false, a hit between two players who share a
@@ -18,4 +20,22 @@ internal sealed class StratumFriendlyFireConfig
 {
 	/// <summary>Whether players in the same player group can damage each other. True is vanilla behaviour.</summary>
 	public bool AllowGroupDamage { get; set; } = true;
+
+	/// <summary>Tell an attacker, in chat, when their hit was dropped for hitting a group mate.</summary>
+	public bool NotifyBlockedAttacker { get; set; } = true;
+
+	/// <summary>Minimum gap between those notices per attacker, so a held attack does not spam chat.</summary>
+	public int NotifyThrottleMs { get; set; } = 3000;
+
+	/// <summary>The notice text. {0} is the group mate's name.</summary>
+	public string BlockedMessage { get; set; } = "{0} is in your group, friendly fire is off.";
+
+	public void EnsureSane()
+	{
+		NotifyThrottleMs = Math.Clamp(NotifyThrottleMs, 500, 60000);
+		if (string.IsNullOrWhiteSpace(BlockedMessage))
+		{
+			BlockedMessage = "{0} is in your group, friendly fire is off.";
+		}
+	}
 }

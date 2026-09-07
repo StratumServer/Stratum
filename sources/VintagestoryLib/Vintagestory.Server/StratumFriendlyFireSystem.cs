@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.CommandAbbr;
 using Vintagestory.API.Config;
@@ -8,7 +9,9 @@ namespace Vintagestory.Server;
 
 // Group friendly fire toggle (issue #277). Owns StratumFriendlyFireHook.BlockGroupDamage and
 // pushes the configured value into it at startup, on /friendlyfire, and after a live
-// /stratum reload. The patched EntityPlayer.ShouldReceiveDamage reads the flag.
+// /stratum reload. The patched EntityPlayer.ShouldReceiveDamage reads the flag, and so do the
+// melee interaction handler and the projectile impact path (through StratumFriendlyFireGuard
+// and the OnBlockedAttack hook).
 //
 // "on" means group members can damage each other, matching how every other server platform
 // reads the phrase: friendly fire on is the vanilla behaviour, friendly fire off protects
@@ -16,6 +19,11 @@ namespace Vintagestory.Server;
 internal sealed class StratumFriendlyFireSystem
 {
 	private readonly ServerMain server;
+
+	// Blocked hits since boot, and the last time each attacker was told, so a held attack does
+	// not spam the same line. Both are only touched from the main thread (the damage path).
+	private long blockedHitsThisBoot;
+	private readonly Dictionary<string, long> lastNotifyMs = new Dictionary<string, long>();
 
 	private static StratumFriendlyFireConfig Cfg => StratumRuntime.Config?.FriendlyFire;
 
@@ -25,6 +33,7 @@ internal sealed class StratumFriendlyFireSystem
 
 		StratumRuntime.Config.EnsurePopulated();
 		Apply(Cfg);
+		StratumFriendlyFireHook.OnBlockedAttack = HandleBlockedAttack;
 
 		if (StratumCommandRegistration.ShouldRegister(StratumRuntime.Config.Commands.FriendlyFire, "/friendlyfire", "Commands.FriendlyFire"))
 		{
@@ -43,6 +52,33 @@ internal sealed class StratumFriendlyFireSystem
 	{
 		StratumFriendlyFireHook.BlockGroupDamage = cfg != null && !cfg.AllowGroupDamage;
 		StratumHarmonyVisibility.WarnFriendlyFireConflicts();
+	}
+
+	// Called from the melee and projectile seams each time a hit is dropped for landing on a
+	// group mate. Counts it and, throttled per attacker, tells the attacker why nothing happened.
+	private void HandleBlockedAttack(string attackerUid, string victimUid)
+	{
+		blockedHitsThisBoot++;
+
+		StratumFriendlyFireConfig cfg = Cfg;
+		if (cfg == null || !cfg.NotifyBlockedAttacker || attackerUid == null)
+		{
+			return;
+		}
+
+		long now = server.ElapsedMilliseconds;
+		if (lastNotifyMs.TryGetValue(attackerUid, out long last) && now - last < cfg.NotifyThrottleMs)
+		{
+			return;
+		}
+		lastNotifyMs[attackerUid] = now;
+
+		if (server.PlayerByUid(attackerUid) is not IServerPlayer attacker)
+		{
+			return;
+		}
+		string victimName = server.PlayerByUid(victimUid)?.PlayerName ?? "That player";
+		attacker.SendMessage(GlobalConstants.GeneralChatGroup, string.Format(cfg.BlockedMessage, victimName), EnumChatType.Notification);
 	}
 
 	private bool CheckAccess(TextCommandCallingArgs args, out TextCommandResult failure)
@@ -94,9 +130,14 @@ internal sealed class StratumFriendlyFireSystem
 		string mode = args[0] as string;
 		if (string.IsNullOrEmpty(mode) || string.Equals(mode, "status", StringComparison.OrdinalIgnoreCase))
 		{
-			return TextCommandResult.Success(cfg.AllowGroupDamage
+			string state = cfg.AllowGroupDamage
 				? "Group friendly fire is on, players in the same group can damage each other."
-				: "Group friendly fire is off, players in the same group cannot damage each other.");
+				: "Group friendly fire is off, players in the same group cannot damage each other.";
+			if (!cfg.AllowGroupDamage && blockedHitsThisBoot > 0)
+			{
+				state += " " + blockedHitsThisBoot + " hit(s) blocked since restart.";
+			}
+			return TextCommandResult.Success(state);
 		}
 
 		bool next = string.Equals(mode, "toggle", StringComparison.OrdinalIgnoreCase) ? !cfg.AllowGroupDamage : string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase);
