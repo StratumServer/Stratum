@@ -101,8 +101,10 @@ Anything else is forwarded to the server, such as `--port` or `--dataPath`.
 
 ## Commands
 
-Stratum adds a set of in-game commands on top of vanilla. See
-[docs/commands/kits.md](docs/commands/kits.md) for `/kit` and `/kitedit`.
+Stratum adds a set of in-game commands on top of vanilla.
+
+- [docs/commands/kits.md](docs/commands/kits.md): `/kit` and `/kitedit`.
+- [docs/commands/friendlyfire.md](docs/commands/friendlyfire.md): `/friendlyfire`, the runtime group friendly-fire toggle.
 
 ## Build
 
