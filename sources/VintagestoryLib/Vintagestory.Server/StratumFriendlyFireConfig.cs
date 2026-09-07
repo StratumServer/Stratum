@@ -11,8 +11,9 @@ namespace Vintagestory.Server;
 // already running when the toggle flips keep going. Vanilla has no player-inflicted
 // damage-over-time, so this only matters with mods that add one.
 //
-// Not covered: explosions. ServerMain.CreateExplosion builds its DamageSource without a source
-// or cause entity, so there is no attacker to compare against.
+// Explosions are covered when the igniter is known: ServerMain.CreateExplosion receives the
+// igniting player's uid (bombs record it), and Stratum skips that player's group mates when
+// building the hurt list. The igniter still takes damage from their own blast.
 internal sealed class StratumFriendlyFireConfig
 {
 	/// <summary>Whether players in the same player group can damage each other. True is vanilla behaviour.</summary>
