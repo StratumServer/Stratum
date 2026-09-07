@@ -1,8 +1,35 @@
 diff --git a/VintagestoryApi/Common/Entity/EntityPlayer.cs b/VintagestoryApi/Common/Entity/EntityPlayer.cs
-index 7279e48..7e5d1f7 100644
+index 7279e48..b425833 100644
 --- a/VintagestoryApi/Common/Entity/EntityPlayer.cs
 +++ b/VintagestoryApi/Common/Entity/EntityPlayer.cs
-@@ -1545,11 +1545,15 @@ namespace Vintagestory.API.Common
+@@ -1349,10 +1349,26 @@ namespace Vintagestory.API.Common
+                 {
+                     return false;
+                 }
+             }
+ 
++            // Stratum start: group friendly fire toggle (#277). GetCauseEntity(), not CauseEntity:
++            // CauseEntity is only set for projectiles, a melee hit leaves it null and puts the
++            // attacker in SourceEntity. Heal is never blocked so a group mate can still heal, and
++            // a player can always still damage themselves.
++            if (StratumFriendlyFireHook.BlockGroupDamage
++                && World?.Api is ICoreServerAPI
++                && damageSource != null
++                && damageSource.Type != EnumDamageType.Heal
++                && damageSource.GetCauseEntity() is EntityPlayer stratumAttacker
++                && stratumAttacker != this
++                && StratumPlayerGroups.SharesGroup(stratumAttacker.Player, Player))
++            {
++                return false;
++            }
++            // Stratum end
++
+             return base.ShouldReceiveDamage(damageSource, damage);
+         }
+ 
+         public override void Ignite()
+         {
+@@ -1545,11 +1561,15 @@ namespace Vintagestory.API.Common
          }
  
          public void SetName(string name)
