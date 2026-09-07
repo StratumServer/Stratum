@@ -6,6 +6,11 @@ namespace Vintagestory.Server;
 // both resolve through DamageSource.GetCauseEntity(). Healing between group members is never
 // blocked, and a player can always still damage themselves.
 //
+// The toggle is evaluated when a hit lands, not on a schedule. A damage-over-time effect
+// (bleeding, burning) is gated only when the hit that starts it lands; ticks from an effect
+// already running when the toggle flips keep going. Vanilla has no player-inflicted
+// damage-over-time, so this only matters with mods that add one.
+//
 // Not covered: explosions. ServerMain.CreateExplosion builds its DamageSource without a source
 // or cause entity, so there is no attacker to compare against.
 internal sealed class StratumFriendlyFireConfig
