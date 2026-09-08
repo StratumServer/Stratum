@@ -1,5 +1,6 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Threading;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.CommandAbbr;
 using Vintagestory.API.Config;
@@ -20,10 +21,10 @@ internal sealed class StratumFriendlyFireSystem
 {
 	private readonly ServerMain server;
 
-	// Blocked hits since boot, and the last time each attacker was told, so a held attack does
-	// not spam the same line. Both are only touched from the main thread (the damage path).
+	// Blocked hits can arrive from the physics workers, so the counter and throttle state must be
+	// safe off the main thread. Notifications themselves are queued back to the server thread.
 	private long blockedHitsThisBoot;
-	private readonly Dictionary<string, long> lastNotifyMs = new Dictionary<string, long>();
+	private readonly ConcurrentDictionary<string, long> lastNotifyMs = new ConcurrentDictionary<string, long>();
 
 	private static StratumFriendlyFireConfig Cfg => StratumRuntime.Config?.FriendlyFire;
 
@@ -55,10 +56,11 @@ internal sealed class StratumFriendlyFireSystem
 	}
 
 	// Called from the melee and projectile seams each time a hit is dropped for landing on a
-	// group mate. Counts it and, throttled per attacker, tells the attacker why nothing happened.
+	// group mate. The seams include a physics-thread projectile path, so only the cheap counter
+	// and throttle claim happen here. Player lookup and SendMessage run on the main thread.
 	private void HandleBlockedAttack(string attackerUid, string victimUid)
 	{
-		blockedHitsThisBoot++;
+		Interlocked.Increment(ref blockedHitsThisBoot);
 
 		StratumFriendlyFireConfig cfg = Cfg;
 		if (cfg == null || !cfg.NotifyBlockedAttacker || attackerUid == null)
@@ -67,18 +69,63 @@ internal sealed class StratumFriendlyFireSystem
 		}
 
 		long now = server.ElapsedMilliseconds;
-		if (lastNotifyMs.TryGetValue(attackerUid, out long last) && now - last < cfg.NotifyThrottleMs)
+		if (!TryClaimNotification(attackerUid, now, cfg.NotifyThrottleMs))
 		{
 			return;
 		}
-		lastNotifyMs[attackerUid] = now;
 
+		string blockedMessage = cfg.BlockedMessage;
+		server.EnqueueMainThreadTask(() => SendBlockedNotice(attackerUid, victimUid, blockedMessage));
+	}
+
+	private bool TryClaimNotification(string attackerUid, long now, int throttleMs)
+	{
+		while (true)
+		{
+			if (!lastNotifyMs.TryGetValue(attackerUid, out long last))
+			{
+				if (lastNotifyMs.TryAdd(attackerUid, now))
+				{
+					return true;
+				}
+
+				continue;
+			}
+
+			if (now - last < throttleMs || !lastNotifyMs.TryUpdate(attackerUid, now, last))
+			{
+				if (now - last < throttleMs)
+				{
+					return false;
+				}
+
+				continue;
+			}
+
+			return true;
+		}
+	}
+
+	private void SendBlockedNotice(string attackerUid, string victimUid, string blockedMessage)
+	{
 		if (server.PlayerByUid(attackerUid) is not IServerPlayer attacker)
 		{
+			lastNotifyMs.TryRemove(attackerUid, out _);
 			return;
 		}
+
 		string victimName = server.PlayerByUid(victimUid)?.PlayerName ?? "That player";
-		attacker.SendMessage(GlobalConstants.GeneralChatGroup, string.Format(cfg.BlockedMessage, victimName), EnumChatType.Notification);
+		string message;
+		try
+		{
+			message = string.Format(blockedMessage, victimName);
+		}
+		catch (FormatException)
+		{
+			message = "Friendly fire is disabled for your group.";
+		}
+
+		attacker.SendMessage(GlobalConstants.GeneralChatGroup, message, EnumChatType.Notification);
 	}
 
 	private bool CheckAccess(TextCommandCallingArgs args, out TextCommandResult failure)
@@ -133,9 +180,10 @@ internal sealed class StratumFriendlyFireSystem
 			string state = cfg.AllowGroupDamage
 				? "Group friendly fire is on, players in the same group can damage each other."
 				: "Group friendly fire is off, players in the same group cannot damage each other.";
-			if (!cfg.AllowGroupDamage && blockedHitsThisBoot > 0)
+			long blockedHits = Interlocked.Read(ref blockedHitsThisBoot);
+			if (!cfg.AllowGroupDamage && blockedHits > 0)
 			{
-				state += " " + blockedHitsThisBoot + " hit(s) blocked since restart.";
+				state += " " + blockedHits + " source hit(s) blocked since restart.";
 			}
 			return TextCommandResult.Success(state);
 		}
