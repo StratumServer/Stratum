@@ -1,0 +1,30 @@
+diff --git a/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/Story/GenStoryStructures.cs b/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/Story/GenStoryStructures.cs
+index 998a40c..c1b14c0 100644
+--- a/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/Story/GenStoryStructures.cs
++++ b/VSSurvivalMod/Systems/WorldGen/Standard/ChunkGen/6.GenStructures/Story/GenStoryStructures.cs
+@@ -729,14 +729,23 @@ namespace Vintagestory.GameContent
+                     else
+                     {
+                         h = chunks[0].MapChunk.WorldGenTerrainHeightMap[(startPos.Z % chunksize) * chunksize + (startPos.X % chunksize)];
+                         strucInst.WorldgenHeight = h;
+                         strucloc.Y1 = h - structure.schematicData.SizeY + structure.schematicData.OffsetY;
+-                        strucloc.Y2 = strucloc.Y1 + structure.schematicData.SizeY;
++                        // Stratum start:
++                        // Protection against structure spawning under the mantle.
++                        // Any negative coordinate will result in a chunk data error.
++                        if (strucloc.Y1 <= 0)
++                        {
++                            strucloc.Y1 = 1;
++                        }
++                        strucloc.Y2 = strucloc.Y1 + structure.schematicData.SizeY; 
+                         StoryStructureInstancesDirty = true;
+                     }
+-                    startPos.Y = h - structure.schematicData.SizeY + structure.schematicData.OffsetY;
++
++                    startPos.Y = strucloc.Y1;
++                    // Stratum end
+                 }
+                 else if(structure.Placement == EnumStructurePlacement.Surface)
+                 {
+                     strucloc.Y1 = api.World.SeaLevel + structure.schematicData.OffsetY;
+                     strucloc.Y2 = strucloc.Y1 + structure.schematicData.SizeY;
