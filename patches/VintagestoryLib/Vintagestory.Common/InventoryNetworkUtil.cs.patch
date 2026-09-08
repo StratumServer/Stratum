@@ -1,0 +1,88 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs b/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
+index 695dd63..3460955 100644
+--- a/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
++++ b/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
+@@ -3,10 +3,11 @@ using System.Buffers;
+ using System.Collections.Generic;
+ using System.IO;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Server;
++using Vintagestory.Server;
+ 
+ namespace Vintagestory.Common;
+ 
+ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ {
+@@ -52,10 +53,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 		HandleClientPacket(byPlayer, packetId, packet_Client);
+ 	}
+ 
+ 	public virtual void HandleClientPacket(IPlayer byPlayer, int packetId, Packet_Client packet)
+ 	{
++		// Stratum: Resyncs can leak contents too, so check access first.
++		if (!StratumInventoryPrivacy.CanView(inv, byPlayer)) return;
+ 		IWorldPlayerData worldData = byPlayer.WorldData;
+ 		switch (packetId)
+ 		{
+ 		case 7:
+ 			handleActivateInventorySlotPacket(byPlayer, packet, worldData);
+@@ -219,11 +222,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 	}
+ 
+ 	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId)
+ 	{
+ 		InventoryBase inventoryBase = (InventoryBase)owningPlayer.InventoryManager.GetInventory(inventoryId);
+-		if (inventoryBase != null)
++		// Stratum: Check access again before sending a rollback.
++		if (StratumInventoryPrivacy.CanView(inventoryBase, owningPlayer))
+ 		{
+ 			Packet_InventoryContents inventoryContents = (inventoryBase.InvNetworkUtil as InventoryNetworkUtil).ToPacket(owningPlayer);
+ 			Packet_Server packet = new Packet_Server
+ 			{
+ 				Id = 30,
+@@ -266,20 +270,27 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 		}
+ 	}
+ 
+ 	protected virtual void NotifyPlayersItemstackMoved(IPlayer player, string[] invIds, int[] slotIds)
+ 	{
+-		Packet_Server doubleUpdatePacket = getDoubleUpdatePacket(player, invIds, slotIds);
+-		((ICoreServerAPI)Api).Network.BroadcastArbitraryPacket(doubleUpdatePacket, (IServerPlayer)player);
++		// Stratum: Send swaps only to players with the inventory open.
++		for (int i = 0; i < invIds.Length; i++)
++		{
++			if (player.InventoryManager.GetInventory(invIds[i]) is InventoryBase inventory)
++			{
++				StratumInventorySync.NotifySlotViewers(player, inventory, slotIds[i]);
++			}
++		}
+ 	}
+ 
+ 	public static Packet_Server getDoubleUpdatePacket(IPlayer player, string[] invIds, int[] slotIds)
+ 	{
+ 		IInventory inventory = player.InventoryManager.GetInventory(invIds[0]);
+ 		IInventory inventory2 = player.InventoryManager.GetInventory(invIds[1]);
+-		ItemStack itemstack = inventory[slotIds[0]].Itemstack;
+-		ItemStack itemstack2 = inventory2[slotIds[1]].Itemstack;
++		// Stratum: Rejected swaps can refer to slots the player can no longer access.
++		ItemStack itemstack = StratumInventoryPrivacy.CanView(inventory as InventoryBase, player) ? inventory[slotIds[0]]?.Itemstack : null;
++		ItemStack itemstack2 = StratumInventoryPrivacy.CanView(inventory2 as InventoryBase, player) ? inventory2[slotIds[1]]?.Itemstack : null;
+ 		Packet_InventoryDoubleUpdate inventoryDoubleUpdate = new Packet_InventoryDoubleUpdate
+ 		{
+ 			ClientId = player.ClientId,
+ 			InventoryId1 = invIds[0],
+ 			InventoryId2 = invIds[1],
+@@ -338,10 +349,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 		return packet_InventoryContents;
+ 	}
+ 
+ 	public virtual Packet_Server getSlotUpdatePacket(IPlayer player, int slotId)
+ 	{
++		// Stratum: Check access before sending slot updates.
++		if (!StratumInventoryPrivacy.CanView(inv, player)) return null;
+ 		ItemSlot itemSlot = inv[slotId];
+ 		if (itemSlot == null)
+ 		{
+ 			return null;
+ 		}

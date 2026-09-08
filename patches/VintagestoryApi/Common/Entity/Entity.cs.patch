@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/Entity/Entity.cs b/VintagestoryApi/Common/Entity/Entity.cs
-index 3a55cef..e935273 100644
+index 3a55cef..3e6a176 100644
 --- a/VintagestoryApi/Common/Entity/Entity.cs
 +++ b/VintagestoryApi/Common/Entity/Entity.cs
 @@ -577,12 +577,16 @@ namespace Vintagestory.API.Common.Entities
@@ -119,3 +119,18 @@ index 3a55cef..e935273 100644
          /// Called by EntityShapeRenderer.cs before tesselating the entity shape
          /// </summary>
          /// <param name="entityShape"></param>
+@@ -2129,11 +2167,13 @@ namespace Vintagestory.API.Common.Entities
+ 
+             SetHeadPositionToWatchedAttributes();
+ 
+             Stats.ToTreeAttributes(WatchedAttributes, forClient);
+ 
+-            WatchedAttributes.ToBytes(writer);
++            // Stratum: Hide bag contents in client snapshots.
++            ITreeAttribute stratumNetworkAttributes = forClient ? StratumInventoryPrivacy.GetPublicAttributes(WatchedAttributes) : WatchedAttributes;
++            stratumNetworkAttributes.ToBytes(writer);
+             Pos.ToBytes(writer);
+             writer.Write(PositionBeforeFalling.X);
+             writer.Write(PositionBeforeFalling.Y);
+             writer.Write(PositionBeforeFalling.Z);
+ 
