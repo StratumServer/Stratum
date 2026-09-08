@@ -71,7 +71,7 @@ internal static class StratumHarmonyVisibility
 
 	// Methods the group friendly fire toggle (#277) relies on to drop a hit between group mates.
 	// A mod that Harmony-patches one of these and skips the original can silently defeat the
-	// toggle. No server platform can stop that, so when the toggle is on we name the mod in the
+	// toggle. No server platform can stop that, so when friendly fire is off we name the mod in the
 	// log for triage. Keyed by the declaring type's simple name plus the method name, which is
 	// enough to be unambiguous here and avoids caring about overloads or full namespaces.
 	private static readonly HashSet<string> FriendlyFireCriticalMethods = new HashSet<string>(System.StringComparer.Ordinal)
@@ -92,8 +92,8 @@ internal static class StratumHarmonyVisibility
 	};
 
 	// Runs regardless of Diagnostics.LogModHarmonyPatches: this is a targeted safety warning for
-	// one feature, not the full patch dump. Only emits anything when /friendlyfire is off (the
-	// toggle is active) and a mod actually patches one of the methods it depends on.
+	// one feature, not the full patch dump. It is called after the friendly-fire state is applied,
+	// including startup, /friendlyfire changes, and /stratum reload.
 	public static void WarnFriendlyFireConflicts()
 	{
 		if (!StratumFriendlyFireHook.BlockGroupDamage)
@@ -120,7 +120,6 @@ internal static class StratumHarmonyVisibility
 			CollectOwners(owners, info.Postfixes);
 			CollectOwners(owners, info.Transpilers);
 			CollectOwners(owners, info.Finalizers);
-			owners.Remove("(unknown)");
 			if (owners.Count == 0)
 			{
 				continue;
