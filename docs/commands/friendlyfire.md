@@ -2,11 +2,14 @@
 
 `/friendlyfire` toggles, at runtime, whether players in the same player group
 can damage each other. It is server side only and needs no custom client.
-Implementation:
+The current branch implements the toggle in:
 [`StratumFriendlyFireSystem.cs`](../../sources/VintagestoryLib/Vintagestory.Server/StratumFriendlyFireSystem.cs),
 [`StratumPlayerGroups.cs`](../../sources/VintagestoryApi/Server/StratumPlayerGroups.cs),
 and the `ShouldReceiveDamage` hunk in
 [`EntityPlayer.cs.patch`](../../patches/VintagestoryApi/Common/Entity/EntityPlayer.cs.patch).
+The known-igniter explosion filter is also present through #302. The earlier
+source-seam guards from #303 and the Harmony warning from #304 land with those
+follow-up PRs.
 
 ## At a glance
 
@@ -25,7 +28,8 @@ admin turns it off.
 `/friendlyfire off`) and a hit from one group member to another is dropped in
 `EntityPlayer.ShouldReceiveDamage`, before the health behaviour runs: no
 health change, no knockback, no hurt animation, no `DidAttack` bookkeeping,
-no death.
+no death. #303 adds earlier source-seam guards for melee and projectile
+interactions.
 
 ## Syntax
 
@@ -71,15 +75,17 @@ toggle follows membership, not the group's join policy.
 
 ## What the toggle does and does not cover
 
-- **Melee and projectiles:** covered. Both resolve through
+- **Melee and projectiles:** the current branch filters the resolved damage in
+  `EntityPlayer.ShouldReceiveDamage`, and #303 adds earlier source-seam guards
+  for the same attacker rule. Both resolve through
   `DamageSource.GetCauseEntity()`.
 - **Healing:** never blocked. A group member can always heal another, toggle
   or not.
 - **Self damage:** never blocked. Fall, drowning, hunger, and a player's own
   hits always apply.
 - **Explosions:** covered when the igniter is known (a bomb records who lit
-  it). The igniter still takes damage from their own blast. A bomb lit before a
-  restart may have no resolvable igniter and is not covered.
+  it). The igniter still takes damage from their own blast. A bomb lit by an
+  offline player may have no resolvable igniter and is not covered.
 - **Other no-cause damage:** fire from `BEBehaviorBurning`, firepits, forges
   and coal piles; falling sand and gravel; creature and commanded-animal
   attacks; and bees spawned by a thrown beenade do not identify a player
@@ -89,13 +95,13 @@ toggle follows membership, not the group's join policy.
   hit that starts the effect lands, not per tick. An effect already running
   when you flip the toggle keeps ticking. Vanilla has no player-inflicted
   damage over time, so this only matters with mods.
-- **Mods that patch the damage path with Harmony:** a mod that replaces
+- **Mods that patch the damage path with Harmony:** #304 adds a warning for a
+  mod that replaces
   `Entity.ReceiveDamage`, `ShouldReceiveDamage`, the melee interaction
   handler, or the projectile impact path, and does not call the original,
-  bypasses this. Stratum enforces the rule at several independent points to
-  narrow that, and logs a warning naming any mod that patches one of them
-  while friendly fire is off, but it cannot promise a mod will not override it.
-  No server platform can.
+  bypasses this. The warning names any mod that patches one of the watched
+  methods while friendly fire is off, but it cannot promise a mod will not
+  override it. No server platform can.
 
 ## Prerequisites
 
@@ -130,11 +136,13 @@ enabled and its effective privilege on a running server.
 | Status and toggle wording | `StratumFriendlyFireSystem.HandleToggle` |
 | Config default | `StratumFriendlyFireConfig.AllowGroupDamage` |
 | Group membership rule | `StratumPlayerGroups.SharesGroup` |
-| The blocking hit | `EntityPlayer.ShouldReceiveDamage`, `ServerMain.CreateExplosion`, `ServerSystemEntitySimulation.HandleEntityInteraction`, and `EntityProjectileBase.CanDealDamage` |
+| The blocking hit | `EntityPlayer.ShouldReceiveDamage`, `ServerMain.CreateExplosion`, `ServerSystemEntitySimulation.HandleEntityInteraction` (#303), and `EntityProjectileBase.CanDealDamage` (#303) |
 
 `scripts/smoke-test.sh` pipes `/friendlyfire` commands into a running
 server's console and asserts the exact status and toggle strings above. The
 group-membership rule and the damage-path blocking are proven against real
 connected players by the private Atlas regression suite
 (`research/atlas-tests/stratum-pr-validation/FriendlyFireScenarios.cs`), not
-by the public smoke test, which has no second player.
+by the public smoke test, which has no second player. The source-seam checks
+from #303 and the conflict warning from #304 are verified by those PRs before
+the complete stack merges.
