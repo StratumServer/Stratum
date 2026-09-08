@@ -84,7 +84,6 @@ internal static class StratumHarmonyVisibility
 		"EntityPlayer.ShouldReceiveDamage",
 		"EntityAgent.OnInteract",
 		"EntityBehaviorHealth.OnEntityReceiveDamage",
-		"ServerMain.CreateExplosion",
 		"ServerSystemEntitySimulation.HandleEntityInteraction",
 		"EntityProjectileBase.CanDealDamage",
 		"EntityProjectileBase.DealDamage",
