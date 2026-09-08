@@ -42,6 +42,7 @@ internal sealed class StratumFriendlyFireSystem
 	public static void Apply(StratumFriendlyFireConfig cfg)
 	{
 		StratumFriendlyFireHook.BlockGroupDamage = cfg != null && !cfg.AllowGroupDamage;
+		StratumHarmonyVisibility.WarnFriendlyFireConflicts();
 	}
 
 	private bool CheckAccess(TextCommandCallingArgs args, out TextCommandResult failure)
