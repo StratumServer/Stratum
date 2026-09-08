@@ -66,7 +66,8 @@ players are on the same group when they both hold a live membership (any
 level above `None`) in the same group. The default chat groups (general,
 server info, and so on) never count. Membership is read from
 `IServerPlayer.ServerData.PlayerGroupMemberships`, the same records the group
-chat and `/group` commands use.
+chat and `/group` commands use. Open player-created groups count too: the
+toggle follows membership, not the group's join policy.
 
 ## What the toggle does and does not cover
 
@@ -77,7 +78,13 @@ chat and `/group` commands use.
 - **Self damage:** never blocked. Fall, drowning, hunger, and a player's own
   hits always apply.
 - **Explosions:** covered when the igniter is known (a bomb records who lit
-  it). The igniter still takes damage from their own blast.
+  it). The igniter still takes damage from their own blast. A bomb lit before a
+  restart may have no resolvable igniter and is not covered.
+- **Other no-cause damage:** fire from `BEBehaviorBurning`, firepits, forges
+  and coal piles; falling sand and gravel; creature and commanded-animal
+  attacks; and bees spawned by a thrown beenade do not identify a player
+  attacker at the blocking seams. Group-membership moderation is also outside
+  this feature.
 - **Damage over time (bleeding, burning):** the toggle is checked when the
   hit that starts the effect lands, not per tick. An effect already running
   when you flip the toggle keeps ticking. Vanilla has no player-inflicted
@@ -87,7 +94,7 @@ chat and `/group` commands use.
   handler, or the projectile impact path, and does not call the original,
   bypasses this. Stratum enforces the rule at several independent points to
   narrow that, and logs a warning naming any mod that patches one of them
-  while the toggle is on, but it cannot promise a mod will not override it.
+  while friendly fire is off, but it cannot promise a mod will not override it.
   No server platform can.
 
 ## Prerequisites
@@ -112,8 +119,8 @@ chat and `/group` commands use.
 | `Commands.FriendlyFire.Privilege` | `stratum.friendlyfire` | Privilege required to use `/friendlyfire`. |
 | `Commands.FriendlyFire.CooldownSeconds` | `0` | Command-level cooldown. |
 
-Use `/stratum access command friendlyfire` to see the effective privilege
-and cooldown on a running server.
+Use `/stratum access command friendlyfire` to see whether the command is
+enabled and its effective privilege on a running server.
 
 ## Keeping this page in sync
 
@@ -123,7 +130,7 @@ and cooldown on a running server.
 | Status and toggle wording | `StratumFriendlyFireSystem.HandleToggle` |
 | Config default | `StratumFriendlyFireConfig.AllowGroupDamage` |
 | Group membership rule | `StratumPlayerGroups.SharesGroup` |
-| The blocking hit | `EntityPlayer.ShouldReceiveDamage` (`patches/VintagestoryApi/...`) |
+| The blocking hit | `EntityPlayer.ShouldReceiveDamage`, `ServerMain.CreateExplosion`, `ServerSystemEntitySimulation.HandleEntityInteraction`, and `EntityProjectileBase.CanDealDamage` |
 
 `scripts/smoke-test.sh` pipes `/friendlyfire` commands into a running
 server's console and asserts the exact status and toggle strings above. The
