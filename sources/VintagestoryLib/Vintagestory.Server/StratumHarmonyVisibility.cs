@@ -88,6 +88,7 @@ internal static class StratumHarmonyVisibility
 		"EntityProjectileBase.CanDealDamage",
 		"EntityProjectileBase.DealDamage",
 		"EntityProjectileBase.ImpactOnEntity",
+		"ServerMain.CreateExplosion",
 	};
 
 	// Runs regardless of Diagnostics.LogModHarmonyPatches: this is a targeted safety warning for
