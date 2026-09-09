@@ -1533,11 +1533,19 @@ index ea1d5c0..88dac30 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -252,15 +1574,22 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -252,15 +1574,30 @@ public class ServerSystemEntitySimulation : ServerSystem
  		if ((cuboidd.ShortestDistanceFrom(x, y, z) > (double)(num * 2f) && flag) || (flag && (((!server.Config.AllowPvP || !player.HasPrivilege("attackplayers")) && entity is EntityPlayer) || (!player.HasPrivilege("attackcreatures") && entity is EntityAgent))) || (entity is EntityPlayer entityPlayer && !(entityPlayer.Player is IServerPlayer { ConnectionState: EnumClientState.Playing })))
  		{
  			return;
  		}
++		// Stratum: group friendly fire (#277). Drop an attack on a group mate here, before the
++		// interact event fires, so it behaves exactly like the vanilla PvP-off return just above:
++		// no slap sound, no weapon durability loss in OnAttackingWith, no combat-log tag. Only
++		// attacks (flag), never right-click interactions like healing a group mate.
++		if (flag && StratumFriendlyFireGuard.BlocksMeleeAttack(player, entity))
++		{
++			return;
++		}
  		Vec3d vec3d = new Vec3d(CollectibleNet.DeserializeDouble(p.HitX), CollectibleNet.DeserializeDouble(p.HitY), CollectibleNet.DeserializeDouble(p.HitZ));
 -		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !player.IsInInteractionRangeOf(entity))
 +		// Stratum: Always check reach for right-click interactions.

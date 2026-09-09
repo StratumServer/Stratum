@@ -53,7 +53,7 @@ Any other word is rejected by the game's own argument parser.
 | Situation | Message |
 | --- | --- |
 | `status`, currently on | `Group friendly fire is on, players in the same group can damage each other.` |
-| `status`, currently off | `Group friendly fire is off, players in the same group cannot damage each other.` |
+| `status`, currently off | `Group friendly fire is off, players in the same group cannot damage each other.` (plus `N source hit(s) blocked since restart.` once any have been) |
 | `toggle`/`on` turning it on | `Group friendly fire enabled, players in the same group can damage each other again.` |
 | `toggle`/`off` turning it off | `Group friendly fire disabled, players in the same group can no longer damage each other.` |
 | No permission | `You do not have permission to use /friendlyfire.` |
@@ -120,6 +120,9 @@ toggle follows membership, not the group's join policy.
 | Key | Default | Effect |
 | --- | --- | --- |
 | `FriendlyFire.AllowGroupDamage` | `true` | `false` blocks damage between members of the same player group. |
+| `FriendlyFire.NotifyBlockedAttacker` | `true` | Tell an attacker in chat when a hit was dropped for hitting a group mate. |
+| `FriendlyFire.NotifyThrottleMs` | `3000` | Minimum gap between those notices per attacker (clamped 500 to 60000). |
+| `FriendlyFire.BlockedMessage` | `{0} is in your group, friendly fire is off.` | The notice text; `{0}` is the group mate's name. |
 | `Commands.Enabled` | `true` | Master switch for every Stratum command. |
 | `Commands.FriendlyFire.Enabled` | `true` | Registers `/friendlyfire`. |
 | `Commands.FriendlyFire.Privilege` | `stratum.friendlyfire` | Privilege required to use `/friendlyfire`. |

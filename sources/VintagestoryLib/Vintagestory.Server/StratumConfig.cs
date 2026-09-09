@@ -106,6 +106,7 @@ internal class StratumConfig
 		Announcements.EnsureSane();
 		CombatLog.EnsureSane();
 		CoopCombat.EnsureSane();
+		FriendlyFire.EnsureSane();
 		ServerStats.EnsureSane();
 		UpdateChecker.EnsureSane();
 	}
