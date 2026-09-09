@@ -52,7 +52,7 @@ Any other word is rejected by the game's own argument parser.
 | Situation | Message |
 | --- | --- |
 | `status`, currently on | `Group friendly fire is on, players in the same group can damage each other.` |
-| `status`, currently off | `Group friendly fire is off, players in the same group cannot damage each other.` (plus `N blocked hit(s) since restart.` once any have been) |
+| `status`, currently off | `Group friendly fire is off, players in the same group cannot damage each other.` (plus `N source hit(s) blocked since restart.` once any have been) |
 | `toggle`/`on` turning it on | `Group friendly fire enabled, players in the same group can damage each other again.` |
 | `toggle`/`off` turning it off | `Group friendly fire disabled, players in the same group can no longer damage each other.` |
 | No permission | `You do not have permission to use /friendlyfire.` |
