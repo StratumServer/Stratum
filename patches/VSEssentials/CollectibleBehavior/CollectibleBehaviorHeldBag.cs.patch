@@ -1,0 +1,72 @@
+diff --git a/VSEssentials/CollectibleBehavior/CollectibleBehaviorHeldBag.cs b/VSEssentials/CollectibleBehavior/CollectibleBehaviorHeldBag.cs
+index 940bfd0..caeaab2 100644
+--- a/VSEssentials/CollectibleBehavior/CollectibleBehaviorHeldBag.cs
++++ b/VSEssentials/CollectibleBehavior/CollectibleBehaviorHeldBag.cs
+@@ -76,11 +76,12 @@ namespace Vintagestory.GameContent
+             return contents.ToArray();
+         }
+ 
+         public virtual bool IsEmpty(ItemStack bagstack)
+         {
+-            ITreeAttribute backpackTree = bagstack.Attributes.GetTreeAttribute("backpack");
++            if (bagstack == null || StratumInventoryPrivacy.IsPublicStackContentsHidden(bagstack)) return false;
++            ITreeAttribute backpackTree = bagstack.Attributes?.GetTreeAttribute("backpack");
+             if (backpackTree == null) return true;
+             ITreeAttribute slotsTree = backpackTree.GetTreeAttribute("slots");
+ 
+             foreach (var val in slotsTree)
+             {
+@@ -244,10 +245,11 @@ namespace Vintagestory.GameContent
+             return true;
+         }
+ 
+         public bool OnTryDetach(ItemSlot itemslot, int slotIndex, Entity fromEntity)
+         {
++            if (StratumInventoryPrivacy.IsPublicStackContentsHidden(itemslot.Itemstack)) return false;
+             return IsEmpty(itemslot.Itemstack);
+         }
+ 
+         public void OnEntityDespawn(ItemSlot itemslot, int slotIndex, Entity onEntity, EntityDespawnData despawn)
+         {
+@@ -320,10 +322,11 @@ namespace Vintagestory.GameContent
+                 return;
+             }
+ 
+             EntityPlayer entityplr = byEntity as EntityPlayer;
+             IPlayer player = onEntity.World.PlayerByUid(entityplr.PlayerUID);
++            if (onEntity.World.Side == EnumAppSide.Server && !StratumInventoryPrivacy.CanAccess(wrapperInv, player)) return;
+ 
+             bool opened = false;
+             if (onEntity.World.Side == EnumAppSide.Client) // Let the client decide when to open/close inventories
+             {
+                 long timeNow = Environment.TickCount64;
+@@ -383,14 +386,16 @@ namespace Vintagestory.GameContent
+             List<ItemSlot> bagslots = new List<ItemSlot> { bagSlot };
+ 
+             if (wrapperInv != null)
+             {
+                 bagInv.ReloadBagInventory(wrapperInv, bagslots.ToArray());
++                wrapperInv.Pos = entity.Pos.AsBlockPos;
+                 return true;
+             }
+ 
+             wrapperInv = new InventoryGeneric(entity.Api);
++            wrapperInv.Pos = entity.Pos.AsBlockPos;
+             bagInv.ReloadBagInventory(wrapperInv, bagslots.ToArray());
+             wrapperInv.Init(bagInv.Count, "mountedbaginv", slotIndex + "-" + entity.EntityId, onNewSlot);
+ 
+             if (entity.World.Side == EnumAppSide.Server)
+             {
+@@ -416,11 +421,11 @@ namespace Vintagestory.GameContent
+         public void OnReceivedClientPacket(IServerPlayer player, int packetid, byte[] data, ItemSlot bagSlot, int slotIndex, ref EnumHandling handled)
+         {
+             // Rennorb 23.06.2026 security: This does not do access checks for any operations - those are validated in the attachable behavior.
+             if (packetid < 1000)
+             {
+-                    if (wrapperInv != null && wrapperInv.HasOpened(player))
++                    if (wrapperInv != null && StratumInventoryPrivacy.CanAccess(wrapperInv, player) && wrapperInv.HasOpened(player))
+                     {
+                         wrapperInv.InvNetworkUtil.HandleClientPacket(player, packetid, data);
+                         handled = EnumHandling.PreventSubsequent;
+                     }
+ 

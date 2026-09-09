@@ -1,0 +1,46 @@
+diff --git a/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs b/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs
+index 84f0f1b..cc8009e 100644
+--- a/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs
++++ b/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs
+@@ -99,10 +99,11 @@ public class BlockEntityContainedBagWorkspace
+         dialogTitleLangCode = bagBh.DialogTitleLangCode;
+         OpenSound = bagBh.OpenSound;
+         CloseSound = bagBh.CloseSound;
+ 
+         bagInv.ReloadBagInventory(wrapperInv, [bagSlot]);
++        wrapperInv.Pos = be.Pos;
+         wrapperInv.Init(bagInv.Count, "blockcontainedbaginv", "blockcontainedbag-slot" + slotId + "-" + be.Pos, onNewBagSlot);
+ 
+         if (be.Api.World.Side == EnumAppSide.Server)
+         {
+             wrapperInv.SlotModified += BagInv_SlotModified;
+@@ -131,10 +132,12 @@ public class BlockEntityContainedBagWorkspace
+         inv?.Dispose();
+     }
+ 
+     public bool OpenHeldBag(IPlayer byPlayer)
+     {
++        if (!StratumInventoryPrivacy.CanAccess(be.Inventory, byPlayer)) return false;
++
+         if (be.Api.World is IServerWorldAccessor)
+         {
+             var data = BlockEntityContainerOpen.ToBytes("BlockEntityInventory", dialogTitleLangCode, 4, wrapperInv);
+             ((ICoreServerAPI)be.Api).Network.SendBlockEntityPacket(
+                 (IServerPlayer)byPlayer,
+@@ -154,10 +157,16 @@ public class BlockEntityContainedBagWorkspace
+             obj.GetCollectibleInterface<IHeldBag>() == null)
+         {
+             return;
+         }
+ 
++        if (!StratumInventoryPrivacy.CanAccess(wrapperInv, player))
++        {
++            if (packetid < 1000) wrapperInv.InvNetworkUtil.SendInventoryRollback((IServerPlayer)player, packetid, data);
++            return;
++        }
++
+         if (packetid < 1000)
+         {
+             var perms = new BlockEntity.CachedAccessPerms(this.be.Api.World, this.be.Pos, player);
+             if(!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.Use, true, "ground stored held bag"))
+             {

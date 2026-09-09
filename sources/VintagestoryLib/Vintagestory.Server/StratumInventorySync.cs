@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
@@ -17,6 +18,11 @@ internal static class StratumInventorySync
 
 	internal static Packet_InventoryContents GetPublicInventory(InventoryBase inventory, IServerPlayer owner)
 	{
+		if (!StratumInventoryPrivacy.InventoryGuardsEnabled)
+		{
+			return (inventory.InvNetworkUtil as InventoryNetworkUtil).ToPacket(owner);
+		}
+
 		var slots = new Packet_ItemStack[inventory.CountForNetworkPacket];
 		for (int i = 0; i < slots.Length; i++)
 		{
@@ -60,7 +66,7 @@ internal static class StratumInventorySync
 
 	internal static void SendOpenedInventory(InventoryBase inventory, IPlayer player)
 	{
-		if (inventory.Api.Side != EnumAppSide.Server || !StratumInventoryPrivacy.CanView(inventory, player)) return;
+		if (!StratumInventoryPrivacy.InventoryGuardsEnabled || inventory.Api.Side != EnumAppSide.Server || !StratumInventoryPrivacy.CanView(inventory, player)) return;
 		if (inventory.Pos == null)
 		{
 			if (player is IServerPlayer serverPlayer && inventory.InvNetworkUtil is InventoryNetworkUtil network)
@@ -99,6 +105,7 @@ internal static class StratumInventorySync
 
 	internal static void RestoreChunkViews(ServerMain server, IServerPlayer player, FastList<ServerChunkWithCoord> chunks)
 	{
+		if (!StratumInventoryPrivacy.InventoryGuardsEnabled) return;
 		if (chunks.Count == 0) return;
 		foreach (InventoryBase inventory in player.InventoryManager.Inventories.Values)
 		{
@@ -144,15 +151,14 @@ internal static class StratumInventorySync
 		}
 	}
 
-	internal static void FilterPublicEntityUpdates(string[] paths, byte[][] data)
+	internal static void FilterPublicEntityUpdates(Entity entity, string[] paths, byte[][] data)
 	{
+		if (!StratumInventoryPrivacy.InventoryGuardsEnabled || !HasInventoryBehavior(entity)) return;
+
 		for (int i = 0; i < paths.Length; i++)
 		{
 			string path = paths[i];
 			if (path == null || data[i] == null || data[i].Length == 0) continue;
-			if (!path.Contains("backpack", StringComparison.Ordinal)
-				&& !path.Contains("wearablesInv", StringComparison.Ordinal)
-				&& !path.Contains("gear", StringComparison.Ordinal)) continue;
 			if (path == "backpack" || path.StartsWith("backpack/", StringComparison.Ordinal) || path.EndsWith("/backpack", StringComparison.Ordinal) || path.Contains("/backpack/", StringComparison.Ordinal))
 			{
 				data[i] = null;
@@ -176,5 +182,20 @@ internal static class StratumInventorySync
 			filtered.ToBytes(writer);
 			data[i] = stream.ToArray();
 		}
+	}
+
+	private static bool HasInventoryBehavior(Entity entity)
+	{
+		if (entity?.SidedProperties?.Behaviors == null) return false;
+		foreach (var behavior in entity.SidedProperties.Behaviors)
+		{
+			for (Type type = behavior?.GetType(); type != null; type = type.BaseType)
+			{
+				if (type.FullName is "Vintagestory.GameContent.EntityBehaviorContainer"
+					or "Vintagestory.GameContent.EntityBehaviorOpenableContainer"
+					or "Vintagestory.GameContent.EntityBehaviorMouthInventory") return true;
+			}
+		}
+		return false;
 	}
 }

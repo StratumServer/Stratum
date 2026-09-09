@@ -844,6 +844,7 @@ internal class CmdStratum
 		try
 		{
 			StratumRuntime.Config.EnsurePopulated();
+			StratumInventoryPrivacy.InventoryGuardsEnabled = StratumRuntime.Config.Hardening.InventoryGuards;
 			StratumMobSpawning.Refresh(); // Stratum: issue #216 apply live config changes
 			StratumRuntime.SaveConfig();
 		}

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index 19f5199..2898680 100644
+index 19f5199..c57b9f5 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -72,7 +72,7 @@ index 19f5199..2898680 100644
  			{
  				activeHotbarSlot.Itemstack.Collectible.OnBlockBreaking(value, value.CurrentBlockSelection, activeHotbarSlot, 99f, dt, value.blockBreakingCounter);
  				value.blockBreakingCounter++;
-@@ -180,10 +188,38 @@ internal class ServerSystemInventory : ServerSystem
+@@ -180,10 +188,44 @@ internal class ServerSystemInventory : ServerSystem
  				value.Entity.Controls.HandUse = EnumHandInteract.None;
  			}
  		}
@@ -81,6 +81,12 @@ index 19f5199..2898680 100644
 +	// Stratum: Clear private tooltip data when the player looks away.
 +	private void StratumUpdateInspectedContainers(float dt)
 +	{
++		if (!StratumInventoryPrivacy.InventoryGuardsEnabled)
++		{
++			stratumInspectedContainers.Clear();
++			return;
++		}
++
 +		foreach (ConnectedClient client in server.Clients.Values)
 +		{
 +			if (!client.IsPlayingClient) continue;
@@ -111,7 +117,7 @@ index 19f5199..2898680 100644
  		ItemFilterEnabled = server.api.World.Config.GetBool("itemFilterEnabled");
  		foreach (ConnectedClient value in server.Clients.Values)
  		{
-@@ -205,19 +241,26 @@ internal class ServerSystemInventory : ServerSystem
+@@ -205,19 +247,26 @@ internal class ServerSystemInventory : ServerSystem
  		}
  	}
  
@@ -139,7 +145,7 @@ index 19f5199..2898680 100644
  				}
  				if (value2 is InventoryCharacter)
  				{
-@@ -369,11 +412,13 @@ internal class ServerSystemInventory : ServerSystem
+@@ -369,11 +418,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ

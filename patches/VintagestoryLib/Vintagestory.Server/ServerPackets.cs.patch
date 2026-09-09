@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
-index d4a0736..7559bfe 100644
+index d4a0736..c345b12 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
 @@ -1,18 +1,31 @@
@@ -41,7 +41,7 @@ index d4a0736..7559bfe 100644
  		Packet_EntityAttributeUpdate packet_EntityAttributeUpdate = new Packet_EntityAttributeUpdate();
  		entity.WatchedAttributes.GetDirtyPathData(ms, out var paths, out var dirtydata);
 +		// Stratum: Strip bag contents from equipment updates.
-+		StratumInventorySync.FilterPublicEntityUpdates(paths, dirtydata);
++		StratumInventorySync.FilterPublicEntityUpdates(entity, paths, dirtydata);
  		Packet_PartialAttribute[] array = new Packet_PartialAttribute[paths.Length];
  		for (int i = 0; i < array.Length; i++)
  		{
@@ -94,7 +94,7 @@ index d4a0736..7559bfe 100644
  		Packet_EntityAttributeUpdate packet_EntityAttributeUpdate = new Packet_EntityAttributeUpdate();
  		entity.WatchedAttributes.GetDirtyPathData(out var paths, out var dirtydata);
 +		// Stratum: Strip bag contents from equipment updates.
-+		StratumInventorySync.FilterPublicEntityUpdates(paths, dirtydata);
++		StratumInventorySync.FilterPublicEntityUpdates(entity, paths, dirtydata);
  		Packet_PartialAttribute[] array = new Packet_PartialAttribute[paths.Length];
  		for (int i = 0; i < array.Length; i++)
  		{

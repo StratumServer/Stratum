@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/Systems/Barrel/BEBarrel.cs b/VSSurvivalMod/Systems/Barrel/BEBarrel.cs
-index 8b593ea..793b2fa 100644
+index 8b593ea..05657c2 100644
 --- a/VSSurvivalMod/Systems/Barrel/BEBarrel.cs
 +++ b/VSSurvivalMod/Systems/Barrel/BEBarrel.cs
 @@ -1,6 +1,7 @@
@@ -17,7 +17,7 @@ index 8b593ea..793b2fa 100644
  
              Sealed = true;
 +            // Stratum: Close open windows when sealing the barrel.
-+            if (Api is ICoreServerAPI sapi)
++            if (StratumInventoryPrivacy.InventoryGuardsEnabled && Api is ICoreServerAPI sapi)
 +            {
 +                foreach (string uid in new List<string>(Inventory.openedByPlayerGUIds))
 +                {

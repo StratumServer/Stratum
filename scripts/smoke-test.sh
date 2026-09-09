@@ -52,6 +52,14 @@ probe_commands=(
   "/friendlyfire status"
   "/friendlyfire toggle"
   "/friendlyfire nonsense"
+  "/stratum get hardening.inventoryGuards"
+  "/stratum set hardening.inventoryGuards true"
+  "/stratum get hardening.inventoryGuards"
+  "/stratum set hardening.inventoryGuards false"
+  "/stratum get hardening.inventoryGuards"
+  "/stratum timings start"
+  "/stratum timings stop"
+  "/stratum timings report"
 )
 probe_expect=(
   "No kits exist yet."
@@ -66,6 +74,14 @@ probe_expect=(
   "Group friendly fire disabled, players in the same group can no longer damage each other."
   "Group friendly fire is off, players in the same group cannot damage each other."
   "Group friendly fire enabled, players in the same group can damage each other again."
+  ""
+  ""
+  ""
+  ""
+  ""
+  ""
+  ""
+  ""
   ""
 )
 
@@ -138,6 +154,8 @@ if [[ -z "$server_bin" || ! -f "$server_bin" ]]; then
   echo "FAIL: no server binary found in $server_dir" >&2
   exit 1
 fi
+
+dotnet run --project tests/InventoryPrivacySmoke/InventoryPrivacySmoke.csproj -c Release
 
 # Pick an ephemeral port.
 if [[ "$port" == "0" ]]; then

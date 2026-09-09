@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/BlockEntity/BEContainer.cs b/VSSurvivalMod/BlockEntity/BEContainer.cs
-index 4bfb9e9..8726c2b 100644
+index 4bfb9e9..2eb36b0 100644
 --- a/VSSurvivalMod/BlockEntity/BEContainer.cs
 +++ b/VSSurvivalMod/BlockEntity/BEContainer.cs
 @@ -10,11 +10,12 @@ using Vintagestory.API.Server;
@@ -61,7 +61,7 @@ index 4bfb9e9..8726c2b 100644
          {
              List<ItemStack> stacklist = new List<ItemStack>();
              foreach (var slot in Inventory)
-@@ -119,10 +137,43 @@ namespace Vintagestory.GameContent
+@@ -119,10 +137,49 @@ namespace Vintagestory.GameContent
              base.ToTreeAttributes(tree);
              container.ToTreeAttributes(tree);
          }
@@ -73,6 +73,7 @@ index 4bfb9e9..8726c2b 100644
 +        // Stratum: Clients still need the slots used to draw the block.
 +        public virtual void StratumFilterInventoryForDisplay(ITreeAttribute tree)
 +        {
++            // Firepit contents are intentionally public because the block renders them.
 +            if (this is BlockEntityFirepit) return;
 +            if (this is BlockEntityQuern)
 +            {
@@ -96,6 +97,11 @@ index 4bfb9e9..8726c2b 100644
 +            }
 +            else if (this is BlockEntityOpenableContainer)
 +            {
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
++            }
++            else
++            {
++                // Modded containers must opt in to public display slots explicitly.
 +                StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
 +            }
 +        }

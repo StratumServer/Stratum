@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs b/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
-index 695dd63..c4e6938 100644
+index 695dd63..b2e3348 100644
 --- a/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
 +++ b/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
 @@ -3,10 +3,11 @@ using System.Buffers;
@@ -27,14 +27,17 @@ index 695dd63..c4e6938 100644
  		{
  		case 7:
  			handleActivateInventorySlotPacket(byPlayer, packet, worldData);
-@@ -216,14 +219,15 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
- 			Packet_Server doubleUpdatePacket = getDoubleUpdatePacket(owningPlayer, invIds, slotIds);
+@@ -217,13 +220,19 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
  			((ICoreServerAPI)Api).Network.SendArbitraryPacket(doubleUpdatePacket, (IServerPlayer)owningPlayer);
  		}
  	}
  
--	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId)
-+	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId, bool force = false)
+ 	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId)
++	{
++		SendInventoryContents(owningPlayer, inventoryId, false);
++	}
++
++	protected void SendInventoryContents(IPlayer owningPlayer, string inventoryId, bool force)
  	{
  		InventoryBase inventoryBase = (InventoryBase)owningPlayer.InventoryManager.GetInventory(inventoryId);
 -		if (inventoryBase != null)
@@ -45,7 +48,7 @@ index 695dd63..c4e6938 100644
  			Packet_Server packet = new Packet_Server
  			{
  				Id = 30,
-@@ -247,15 +251,15 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+@@ -247,15 +256,15 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
  			ArrayPool<byte>.Shared.Return(array);
  		}
  		switch (packetId)
@@ -64,7 +67,7 @@ index 695dd63..c4e6938 100644
  		{
  			Packet_FlipItemstacks flipitemstacks = packet_Client.Flipitemstacks;
  			string[] invIds = new string[2] { flipitemstacks.SourceInventoryId, flipitemstacks.TargetInventoryId };
-@@ -266,20 +270,27 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+@@ -266,20 +275,39 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
  		}
  	}
  
@@ -72,6 +75,13 @@ index 695dd63..c4e6938 100644
  	{
 -		Packet_Server doubleUpdatePacket = getDoubleUpdatePacket(player, invIds, slotIds);
 -		((ICoreServerAPI)Api).Network.BroadcastArbitraryPacket(doubleUpdatePacket, (IServerPlayer)player);
++		if (!StratumInventoryPrivacy.InventoryGuardsEnabled)
++		{
++			Packet_Server doubleUpdatePacket = getDoubleUpdatePacket(player, invIds, slotIds);
++			((ICoreServerAPI)Api).Network.BroadcastArbitraryPacket(doubleUpdatePacket, (IServerPlayer)player);
++			return;
++		}
++
 +		// Stratum: Send swaps only to players with the inventory open.
 +		for (int i = 0; i < invIds.Length; i++)
 +		{
@@ -89,14 +99,19 @@ index 695dd63..c4e6938 100644
 -		ItemStack itemstack = inventory[slotIds[0]].Itemstack;
 -		ItemStack itemstack2 = inventory2[slotIds[1]].Itemstack;
 +		// Stratum: Rejected swaps can refer to slots the player can no longer access.
-+		ItemStack itemstack = StratumInventoryPrivacy.CanView(inventory as InventoryBase, player) ? inventory[slotIds[0]]?.Itemstack : null;
-+		ItemStack itemstack2 = StratumInventoryPrivacy.CanView(inventory2 as InventoryBase, player) ? inventory2[slotIds[1]]?.Itemstack : null;
++		ItemStack itemstack = inventory?[slotIds[0]]?.Itemstack;
++		ItemStack itemstack2 = inventory2?[slotIds[1]]?.Itemstack;
++		if (StratumInventoryPrivacy.InventoryGuardsEnabled)
++		{
++			itemstack = StratumInventoryPrivacy.GetPublicStack(itemstack);
++			itemstack2 = StratumInventoryPrivacy.GetPublicStack(itemstack2);
++		}
  		Packet_InventoryDoubleUpdate inventoryDoubleUpdate = new Packet_InventoryDoubleUpdate
  		{
  			ClientId = player.ClientId,
  			InventoryId1 = invIds[0],
  			InventoryId2 = invIds[1],
-@@ -338,10 +349,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+@@ -338,10 +366,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
  		return packet_InventoryContents;
  	}
  
