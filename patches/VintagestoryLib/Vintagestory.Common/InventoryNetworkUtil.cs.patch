@@ -30,17 +30,33 @@ index 695dd63..3460955 100644
 @@ -219,11 +222,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
  	}
  
- 	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId)
+-	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId)
++	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId, bool force = false)
  	{
  		InventoryBase inventoryBase = (InventoryBase)owningPlayer.InventoryManager.GetInventory(inventoryId);
 -		if (inventoryBase != null)
-+		// Stratum: Check access again before sending a rollback.
-+		if (StratumInventoryPrivacy.CanView(inventoryBase, owningPlayer))
++		// Stratum: Ordinary updates require access; rejected client moves still need an authoritative rollback.
++		if (inventoryBase != null && (force || StratumInventoryPrivacy.CanView(inventoryBase, owningPlayer)))
  		{
  			Packet_InventoryContents inventoryContents = (inventoryBase.InvNetworkUtil as InventoryNetworkUtil).ToPacket(owningPlayer);
  			Packet_Server packet = new Packet_Server
  			{
  				Id = 30,
+@@ -249,11 +252,11 @@ public virtual void SendInventoryRollback(IServerPlayer byPlayer, int packetId, ReadOnlySpan<byte> packetData)
+ 		switch (packetId)
+ 		{
+ 		case 7:
+-			SendInventoryContents(byPlayer, inv.InventoryID);
++			SendInventoryContents(byPlayer, inv.InventoryID, true);
+ 			break;
+ 		case 8:
+-			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.SourceInventoryId);
+-			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.TargetInventoryId);
++			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.SourceInventoryId, true);
++			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.TargetInventoryId, true);
+ 			break;
+ 		case 9:
+ 		{
 @@ -266,20 +270,27 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
  		}
  	}

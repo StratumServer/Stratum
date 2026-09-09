@@ -14,7 +14,7 @@ index 3ead593..d5727be 100644
  
  public abstract class PlayerInventoryManager : IPlayerInventoryManager
  {
-@@ -335,11 +336,14 @@ public abstract class PlayerInventoryManager : IPlayerInventoryManager
+@@ -335,11 +336,15 @@ public abstract class PlayerInventoryManager : IPlayerInventoryManager
  	}
  
  	public object OpenInventory(IInventory inventory)
@@ -22,8 +22,9 @@ index 3ead593..d5727be 100644
  		Inventories[inventory.InventoryID] = (InventoryBase)inventory;
 -		return inventory.Open(player);
 +		// Stratum: Send the contents once the server has opened the inventory.
++		bool wasOpened = ((InventoryBase)inventory).openedByPlayerGUIds.Contains(player.PlayerUID);
 +		object packet = inventory.Open(player);
-+		StratumInventorySync.SendOpenedInventory((InventoryBase)inventory, player);
++		if (!wasOpened) StratumInventorySync.SendOpenedInventory((InventoryBase)inventory, player);
 +		return packet;
  	}
  

@@ -211,6 +211,7 @@ internal class CmdStratum
 		string result = (loaded ? StratumCommandText.Confirm("Stratum config reloaded", message) : StratumCommandText.Danger("Stratum config failed") + ": " + StratumCommandText.Escape(message)) + "\n" + FormatPreflight(report);
 		if (loaded)
 		{
+			StratumInventoryPrivacy.InventoryGuardsEnabled = StratumRuntime.Config.Hardening.InventoryGuards;
 			CmdStratumEssentials.RegisterConfiguredPrivileges(server);
 			StratumCoopCombatSystem.Apply(StratumRuntime.Config.CoopCombat);
 			StratumFriendlyFireSystem.Apply(StratumRuntime.Config.FriendlyFire);

@@ -5,12 +5,18 @@ namespace Vintagestory.API.Common
 {
     public static class StratumInventoryPrivacy
     {
+        public static bool InventoryGuardsEnabled { get; set; }
+
         /// <summary>Checks inventory access, including range and claims.</summary>
         public static bool CanAccess(InventoryBase inventory, IPlayer player)
         {
+            if (!InventoryGuardsEnabled) return true;
             if (inventory == null || player?.Entity == null) return false;
             if (!inventory.CanPlayerAccess(player, player.Entity.Pos)) return false;
-            if (inventory.Pos == null) return true;
+            if (inventory.Pos == null)
+            {
+                return ReferenceEquals(player.InventoryManager.GetInventory(inventory.InventoryID), inventory);
+            }
 
             return inventory.Pos.dimension == player.Entity.Pos.Dimension
                 && player.IsInInteractionRangeOf(inventory.Pos)
@@ -20,6 +26,7 @@ namespace Vintagestory.API.Common
         /// <summary>Requires an open inventory and current access.</summary>
         public static bool CanView(InventoryBase inventory, IPlayer player)
         {
+            if (!InventoryGuardsEnabled) return true;
             return inventory != null && player != null
                 && inventory.HasOpened(player)
                 && ReferenceEquals(player.InventoryManager.GetInventory(inventory.InventoryID), inventory)
@@ -40,6 +47,7 @@ namespace Vintagestory.API.Common
         /// <summary>Strips bag contents without changing the original attributes.</summary>
         public static ITreeAttribute GetPublicAttributes(ITreeAttribute attributes)
         {
+            if (!InventoryGuardsEnabled || attributes == null) return attributes;
             ITreeAttribute result = null;
             foreach (var entry in attributes)
             {
@@ -86,6 +94,7 @@ namespace Vintagestory.API.Common
         /// <summary>Keeps the slot count and the slots needed for rendering.</summary>
         public static void KeepDisplaySlots(ITreeAttribute tree, ReadOnlySpan<int> slotIds)
         {
+            if (!InventoryGuardsEnabled || tree == null) return;
             ITreeAttribute inventory = tree.GetTreeAttribute("inventory");
             if (inventory == null) return;
 

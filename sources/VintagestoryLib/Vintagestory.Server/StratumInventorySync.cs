@@ -60,7 +60,19 @@ internal static class StratumInventorySync
 
 	internal static void SendOpenedInventory(InventoryBase inventory, IPlayer player)
 	{
-		if (inventory.Api.Side != EnumAppSide.Server || inventory.Pos == null || !StratumInventoryPrivacy.CanView(inventory, player)) return;
+		if (inventory.Api.Side != EnumAppSide.Server || !StratumInventoryPrivacy.CanView(inventory, player)) return;
+		if (inventory.Pos == null)
+		{
+			if (player is IServerPlayer serverPlayer && inventory.InvNetworkUtil is InventoryNetworkUtil network)
+			{
+				var packet = new Packet_Server {
+					Id = 30,
+					InventoryContents = network.ToPacket(player)
+				};
+				((ICoreServerAPI)inventory.Api).Network.SendArbitraryPacket(packet, serverPlayer);
+			}
+			return;
+		}
 		var server = (ServerMain)inventory.Api.World;
 		BlockEntity blockEntity = server.BlockAccessor.GetBlockEntity(inventory.Pos);
 		if (blockEntity is IBlockEntityContainer container && ReferenceEquals(container.Inventory, inventory))
@@ -138,6 +150,9 @@ internal static class StratumInventorySync
 		{
 			string path = paths[i];
 			if (path == null || data[i] == null || data[i].Length == 0) continue;
+			if (!path.Contains("backpack", StringComparison.Ordinal)
+				&& !path.Contains("wearablesInv", StringComparison.Ordinal)
+				&& !path.Contains("gear", StringComparison.Ordinal)) continue;
 			if (path == "backpack" || path.StartsWith("backpack/", StringComparison.Ordinal) || path.EndsWith("/backpack", StringComparison.Ordinal) || path.Contains("/backpack/", StringComparison.Ordinal))
 			{
 				data[i] = null;
