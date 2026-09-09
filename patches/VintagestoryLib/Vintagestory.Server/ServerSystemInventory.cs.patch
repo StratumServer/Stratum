@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index 19f5199..2ee2e5c 100644
+index 19f5199..2898680 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -139,7 +139,7 @@ index 19f5199..2ee2e5c 100644
  				}
  				if (value2 is InventoryCharacter)
  				{
-@@ -369,10 +411,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -369,11 +412,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ
@@ -153,3 +153,4 @@ index 19f5199..2ee2e5c 100644
  			ServerMain.Logger.Audit("{0} tried to interact with {1} out of range.", player.PlayerName, (blockSelection?.Position != null) ? "a block" : "an entity");
  			if (blockSelection != null)
  			{
+ 				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();

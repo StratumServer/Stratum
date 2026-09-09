@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
-index 6b3cdd0..cee9a4a 100644
+index 6b3cdd0..d5284a1 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 @@ -3,10 +3,11 @@ using System.Collections.Concurrent;
@@ -338,7 +338,7 @@ index 6b3cdd0..cee9a4a 100644
  		Vec3d hitPosition = new Vec3d(CollectibleNet.DeserializeDoublePrecise(handInteraction.HitX), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitY), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitZ));
  		BlockSelection blockSelection = new BlockSelection
  		{
-@@ -402,10 +655,16 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -402,11 +655,17 @@ public class ServerSystemBlockSimulation : ServerSystem
  			Face = face,
  			HitPosition = hitPosition,
  			SelectionBoxIndex = handInteraction.SelectionBoxIndex,
@@ -356,6 +356,7 @@ index 6b3cdd0..cee9a4a 100644
  			ServerMain.Logger.Audit("{0} tried to interact with a block out of range.", player.PlayerName);
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			return;
+ 		}
 @@ -418,11 +677,10 @@ public class ServerSystemBlockSimulation : ServerSystem
  			LandClaim blockingLandClaimant = server.WorldMap.GetBlockingLandClaimant(client.Player, blockSelection.Position, EnumBlockAccessFlags.BuildOrBreak);
  			client.Player.SendIngameError(code, null, blockingLandClaimant?.LastKnownOwnerName);
@@ -368,7 +369,7 @@ index 6b3cdd0..cee9a4a 100644
  		{
  		default:
  			return;
-@@ -483,10 +740,21 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -483,10 +741,21 @@ public class ServerSystemBlockSimulation : ServerSystem
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.UP), sendPlayerData: false);
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.DOWN), sendPlayerData: false);
  		server.SendOwnPlayerData(targetPlayer);
