@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
@@ -15,6 +16,7 @@ internal static class StratumInventorySync
 	private static readonly byte treeAttributeId = (byte)new TreeAttribute().GetAttributeId();
 	private static readonly byte stackAttributeId = (byte)new ItemstackAttribute().GetAttributeId();
 	private static readonly byte treeArrayAttributeId = (byte)new TreeArrayAttribute().GetAttributeId();
+	private static readonly byte[] stratumBackpackKeyBytes = System.Text.Encoding.ASCII.GetBytes("backpack");
 
 	internal static Packet_InventoryContents GetPublicInventory(InventoryBase inventory, IServerPlayer owner)
 	{
@@ -153,7 +155,7 @@ internal static class StratumInventorySync
 
 	internal static void FilterPublicEntityUpdates(Entity entity, string[] paths, byte[][] data)
 	{
-		if (!StratumInventoryPrivacy.InventoryGuardsEnabled || !HasInventoryBehavior(entity)) return;
+		if (!StratumInventoryPrivacy.InventoryGuardsEnabled) return;
 
 		for (int i = 0; i < paths.Length; i++)
 		{
@@ -164,6 +166,10 @@ internal static class StratumInventorySync
 				data[i] = null;
 				continue;
 			}
+			// TreeAttribute.ToBytes writes each key with BinaryWriter.Write(string), so a
+			// path carrying a bag has the literal "backpack" key in its bytes. A miss here
+			// is every player and animal health and hunger tick, so skip before deserialising.
+			if (data[i].AsSpan().IndexOf(stratumBackpackKeyBytes) < 0) continue;
 			// Use the packet data because the live attributes may have changed.
 			byte id = data[i][0];
 			IAttribute attribute;
@@ -184,18 +190,13 @@ internal static class StratumInventorySync
 		}
 	}
 
-	private static bool HasInventoryBehavior(Entity entity)
+	internal static void CloseInventoryForPlayer(InventoryBase inventory, IServerPlayer player)
 	{
-		if (entity?.SidedProperties?.Behaviors == null) return false;
-		foreach (var behavior in entity.SidedProperties.Behaviors)
+		if (inventory == null || player == null) return;
+		player.InventoryManager.CloseInventory(inventory);
+		if (inventory.Pos != null && inventory.Api is ICoreServerAPI sapi)
 		{
-			for (Type type = behavior?.GetType(); type != null; type = type.BaseType)
-			{
-				if (type.FullName is "Vintagestory.GameContent.EntityBehaviorContainer"
-					or "Vintagestory.GameContent.EntityBehaviorOpenableContainer"
-					or "Vintagestory.GameContent.EntityBehaviorMouthInventory") return true;
-			}
+			sapi.Network.SendBlockEntityPacket(player, inventory.Pos, (int)EnumBlockEntityPacketId.Close);
 		}
-		return false;
 	}
 }

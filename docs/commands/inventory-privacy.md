@@ -1,10 +1,10 @@
 # Inventory privacy
 
-Stratum can hide private inventory contents from public entity and block-entity
-packets. It is disabled by default. Enable it with:
+Stratum hides private inventory contents from public entity and block-entity
+packets by default. Existing servers can disable it with:
 
 ```text
-/stratum set hardening.inventoryGuards true
+/stratum set hardening.inventoryGuards false
 ```
 
 The setting takes effect immediately and persists across restarts. When disabled,
@@ -14,7 +14,9 @@ access; rejected moves receive an authoritative rollback.
 
 The filter preserves public item appearance data while removing nested backpack
 contents from entity updates. It also applies to attached and contained
-inventories, subject to the normal range and claim checks. Firepit contents stay
-public because they are rendered as part of the block's world display. Other
-custom containers hide their contents unless they explicitly select display
-slots.
+inventories. Bags attached to an entity use the live entity's interaction range
+without a claim test; bags contained in a block use the block position, range,
+and claim checks; and a player's own inventories are checked by ownership.
+Firepit contents stay public because they are rendered as part of the block's
+world display. Other custom containers hide their contents unless they explicitly
+select display slots.

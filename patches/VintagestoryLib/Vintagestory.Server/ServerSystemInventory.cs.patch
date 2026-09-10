@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index 19f5199..c57b9f5 100644
+index 19f5199..a7e814f 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -160,3 +160,16 @@ index 19f5199..c57b9f5 100644
  			if (blockSelection != null)
  			{
  				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();
+@@ -494,10 +545,12 @@ internal class ServerSystemInventory : ServerSystem
+ 		player.InventoryManager.GetInventory(createItemstack.TargetInventoryId, out var invFound);
+ 		ItemSlot itemSlot = invFound?[createItemstack.TargetSlot];
+ 		if (player.WorldData.CurrentGameMode == EnumGameMode.Creative && itemSlot != null)
+ 		{
+ 			ItemStack itemStack = (itemSlot.Itemstack = StackConverter.FromPacket(createItemstack.Itemstack, server));
++			// Stratum: A creative client must not set the hidden-contents marker.
++			StratumInventoryPrivacy.StripHiddenContentsMarker(itemStack);
+ 			itemSlot.MarkDirty();
+ 			ServerMain.Logger.Audit("{0} creative mode created item stack {1}x{2}", player.PlayerName, itemStack.StackSize, itemStack.GetName());
+ 		}
+ 		else
+ 		{

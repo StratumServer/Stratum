@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/BlockEntity/BEContainer.cs b/VSSurvivalMod/BlockEntity/BEContainer.cs
-index 4bfb9e9..2eb36b0 100644
+index 4bfb9e9..2d51a4b 100644
 --- a/VSSurvivalMod/BlockEntity/BEContainer.cs
 +++ b/VSSurvivalMod/BlockEntity/BEContainer.cs
 @@ -10,11 +10,12 @@ using Vintagestory.API.Server;
@@ -61,47 +61,49 @@ index 4bfb9e9..2eb36b0 100644
          {
              List<ItemStack> stacklist = new List<ItemStack>();
              foreach (var slot in Inventory)
-@@ -119,10 +137,49 @@ namespace Vintagestory.GameContent
+@@ -119,10 +137,51 @@ namespace Vintagestory.GameContent
              base.ToTreeAttributes(tree);
              container.ToTreeAttributes(tree);
          }
  
  
-+        // Stratum: Crates and sealed barrels need contents for tooltips.
++        // Stratum: crates and sealed barrels need their contents for the block info tooltip.
 +        public virtual bool StratumNeedsInventoryForBlockInfo => this is BlockEntityCrate || this is BlockEntityBarrel { Sealed: true };
 +
-+        // Stratum: Clients still need the slots used to draw the block.
++        // Stratum: the client still needs the slots that draw the block, so only real storage
++        // containers hide their contents. Display blocks rebuild their meshes from this tree.
 +        public virtual void StratumFilterInventoryForDisplay(ITreeAttribute tree)
 +        {
-+            // Firepit contents are intentionally public because the block renders them.
-+            if (this is BlockEntityFirepit) return;
++            if (this is BlockEntityDisplay) return;
++            if (this is BlockEntityFirepit)
++            {
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, [0, 1, 2]);
++                return;
++            }
 +            if (this is BlockEntityQuern)
 +            {
 +                StratumInventoryPrivacy.KeepDisplaySlots(tree, [0]);
++                return;
 +            }
-+            else if (this is BlockEntityBarrel barrel)
++            if (this is BlockEntityBarrel barrel)
 +            {
 +                StratumInventoryPrivacy.KeepDisplaySlots(tree, barrel.Sealed ? [] : [0, 1]);
++                return;
 +            }
-+            else if (this is BlockEntityCrate crate)
++            if (this is BlockEntityCrate crate)
 +            {
 +                ItemSlot first = Inventory.FirstNonEmptySlot;
 +                if (crate.LidState == "closed" || first == null)
 +                {
 +                    StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
++                    tree.SetString("lidState", "closed");
++                    return;
 +                }
-+                else
-+                {
-+                    StratumInventoryPrivacy.KeepDisplaySlots(tree, [Inventory.GetSlotId(first)]);
-+                }
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, [Inventory.GetSlotId(first)]);
++                return;
 +            }
-+            else if (this is BlockEntityOpenableContainer)
++            if (this is BlockEntityOpenableContainer)
 +            {
-+                StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
-+            }
-+            else
-+            {
-+                // Modded containers must opt in to public display slots explicitly.
 +                StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
 +            }
 +        }

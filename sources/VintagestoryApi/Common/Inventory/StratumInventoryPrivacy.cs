@@ -1,4 +1,5 @@
 using System;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
 
 namespace Vintagestory.API.Common;
@@ -15,6 +16,14 @@ public static class StratumInventoryPrivacy
 		if (!InventoryGuardsEnabled) return true;
 		if (inventory == null || player?.Entity == null) return false;
 		if (!inventory.CanPlayerAccess(player, player.Entity.Pos)) return false;
+		// An inventory carried by an entity takes its range from the live entity, the
+		// way vanilla checks entity interaction, with no land claim test.
+		if (inventory.StratumRangeEntity is Entity rangeEntity)
+		{
+			return ReferenceEquals(player.InventoryManager.GetInventory(inventory.InventoryID), inventory)
+				&& rangeEntity.Pos.Dimension == player.Entity.Pos.Dimension
+				&& player.IsInInteractionRangeOf(rangeEntity);
+		}
 		if (inventory.Pos == null)
 		{
 			return ReferenceEquals(player.InventoryManager.GetInventory(inventory.InventoryID), inventory);
@@ -112,7 +121,9 @@ public static class StratumInventoryPrivacy
 		var filtered = new TreeAttribute();
 		foreach (var entry in inventory)
 		{
-			if (entry.Key is not ("slots" or "PlayerQuantities" or "Quantities")) filtered[entry.Key] = entry.Value;
+			// Keep Quantities (crate stack sizes needed for rendering the visible stack);
+			// drop only PlayerQuantities, the per-player looter UID map.
+			if (entry.Key is not ("slots" or "PlayerQuantities")) filtered[entry.Key] = entry.Value;
 		}
 		filtered["slots"] = visible;
 		tree["inventory"] = filtered;
@@ -121,5 +132,11 @@ public static class StratumInventoryPrivacy
 	public static bool IsPublicStackContentsHidden(ItemStack stack)
 	{
 		return stack?.Attributes?.GetBool(HiddenContentsAttribute) == true;
+	}
+
+	/// <summary>Removes the hidden-contents marker so a client cannot pin a bag stack non-empty.</summary>
+	public static void StripHiddenContentsMarker(ItemStack stack)
+	{
+		stack?.Attributes?.RemoveAttribute(HiddenContentsAttribute);
 	}
 }

@@ -372,7 +372,8 @@ internal class StratumHardeningConfig
 
 	public bool BlockBreakGuards { get; set; } = true;
 
-	public bool InventoryGuards { get; set; }
+	// Private inventory contents are the safe default. Set false only for vanilla visibility compatibility.
+	public bool InventoryGuards { get; set; } = true;
 
 	public bool EntityGuards { get; set; }
 }
