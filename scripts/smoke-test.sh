@@ -75,14 +75,14 @@ probe_expect=(
   "Group friendly fire is off, players in the same group cannot damage each other."
   "Group friendly fire enabled, players in the same group can damage each other again."
   ""
-  ""
-  ""
-  ""
-  ""
-  ""
-  ""
-  ""
-  ""
+  "Hardening.InventoryGuards:</font> true"
+  "Hardening.InventoryGuards = true (was true)"
+  "Hardening.InventoryGuards:</font> true"
+  "Hardening.InventoryGuards = false (was true)"
+  "Hardening.InventoryGuards:</font> false"
+  "Stratum timings started"
+  "Stratum timings stopped"
+  "Stratum Timings"
 )
 
 # Data path handling.

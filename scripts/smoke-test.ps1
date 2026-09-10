@@ -5,9 +5,8 @@ monitors progress through startup phases, and verifies it reaches RunGame
 without fatal errors. Detects stalls by checking log growth rather than a
 hard timeout.
 
-Does not yet pipe the console command probe scripts/smoke-test.sh runs on
-Linux/macOS (registration and argument-handling coverage for commands like
-/kitedit); this script is boot-only for now.
+The focused inventory privacy smoke test is run after the Release build. The
+interactive console command probe remains Linux/macOS-only.
 
 .PARAMETER Patience
 Seconds without log output before declaring a stall. Default: 60.
@@ -62,6 +61,8 @@ try {
         Write-Error "Server binary not found in $serverDir"
         exit 1
     }
+
+    dotnet run --project tests/InventoryPrivacySmoke/InventoryPrivacySmoke.csproj -c Release
 
     # Data path.
     $ownData = $false
