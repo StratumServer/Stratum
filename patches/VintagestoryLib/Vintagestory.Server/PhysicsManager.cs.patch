@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
-index 2c2605d..37c418f 100644
+index 2c2605d..89fa55a 100644
 --- a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 +++ b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 @@ -1,6 +1,7 @@
@@ -136,7 +136,7 @@ index 2c2605d..37c418f 100644
 +			baseMaxPhysicsThreads = stratumPhysicsMaxThreads;
 +		}
 +		else
-+		{
+ 		{
 +			// MagicNum.MaxPhysicsThreads is 1 in vanilla. Use a sensible Stratum default instead:
 +			// up to 4, but never more than ProcessorCount - 1, and at least 2 on multicore boxes.
 +			int cpus = Math.Max(1, Environment.ProcessorCount);
@@ -145,7 +145,7 @@ index 2c2605d..37c418f 100644
 +		}
 +		maxPhysicsThreads = Math.Clamp(baseMaxPhysicsThreads, 1, 8);
 +		if (sapi.Server.ReducedServerThreads && stratumPhysicsMaxThreads <= 0)
- 		{
++		{
 +			// Honour --reducedthreads only when there's no explicit Stratum override.
  			maxPhysicsThreads = 1;
  		}
@@ -423,12 +423,13 @@ index 2c2605d..37c418f 100644
  		double y = pos.Y;
  		double z = pos.Z;
  		double num = double.MaxValue;
-@@ -536,10 +733,24 @@ public class PhysicsManager : LoadBalancedTask
+@@ -536,10 +733,25 @@ public class PhysicsManager : LoadBalancedTask
  		List<long> list2 = alreadyTracked;
  		list2.EnsureCapacity(trackedEntities.Count);
  		List<Entity> list3 = newlyTracked;
  		foreach (Entity item in list)
  		{
++			// Stratum #312: a hidden entity is dropped from TrackedEntities and despawned for this client.
 +			if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
 +			{
 +				if (trackedEntities.Remove(item.EntityId))
@@ -448,12 +449,13 @@ index 2c2605d..37c418f 100644
  			{
  				list2.Add(entityId);
  			}
-@@ -550,10 +761,24 @@ public class PhysicsManager : LoadBalancedTask
+@@ -550,10 +762,25 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		for (int i = 1; i < threadCount; i++)
  		{
  			foreach (Entity item2 in threadedTrackedEntities[i])
  			{
++				// Stratum #312: a hidden entity is dropped from TrackedEntities and despawned for this client.
 +				if (StratumStaffCommandState.ShouldHideEntityFromClient(item2, client))
 +				{
 +					if (trackedEntities.Remove(item2.EntityId))
@@ -473,7 +475,7 @@ index 2c2605d..37c418f 100644
  				{
  					list2.Add(entityId);
  				}
-@@ -563,19 +788,51 @@ public class PhysicsManager : LoadBalancedTask
+@@ -563,19 +790,52 @@ public class PhysicsManager : LoadBalancedTask
  				}
  				list.Add(item2);
  			}
@@ -489,6 +491,7 @@ index 2c2605d..37c418f 100644
  		{
 +			if (server.LoadedEntities.TryGetValue(item3, out Entity trackedEntity) && !trackedEntity.ShouldDespawn)
 +			{
++				// Stratum #312: hidden wins over the hysteresis keep-alive.
 +				if (StratumStaffCommandState.ShouldHideEntityFromClient(trackedEntity, client))
 +				{
 +					client.entitiesNowOutOfRange.Add(new EntityDespawn
@@ -525,7 +528,7 @@ index 2c2605d..37c418f 100644
  		list2.Clear();
  		foreach (Entity item4 in list3)
  		{
-@@ -593,61 +850,165 @@ public class PhysicsManager : LoadBalancedTask
+@@ -593,61 +853,166 @@ public class PhysicsManager : LoadBalancedTask
  		list3.Clear();
  	}
  
@@ -560,6 +563,7 @@ index 2c2605d..37c418f 100644
 -					list.Clear();
 -					if (fastMemoryStream == null)
 +					Entity entity = item.Entity;
++					// Stratum #312: no spawn, player data or animation for a hidden entity.
 +					if (StratumStaffCommandState.ShouldHideEntityFromClient(entity, client))
  					{
 -						fastMemoryStream = new FastMemoryStream();
@@ -594,11 +598,11 @@ index 2c2605d..37c418f 100644
 +								}
 +								SendPreparedStateChangePacket(client, preparedPacket.PacketBytes, preparedPacket.Compressed);
 +							}
- 						}
++						}
 +						if (stratumRecordSectionTimings)
 +						{
 +							stratumPlayerPacketTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
-+						}
+ 						}
 +					}
 +					long entityIdForPacket = entity.EntityId;
 +					if (!entityPacketCache.TryGetValue(entityIdForPacket, out Packet_Entity entityPacket))
@@ -611,11 +615,10 @@ index 2c2605d..37c418f 100644
 +						entityPacket = ServerPackets.GetEntityPacket(entity, fastMemoryStream, writer);
 +						entityPacketCache[entityIdForPacket] = entityPacket;
 +						if (stratumRecordSectionTimings)
- 						{
--							list.Add(new AnimationPacket(entity));
++						{
 +							stratumFullEntityBuildTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
- 						}
- 					}
++						}
++					}
 +					entityPackets.Add(entityPacket);
 +					if (entity.AnimManager != null)
 +					{
@@ -640,16 +643,17 @@ index 2c2605d..37c418f 100644
 +					{
 +						Id = 40,
 +						Entities = new Packet_Entities
-+						{
+ 						{
+-							list.Add(new AnimationPacket(entity));
 +							Entities = entityPackets.ToArray(),
 +							EntitiesCount = entityPackets.Count,
 +							EntitiesLength = entityPackets.Count
-+						}
+ 						}
 +					};
 +					if (client.IsSinglePlayerClient)
 +					{
 +						server.SendPacket(client.Id, packet);
-+					}
+ 					}
 +					else
 +					{
 +						stateChangeSerializedPacket.Serialize(packet);
@@ -715,29 +719,24 @@ index 2c2605d..37c418f 100644
  	public void GatherUpdatePacketsFromAllThreads()
  	{
  		Dictionary<long, Packet_EntityAttributes> dict = entitiesFullUpdate[0];
-@@ -680,13 +1041,18 @@ public class PhysicsManager : LoadBalancedTask
- 			list3.Clear();
- 			try
+@@ -682,10 +1047,16 @@ public class PhysicsManager : LoadBalancedTask
  			{
  				try
  				{
--					foreach (Entity item in client.threadedTrackedEntities[0])
--					{
--						long entityId = item.EntityId;
-+						foreach (Entity item in client.threadedTrackedEntities[0])
+ 					foreach (Entity item in client.threadedTrackedEntities[0])
+ 					{
++						// Stratum #312: no attribute updates for a hidden entity.
++						if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
 +						{
-+							if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
-+							{
-+								continue;
-+							}
++							continue;
++						}
 +
-+							long entityId = item.EntityId;
+ 						long entityId = item.EntityId;
  						if (dictionary.TryGetValue(entityId, out var value))
  						{
  							list.Add(value);
  						}
- 						if (dictionary2.TryGetValue(entityId, out var value2))
-@@ -728,18 +1094,62 @@ public class PhysicsManager : LoadBalancedTask
+@@ -728,18 +1099,62 @@ public class PhysicsManager : LoadBalancedTask
  	{
  		if (entity is EntityPlayer)
  		{
@@ -802,7 +801,7 @@ index 2c2605d..37c418f 100644
  			if (entityAgent != null)
  			{
  				entityAgent.Controls.Dirty = false;
-@@ -747,10 +1157,106 @@ public class PhysicsManager : LoadBalancedTask
+@@ -747,10 +1162,106 @@ public class PhysicsManager : LoadBalancedTask
  			entity.tagsDirty = false;
  		}
  		CompletePositionUpdate(entity);
@@ -909,7 +908,7 @@ index 2c2605d..37c418f 100644
  		EntityTagPacket result = null;
  		SyncedTreeAttribute watchedAttributes = entity.WatchedAttributes;
  		if (watchedAttributes.AllDirty)
-@@ -779,82 +1285,226 @@ public class PhysicsManager : LoadBalancedTask
+@@ -779,82 +1290,231 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		watchedAttributes.MarkClean();
  		return result;
@@ -982,21 +981,19 @@ index 2c2605d..37c418f 100644
  			if (stateUpdateTick)
  			{
  				List<Entity> list4 = client.threadedTrackedEntities[zeroBasedThreadNum];
--				foreach (Entity item in list4)
--				{
+ 				foreach (Entity item in list4)
+ 				{
 -					long entityId = item.EntityId;
 -					if (entityPositionPackets.TryGetValue(entityId, out var value))
-+					foreach (Entity item in list4)
++					// Stratum #312: no animation or tag packets for a hidden entity.
++					if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
  					{
 -						list.Add(value);
--					}
++						continue;
+ 					}
 -					if (entityAnimPackets.TryGetValue(entityId, out var value2))
-+						if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
-+						{
-+							continue;
-+						}
 +
-+						long entityId = item.EntityId;
++					long entityId = item.EntityId;
 +					if (hasAnimationPackets && entityAnimPackets.TryGetValue(entityId, out var value2))
  					{
  						list2.Add(value2);
@@ -1019,12 +1016,13 @@ index 2c2605d..37c418f 100644
 +				// Iterate the smaller entityPositionPackets dict (~N/4 per thread) and check
 +				// TrackedEntities (HashSet O(1)) rather than the reverse, which iterates all
 +				// ~N tracked entities per client doing expensive dict lookups with ~25% hit rate.
++				// Stratum #312: positions, animations and tags are routed via TrackedEntities directly, so the hide check needs the entity back from LoadedEntities.
 +				if (hasPositionPackets)
 +				{
-+						foreach (KeyValuePair<long, Packet_EntityPosition> kvp in entityPositionPackets)
-+						{
-+							if (client.TrackedEntities.Contains(kvp.Key)
-+								&& (!server.LoadedEntities.TryGetValue(kvp.Key, out Entity entity) || !StratumStaffCommandState.ShouldHideEntityFromClient(entity, client)))
++					foreach (KeyValuePair<long, Packet_EntityPosition> kvp in entityPositionPackets)
++					{
++						if (client.TrackedEntities.Contains(kvp.Key)
++							&& (!server.LoadedEntities.TryGetValue(kvp.Key, out Entity entity) || !StratumStaffCommandState.ShouldHideEntityFromClient(entity, client)))
 +						{
 +							list.Add(kvp.Value);
 +						}
@@ -1047,6 +1045,7 @@ index 2c2605d..37c418f 100644
 +				// than client.TrackedEntities). Iterate the smaller dict and Contains-check the
 +				// HashSet rather than the other way round. Tags use the shared concurrentDictionary
 +				// which may be equal-sized to TrackedEntities, so keep that direction unchanged.
++				// Stratum #312: positions, animations and tags are routed via TrackedEntities directly, so the hide check needs the entity back from LoadedEntities.
 +				if (hasPositionPackets)
  				{
 -					if (entityPositionPackets.TryGetValue(trackedEntity, out var value5))
@@ -1060,21 +1059,22 @@ index 2c2605d..37c418f 100644
 +						}
  					}
 -					if (entityAnimPackets.TryGetValue(trackedEntity, out var value6))
--					{
--						list2.Add(value6);
 +				}
++				// Stratum #312: positions, animations and tags are routed via TrackedEntities directly, so the hide check needs the entity back from LoadedEntities.
 +				if (hasAnimationPackets)
 +				{
-+						foreach (KeyValuePair<long, AnimationPacket> kvp in entityAnimPackets)
-+						{
-+							if (client.TrackedEntities.Contains(kvp.Key)
-+								&& (!server.LoadedEntities.TryGetValue(kvp.Key, out Entity entity) || !StratumStaffCommandState.ShouldHideEntityFromClient(entity, client)))
++					foreach (KeyValuePair<long, AnimationPacket> kvp in entityAnimPackets)
+ 					{
+-						list2.Add(value6);
++						if (client.TrackedEntities.Contains(kvp.Key)
++							&& (!server.LoadedEntities.TryGetValue(kvp.Key, out Entity entity) || !StratumStaffCommandState.ShouldHideEntityFromClient(entity, client)))
 +						{
 +							list2.Add(kvp.Value);
 +						}
  					}
 -					if (concurrentDictionary.TryGetValue(trackedEntity, out var value7))
 +				}
++				// Stratum #312: positions, animations and tags are routed via TrackedEntities directly, so the hide check needs the entity back from LoadedEntities.
 +				if (hasTagPackets)
 +				{
 +					foreach (long trackedEntity in client.TrackedEntities)
@@ -1161,7 +1161,7 @@ index 2c2605d..37c418f 100644
  			if (list2.Count > 0)
  			{
  				BulkAnimationPacket message = new BulkAnimationPacket
-@@ -872,35 +1522,65 @@ public class PhysicsManager : LoadBalancedTask
+@@ -872,35 +1532,66 @@ public class PhysicsManager : LoadBalancedTask
  				AnimationsAndTagsChannel.SendPacket(item2, client.Player);
  			}
  		}
@@ -1219,6 +1219,7 @@ index 2c2605d..37c418f 100644
  				{
 -					ConnectedClient connectedClient = clientList[j / 3];
 +					ConnectedClient connectedClient = clientList[clientIndex];
++					// Stratum #312: never batch a hidden entity into this client's spawn packet.
 +					if (StratumStaffCommandState.ShouldHideEntityFromClient(entity, connectedClient))
 +					{
 +						continue;
@@ -1229,7 +1230,7 @@ index 2c2605d..37c418f 100644
  					flag = true;
  				}
  			}
-@@ -990,11 +1670,14 @@ public class PhysicsManager : LoadBalancedTask
+@@ -990,11 +1681,14 @@ public class PhysicsManager : LoadBalancedTask
  		return ServerPackets.getEntityPositionPacket(entity.Pos, entity, 1);
  	}
  
@@ -1245,12 +1246,13 @@ index 2c2605d..37c418f 100644
  		{
  			Id = 80,
  			EntityPosition = entityPosition
-@@ -1007,10 +1690,15 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1007,10 +1701,16 @@ public class PhysicsManager : LoadBalancedTask
  			if (client.State.ConnectedOrPlaying() && client.Entityplayer != null)
  			{
  				EntityPos pos2 = client.Entityplayer.Pos;
  				if (pos.InRangeOf(pos2, squareDistance))
  				{
++					// Stratum #312: never batch a hidden entity into this client's spawn packet.
 +					if (StratumStaffCommandState.ShouldHideEntityFromClient(entity, client))
 +					{
 +						continue;
@@ -1261,7 +1263,7 @@ index 2c2605d..37c418f 100644
  					server.SendPacket(client.Id, packet);
  				}
  			}
-@@ -1026,16 +1714,29 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1026,16 +1726,29 @@ public class PhysicsManager : LoadBalancedTask
  		if (threadNumber == 0)
  		{
  			threadNumber = 1;
@@ -1296,7 +1298,7 @@ index 2c2605d..37c418f 100644
  		Dictionary<long, AnimationPacket> dictionary2 = entitiesAnimPackets[threadNumber - 1];
  		dictionary.Clear();
  		dictionary2.Clear();
-@@ -1097,10 +1798,19 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1097,10 +1810,19 @@ public class PhysicsManager : LoadBalancedTask
  		try
  		{
  			int num5 = -1;
@@ -1316,7 +1318,7 @@ index 2c2605d..37c418f 100644
  				int num6 = (ticksToDo - num5 + 1) % 2;
  				num5 += num6;
  				bool flag2 = num5 == ticksToDo - 1;
-@@ -1108,20 +1818,113 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1108,20 +1830,113 @@ public class PhysicsManager : LoadBalancedTask
  				bool forceUpdate = (num5 + currentTick) % 30 <= num6;
  				for (int j = num3; j < num4; j++)
  				{
@@ -1433,7 +1435,7 @@ index 2c2605d..37c418f 100644
  						{
  							entity.PositionTicked = true;
  						}
-@@ -1196,49 +1999,153 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1196,49 +2011,153 @@ public class PhysicsManager : LoadBalancedTask
  		if (doBuildAttributes)
  		{
  			eFullUpdate = entitiesFullUpdate[0];
@@ -1594,7 +1596,7 @@ index 2c2605d..37c418f 100644
  			SendPositionsAndAnimations(dictionary, dictionary2, 0, doBuildAttributes);
  		}
  		dictionary.Clear();
-@@ -1262,11 +2169,25 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1262,11 +2181,25 @@ public class PhysicsManager : LoadBalancedTask
  
  	public void StartWorkerThread(int threadNum)
  	{

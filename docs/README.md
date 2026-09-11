@@ -14,6 +14,7 @@ Pages in this folder, by audience.
 - [commands/kits.md](commands/kits.md): `/kit` and `/kitedit`.
 - [commands/friendlyfire.md](commands/friendlyfire.md): `/friendlyfire`, the runtime group friendly-fire toggle.
 - [commands/inventory-privacy.md](commands/inventory-privacy.md): the `hardening.inventoryGuards` inventory privacy setting.
+- [commands/vanish.md](commands/vanish.md): `/vanish`, what it hides, and the blocks, particles and sounds it does not.
 - [role-prefixes.md](role-prefixes.md): stacking role name prefixes in chat and nametags.
 
 Config keys live in `stratum.json`, `stratum-commands.json` and `stratum-performance.json` next to the world data; `/stratum get` and `/stratum set` read and write them on a running server.

@@ -21,8 +21,10 @@ internal static class StratumStaffCommandState
 	private static readonly HashSet<string> VanishedPlayerUids = new HashSet<string>(StringComparer.Ordinal);
 
 	// Stratum #213: per-viewer override of "do I see other vanished players".
-	// Absent = follow Commands.VanishHideOtherVanishedDefault. Session state, same
-	// lifetime as VanishedPlayerUids, cleared in ClearSessionState.
+	// Absent = follow Commands.VanishHideOtherVanishedDefault. Pure session state: unlike vanish
+	// itself (#312, persisted in ServerPlayerData.CustomPlayerData and re-read at identification)
+	// this preference is not stored, so it resets to the configured default on every reconnect.
+	// Cleared in ClearSessionState.
 	private static readonly Dictionary<string, bool> HideOtherVanishedByUid = new Dictionary<string, bool>(StringComparer.Ordinal);
 
 	private static readonly Dictionary<string, FrozenPlayerState> FrozenPlayers = new Dictionary<string, FrozenPlayerState>(StringComparer.Ordinal);
@@ -100,6 +102,18 @@ internal static class StratumStaffCommandState
 
 	public static void RestoreVanishedState(ServerMain server, IServerPlayer player)
 	{
+		RestoreVanishedState(server, player, persistRevocation: true);
+	}
+
+	// Stratum #312: called twice per session. First from ServerMain.FinalizePlayerIdentification,
+	// before the first SpawnEntity/SendServerReady, so a reconnecting vanished player is never
+	// broadcast to nearby clients during the seconds between identification and RequestJoin. That
+	// call passes persistRevocation: false, because the role is not final there yet (a
+	// single-player client is upgraded in HandleRequestJoin) and a stored flag must not be erased
+	// on a role that is still settling. It is called again from CmdStratumStaffCommands' OnPlayerJoin
+	// handler, where the role is final and a revoked privilege can be persisted away.
+	public static void RestoreVanishedState(ServerMain server, IServerPlayer player, bool persistRevocation)
+	{
 		if (server == null || player == null || string.IsNullOrWhiteSpace(player.PlayerUID))
 		{
 			return;
@@ -117,10 +131,12 @@ internal static class StratumStaffCommandState
 		if (StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish))
 		{
 			VanishedPlayerUids.Add(player.PlayerUID);
+			return;
 		}
-		else
+
+		VanishedPlayerUids.Remove(player.PlayerUID);
+		if (persistRevocation)
 		{
-			VanishedPlayerUids.Remove(player.PlayerUID);
 			data.CustomPlayerData[VanishStateKey] = bool.FalseString;
 			server.PlayerDataManager.playerDataDirty = true;
 		}
@@ -164,6 +180,14 @@ internal static class StratumStaffCommandState
 
 	public static bool ShouldHideEntityFromClient(Entity entity, ConnectedClient client)
 	{
+		// Stratum #312: nobody vanished is the overwhelmingly common case, and this runs once per
+		// client per entity in UpdateTrackedEntityLists, SendAttributesViaTCP, the state-tick loop
+		// and the per-packet position/animation loops. Bail before any type test or behaviour walk.
+		if (VanishedPlayerUids.Count == 0)
+		{
+			return false;
+		}
+
 		if (entity == null || client?.Player == null)
 		{
 			return false;
@@ -174,21 +198,45 @@ internal static class StratumStaffCommandState
 			return ShouldHideVanishedPlayerFromClient(entityPlayer, client);
 		}
 
+		// Stratum #312: a projectile is spawned at the shooter's eye height and carries firedBy
+		// (EntityProjectileBase.Initialize writes it server side before the spawn packet is built),
+		// so a vanished shooter is located by their own arrow. Filtering the predicate rather than
+		// only SendPrioritySpawn hides it for its whole flight, including the position updates.
+		if (entity is IProjectile projectile && projectile.FiredBy is EntityPlayer shooter && IsVanished(shooter.PlayerUID))
+		{
+			return ShouldHideVanishedPlayerFromClient(shooter, client);
+		}
+
 		IMountable mountable = entity.GetInterface<IMountable>();
 		if (mountable?.Seats == null)
 		{
 			return false;
 		}
 
+		// Stratum #312: every seat is inspected before deciding. A mount is never hidden from a
+		// client riding it, even when another seat holds vanished staff: otherwise a regular player
+		// sharing a boat or elk gets their own mount despawned by UpdateTrackedEntityLists while
+		// the server still has them mounted.
+		EntityPlayer vanishedPassenger = null;
 		foreach (IMountableSeat seat in mountable.Seats)
 		{
-			if (seat?.Passenger is EntityPlayer passenger && IsVanished(passenger.PlayerUID))
+			if (seat?.Passenger is not EntityPlayer passenger)
 			{
-				return ShouldHideVanishedPlayerFromClient(passenger, client);
+				continue;
+			}
+
+			if (passenger == client.Entityplayer)
+			{
+				return false;
+			}
+
+			if (vanishedPassenger == null && IsVanished(passenger.PlayerUID))
+			{
+				vanishedPassenger = passenger;
 			}
 		}
 
-		return false;
+		return vanishedPassenger != null && ShouldHideVanishedPlayerFromClient(vanishedPassenger, client);
 	}
 
 	private static bool ShouldHideVanishedPlayerFromClient(EntityPlayer entityPlayer, ConnectedClient client)
@@ -213,12 +261,24 @@ internal static class StratumStaffCommandState
 
 	private static bool IsVanishVisibilitySubject(Entity entity)
 	{
+		// Stratum #312: same early-out as ShouldHideEntityFromClient. This walks all of
+		// LoadedEntities, so with nobody vanished it must not touch the behaviour list either.
+		if (VanishedPlayerUids.Count == 0 || entity == null)
+		{
+			return false;
+		}
+
 		if (entity is EntityPlayer player && IsVanished(player.PlayerUID))
 		{
 			return true;
 		}
 
-		IMountable mountable = entity?.GetInterface<IMountable>();
+		if (entity is IProjectile projectile && projectile.FiredBy is EntityPlayer shooter && IsVanished(shooter.PlayerUID))
+		{
+			return true;
+		}
+
+		IMountable mountable = entity.GetInterface<IMountable>();
 		if (mountable?.Seats == null)
 		{
 			return false;
@@ -242,16 +302,21 @@ internal static class StratumStaffCommandState
 
 	public static void RevealPlayerToOthers(ServerMain server, IServerPlayer player)
 	{
-		if (player?.Entity == null)
+		if (server == null || player?.Entity == null)
 		{
 			return;
 		}
 
-		Packet_Server packet = ServerPackets.GetEntitySpawnPacket(new List<Entity> { player.Entity });
+		Packet_Server spawnPacket = ServerPackets.GetEntitySpawnPacket(new List<Entity> { player.Entity });
+		// Stratum #312: packet 41 has to go first. The vanilla client only fills PlayersByUid from
+		// player data, and UpdateTrackedEntityLists will never send it later because the id below is
+		// already in TrackedEntities. Without it the observer gets an EntityPlayer with no
+		// ClientPlayer: empty hands, no armor, missing from the player list until it leaves range.
+		Packet_Server dataPacket = ((ServerWorldPlayerData)player.WorldData).ToPacketForOtherPlayers(player);
 		int rangeSq = MagicNum.DefaultEntityTrackingRange * MagicNum.ServerChunkSize * MagicNum.DefaultEntityTrackingRange * MagicNum.ServerChunkSize;
 		foreach (ConnectedClient client in server.Clients.Values)
 		{
-			if (!client.State.IsAdmitted() || client.Player == null || client.Player.PlayerUID == player.PlayerUID || ShouldHideEntityFromClient(player.Entity, client))
+			if (!client.State.IsAdmitted() || client.Player?.Entity == null || client.Player.PlayerUID == player.PlayerUID || ShouldHideEntityFromClient(player.Entity, client))
 			{
 				continue;
 			}
@@ -259,9 +324,15 @@ internal static class StratumStaffCommandState
 			if (player.Entity.Pos.InRangeOf(client.Player.Entity.Pos, rangeSq))
 			{
 				client.TrackedEntities.Add(player.Entity.EntityId);
-				server.SendPacket(client.Id, packet);
+				server.SendPacket(client.Id, dataPacket);
+				server.SendPacket(client.Id, spawnPacket);
 			}
 		}
+
+		// Stratum #312: the active hotbar slot number only travels in packet 53, which the filter
+		// added to BroadcastHotbarSlot withheld for the whole vanish. Re-broadcasting it here is
+		// what makes the revealed player show the right held item instead of an empty hand.
+		server.BroadcastHotbarSlot(player);
 	}
 
 	private static void RefreshVanishedVisibilityForAllViewers(ServerMain server)
@@ -280,15 +351,16 @@ internal static class StratumStaffCommandState
 		}
 	}
 
-	// Stratum #213: the inverse of Hide/RevealPlayerToOthers. Those iterate every client
-	// for one subject; this iterates every vanished subject for one client, and is what
-	// makes the /vanish hideothers toggle take effect mid-session.
+	// Stratum #213/#312: the inverse of Hide/RevealPlayerToOthers. Those iterate every client for
+	// one subject; this iterates every loaded entity for one viewer, keeping the ones the vanish
+	// rules apply to (IsVanishVisibilitySubject: a vanished player, a projectile they fired, or a
+	// mount carrying them). It is what makes the /vanish hideothers toggle take effect mid-session.
 	//
-	// The despawn half is mandatory, not cosmetic: PhysicsManager's tracking hysteresis
-	// (PhysicsManager.cs.patch:466) keeps an already-tracked entity tracked while it is
-	// inside 1.21x the tracking radius, so a newly hidden neighbour would otherwise stay
-	// visible indefinitely. The spawn half is a fast path; UpdateTrackedEntityLists would
-	// re-spawn it within a tick or two anyway.
+	// Both halves are fast paths, not correctness requirements: UpdateTrackedEntityLists
+	// re-evaluates ShouldHideEntityFromClient on every state tick, despawning a newly hidden entity
+	// (PhysicsManager's tracking hysteresis loop checks the predicate before the outer-radius
+	// keep-alive) and re-spawning a newly visible one within a tick or two either way. Doing it
+	// here makes a /vanish toggle instant rather than tick-latent.
 	public static void RefreshVanishedVisibilityForViewer(ServerMain server, IServerPlayer viewer)
 	{
 		if (server == null || viewer?.Entity == null || string.IsNullOrWhiteSpace(viewer.PlayerUID))
@@ -344,8 +416,30 @@ internal static class StratumStaffCommandState
 
 		if (spawns != null)
 		{
+			// Stratum #312: same ordering rule as RevealPlayerToOthers -- player data before the
+			// spawn, because adding the id to TrackedEntities above means UpdateTrackedEntityLists
+			// will not take the entitiesNowInRange path that would otherwise send it.
+			foreach (Entity spawn in spawns)
+			{
+				SendPlayerDataForSpawn(server, spawn, viewerClient);
+			}
+
 			server.SendPacket(viewerClient.Id, ServerPackets.GetEntitySpawnPacket(spawns));
 		}
+	}
+
+	// Stratum #312: packet 41 for one revealed subject, if that subject is a player at all -- a
+	// revealed mount or projectile carries no separate player data of its own.
+	private static void SendPlayerDataForSpawn(ServerMain server, Entity subject, ConnectedClient viewerClient)
+	{
+		if (subject is not EntityPlayer entityPlayer
+			|| !server.PlayersByUid.TryGetValue(entityPlayer.PlayerUID, out ServerPlayer owner)
+			|| owner?.WorldData is not ServerWorldPlayerData worldData)
+		{
+			return;
+		}
+
+		server.SendPacket(viewerClient.Id, worldData.ToPacketForOtherPlayers(owner));
 	}
 
 	public static bool IsFrozen(string playerUid)
@@ -418,6 +512,9 @@ internal static class StratumStaffCommandState
 			return;
 		}
 
+		// Stratum #312: dropping the UID here is correct and intentional. Vanish persists in
+		// ServerPlayerData.CustomPlayerData and is re-read in FinalizePlayerIdentification, which
+		// also covers a server restart; keeping the set populated across a disconnect would not.
 		VanishedPlayerUids.Remove(playerUid);
 		HideOtherVanishedByUid.Remove(playerUid);
 		FrozenPlayers.Remove(playerUid);
