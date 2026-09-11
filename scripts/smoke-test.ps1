@@ -63,6 +63,13 @@ try {
     }
 
     dotnet run --project tests/InventoryPrivacySmoke/InventoryPrivacySmoke.csproj -c Release
+    if ($LASTEXITCODE -ne 0) {
+        # Stratum: $ErrorActionPreference = 'Stop' only converts PowerShell errors to
+        # terminating ones. It does not inspect a native process's exit code, so a failing
+        # check here would otherwise reach the PASS banner at the bottom of this script.
+        Write-Error "InventoryPrivacySmoke failed (exit $LASTEXITCODE)"
+        exit 1
+    }
 
     # Data path.
     $ownData = $false
