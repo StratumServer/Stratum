@@ -106,6 +106,7 @@ Stratum adds a set of in-game commands on top of vanilla. The full list of pages
 - [docs/commands/kits.md](docs/commands/kits.md): `/kit` and `/kitedit`.
 - [docs/role-prefixes.md](docs/role-prefixes.md): stacking role name prefixes.
 - [docs/commands/friendlyfire.md](docs/commands/friendlyfire.md): `/friendlyfire`, the runtime group friendly-fire toggle.
+- [docs/commands/inventory-privacy.md](docs/commands/inventory-privacy.md): the `hardening.inventoryGuards` inventory privacy setting.
 
 ## Build
 

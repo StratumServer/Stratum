@@ -1,0 +1,17 @@
+diff --git a/VSSurvivalMod/BlockEntity/BEItemFlow.cs b/VSSurvivalMod/BlockEntity/BEItemFlow.cs
+index 7e8e0c4..733e093 100644
+--- a/VSSurvivalMod/BlockEntity/BEItemFlow.cs
++++ b/VSSurvivalMod/BlockEntity/BEItemFlow.cs
+@@ -425,10 +425,12 @@ namespace Vintagestory.GameContent
+ 
+         public override bool OnPlayerRightClick(IPlayer byPlayer, BlockSelection blockSel)
+         {
+             if (Api.World is IServerWorldAccessor)
+             {
++                // Stratum: Check access before sending the inventory.
++                if (!StratumInventoryPrivacy.CanAccess(inventory, byPlayer)) return false;
+                 var data = BlockEntityContainerOpen.ToBytes("BlockEntityItemFlowDialog", Lang.Get(ItemFlowObjectLangCode), 4, inventory);
+ 
+                 ((ICoreServerAPI)Api).Network.SendBlockEntityPacket(
+                     (IServerPlayer)byPlayer,
+                     Pos,

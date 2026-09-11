@@ -1,8 +1,28 @@
 diff --git a/VintagestoryApi/Common/Inventory/InventoryBase.cs b/VintagestoryApi/Common/Inventory/InventoryBase.cs
-index 0820ca0..539640f 100644
+index 0820ca0..4aeda6f 100644
 --- a/VintagestoryApi/Common/Inventory/InventoryBase.cs
 +++ b/VintagestoryApi/Common/Inventory/InventoryBase.cs
-@@ -79,10 +79,15 @@ namespace Vintagestory.API.Common
+@@ -39,10 +39,19 @@ namespace Vintagestory.API.Common
+         /// <summary>
+         /// Optional field that can be used to define in-world position of the inventory. Is set by most container block entities. Might be null!
+         /// </summary>
+         public BlockPos Pos;
+ 
++        // Stratum: an inventory carried by an entity takes its range from the live entity.
++        // A stored BlockPos freezes at open time and drags a land claim test onto a moving mount.
++        public Entity StratumRangeEntity;
++
++        // Stratum: some block entities dispatch their packets by slot (see
++        // BEBehaviorContainedBagInventory.PacketIdBitShift), so a server-driven close has to
++        // carry the same offset the dialog was opened with. 0 for an ordinary container.
++        public int StratumBlockEntityPacketIdOffset;
++
+         /// <summary>
+         /// Optional field, if set, will check against the collectible dimensions and deny placecment if too large
+         /// </summary>
+         public virtual Size3f MaxContentDimensions { get; set; } = null;
+ 
+@@ -79,10 +88,15 @@ namespace Vintagestory.API.Common
          /// <summary>
          /// Slots that have been recently modified. This list is used on the server to update the clients (then cleared) and on the client to redraw itemstacks in guis (then cleared)
          /// </summary>
@@ -18,7 +38,7 @@ index 0820ca0..539640f 100644
          /// </summary>
          public string InventoryID { get { return className + "-" + instanceID; } }
  
-@@ -685,10 +690,11 @@ namespace Vintagestory.API.Common
+@@ -685,10 +699,11 @@ namespace Vintagestory.API.Common
          /// <param name="slotId"></param>
          public virtual void MarkSlotDirty(int slotId)
          {
@@ -30,7 +50,7 @@ index 0820ca0..539640f 100644
          /// <summary>
          /// Discards everything in the item slots.
          /// </summary>
-@@ -701,10 +707,11 @@ namespace Vintagestory.API.Common
+@@ -701,10 +716,11 @@ namespace Vintagestory.API.Common
                      dirtySlots.Add(i);
                  }
  

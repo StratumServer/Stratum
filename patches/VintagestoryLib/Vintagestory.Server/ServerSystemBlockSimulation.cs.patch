@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
-index 6b3cdd0..6da60f6 100644
+index 6b3cdd0..28ea78f 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 @@ -3,10 +3,11 @@ using System.Collections.Concurrent;
@@ -155,8 +155,8 @@ index 6b3cdd0..6da60f6 100644
 +		return string.Equals(assemblyName, "VSSurvivalMod", StringComparison.Ordinal)
 +			|| string.Equals(assemblyName, "VSEssentials", StringComparison.Ordinal)
 +			|| string.Equals(assemblyName, "VintagestoryLib", StringComparison.Ordinal);
- 	}
- 
++	}
++
 +	private static bool IsBlockEntityPacketInRange(ServerPlayer player, BlockPos pos)
 +	{
 +		double maxRange = player.WorldData.PickingRange + StratumBlockEntityPacketRangeSlack;
@@ -198,8 +198,8 @@ index 6b3cdd0..6da60f6 100644
 +			SelectionBoxIndex = 0
 +		});
 +		return true;
-+	}
-+
+ 	}
+ 
 +	private bool TryAllowDevCommandBlockUse(BlockPos pos, ConnectedClient client)
 +	{
 +		ServerPlayer player = client?.Player;
@@ -450,7 +450,84 @@ index 6b3cdd0..6da60f6 100644
  	private void UpdateEvery100ms(float t1)
  	{
  		HandleDirtyAndUpdatedBlocks();
-@@ -778,12 +1056,20 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -716,17 +994,23 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			}
+ 			server.SendSetDecorsPackets(list3);
+ 		}
+ 	}
+ 
++	// Stratum: Cache full snapshots separately from public ones.
++	private readonly Dictionary<Packet_BlockEntity, BlockEntity> stratumInventoryBlockEntities = new();
++	private readonly Dictionary<Packet_BlockEntity, Packet_BlockEntity> stratumFullBlockEntities = new();
++
+ 	private void SendDirtyBlockEntities()
+ 	{
+ 		if (server.DirtyBlockEntities.IsEmpty)
+ 		{
+ 			return;
+ 		}
+ 		blockEntitiesPacked.Clear();
++		stratumInventoryBlockEntities.Clear();
++		stratumFullBlockEntities.Clear();
+ 		noblockEntities.Clear();
+ 		positionsDone.Clear();
+ 		ConcurrentQueue<BlockPos> dirtyBlockEntities = server.DirtyBlockEntities;
+ 		if (!dirtyBlockEntities.IsEmpty)
+ 		{
+@@ -737,11 +1021,16 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 				if (positionsDone.Add(result))
+ 				{
+ 					BlockEntity blockEntity = server.WorldMap.GetBlockEntity(result);
+ 					if (blockEntity != null)
+ 					{
+-						blockEntitiesPacked.Add(BlockEntityToPacket(blockEntity, ms));
++						// Stratum: remember which packet came from which container so the
++						// per-player send pass below can swap in a filtered or full tree
++						// depending on whether that recipient has the container open.
++						Packet_BlockEntity packet = BlockEntityToPacket(blockEntity, ms);
++						blockEntitiesPacked.Add(packet);
++						if (blockEntity is IBlockEntityContainer) stratumInventoryBlockEntities.Add(packet, blockEntity);
+ 					}
+ 					else
+ 					{
+ 						noblockEntities.Add(result);
+ 					}
+@@ -762,28 +1051,54 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			foreach (Packet_BlockEntity item in blockEntitiesPacked)
+ 			{
+ 				long index3d = server.WorldMap.ChunkIndex3D(new ChunkPos(item.PosX / 32, item.PosY / 32, item.PosZ / 32));
+ 				if (value.DidSendChunk(index3d))
+ 				{
+-					playerBlockEntitiesPacked.Add(item);
++					// Stratum start: send the full snapshot to viewers, the public one to everyone else.
++					if (StratumInventoryPrivacy.InventoryGuardsEnabled
++						&& stratumInventoryBlockEntities.TryGetValue(item, out BlockEntity blockEntity)
++						&& StratumInventorySync.CanViewBlockEntity(blockEntity, value.Player))
++					{
++						if (!stratumFullBlockEntities.TryGetValue(item, out Packet_BlockEntity fullPacket))
++						{
++							fullPacket = StratumInventorySync.GetFullBlockEntityPacket(blockEntity, item);
++							stratumFullBlockEntities.Add(item, fullPacket);
++						}
++						playerBlockEntitiesPacked.Add(fullPacket);
++					}
++					else
++					{
++						playerBlockEntitiesPacked.Add(item);
++					}
++					// Stratum end
+ 				}
+ 			}
+ 			if (playerBlockEntitiesPacked.Count + noblockEntities.Count > 0)
+ 			{
+ 				SendBlockEntitiesPacket(value, playerBlockEntitiesPacked, noblockEntities);
+ 			}
+ 		}
++		stratumInventoryBlockEntities.Clear();
++		stratumFullBlockEntities.Clear();
+ 	}
+ 
+ 	public override void OnServerTick(float dt)
  	{
  		if (server.RunPhase != EnumServerRunPhase.RunGame)
  		{
@@ -473,7 +550,7 @@ index 6b3cdd0..6da60f6 100644
  			{
  				continue;
  			}
-@@ -812,22 +1098,37 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -812,22 +1127,37 @@ public class ServerSystemBlockSimulation : ServerSystem
  			catch (Exception e)
  			{
  				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
@@ -512,7 +589,7 @@ index 6b3cdd0..6da60f6 100644
  			foreach (int clientId in clientIds)
  			{
  				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
-@@ -862,34 +1163,116 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -862,34 +1192,116 @@ public class ServerSystemBlockSimulation : ServerSystem
  						}
  					}
  				}
@@ -632,7 +709,7 @@ index 6b3cdd0..6da60f6 100644
  		{
  			int num6 = rand.Next(32);
  			int num7 = rand.Next(32);
-@@ -905,29 +1288,73 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -905,35 +1317,79 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (fluid != 0)
  			{
  				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));
@@ -706,4 +783,12 @@ index 6b3cdd0..6da60f6 100644
  	{
  		ms.Reset();
  		BinaryWriter stream = new BinaryWriter(ms);
- 		TreeAttribute treeAttribute = new TreeAttribute();
+-		TreeAttribute treeAttribute = new TreeAttribute();
+-		blockEntity.ToTreeAttributes(treeAttribute);
++		// Stratum: Hide unopened inventory slots.
++		ITreeAttribute treeAttribute = StratumInventorySync.GetBlockEntityAttributes(blockEntity);
+ 		treeAttribute.ToBytes(stream);
+ 		string text = ServerMain.ClassRegistry.blockEntityTypeToClassnameMapping[blockEntity.GetType()];
+ 		byte[] array = ms.ToArray();
+ 		Packet_BlockEntity packet_BlockEntity = new Packet_BlockEntity();
+ 		packet_BlockEntity.Classname = text;

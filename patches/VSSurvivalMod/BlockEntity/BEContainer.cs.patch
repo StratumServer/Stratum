@@ -1,8 +1,22 @@
 diff --git a/VSSurvivalMod/BlockEntity/BEContainer.cs b/VSSurvivalMod/BlockEntity/BEContainer.cs
-index 4bfb9e9..4cf2cc5 100644
+index 4bfb9e9..fa05c63 100644
 --- a/VSSurvivalMod/BlockEntity/BEContainer.cs
 +++ b/VSSurvivalMod/BlockEntity/BEContainer.cs
-@@ -83,21 +83,38 @@ namespace Vintagestory.GameContent
+@@ -10,11 +10,12 @@ using Vintagestory.API.Server;
+ #nullable disable
+ 
+ namespace Vintagestory.GameContent
+ {
+ 
+-    public abstract class BlockEntityContainer : BlockEntity, IBlockEntityContainer
++    // Stratum: Keep inventory filtering separate from saves.
++    public abstract class BlockEntityContainer : BlockEntity, IBlockEntityContainer, IStratumInventoryDisplay
+     {
+         public abstract InventoryBase Inventory { get; }
+         public abstract string InventoryClassName { get; }
+         IInventory IBlockEntityContainer.Inventory { get { return Inventory; } }
+ 
+@@ -83,21 +84,38 @@ namespace Vintagestory.GameContent
              }
  
              base.OnBlockBroken(byPlayer);
@@ -47,3 +61,60 @@ index 4bfb9e9..4cf2cc5 100644
          {
              List<ItemStack> stacklist = new List<ItemStack>();
              foreach (var slot in Inventory)
+@@ -119,10 +137,56 @@ namespace Vintagestory.GameContent
+             base.ToTreeAttributes(tree);
+             container.ToTreeAttributes(tree);
+         }
+ 
+ 
++        // Stratum: crates and sealed barrels need their contents for the block info tooltip.
++        public virtual bool StratumNeedsInventoryForBlockInfo => this is BlockEntityCrate || this is BlockEntityBarrel { Sealed: true };
++
++        // Stratum: the client still needs the slots that draw the block, so only real storage
++        // containers hide their contents. Display blocks rebuild their meshes from this tree.
++        public virtual void StratumFilterInventoryForDisplay(ITreeAttribute tree)
++        {
++            if (this is BlockEntityDisplay) return;
++            if (this is BlockEntityFirepit)
++            {
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, [0, 1, 2]);
++                return;
++            }
++            if (this is BlockEntityQuern)
++            {
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, [0]);
++                return;
++            }
++            if (this is BlockEntityBarrel barrel)
++            {
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, barrel.Sealed ? [] : [0, 1]);
++                return;
++            }
++            if (this is BlockEntityCrate crate)
++            {
++                // Stratum: an empty crate with an open preferred lid state is not a closed
++                // crate (LidState falls back to preferredLidState when Inventory.Empty). Only
++                // a genuinely closed LidState should force the lid shut here, otherwise the
++                // owner's own inspection swap makes the lid follow the crosshair as
++                // StratumUpdateInspectedContainers alternates the full and public trees.
++                if (crate.LidState == "closed")
++                {
++                    StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
++                    tree.SetString("lidState", "closed");
++                    return;
++                }
++                ItemSlot first = Inventory.FirstNonEmptySlot;
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, first == null ? [] : [Inventory.GetSlotId(first)]);
++                return;
++            }
++            if (this is BlockEntityOpenableContainer)
++            {
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
++            }
++        }
++
+         public override void OnStoreCollectibleMappings(Dictionary<int, AssetLocation> blockIdMapping, Dictionary<int, AssetLocation> itemIdMapping)
+         {
+             container.OnStoreCollectibleMappings(blockIdMapping, itemIdMapping);
+         }
+ 

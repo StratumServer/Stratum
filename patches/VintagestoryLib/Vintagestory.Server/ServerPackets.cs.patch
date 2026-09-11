@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
-index d4a0736..8cb471c 100644
+index d4a0736..c345b12 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerPackets.cs
 @@ -1,18 +1,31 @@
@@ -34,7 +34,20 @@ index d4a0736..8cb471c 100644
  		Packet_Server packet_Server = new Packet_Server();
  		packet_Server.Id = 68;
  		packet_Server.IngameError = new Packet_IngameError
-@@ -171,29 +184,27 @@ public class ServerPackets
+@@ -155,10 +168,12 @@ public class ServerPackets
+ 
+ 	public static Packet_EntityAttributeUpdate GetEntityPartialAttributePacket(FastMemoryStream ms, Entity entity)
+ 	{
+ 		Packet_EntityAttributeUpdate packet_EntityAttributeUpdate = new Packet_EntityAttributeUpdate();
+ 		entity.WatchedAttributes.GetDirtyPathData(ms, out var paths, out var dirtydata);
++		// Stratum: Strip bag contents from equipment updates.
++		StratumInventorySync.FilterPublicEntityUpdates(entity, paths, dirtydata);
+ 		Packet_PartialAttribute[] array = new Packet_PartialAttribute[paths.Length];
+ 		for (int i = 0; i < array.Length; i++)
+ 		{
+ 			array[i] = new Packet_PartialAttribute
+ 			{
+@@ -171,29 +186,27 @@ public class ServerPackets
  		return packet_EntityAttributeUpdate;
  	}
  
@@ -74,7 +87,20 @@ index d4a0736..8cb471c 100644
  	public static Packet_Server GetEntityAttributesPacket(Entity entity)
  	{
  		Packet_EntityAttributes packet_EntityAttributes = new Packet_EntityAttributes();
-@@ -238,13 +249,22 @@ public class ServerPackets
+@@ -211,10 +224,12 @@ public class ServerPackets
+ 
+ 	public static Packet_Server GetEntityAttributesUpdatePacket(Entity entity)
+ 	{
+ 		Packet_EntityAttributeUpdate packet_EntityAttributeUpdate = new Packet_EntityAttributeUpdate();
+ 		entity.WatchedAttributes.GetDirtyPathData(out var paths, out var dirtydata);
++		// Stratum: Strip bag contents from equipment updates.
++		StratumInventorySync.FilterPublicEntityUpdates(entity, paths, dirtydata);
+ 		Packet_PartialAttribute[] array = new Packet_PartialAttribute[paths.Length];
+ 		for (int i = 0; i < array.Length; i++)
+ 		{
+ 			array[i] = new Packet_PartialAttribute();
+ 			array[i].Path = paths[i];
+@@ -238,13 +253,22 @@ public class ServerPackets
  		};
  	}
  
@@ -100,7 +126,7 @@ index d4a0736..8cb471c 100644
  		packet_EntityDespawn.SetDeathDamageSource(deathDamageSource);
  		packet_EntityDespawn.SetDespawnReason(despawnReason);
  		return new Packet_Server
-@@ -345,20 +365,34 @@ public class ServerPackets
+@@ -345,20 +369,34 @@ public class ServerPackets
  			}
  		};
  		if (entity is EntityAgent entityAgent)
@@ -136,3 +162,17 @@ index d4a0736..8cb471c 100644
  		ms.Reset();
  		entity.ToBytes(writer, forClient: true);
  		return ms.ToArray();
+@@ -377,11 +415,11 @@ public class ServerPackets
+ 	}
+ 
+ 	private static byte[] getBlockEntityData(BlockEntity blockEntity, FastMemoryStream ms, BinaryWriter writer)
+ 	{
+ 		ms.Reset();
+-		TreeAttribute treeAttribute = new TreeAttribute();
+-		blockEntity.ToTreeAttributes(treeAttribute);
++		// Stratum: Keep hidden slots out of chunk packets.
++		ITreeAttribute treeAttribute = StratumInventorySync.GetBlockEntityAttributes(blockEntity);
+ 		treeAttribute.ToBytes(writer);
+ 		return ms.ToArray();
+ 	}
+ }

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index 19f5199..532b495 100644
+index 19f5199..a7e814f 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -11,7 +11,56 @@ index 19f5199..532b495 100644
  using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
  using Vintagestory.Common;
-@@ -138,10 +139,11 @@ internal class ServerSystemInventory : ServerSystem
+@@ -10,18 +11,22 @@ namespace Vintagestory.Server;
+ 
+ internal class ServerSystemInventory : ServerSystem
+ {
+ 	private bool ItemFilterEnabled;
+ 
++	// Stratum: Track who is looking at a crate or sealed barrel.
++	private readonly Dictionary<string, BlockEntity> stratumInspectedContainers = new();
++
+ 	private List<InventoryBase> dirtySlots2Clear = new List<InventoryBase>();
+ 
+ 	public ServerSystemInventory(ServerMain server)
+ 		: base(server)
+ 	{
+ 		server.RegisterGameTickListener(SendDirtySlots, 30);
+ 		server.RegisterGameTickListener(OnUsingTick, 20);
+ 		server.RegisterGameTickListener(UpdateTransitionStates, 4000);
++		server.RegisterGameTickListener(StratumUpdateInspectedContainers, 100); // Stratum: Update container tooltips.
+ 		server.PacketHandlers[13] = HandleSelectedHotbarSlot;
+ 		server.PacketHandlers[7] = HandleActivateInventorySlot;
+ 		server.PacketHandlers[10] = HandleCreateItemstack;
+ 		server.PacketHandlers[8] = HandleMoveItemstack;
+ 		server.PacketHandlers[9] = HandleFlipItemStacks;
+@@ -37,10 +42,11 @@ internal class ServerSystemInventory : ServerSystem
+ 	}
+ 
+ 	public override void OnPlayerDisconnect(ServerPlayer player)
+ 	{
+ 		base.OnPlayerDisconnect(player);
++		stratumInspectedContainers.Remove(player.PlayerUID); // Stratum: Drop the saved selection on disconnect.
+ 		secureMouseSlotContents(player);
+ 		(player.InventoryManager as ServerPlayerInventoryManager)?.OnPlayerDisconnect();
+ 	}
+ 
+ 	private void secureMouseSlotContents(ServerPlayer player)
+@@ -103,11 +109,12 @@ internal class ServerSystemInventory : ServerSystem
+ 		string inventoryId = packet.InvOpenedClosed.InventoryId;
+ 		if (player.InventoryManager.GetInventory(inventoryId, out var invFound))
+ 		{
+ 			if (packet.InvOpenedClosed.Opened > 0)
+ 			{
+-				player.InventoryManager.OpenInventory(invFound);
++				// Stratum: An open acknowledgement cannot start a session.
++				if (StratumInventoryPrivacy.CanView(invFound, player)) player.InventoryManager.OpenInventory(invFound);
+ 			}
+ 			else
+ 			{
+ 				player.InventoryManager.CloseInventory(invFound);
+ 			}
+@@ -138,10 +145,11 @@ internal class ServerSystemInventory : ServerSystem
  		{
  			if (value.ConnectionState != EnumClientState.Playing)
  			{
@@ -23,7 +72,52 @@ index 19f5199..532b495 100644
  			{
  				activeHotbarSlot.Itemstack.Collectible.OnBlockBreaking(value, value.CurrentBlockSelection, activeHotbarSlot, 99f, dt, value.blockBreakingCounter);
  				value.blockBreakingCounter++;
-@@ -205,10 +207,16 @@ internal class ServerSystemInventory : ServerSystem
+@@ -180,10 +188,44 @@ internal class ServerSystemInventory : ServerSystem
+ 				value.Entity.Controls.HandUse = EnumHandInteract.None;
+ 			}
+ 		}
+ 	}
+ 
++	// Stratum: Clear private tooltip data when the player looks away.
++	private void StratumUpdateInspectedContainers(float dt)
++	{
++		if (!StratumInventoryPrivacy.InventoryGuardsEnabled)
++		{
++			stratumInspectedContainers.Clear();
++			return;
++		}
++
++		foreach (ConnectedClient client in server.Clients.Values)
++		{
++			if (!client.IsPlayingClient) continue;
++			ServerPlayer player = client.Player;
++			BlockPos pos = player.CurrentBlockSelection?.Position;
++			BlockEntity selected = pos == null ? null : server.BlockAccessor.GetBlockEntity(pos);
++			BlockEntity inspected = StratumInventorySync.CanInspect(selected, player) ? selected : null;
++			stratumInspectedContainers.TryGetValue(player.PlayerUID, out BlockEntity previous);
++			if (ReferenceEquals(previous, inspected)) continue;
++			if (previous != null && ReferenceEquals(server.BlockAccessor.GetBlockEntity(previous.Pos), previous))
++			{
++				server.SendBlockEntity(player, previous);
++			}
++			if (inspected == null)
++			{
++				stratumInspectedContainers.Remove(player.PlayerUID);
++			}
++			else
++			{
++				stratumInspectedContainers[player.PlayerUID] = inspected;
++				server.SendBlockEntity(player, inspected);
++			}
++		}
++	}
++
+ 	private void UpdateTransitionStates(float dt)
+ 	{
+ 		ItemFilterEnabled = server.api.World.Config.GetBool("itemFilterEnabled");
+ 		foreach (ConnectedClient value in server.Clients.Values)
+ 		{
+@@ -205,19 +247,26 @@ internal class ServerSystemInventory : ServerSystem
  		}
  	}
  
@@ -40,7 +134,18 @@ index 19f5199..532b495 100644
  			if (!value.IsPlayingClient)
  			{
  				continue;
-@@ -369,11 +377,13 @@ internal class ServerSystemInventory : ServerSystem
+ 			}
+ 			foreach (InventoryBase value2 in value.Player.inventoryMgr.Inventories.Values)
+ 			{
+-				if (!value2.IsDirty)
++				// Stratum: Skip viewers who have closed the inventory or lost access.
++				if (!value2.IsDirty || !StratumInventoryPrivacy.CanView(value2, value.Player))
+ 				{
+ 					continue;
+ 				}
+ 				if (value2 is InventoryCharacter)
+ 				{
+@@ -369,11 +418,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ
@@ -55,3 +160,16 @@ index 19f5199..532b495 100644
  			if (blockSelection != null)
  			{
  				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();
+@@ -494,10 +545,12 @@ internal class ServerSystemInventory : ServerSystem
+ 		player.InventoryManager.GetInventory(createItemstack.TargetInventoryId, out var invFound);
+ 		ItemSlot itemSlot = invFound?[createItemstack.TargetSlot];
+ 		if (player.WorldData.CurrentGameMode == EnumGameMode.Creative && itemSlot != null)
+ 		{
+ 			ItemStack itemStack = (itemSlot.Itemstack = StackConverter.FromPacket(createItemstack.Itemstack, server));
++			// Stratum: A creative client must not set the hidden-contents marker.
++			StratumInventoryPrivacy.StripHiddenContentsMarker(itemStack);
+ 			itemSlot.MarkDirty();
+ 			ServerMain.Logger.Audit("{0} creative mode created item stack {1}x{2}", player.PlayerName, itemStack.StackSize, itemStack.GetName());
+ 		}
+ 		else
+ 		{

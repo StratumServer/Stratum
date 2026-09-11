@@ -1,0 +1,17 @@
+diff --git a/VSSurvivalMod/BlockEntity/BEGenericTypedContainer.cs b/VSSurvivalMod/BlockEntity/BEGenericTypedContainer.cs
+index e8d9ce5..4ab0bf0 100644
+--- a/VSSurvivalMod/BlockEntity/BEGenericTypedContainer.cs
++++ b/VSSurvivalMod/BlockEntity/BEGenericTypedContainer.cs
+@@ -322,10 +322,12 @@ namespace Vintagestory.GameContent
+ 
+             //if (inventory.PutLocked && inventory.Empty) return false;
+ 
+             if (Api.World is IServerWorldAccessor)
+             {
++                // Stratum: Check access before sending the inventory.
++                if (!StratumInventoryPrivacy.CanAccess(inventory, byPlayer)) return false;
+                 var data = BlockEntityContainerOpen.ToBytes("BlockEntityInventory", DialogTitle, (byte)quantityColumns, inventory);
+                 ((ICoreServerAPI)Api).Network.SendBlockEntityPacket(
+                     (IServerPlayer)byPlayer,
+                     Pos,
+                     (int)EnumBlockContainerPacketId.OpenInventory,

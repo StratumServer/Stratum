@@ -52,6 +52,13 @@ probe_commands=(
   "/friendlyfire status"
   "/friendlyfire toggle"
   "/friendlyfire nonsense"
+  "/stratum get hardening.inventoryGuards"
+  "/stratum set hardening.inventoryGuards false"
+  "/stratum get hardening.inventoryGuards"
+  "/stratum set hardening.inventoryGuards true"
+  "/stratum timings start"
+  "/stratum timings stop"
+  "/stratum timings report"
 )
 probe_expect=(
   "No kits exist yet."
@@ -67,6 +74,13 @@ probe_expect=(
   "Group friendly fire is off, players in the same group cannot damage each other."
   "Group friendly fire enabled, players in the same group can damage each other again."
   ""
+  "Hardening.InventoryGuards:</font> true"
+  "Hardening.InventoryGuards = false (was true)"
+  "Hardening.InventoryGuards:</font> false"
+  "Hardening.InventoryGuards = true (was false)"
+  "Stratum timings started"
+  "Stratum timings stopped"
+  "Stratum Timings"
 )
 
 # Data path handling.
@@ -85,12 +99,22 @@ mkdir -p "$data_path"
 # Priority reorders them rather than the file order being echoed back, and "admin" stays a
 # bare single object so the pre-#274 shape is covered too. GamePaths.Config resolves to the
 # data path root, not a Config subfolder. Never replace a caller-supplied data path.
+#
+# Hardening.InventoryGuards is seeded explicitly false at ConfigVersion 3: this is the exact
+# shape LoadOrCreateConfig wrote to disk for every server booted before inventory privacy
+# existed (the flag defaulted false and every boot re-saved it), so it reproduces an upgraded
+# server rather than a fresh install. The version-4 migration should force it back to true;
+# the first inventoryGuards probe below asserts that, and the two checks after the probe loop
+# assert the migration ran and persisted.
 if [[ "$own_data" == "1" ]]; then
   probe_commands+=("/stratum chat")
   probe_expect+=("[Moderator][XYZ Villager]")
   cat >"$data_path/stratum.json" <<'JSON'
 {
   "ConfigVersion": 3,
+  "Hardening": {
+    "InventoryGuards": false
+  },
   "Appearance": {
     "RolePrefixes": {
       "Enabled": true,
@@ -138,6 +162,8 @@ if [[ -z "$server_bin" || ! -f "$server_bin" ]]; then
   echo "FAIL: no server binary found in $server_dir" >&2
   exit 1
 fi
+
+dotnet run --project tests/InventoryPrivacySmoke/InventoryPrivacySmoke.csproj -c Release
 
 # Pick an ephemeral port.
 if [[ "$port" == "0" ]]; then
@@ -252,6 +278,18 @@ if [[ "${SMOKE_TEST_PROBE:-1}" == "1" ]] \
       if ! grep -q '"admin": {' "$data_path/stratum.json"; then
         probe_failures+="    stratum.json rewrite reshaped the single-prefix role into an array"$'\n'
       fi
+    fi
+
+    # The seed above is a version 3 config with InventoryGuards explicitly false, matching
+    # what every server booted before inventory privacy existed has on disk. This must
+    # migrate to version 4 and force the guard back on; the first inventoryGuards probe above
+    # already exercises the runtime effect, these two confirm the migration itself ran and
+    # the config file it wrote back reflects it.
+    if ! log_contains "upgraded config from version 3 to 4"; then
+      probe_failures+="    config migration did not run on the seeded version 3 config"$'\n'
+    fi
+    if [[ -f "$data_path/stratum.json" ]] && ! grep -q '"ConfigVersion": 4' "$data_path/stratum.json"; then
+      probe_failures+="    stratum.json was not rewritten at config version 4"$'\n'
     fi
   fi
 fi

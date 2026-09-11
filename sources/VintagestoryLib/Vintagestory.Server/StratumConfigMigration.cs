@@ -5,7 +5,7 @@ namespace Vintagestory.Server;
 
 internal static class StratumConfigMigration
 {
-	public const int CurrentVersion = 3;
+	public const int CurrentVersion = 4;
 
 	public static int Upgrade(JObject main, JObject performance, bool mainExisted)
 	{
@@ -22,6 +22,10 @@ internal static class StratumConfigMigration
 		if (loadedVersion < 3)
 		{
 			UpgradeToVersion3(main, performance);
+		}
+		if (loadedVersion < 4)
+		{
+			UpgradeToVersion4(main);
 		}
 
 		main[nameof(StratumConfig.ConfigVersion)] = CurrentVersion;
@@ -85,6 +89,17 @@ internal static class StratumConfigMigration
 			Move(legacyPerformanceChat, "ExemptCommands", rateLimit, nameof(StratumChatRateLimitConfig.ExemptCommands));
 		}
 		RemoveLegacyRateLimit(chat);
+	}
+
+	private static void UpgradeToVersion4(JObject main)
+	{
+		// Stratum: InventoryGuards shipped off by default and never gated anything until
+		// the inventory-privacy fix, but LoadOrCreateConfig writes every field including
+		// defaults on every boot, so an upgraded server already has "InventoryGuards": false
+		// on disk even though no operator ever had a reason to set it. Force it on once; a
+		// deliberate false set after this migration runs is left alone.
+		JObject hardening = GetOrCreateObject(main, nameof(StratumConfig.Hardening));
+		hardening[nameof(StratumHardeningConfig.InventoryGuards)] = true;
 	}
 
 	private static void RemoveLegacyRateLimit(JObject chat)

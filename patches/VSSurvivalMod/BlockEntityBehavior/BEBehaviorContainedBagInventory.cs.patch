@@ -1,0 +1,52 @@
+diff --git a/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs b/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs
+index 84f0f1b..6b3c636 100644
+--- a/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs
++++ b/VSSurvivalMod/BlockEntityBehavior/BEBehaviorContainedBagInventory.cs
+@@ -99,10 +99,15 @@ public class BlockEntityContainedBagWorkspace
+         dialogTitleLangCode = bagBh.DialogTitleLangCode;
+         OpenSound = bagBh.OpenSound;
+         CloseSound = bagBh.CloseSound;
+ 
+         bagInv.ReloadBagInventory(wrapperInv, [bagSlot]);
++        // Stratum: a ground-stored bag takes its range from the block it is stored in.
++        wrapperInv.Pos = be.Pos;
++        // Stratum: this workspace dispatches by slot, so a server-driven close needs the same
++        // shift the dialog was opened with or it always targets BagInventories[0].
++        wrapperInv.StratumBlockEntityPacketIdOffset = slotId << BEBehaviorContainedBagInventory.PacketIdBitShift;
+         wrapperInv.Init(bagInv.Count, "blockcontainedbaginv", "blockcontainedbag-slot" + slotId + "-" + be.Pos, onNewBagSlot);
+ 
+         if (be.Api.World.Side == EnumAppSide.Server)
+         {
+             wrapperInv.SlotModified += BagInv_SlotModified;
+@@ -131,10 +136,13 @@ public class BlockEntityContainedBagWorkspace
+         inv?.Dispose();
+     }
+ 
+     public bool OpenHeldBag(IPlayer byPlayer)
+     {
++        // Stratum: check access before sending the bag inventory to a player.
++        if (!StratumInventoryPrivacy.CanAccess(be.Inventory, byPlayer)) return false;
++
+         if (be.Api.World is IServerWorldAccessor)
+         {
+             var data = BlockEntityContainerOpen.ToBytes("BlockEntityInventory", dialogTitleLangCode, 4, wrapperInv);
+             ((ICoreServerAPI)be.Api).Network.SendBlockEntityPacket(
+                 (IServerPlayer)byPlayer,
+@@ -154,10 +162,17 @@ public class BlockEntityContainedBagWorkspace
+             obj.GetCollectibleInterface<IHeldBag>() == null)
+         {
+             return;
+         }
+ 
++        // Stratum: roll back instead of acting on a slot packet from a player who has lost access.
++        if (!StratumInventoryPrivacy.CanAccess(wrapperInv, player))
++        {
++            if (packetid < 1000) wrapperInv.InvNetworkUtil.SendInventoryRollback((IServerPlayer)player, packetid, data);
++            return;
++        }
++
+         if (packetid < 1000)
+         {
+             var perms = new BlockEntity.CachedAccessPerms(this.be.Api.World, this.be.Pos, player);
+             if(!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.Use, true, "ground stored held bag"))
+             {

@@ -1,0 +1,142 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs b/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
+index 695dd63..3f66e83 100644
+--- a/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
++++ b/VintagestoryLib/Vintagestory.Common/InventoryNetworkUtil.cs
+@@ -3,10 +3,11 @@ using System.Buffers;
+ using System.Collections.Generic;
+ using System.IO;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Server;
++using Vintagestory.Server;
+ 
+ namespace Vintagestory.Common;
+ 
+ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ {
+@@ -52,10 +53,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 		HandleClientPacket(byPlayer, packetId, packet_Client);
+ 	}
+ 
+ 	public virtual void HandleClientPacket(IPlayer byPlayer, int packetId, Packet_Client packet)
+ 	{
++		// Stratum: Resyncs can leak contents too, so check access first.
++		if (!StratumInventoryPrivacy.CanView(inv, byPlayer)) return;
+ 		IWorldPlayerData worldData = byPlayer.WorldData;
+ 		switch (packetId)
+ 		{
+ 		case 7:
+ 			handleActivateInventorySlotPacket(byPlayer, packet, worldData);
+@@ -217,13 +220,28 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 			((ICoreServerAPI)Api).Network.SendArbitraryPacket(doubleUpdatePacket, (IServerPlayer)owningPlayer);
+ 		}
+ 	}
+ 
+ 	protected virtual void SendInventoryContents(IPlayer owningPlayer, string inventoryId)
++	{
++		SendInventoryContents(owningPlayer, inventoryId, false);
++	}
++
++	protected void SendInventoryContents(IPlayer owningPlayer, string inventoryId, bool force)
+ 	{
+ 		InventoryBase inventoryBase = (InventoryBase)owningPlayer.InventoryManager.GetInventory(inventoryId);
+-		if (inventoryBase != null)
++		if (inventoryBase == null) return;
++		// Stratum: A forced rollback to a player who just failed range or claim closes the
++		// window server side and lets their own inventories resync, rather than resending
++		// the whole container to someone who cannot view it.
++		if (force && StratumInventoryPrivacy.InventoryGuardsEnabled && !StratumInventoryPrivacy.CanView(inventoryBase, owningPlayer))
++		{
++			StratumInventorySync.CloseInventoryForPlayer(inventoryBase, owningPlayer as IServerPlayer);
++			return;
++		}
++		// Stratum: Ordinary updates require access; rejected client moves still need an authoritative rollback.
++		if (force || StratumInventoryPrivacy.CanView(inventoryBase, owningPlayer))
+ 		{
+ 			Packet_InventoryContents inventoryContents = (inventoryBase.InvNetworkUtil as InventoryNetworkUtil).ToPacket(owningPlayer);
+ 			Packet_Server packet = new Packet_Server
+ 			{
+ 				Id = 30,
+@@ -244,18 +262,20 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 		}
+ 		finally
+ 		{
+ 			ArrayPool<byte>.Shared.Return(array);
+ 		}
++		// Stratum: a rejected move or flip needs an authoritative rollback regardless of
++		// CanView, so both ends go through SendInventoryContents with force: true.
+ 		switch (packetId)
+ 		{
+ 		case 7:
+-			SendInventoryContents(byPlayer, inv.InventoryID);
++			SendInventoryContents(byPlayer, inv.InventoryID, true);
+ 			break;
+ 		case 8:
+-			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.SourceInventoryId);
+-			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.TargetInventoryId);
++			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.SourceInventoryId, true);
++			SendInventoryContents(byPlayer, packet_Client.MoveItemstack.TargetInventoryId, true);
+ 			break;
+ 		case 9:
+ 		{
+ 			Packet_FlipItemstacks flipitemstacks = packet_Client.Flipitemstacks;
+ 			string[] invIds = new string[2] { flipitemstacks.SourceInventoryId, flipitemstacks.TargetInventoryId };
+@@ -266,20 +286,41 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 		}
+ 	}
+ 
+ 	protected virtual void NotifyPlayersItemstackMoved(IPlayer player, string[] invIds, int[] slotIds)
+ 	{
+-		Packet_Server doubleUpdatePacket = getDoubleUpdatePacket(player, invIds, slotIds);
+-		((ICoreServerAPI)Api).Network.BroadcastArbitraryPacket(doubleUpdatePacket, (IServerPlayer)player);
++		if (!StratumInventoryPrivacy.InventoryGuardsEnabled)
++		{
++			Packet_Server doubleUpdatePacket = getDoubleUpdatePacket(player, invIds, slotIds);
++			((ICoreServerAPI)Api).Network.BroadcastArbitraryPacket(doubleUpdatePacket, (IServerPlayer)player);
++			return;
++		}
++
++		// Stratum: Send swaps only to players with the inventory open.
++		for (int i = 0; i < invIds.Length; i++)
++		{
++			if (player.InventoryManager.GetInventory(invIds[i]) is InventoryBase inventory)
++			{
++				StratumInventorySync.NotifySlotViewers(player, inventory, slotIds[i]);
++			}
++		}
+ 	}
+ 
+ 	public static Packet_Server getDoubleUpdatePacket(IPlayer player, string[] invIds, int[] slotIds)
+ 	{
+ 		IInventory inventory = player.InventoryManager.GetInventory(invIds[0]);
+ 		IInventory inventory2 = player.InventoryManager.GetInventory(invIds[1]);
+-		ItemStack itemstack = inventory[slotIds[0]].Itemstack;
+-		ItemStack itemstack2 = inventory2[slotIds[1]].Itemstack;
++		// Stratum: Rejected swaps can refer to slots the player can no longer access.
++		ItemStack itemstack = inventory?[slotIds[0]]?.Itemstack;
++		ItemStack itemstack2 = inventory2?[slotIds[1]]?.Itemstack;
++		// Stratum: This rollback goes to the owning player, and invIds[0] is usually their
++		// own inventory, so only filter the side they cannot view.
++		if (StratumInventoryPrivacy.InventoryGuardsEnabled)
++		{
++			if (!StratumInventoryPrivacy.CanView(inventory as InventoryBase, player)) itemstack = StratumInventoryPrivacy.GetPublicStack(itemstack);
++			if (!StratumInventoryPrivacy.CanView(inventory2 as InventoryBase, player)) itemstack2 = StratumInventoryPrivacy.GetPublicStack(itemstack2);
++		}
+ 		Packet_InventoryDoubleUpdate inventoryDoubleUpdate = new Packet_InventoryDoubleUpdate
+ 		{
+ 			ClientId = player.ClientId,
+ 			InventoryId1 = invIds[0],
+ 			InventoryId2 = invIds[1],
+@@ -338,10 +379,12 @@ public class InventoryNetworkUtil : IInventoryNetworkUtil
+ 		return packet_InventoryContents;
+ 	}
+ 
+ 	public virtual Packet_Server getSlotUpdatePacket(IPlayer player, int slotId)
+ 	{
++		// Stratum: Check access before sending slot updates.
++		if (!StratumInventoryPrivacy.CanView(inv, player)) return null;
+ 		ItemSlot itemSlot = inv[slotId];
+ 		if (itemSlot == null)
+ 		{
+ 			return null;
+ 		}
