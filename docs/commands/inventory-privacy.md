@@ -17,6 +17,16 @@ contents from entity updates. It also applies to attached and contained
 inventories. Bags attached to an entity use the live entity's interaction range
 without a claim test; bags contained in a block use the block position, range,
 and claim checks; and a player's own inventories are checked by ownership.
-Firepit contents stay public because they are rendered as part of the block's
-world display. Other custom containers hide their contents unless they explicitly
-select display slots.
+
+Real storage, meaning openable containers such as chests and barrels, hides its
+contents entirely until a player opens it. Display blocks keep their whole
+tree, since the client rebuilds the block mesh from it: shelves, display
+cases, and the other blocks that render their own contents show what is in
+them. A few block types keep a fixed subset instead of the whole tree, because
+those slots are what the world renders: a firepit keeps its fuel, input, and
+output slots; a quern keeps its input slot; an unsealed barrel keeps its two
+visible slots and a sealed one keeps none; a crate keeps the one stack it
+renders on its model, or none with the lid closed. A custom block entity
+container that does not derive from one of these keeps its contents public
+unless it derives from the openable-container base or opts into display
+slots itself.

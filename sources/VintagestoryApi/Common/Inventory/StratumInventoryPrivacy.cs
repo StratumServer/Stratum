@@ -18,10 +18,13 @@ public static class StratumInventoryPrivacy
 		if (!inventory.CanPlayerAccess(player, player.Entity.Pos)) return false;
 		// An inventory carried by an entity takes its range from the live entity, the
 		// way vanilla checks entity interaction, with no land claim test.
+		// Stratum: registration is checked by CanView. CanAccess runs before
+		// OpenInventory on the open path (CollectibleBehaviorHeldBag.OnInteract), so it
+		// cannot also require the inventory to already be registered, or an unopened bag
+		// can never be opened.
 		if (inventory.StratumRangeEntity is Entity rangeEntity)
 		{
-			return ReferenceEquals(player.InventoryManager.GetInventory(inventory.InventoryID), inventory)
-				&& rangeEntity.Pos.Dimension == player.Entity.Pos.Dimension
+			return rangeEntity.Pos.Dimension == player.Entity.Pos.Dimension
 				&& player.IsInInteractionRangeOf(rangeEntity);
 		}
 		if (inventory.Pos == null)
@@ -121,9 +124,10 @@ public static class StratumInventoryPrivacy
 		var filtered = new TreeAttribute();
 		foreach (var entry in inventory)
 		{
-			// Keep Quantities (crate stack sizes needed for rendering the visible stack);
-			// drop only PlayerQuantities, the per-player looter UID map.
-			if (entry.Key is not ("slots" or "PlayerQuantities")) filtered[entry.Key] = entry.Value;
+			// Quantities and PlayerQuantities are both written only by InventoryPerPlayer
+			// (story loot chests): per-slot loot counts and the per-player looter UID map
+			// for slots this viewer has not opened. Drop both.
+			if (entry.Key is not ("slots" or "Quantities" or "PlayerQuantities")) filtered[entry.Key] = entry.Value;
 		}
 		filtered["slots"] = visible;
 		tree["inventory"] = filtered;

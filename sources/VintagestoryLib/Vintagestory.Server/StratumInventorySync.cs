@@ -196,7 +196,10 @@ internal static class StratumInventorySync
 		player.InventoryManager.CloseInventory(inventory);
 		if (inventory.Pos != null && inventory.Api is ICoreServerAPI sapi)
 		{
-			sapi.Network.SendBlockEntityPacket(player, inventory.Pos, (int)EnumBlockEntityPacketId.Close);
+			// Stratum: some block entities (ground-stored bags) dispatch by slot; carry the
+			// same offset the dialog opened with so the close lands on the right sub-dialog.
+			sapi.Network.SendBlockEntityPacket(player, inventory.Pos,
+				(int)EnumBlockEntityPacketId.Close + inventory.StratumBlockEntityPacketIdOffset);
 		}
 	}
 }

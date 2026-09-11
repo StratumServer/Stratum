@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/BlockEntity/BEContainer.cs b/VSSurvivalMod/BlockEntity/BEContainer.cs
-index 4bfb9e9..2d51a4b 100644
+index 4bfb9e9..fa05c63 100644
 --- a/VSSurvivalMod/BlockEntity/BEContainer.cs
 +++ b/VSSurvivalMod/BlockEntity/BEContainer.cs
 @@ -10,11 +10,12 @@ using Vintagestory.API.Server;
@@ -61,7 +61,7 @@ index 4bfb9e9..2d51a4b 100644
          {
              List<ItemStack> stacklist = new List<ItemStack>();
              foreach (var slot in Inventory)
-@@ -119,10 +137,51 @@ namespace Vintagestory.GameContent
+@@ -119,10 +137,56 @@ namespace Vintagestory.GameContent
              base.ToTreeAttributes(tree);
              container.ToTreeAttributes(tree);
          }
@@ -92,14 +92,19 @@ index 4bfb9e9..2d51a4b 100644
 +            }
 +            if (this is BlockEntityCrate crate)
 +            {
-+                ItemSlot first = Inventory.FirstNonEmptySlot;
-+                if (crate.LidState == "closed" || first == null)
++                // Stratum: an empty crate with an open preferred lid state is not a closed
++                // crate (LidState falls back to preferredLidState when Inventory.Empty). Only
++                // a genuinely closed LidState should force the lid shut here, otherwise the
++                // owner's own inspection swap makes the lid follow the crosshair as
++                // StratumUpdateInspectedContainers alternates the full and public trees.
++                if (crate.LidState == "closed")
 +                {
 +                    StratumInventoryPrivacy.KeepDisplaySlots(tree, []);
 +                    tree.SetString("lidState", "closed");
 +                    return;
 +                }
-+                StratumInventoryPrivacy.KeepDisplaySlots(tree, [Inventory.GetSlotId(first)]);
++                ItemSlot first = Inventory.FirstNonEmptySlot;
++                StratumInventoryPrivacy.KeepDisplaySlots(tree, first == null ? [] : [Inventory.GetSlotId(first)]);
 +                return;
 +            }
 +            if (this is BlockEntityOpenableContainer)
