@@ -7,15 +7,10 @@ using Vintagestory.API.MathTools;
 
 namespace Vintagestory.API.Common;
 
-// Stratum: IPlayer declares IsInInteractionRangeOf(BlockPos, float) as an internal interface
-// member, so only a type inside this assembly can implement IPlayer at all; the
-// InventoryPrivacySmoke test project references this assembly but cannot satisfy that member
-// from outside it (confirmed: the compiler rejects an external class that implements IPlayer
-// even when it never calls that overload). These two classes exist solely so that test project
-// can exercise StratumInventoryPrivacy.CanAccess and CanView against a real IPlayer instead of
-// re-deriving their logic. Nothing in runtime code constructs them. Every member the two
-// methods under test do not touch throws on purpose, so an accidental new dependency on this
-// double shows up as a test failure instead of a silently wrong default.
+// These doubles stay in the smoke-test assembly so they cannot become part of the
+// VintagestoryAPI.dll or a mod's public API. The API assembly grants this test assembly
+// access to IPlayer's internal BlockPos range member; every unused member throws so a
+// production dependency accidentally added to the code under test fails loudly.
 public sealed class StratumTestPlayer : IPlayer
 {
 	private readonly string playerUID;
@@ -23,6 +18,7 @@ public sealed class StratumTestPlayer : IPlayer
 	private readonly IPlayerInventoryManager inventoryManager;
 
 	public bool StratumInRange = true;
+	public Entity StratumRangeEntity = null!;
 
 	public StratumTestPlayer(string playerUID, EntityPlayer entity, IPlayerInventoryManager inventoryManager)
 	{
@@ -34,9 +30,7 @@ public sealed class StratumTestPlayer : IPlayer
 	public string PlayerUID => playerUID;
 	public EntityPlayer Entity => entity;
 	public IPlayerInventoryManager InventoryManager => inventoryManager;
-	public bool IsInInteractionRangeOf(Entity entity, float slack = .25f) => StratumInRange;
-	// Stratum: internal on the interface (see the file header); only a type inside this
-	// assembly can even write this signature. Nothing under test calls the BlockPos overload.
+	public bool IsInInteractionRangeOf(Entity rangeEntity, float slack = .25f) => StratumInRange && ReferenceEquals(rangeEntity, StratumRangeEntity);
 	bool IPlayer.IsInInteractionRangeOf(BlockPos blockPos, float slack) => throw new NotSupportedException();
 
 	public IPlayerRole Role { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
@@ -54,11 +48,11 @@ public sealed class StratumTestPlayer : IPlayer
 	public bool HasPrivilege(string privilegeCode) => throw new NotSupportedException();
 }
 
-// Stratum: see StratumTestPlayer. Only GetInventory(string) is implemented; that is the one
-// member StratumInventoryPrivacy.CanAccess and CanView call on IPlayer.InventoryManager.
+// Only GetInventory(string) is implemented because it is the member exercised by
+// StratumInventoryPrivacy.CanAccess and CanView.
 public sealed class StratumTestInventoryManager : IPlayerInventoryManager
 {
-	public IInventory StratumRegisteredInventory;
+	public IInventory StratumRegisteredInventory = null!;
 
 	public IInventory GetInventory(string inventoryId) => StratumRegisteredInventory;
 
@@ -80,7 +74,7 @@ public sealed class StratumTestInventoryManager : IPlayerInventoryManager
 	public bool GetInventory(string invID, [MaybeNullWhen(false)] out InventoryBase invFound) => throw new NotSupportedException();
 	public ItemStack GetHotbarItemstack(int slotId) => throw new NotSupportedException();
 	public IInventory GetHotbarInventory() => throw new NotSupportedException();
-	public ItemSlot GetBestSuitedSlot(ItemSlot sourceSlot, bool onlyPlayerInventory, ItemStackMoveOperation op = null, List<ItemSlot> skipSlots = null) => throw new NotSupportedException();
+	public ItemSlot GetBestSuitedSlot(ItemSlot sourceSlot, bool onlyPlayerInventory, ItemStackMoveOperation op = null!, List<ItemSlot> skipSlots = null!) => throw new NotSupportedException();
 	public ItemSlot GetBestSuitedSlot(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots) => throw new NotSupportedException();
 	public object[] TryTransferAway(ItemSlot sourceSlot, ref ItemStackMoveOperation op, bool onlyPlayerInventory, bool slotNotifyEffect = false) => throw new NotSupportedException();
 	public object[] TryTransferAway(ItemSlot sourceSlot, ref ItemStackMoveOperation op, bool onlyPlayerInventory, StringBuilder shiftClickDebugText, bool slotNotifyEffect = false) => throw new NotSupportedException();
@@ -89,10 +83,6 @@ public sealed class StratumTestInventoryManager : IPlayerInventoryManager
 	public object OpenInventory(IInventory inventory) => throw new NotSupportedException();
 	public object CloseInventory(IInventory inventory) => throw new NotSupportedException();
 	public void CloseInventoryAndSync(IInventory inventory) => throw new NotSupportedException();
-	// Stratum: System.Func, spelled out. Vintagestory.API.Common.Delegates declares its own
-	// single-arg Func<T1, TResult> delegate, which would otherwise shadow System.Func here
-	// since this file is in the same namespace (the interface source has the same
-	// qualification for the same reason).
 	public bool Find(System.Func<ItemSlot, bool> matcher) => throw new NotSupportedException();
 	public bool HasInventory(IInventory inventory) => throw new NotSupportedException();
 	public void DiscardAll() => throw new NotSupportedException();

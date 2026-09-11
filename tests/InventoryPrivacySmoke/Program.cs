@@ -64,14 +64,18 @@ Check(!displayInventory.HasAttribute("Quantities"), "loot quantities must not le
 	var bagInventory = new InventoryGeneric(2, "mountedbaginv", "test", null) { StratumRangeEntity = mount };
 	var testInventoryManager = new StratumTestInventoryManager();
 	var testPlayer = new StratumTestPlayer("rider-uid", rider, testInventoryManager);
+	testPlayer.StratumRangeEntity = mount;
 
 	// Row 1: in range, not yet registered. This is the open path, and the regression: the
 	// server must be able to grant access before OpenInventory puts the wrapper in
 	// InventoryManager.Inventories, or the bag can never be opened at all.
-	testInventoryManager.StratumRegisteredInventory = null;
+	testInventoryManager.StratumRegisteredInventory = null!;
 	testPlayer.StratumInRange = true;
 	Check(StratumInventoryPrivacy.CanAccess(bagInventory, testPlayer), "an unregistered mount bag in range must be accessible so it can be opened");
 	Check(!StratumInventoryPrivacy.CanView(bagInventory, testPlayer), "CanView still requires HasOpened even when CanAccess is true");
+	bagInventory.openedByPlayerGUIds.Add(testPlayer.PlayerUID);
+	Check(!StratumInventoryPrivacy.CanView(bagInventory, testPlayer), "an opened mount bag must still be registered before it can be viewed");
+	bagInventory.openedByPlayerGUIds.Remove(testPlayer.PlayerUID);
 
 	// Row 2: in range, registered, and opened. The ordinary post-open state.
 	testInventoryManager.StratumRegisteredInventory = bagInventory;
@@ -85,6 +89,12 @@ Check(!displayInventory.HasAttribute("Quantities"), "loot quantities must not le
 	Check(!StratumInventoryPrivacy.CanView(bagInventory, testPlayer), "an out-of-range mount bag must not be viewable");
 	testPlayer.StratumInRange = true;
 
+	// A different entity in the same dimension must not pass because the test double ignores
+	// the entity argument. This keeps the range check tied to the live inventory owner.
+	var unrelatedMount = new EntityPlayer();
+	var wrongEntityInventory = new InventoryGeneric(2, "mountedbaginv", "wrong-entity", null) { StratumRangeEntity = unrelatedMount };
+	Check(!StratumInventoryPrivacy.CanAccess(wrongEntityInventory, testPlayer), "range checks must use the inventory's live entity");
+
 	// Row 4: registered and opened, but the mount is in a different dimension.
 	var crossDimensionInventory = new InventoryGeneric(2, "mountedbaginv", "otherdim", null) { StratumRangeEntity = otherDimension };
 	testInventoryManager.StratumRegisteredInventory = crossDimensionInventory;
@@ -96,7 +106,7 @@ Check(!displayInventory.HasAttribute("Quantities"), "loot quantities must not le
 	// ownership) still requires registration. This pins that the entity-branch fix did not
 	// loosen the ownership branch it sits next to.
 	var ownInventory = new InventoryGeneric(2, "characterinv", "test", null);
-	testInventoryManager.StratumRegisteredInventory = null;
+	testInventoryManager.StratumRegisteredInventory = null!;
 	Check(!StratumInventoryPrivacy.CanAccess(ownInventory, testPlayer), "an unregistered own inventory must still require registration");
 }
 
