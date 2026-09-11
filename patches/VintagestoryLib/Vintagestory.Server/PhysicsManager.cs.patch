@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
-index 2c2605d..3941bd6 100644
+index 2c2605d..37c418f 100644
 --- a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 +++ b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 @@ -1,6 +1,7 @@
@@ -131,7 +131,7 @@ index 2c2605d..3941bd6 100644
 +		int stratumPhysicsMaxThreads = StratumRuntime.Config.Performance.Physics.MaxThreadsOverride;
 +		int baseMaxPhysicsThreads;
 +		if (stratumPhysicsMaxThreads > 0)
- 		{
++		{
 +			// Explicit override wins -- ignore both MagicNum (which is 1) and ReducedServerThreads.
 +			baseMaxPhysicsThreads = stratumPhysicsMaxThreads;
 +		}
@@ -145,7 +145,7 @@ index 2c2605d..3941bd6 100644
 +		}
 +		maxPhysicsThreads = Math.Clamp(baseMaxPhysicsThreads, 1, 8);
 +		if (sapi.Server.ReducedServerThreads && stratumPhysicsMaxThreads <= 0)
-+		{
+ 		{
 +			// Honour --reducedthreads only when there's no explicit Stratum override.
  			maxPhysicsThreads = 1;
  		}
@@ -423,7 +423,7 @@ index 2c2605d..3941bd6 100644
  		double y = pos.Y;
  		double z = pos.Z;
  		double num = double.MaxValue;
-@@ -536,10 +733,15 @@ public class PhysicsManager : LoadBalancedTask
+@@ -536,10 +733,24 @@ public class PhysicsManager : LoadBalancedTask
  		List<long> list2 = alreadyTracked;
  		list2.EnsureCapacity(trackedEntities.Count);
  		List<Entity> list3 = newlyTracked;
@@ -431,6 +431,15 @@ index 2c2605d..3941bd6 100644
  		{
 +			if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
 +			{
++				if (trackedEntities.Remove(item.EntityId))
++				{
++					client.entitiesNowOutOfRange.Add(new EntityDespawn
++					{
++						ForClientId = client.Id,
++						DespawnData = outofRangeDespawnData,
++						EntityId = item.EntityId
++					});
++				}
 +				continue;
 +			}
 +
@@ -439,7 +448,7 @@ index 2c2605d..3941bd6 100644
  			{
  				list2.Add(entityId);
  			}
-@@ -550,10 +752,15 @@ public class PhysicsManager : LoadBalancedTask
+@@ -550,10 +761,24 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		for (int i = 1; i < threadCount; i++)
  		{
@@ -447,6 +456,15 @@ index 2c2605d..3941bd6 100644
  			{
 +				if (StratumStaffCommandState.ShouldHideEntityFromClient(item2, client))
 +				{
++					if (trackedEntities.Remove(item2.EntityId))
++					{
++						client.entitiesNowOutOfRange.Add(new EntityDespawn
++						{
++							ForClientId = client.Id,
++							DespawnData = outofRangeDespawnData,
++							EntityId = item2.EntityId
++						});
++					}
 +					continue;
 +				}
 +
@@ -455,7 +473,7 @@ index 2c2605d..3941bd6 100644
  				{
  					list2.Add(entityId);
  				}
-@@ -563,19 +770,40 @@ public class PhysicsManager : LoadBalancedTask
+@@ -563,19 +788,51 @@ public class PhysicsManager : LoadBalancedTask
  				}
  				list.Add(item2);
  			}
@@ -471,6 +489,17 @@ index 2c2605d..3941bd6 100644
  		{
 +			if (server.LoadedEntities.TryGetValue(item3, out Entity trackedEntity) && !trackedEntity.ShouldDespawn)
 +			{
++				if (StratumStaffCommandState.ShouldHideEntityFromClient(trackedEntity, client))
++				{
++					client.entitiesNowOutOfRange.Add(new EntityDespawn
++					{
++						ForClientId = client.Id,
++						DespawnData = outofRangeDespawnData,
++						EntityId = item3
++					});
++					continue;
++				}
++
 +				EntityPos epos = trackedEntity.Pos;
 +				double dx = epos.X - clientX;
 +				double dy = epos.Y - clientY;
@@ -496,7 +525,7 @@ index 2c2605d..3941bd6 100644
  		list2.Clear();
  		foreach (Entity item4 in list3)
  		{
-@@ -593,61 +821,160 @@ public class PhysicsManager : LoadBalancedTask
+@@ -593,61 +850,165 @@ public class PhysicsManager : LoadBalancedTask
  		list3.Clear();
  	}
  
@@ -530,11 +559,14 @@ index 2c2605d..3941bd6 100644
  				{
 -					list.Clear();
 -					if (fastMemoryStream == null)
--					{
--						fastMemoryStream = new FastMemoryStream();
--					}
--					foreach (EntityInRange item in client.entitiesNowInRange)
 +					Entity entity = item.Entity;
++					if (StratumStaffCommandState.ShouldHideEntityFromClient(entity, client))
+ 					{
+-						fastMemoryStream = new FastMemoryStream();
++						continue;
+ 					}
+-					foreach (EntityInRange item in client.entitiesNowInRange)
++
 +					if (entity is EntityPlayer entityPlayer)
  					{
 -						Entity entity = item.Entity;
@@ -683,7 +715,29 @@ index 2c2605d..3941bd6 100644
  	public void GatherUpdatePacketsFromAllThreads()
  	{
  		Dictionary<long, Packet_EntityAttributes> dict = entitiesFullUpdate[0];
-@@ -728,18 +1055,62 @@ public class PhysicsManager : LoadBalancedTask
+@@ -680,13 +1041,18 @@ public class PhysicsManager : LoadBalancedTask
+ 			list3.Clear();
+ 			try
+ 			{
+ 				try
+ 				{
+-					foreach (Entity item in client.threadedTrackedEntities[0])
+-					{
+-						long entityId = item.EntityId;
++						foreach (Entity item in client.threadedTrackedEntities[0])
++						{
++							if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
++							{
++								continue;
++							}
++
++							long entityId = item.EntityId;
+ 						if (dictionary.TryGetValue(entityId, out var value))
+ 						{
+ 							list.Add(value);
+ 						}
+ 						if (dictionary2.TryGetValue(entityId, out var value2))
+@@ -728,18 +1094,62 @@ public class PhysicsManager : LoadBalancedTask
  	{
  		if (entity is EntityPlayer)
  		{
@@ -748,7 +802,7 @@ index 2c2605d..3941bd6 100644
  			if (entityAgent != null)
  			{
  				entityAgent.Controls.Dirty = false;
-@@ -747,10 +1118,106 @@ public class PhysicsManager : LoadBalancedTask
+@@ -747,10 +1157,106 @@ public class PhysicsManager : LoadBalancedTask
  			entity.tagsDirty = false;
  		}
  		CompletePositionUpdate(entity);
@@ -855,7 +909,7 @@ index 2c2605d..3941bd6 100644
  		EntityTagPacket result = null;
  		SyncedTreeAttribute watchedAttributes = entity.WatchedAttributes;
  		if (watchedAttributes.AllDirty)
-@@ -779,16 +1246,66 @@ public class PhysicsManager : LoadBalancedTask
+@@ -779,82 +1285,226 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		watchedAttributes.MarkClean();
  		return result;
@@ -925,17 +979,24 @@ index 2c2605d..3941bd6 100644
  			list.Clear();
  			list2.Clear();
  			list3.Clear();
-@@ -796,65 +1313,145 @@ public class PhysicsManager : LoadBalancedTask
+ 			if (stateUpdateTick)
  			{
  				List<Entity> list4 = client.threadedTrackedEntities[zeroBasedThreadNum];
- 				foreach (Entity item in list4)
- 				{
- 					long entityId = item.EntityId;
+-				foreach (Entity item in list4)
+-				{
+-					long entityId = item.EntityId;
 -					if (entityPositionPackets.TryGetValue(entityId, out var value))
--					{
++					foreach (Entity item in list4)
+ 					{
 -						list.Add(value);
 -					}
 -					if (entityAnimPackets.TryGetValue(entityId, out var value2))
++						if (StratumStaffCommandState.ShouldHideEntityFromClient(item, client))
++						{
++							continue;
++						}
++
++						long entityId = item.EntityId;
 +					if (hasAnimationPackets && entityAnimPackets.TryGetValue(entityId, out var value2))
  					{
  						list2.Add(value2);
@@ -960,9 +1021,10 @@ index 2c2605d..3941bd6 100644
 +				// ~N tracked entities per client doing expensive dict lookups with ~25% hit rate.
 +				if (hasPositionPackets)
 +				{
-+					foreach (KeyValuePair<long, Packet_EntityPosition> kvp in entityPositionPackets)
-+					{
-+						if (client.TrackedEntities.Contains(kvp.Key))
++						foreach (KeyValuePair<long, Packet_EntityPosition> kvp in entityPositionPackets)
++						{
++							if (client.TrackedEntities.Contains(kvp.Key)
++								&& (!server.LoadedEntities.TryGetValue(kvp.Key, out Entity entity) || !StratumStaffCommandState.ShouldHideEntityFromClient(entity, client)))
 +						{
 +							list.Add(kvp.Value);
 +						}
@@ -991,19 +1053,22 @@ index 2c2605d..3941bd6 100644
 +					foreach (KeyValuePair<long, Packet_EntityPosition> kvp in entityPositionPackets)
  					{
 -						list.Add(value5);
-+						if (client.TrackedEntities.Contains(kvp.Key))
++						if (client.TrackedEntities.Contains(kvp.Key)
++							&& (!server.LoadedEntities.TryGetValue(kvp.Key, out Entity entity) || !StratumStaffCommandState.ShouldHideEntityFromClient(entity, client)))
 +						{
 +							list.Add(kvp.Value);
 +						}
  					}
 -					if (entityAnimPackets.TryGetValue(trackedEntity, out var value6))
+-					{
+-						list2.Add(value6);
 +				}
 +				if (hasAnimationPackets)
 +				{
-+					foreach (KeyValuePair<long, AnimationPacket> kvp in entityAnimPackets)
- 					{
--						list2.Add(value6);
-+						if (client.TrackedEntities.Contains(kvp.Key))
++						foreach (KeyValuePair<long, AnimationPacket> kvp in entityAnimPackets)
++						{
++							if (client.TrackedEntities.Contains(kvp.Key)
++								&& (!server.LoadedEntities.TryGetValue(kvp.Key, out Entity entity) || !StratumStaffCommandState.ShouldHideEntityFromClient(entity, client)))
 +						{
 +							list2.Add(kvp.Value);
 +						}
@@ -1015,6 +1080,12 @@ index 2c2605d..3941bd6 100644
 +					foreach (long trackedEntity in client.TrackedEntities)
  					{
 -						list3.Add(value7);
++						if (server.LoadedEntities.TryGetValue(trackedEntity, out Entity entity)
++							&& StratumStaffCommandState.ShouldHideEntityFromClient(entity, client))
++						{
++							continue;
++						}
++
 +						if (concurrentDictionary.TryGetValue(trackedEntity, out var value7))
 +						{
 +							list3.Add(value7);
@@ -1090,7 +1161,7 @@ index 2c2605d..3941bd6 100644
  			if (list2.Count > 0)
  			{
  				BulkAnimationPacket message = new BulkAnimationPacket
-@@ -872,35 +1469,65 @@ public class PhysicsManager : LoadBalancedTask
+@@ -872,35 +1522,65 @@ public class PhysicsManager : LoadBalancedTask
  				AnimationsAndTagsChannel.SendPacket(item2, client.Player);
  			}
  		}
@@ -1158,7 +1229,7 @@ index 2c2605d..3941bd6 100644
  					flag = true;
  				}
  			}
-@@ -990,11 +1617,14 @@ public class PhysicsManager : LoadBalancedTask
+@@ -990,11 +1670,14 @@ public class PhysicsManager : LoadBalancedTask
  		return ServerPackets.getEntityPositionPacket(entity.Pos, entity, 1);
  	}
  
@@ -1174,7 +1245,23 @@ index 2c2605d..3941bd6 100644
  		{
  			Id = 80,
  			EntityPosition = entityPosition
-@@ -1026,16 +1656,29 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1007,10 +1690,15 @@ public class PhysicsManager : LoadBalancedTask
+ 			if (client.State.ConnectedOrPlaying() && client.Entityplayer != null)
+ 			{
+ 				EntityPos pos2 = client.Entityplayer.Pos;
+ 				if (pos.InRangeOf(pos2, squareDistance))
+ 				{
++					if (StratumStaffCommandState.ShouldHideEntityFromClient(entity, client))
++					{
++						continue;
++					}
++
+ 					client.TrackedEntities.Add(entity.EntityId);
+ 					server.SendPacket(client.Id, entitySpawnPacket);
+ 					server.SendPacket(client.Id, packet);
+ 				}
+ 			}
+@@ -1026,16 +1714,29 @@ public class PhysicsManager : LoadBalancedTask
  		if (threadNumber == 0)
  		{
  			threadNumber = 1;
@@ -1187,8 +1274,7 @@ index 2c2605d..3941bd6 100644
 +		int num3;
 +		int num4;
 +		if (StratumRuntime.Config.Performance.Physics.EvenThreadPartition && num > 1)
- 		{
--			num3 = 0;
++		{
 +			// Stratum: even partition across threads (vanilla overloads thread 1).
 +			int chunk = (count + num - 1) / num;
 +			num3 = (threadNumber - 1) * chunk;
@@ -1196,7 +1282,8 @@ index 2c2605d..3941bd6 100644
 +			if (num3 > count) num3 = count;
 +		}
 +		else
-+		{
+ 		{
+-			num3 = 0;
 +			int num2 = 480;
 +			num3 = num2 + (count - num2) * (threadNumber - 1) / num;
 +			num4 = num2 + (count - num2) * threadNumber / num;
@@ -1209,7 +1296,7 @@ index 2c2605d..3941bd6 100644
  		Dictionary<long, AnimationPacket> dictionary2 = entitiesAnimPackets[threadNumber - 1];
  		dictionary.Clear();
  		dictionary2.Clear();
-@@ -1097,10 +1740,19 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1097,10 +1798,19 @@ public class PhysicsManager : LoadBalancedTask
  		try
  		{
  			int num5 = -1;
@@ -1229,7 +1316,7 @@ index 2c2605d..3941bd6 100644
  				int num6 = (ticksToDo - num5 + 1) % 2;
  				num5 += num6;
  				bool flag2 = num5 == ticksToDo - 1;
-@@ -1108,20 +1760,113 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1108,20 +1818,113 @@ public class PhysicsManager : LoadBalancedTask
  				bool forceUpdate = (num5 + currentTick) % 30 <= num6;
  				for (int j = num3; j < num4; j++)
  				{
@@ -1346,7 +1433,7 @@ index 2c2605d..3941bd6 100644
  						{
  							entity.PositionTicked = true;
  						}
-@@ -1196,49 +1941,153 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1196,49 +1999,153 @@ public class PhysicsManager : LoadBalancedTask
  		if (doBuildAttributes)
  		{
  			eFullUpdate = entitiesFullUpdate[0];
@@ -1507,7 +1594,7 @@ index 2c2605d..3941bd6 100644
  			SendPositionsAndAnimations(dictionary, dictionary2, 0, doBuildAttributes);
  		}
  		dictionary.Clear();
-@@ -1262,11 +2111,25 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1262,11 +2169,25 @@ public class PhysicsManager : LoadBalancedTask
  
  	public void StartWorkerThread(int threadNum)
  	{

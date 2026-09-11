@@ -1,3 +1,4 @@
+using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 
 namespace Vintagestory.Server;
@@ -49,6 +50,12 @@ internal static class StratumPlayerPrivacy
 
 	private static bool? AllowMapPinDisclosure(IServerPlayer sender, IServerPlayer receiver)
 	{
+		if (sender?.WorldData?.CurrentGameMode == EnumGameMode.Spectator
+			&& receiver != null && sender.PlayerUID != receiver.PlayerUID)
+		{
+			return false;
+		}
+
 		// Vanish hides the map pin too, independent of the Enabled/HideMapPins config below:
 		// a vanished player is meant to disappear entirely, not just off the entity tracker.
 		// Mirrors the /near and entity-visibility rule exactly (see StratumStaffCommandState),

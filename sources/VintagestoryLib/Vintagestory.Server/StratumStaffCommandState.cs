@@ -14,6 +14,8 @@ internal static class StratumStaffCommandState
 
 	public const string LastSeenStateKey = "stratum.lastSeenState";
 
+	public const string VanishStateKey = "stratum.vanishEnabled";
+
 	private static readonly Dictionary<string, EntityPos> BackPositions = new Dictionary<string, EntityPos>(StringComparer.Ordinal);
 
 	private static readonly HashSet<string> VanishedPlayerUids = new HashSet<string>(StringComparer.Ordinal);
@@ -84,14 +86,57 @@ internal static class StratumStaffCommandState
 		return !string.IsNullOrWhiteSpace(playerUid) && VanishedPlayerUids.Contains(playerUid);
 	}
 
-	public static bool SetVanished(IServerPlayer player, bool vanished)
+	public static bool SetVanished(ServerMain server, IServerPlayer player, bool vanished)
 	{
 		if (player == null || string.IsNullOrWhiteSpace(player.PlayerUID))
 		{
 			return false;
 		}
 
-		return vanished ? VanishedPlayerUids.Add(player.PlayerUID) : VanishedPlayerUids.Remove(player.PlayerUID);
+		bool changed = vanished ? VanishedPlayerUids.Add(player.PlayerUID) : VanishedPlayerUids.Remove(player.PlayerUID);
+		PersistVanishedState(server, player, vanished);
+		return changed;
+	}
+
+	public static void RestoreVanishedState(ServerMain server, IServerPlayer player)
+	{
+		if (server == null || player == null || string.IsNullOrWhiteSpace(player.PlayerUID))
+		{
+			return;
+		}
+
+		ServerPlayerData data = server.PlayerDataManager.GetOrCreateServerPlayerData(player.PlayerUID, player.PlayerName);
+		if (data.CustomPlayerData == null || !data.CustomPlayerData.TryGetValue(VanishStateKey, out string raw)
+			|| !bool.TryParse(raw, out bool vanished) || !vanished)
+		{
+			VanishedPlayerUids.Remove(player.PlayerUID);
+			return;
+		}
+
+		StratumRuntime.Config.EnsurePopulated();
+		if (StratumCommandAccessCatalog.PlayerHasAccess(player, StratumRuntime.Config.Commands.Vanish))
+		{
+			VanishedPlayerUids.Add(player.PlayerUID);
+		}
+		else
+		{
+			VanishedPlayerUids.Remove(player.PlayerUID);
+			data.CustomPlayerData[VanishStateKey] = bool.FalseString;
+			server.PlayerDataManager.playerDataDirty = true;
+		}
+	}
+
+	private static void PersistVanishedState(ServerMain server, IServerPlayer player, bool vanished)
+	{
+		if (server == null || player == null || string.IsNullOrWhiteSpace(player.PlayerUID))
+		{
+			return;
+		}
+
+		ServerPlayerData data = server.PlayerDataManager.GetOrCreateServerPlayerData(player.PlayerUID, player.PlayerName);
+		data.CustomPlayerData ??= new Dictionary<string, string>();
+		data.CustomPlayerData[VanishStateKey] = vanished ? bool.TrueString : bool.FalseString;
+		server.PlayerDataManager.playerDataDirty = true;
 	}
 
 	public static bool HidesOtherVanished(string viewerUid)
@@ -119,11 +164,35 @@ internal static class StratumStaffCommandState
 
 	public static bool ShouldHideEntityFromClient(Entity entity, ConnectedClient client)
 	{
-		if (entity is not EntityPlayer entityPlayer || client?.Player == null || !IsVanished(entityPlayer.PlayerUID))
+		if (entity == null || client?.Player == null)
 		{
 			return false;
 		}
 
+		if (entity is EntityPlayer entityPlayer && IsVanished(entityPlayer.PlayerUID))
+		{
+			return ShouldHideVanishedPlayerFromClient(entityPlayer, client);
+		}
+
+		IMountable mountable = entity.GetInterface<IMountable>();
+		if (mountable?.Seats == null)
+		{
+			return false;
+		}
+
+		foreach (IMountableSeat seat in mountable.Seats)
+		{
+			if (seat?.Passenger is EntityPlayer passenger && IsVanished(passenger.PlayerUID))
+			{
+				return ShouldHideVanishedPlayerFromClient(passenger, client);
+			}
+		}
+
+		return false;
+	}
+
+	private static bool ShouldHideVanishedPlayerFromClient(EntityPlayer entityPlayer, ConnectedClient client)
+	{
 		IServerPlayer viewer = client.Player;
 		if (viewer.PlayerUID == entityPlayer.PlayerUID)
 		{
@@ -142,30 +211,33 @@ internal static class StratumStaffCommandState
 		return HidesOtherVanished(viewer.PlayerUID);
 	}
 
+	private static bool IsVanishVisibilitySubject(Entity entity)
+	{
+		if (entity is EntityPlayer player && IsVanished(player.PlayerUID))
+		{
+			return true;
+		}
+
+		IMountable mountable = entity?.GetInterface<IMountable>();
+		if (mountable?.Seats == null)
+		{
+			return false;
+		}
+
+		foreach (IMountableSeat seat in mountable.Seats)
+		{
+			if (seat?.Passenger is EntityPlayer passenger && IsVanished(passenger.PlayerUID))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	public static void HideVanishedPlayerFromOthers(ServerMain server, IServerPlayer player)
 	{
-		if (player?.Entity == null)
-		{
-			return;
-		}
-
-		Packet_Server packet = ServerPackets.GetEntityDespawnPacket(new List<EntityDespawn>
-		{
-			new EntityDespawn
-			{
-				EntityId = player.Entity.EntityId,
-				DespawnData = new EntityDespawnData { Reason = EnumDespawnReason.Unload }
-			}
-		});
-
-		foreach (ConnectedClient client in server.Clients.Values)
-		{
-			if (client.State.IsAdmitted() && ShouldHideEntityFromClient(player.Entity, client))
-			{
-				client.TrackedEntities.Remove(player.Entity.EntityId);
-				server.SendPacket(client.Id, packet);
-			}
-		}
+		RefreshVanishedVisibilityForAllViewers(server);
 	}
 
 	public static void RevealPlayerToOthers(ServerMain server, IServerPlayer player)
@@ -188,6 +260,22 @@ internal static class StratumStaffCommandState
 			{
 				client.TrackedEntities.Add(player.Entity.EntityId);
 				server.SendPacket(client.Id, packet);
+			}
+		}
+	}
+
+	private static void RefreshVanishedVisibilityForAllViewers(ServerMain server)
+	{
+		if (server == null)
+		{
+			return;
+		}
+
+		foreach (ConnectedClient client in server.Clients.Values)
+		{
+			if (client?.Player?.Entity != null && client.State.IsAdmitted())
+			{
+				RefreshVanishedVisibilityForViewer(server, client.Player);
 			}
 		}
 	}
@@ -218,35 +306,34 @@ internal static class StratumStaffCommandState
 		List<Entity> spawns = null;
 		int rangeSq = MagicNum.DefaultEntityTrackingRange * MagicNum.ServerChunkSize * MagicNum.DefaultEntityTrackingRange * MagicNum.ServerChunkSize;
 
-		foreach (string vanishedUid in VanishedPlayerUids)
+		foreach (Entity subject in server.LoadedEntities.Values)
 		{
-			if (string.Equals(vanishedUid, viewer.PlayerUID, StringComparison.Ordinal))
+			if (!IsVanishVisibilitySubject(subject) || subject == viewer.Entity)
 			{
 				continue;
 			}
 
-			if (!server.PlayersByUid.TryGetValue(vanishedUid, out ServerPlayer subject) || subject?.Entity == null)
-			{
-				continue;
-			}
-
-			long entityId = subject.Entity.EntityId;
+			long entityId = subject.EntityId;
 			bool tracked = viewerClient.TrackedEntities.Contains(entityId);
-			bool hide = ShouldHideEntityFromClient(subject.Entity, viewerClient);
+			bool hide = ShouldHideEntityFromClient(subject, viewerClient);
 
 			if (hide && tracked)
 			{
 				viewerClient.TrackedEntities.Remove(entityId);
+				foreach (List<Entity> threadedEntities in viewerClient.threadedTrackedEntities ?? Array.Empty<List<Entity>>())
+				{
+					threadedEntities?.RemoveAll(entity => entity?.EntityId == entityId);
+				}
 				(despawns ??= new List<EntityDespawn>()).Add(new EntityDespawn
 				{
 					EntityId = entityId,
 					DespawnData = new EntityDespawnData { Reason = EnumDespawnReason.Unload }
 				});
 			}
-			else if (!hide && !tracked && subject.Entity.Pos.InRangeOf(viewer.Entity.Pos, rangeSq))
+			else if (!hide && !tracked && subject.Pos.InRangeOf(viewer.Entity.Pos, rangeSq))
 			{
 				viewerClient.TrackedEntities.Add(entityId);
-				(spawns ??= new List<Entity>()).Add(subject.Entity);
+				(spawns ??= new List<Entity>()).Add(subject);
 			}
 		}
 

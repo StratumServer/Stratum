@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index 6f69cd3..ee4a1e7 100644
+index 6f69cd3..6cb6f43 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -27,10 +27,13 @@ using VintagestoryLib.Server.Systems;
@@ -123,8 +123,7 @@ index 6f69cd3..ee4a1e7 100644
 +			{
 +				return stratumCachedOnlinePlayers;
 +			}
- 
--	public IPlayer[] AllPlayers => PlayersByUid.Values.ToArray();
++
 +			// Stratum: single pass, reuse backing list to avoid per-tick array allocation.
 +			stratumOnlinePlayersList.Clear();
 +			foreach (ConnectedClient client in Clients.Values)
@@ -148,7 +147,8 @@ index 6f69cd3..ee4a1e7 100644
 +			return stratumCachedOnlinePlayers;
 +		}
 +	}
-+
+
+-	public IPlayer[] AllPlayers => PlayersByUid.Values.ToArray();
 +	public IPlayer[] AllPlayers
 +	{
 +		get
@@ -204,7 +204,7 @@ index 6f69cd3..ee4a1e7 100644
  		if (Config.RepairMode)
  		{
  			SendMessage(player, GlobalConstants.GeneralChatGroup, "Server is in repair mode, you are now in spectator mode. If you are not already there, fly to the area that crashes and let the chunks load, then exit the game and run in normal mode.", EnumChatType.Notification);
-@@ -617,21 +713,25 @@
+@@ -617,21 +713,25 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			ReplyMessage(client.Player, "No such target client found.", EnumChatType.CommandError);
  			return;
@@ -212,30 +212,26 @@ index 6f69cd3..ee4a1e7 100644
  		ServerWorldPlayerData worldData = clientByUID.WorldData;
 -		worldData.DesiredViewDistance = requestModeChange.ViewDistance;
 -		if (worldData.Viewdistance != requestModeChange.ViewDistance)
--		{
--			Logger.Notification("Player {0} requested new view distance: {1}", client.PlayerName, requestModeChange.ViewDistance);
--			if (clientByUID.IsSinglePlayerClient)
--			{
--				Config.MaxChunkRadius = Math.Max(Config.MaxChunkRadius, requestModeChange.ViewDistance / 32);
--				Logger.Notification($"Upped server view distance to: {requestModeChange.ViewDistance}, because player is in singleplayer");
--			}
--		}
--		worldData.Viewdistance = requestModeChange.ViewDistance;
 +		// Stratum: Only the requesting player may change their view distance.
 +		if (playerUID == client.WorldData.PlayerUID)
-+		{
+ 		{
+-			Logger.Notification("Player {0} requested new view distance: {1}", client.PlayerName, requestModeChange.ViewDistance);
+-			if (clientByUID.IsSinglePlayerClient)
 +			worldData.DesiredViewDistance = requestModeChange.ViewDistance;
 +			if (worldData.Viewdistance != requestModeChange.ViewDistance)
-+			{
+ 			{
+-				Config.MaxChunkRadius = Math.Max(Config.MaxChunkRadius, requestModeChange.ViewDistance / 32);
+-				Logger.Notification($"Upped server view distance to: {requestModeChange.ViewDistance}, because player is in singleplayer");
 +				Logger.Notification("Player {0} requested new view distance: {1}", client.PlayerName, requestModeChange.ViewDistance);
 +				if (clientByUID.IsSinglePlayerClient)
 +				{
 +					Config.MaxChunkRadius = Math.Max(Config.MaxChunkRadius, requestModeChange.ViewDistance / 32);
 +					Logger.Notification($"Upped server view distance to: {requestModeChange.ViewDistance}, because player is in singleplayer");
 +				}
-+			}
+ 			}
 +			worldData.Viewdistance = requestModeChange.ViewDistance;
-+		}
+ 		}
+-		worldData.Viewdistance = requestModeChange.ViewDistance;
  		bool flag;
  		bool flag2;
  		bool flag3;
@@ -1036,24 +1032,24 @@ index 6f69cd3..ee4a1e7 100644
  		float horRangeSq = horRange * horRange;
 -		foreach (ConnectedClient value in Clients.Values)
 +		try
-+		{
+ 		{
+-			if (value.State == EnumClientState.Playing && value.Entityplayer != null && value.Position.InRangeOf(position, horRangeSq, vertRange) && (matches == null || matches(value.Player)))
 +			foreach (ConnectedClient value in Clients.Values)
-+			{
+ 			{
+-				list.Add(value.Player);
 +				if (value.State == EnumClientState.Playing && value.Entityplayer != null && value.Position.InRangeOf(position, horRangeSq, vertRange) && (matches == null || matches(value.Player)))
 +				{
 +					list.Add(value.Player);
 +				}
-+			}
+ 			}
 +			return list.Count == 0 ? Array.Empty<IPlayer>() : list.ToArray();
 +		}
 +		finally
- 		{
--			if (value.State == EnumClientState.Playing && value.Entityplayer != null && value.Position.InRangeOf(position, horRangeSq, vertRange) && (matches == null || matches(value.Player)))
++		{
 +			if (reuseList)
- 			{
--				list.Add(value.Player);
++			{
 +				list.Clear();
- 			}
++			}
 +			reusablePlayersAroundDepth--;
  		}
 -		return list.ToArray();
@@ -1154,7 +1150,8 @@ index 6f69cd3..ee4a1e7 100644
  		{
 -			item = new ReceivedClientPacket(client, packet_Client);
 +			item = new ReceivedClientPacket(client, packet_Client, length);
-+		}
+ 		}
+-		ClientPackets.Enqueue(item);
 +		EnqueueStratumClientPacket(item);
 +	}
 +
@@ -1188,8 +1185,7 @@ index 6f69cd3..ee4a1e7 100644
 +				DisconnectPlayer(pkt.client, "Threw an exception at the server", "An action you (or your client) did caused an unhandled exception");
 +			}
 +			Logger.Error(e);
- 		}
--		ClientPackets.Enqueue(item);
++		}
 +	}
 +
 +	private void KickForBackPressure(ConnectedClient client, string reason)
@@ -1483,7 +1479,38 @@ index 6f69cd3..ee4a1e7 100644
  		Clients.TryGetValue(client.Id, out var value);
  		if (value != null)
  		{
-@@ -4245,11 +4900,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3979,15 +4634,28 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		{
+ 			Packetid = packetId,
+ 			EntityId = entityId
+ 		};
+ 		packet_EntityPacket.SetData(data);
+-		BroadcastPacket(new Packet_Server
++		Packet_Server packet = new Packet_Server
+ 		{
+ 			Id = 67,
+ 			EntityPacket = packet_EntityPacket
+-		});
++		};
++		List<IServerPlayer> hiddenPlayers = null;
++		if (LoadedEntities.TryGetValue(entityId, out Entity entity))
++		{
++			foreach (ConnectedClient client in Clients.Values)
++			{
++				if (client.Player != null && StratumStaffCommandState.ShouldHideEntityFromClient(entity, client))
++				{
++					(hiddenPlayers ??= new List<IServerPlayer>()).Add(client.Player);
++				}
++			}
++		}
++
++		BroadcastPacket(packet, hiddenPlayers?.ToArray());
+ 	}
+
+ 	public void BroadcastBlockEntityPacket(int x, int y, int z, int packetId, byte[] data = null, params IServerPlayer[] skipPlayers)
+ 	{
+ 		Packet_BlockEntityMessage packet_BlockEntityMessage = new Packet_BlockEntityMessage
+@@ -4245,11 +4913,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	internal void BroadcastArbitraryPacket(byte[] data, params IServerPlayer[] skipPlayers)
  	{
@@ -1496,7 +1523,7 @@ index 6f69cd3..ee4a1e7 100644
  			}
  		}
  	}
-@@ -4259,11 +4914,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4259,11 +4927,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		Serialize_(packet);
  		byte[] array = null;
  		bool compressed = false;
@@ -1509,7 +1536,7 @@ index 6f69cd3..ee4a1e7 100644
  				{
  					array = client.Socket.PreparePacketForSending(reusableBuffer, Config.CompressPackets, out compressed);
  				}
-@@ -4278,17 +4933,42 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4278,17 +4946,42 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	internal void BroadcastArbitraryUdpPacket(Packet_UdpPacket data, params IServerPlayer[] skipPlayers)
  	{
@@ -1553,7 +1580,7 @@ index 6f69cd3..ee4a1e7 100644
  		if (packetBenchmark.ContainsKey(packetId))
  		{
  			packetBenchmark[packetId]++;
-@@ -4695,15 +5375,40 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4695,15 +5388,40 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	}
  
  	private void SendWorldMetaData(IServerPlayer player)
@@ -1594,7 +1621,7 @@ index 6f69cd3..ee4a1e7 100644
  		float[] array = blockLightLevels;
  		Packet_WorldMetaData packet_WorldMetaData = new Packet_WorldMetaData();
  		int[] array2 = new int[array.Length];
-@@ -4756,14 +5461,53 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4756,14 +5474,53 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			((DummyUdpNetServer)UdpSockets[0]).Client.Player = player;
  		}
@@ -1649,7 +1676,7 @@ index 6f69cd3..ee4a1e7 100644
  		List<Packet_ModId> list = (from mod in api.ModLoader.Mods
  			where mod.Info.Side.IsUniversal()
  			select new Packet_ModId
-@@ -4792,15 +5536,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4792,15 +5549,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			RequireRemapping = ((controlServerPrivilege && requiresRemaps) ? 1 : 0)
  		};
  		Logger.Notification((Config.DisableAutoRemap ? ("Sending server identification with remap " + requiresRemaps) : "Sending server identification") + ". Server control privilege is " + controlServerPrivilege);
@@ -1672,7 +1699,44 @@ index 6f69cd3..ee4a1e7 100644
  		}
  		return new Packet_Server
  		{
-@@ -4844,12 +5593,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4812,21 +5574,35 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 	public void BroadcastPlayerData(IServerPlayer owningPlayer, bool sendInventory = true, bool sendPrivileges = false)
+ 	{
+ 		Packet_Server packet = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacket(owningPlayer, sendInventory, sendPrivileges);
+ 		Packet_Server packet2 = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacketForOtherPlayers(owningPlayer);
+ 		SendPacket(owningPlayer, packet);
+-		BroadcastPacket(packet2, owningPlayer);
++		List<IServerPlayer> hiddenPlayers = new List<IServerPlayer> { owningPlayer };
++		foreach (ConnectedClient client in Clients.Values)
++		{
++			if (client.Player != null && StratumStaffCommandState.ShouldHideEntityFromClient(owningPlayer.Entity, client))
++			{
++				hiddenPlayers.Add(client.Player);
++			}
++		}
++		BroadcastPacket(packet2, hiddenPlayers.ToArray());
+ 	}
+
+ 	public void SendOwnPlayerData(IServerPlayer owningPlayer, bool sendInventory = true, bool sendPrivileges = false)
+ 	{
+ 		Packet_Server packet = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacket(owningPlayer, sendInventory, sendPrivileges);
+ 		SendPacket(owningPlayer, packet);
+ 	}
+
+ 	public void SendInitialPlayerDataForOthers(IServerPlayer owningPlayer, IServerPlayer toPlayer, FastMemoryStream ms)
+ 	{
++		if (toPlayer == null || (Clients.TryGetValue(toPlayer.ClientId, out ConnectedClient client)
++			&& StratumStaffCommandState.ShouldHideEntityFromClient(owningPlayer.Entity, client)))
++		{
++			return;
++		}
++
+ 		Packet_Server packet = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacketForOtherPlayers(owningPlayer);
+ 		SendPacket(toPlayer, packet);
+ 	}
+
+ 	public void BroadcastPlayerPings()
+@@ -4844,12 +5620,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				array[num] = item.Id;
  				array2[num] = (int)(1000f * item.Player.Ping);
  				num++;
@@ -1687,7 +1751,7 @@ index 6f69cd3..ee4a1e7 100644
  			Id = 3,
  			PlayerPing = packet_ServerPlayerPing
  		};
-@@ -5141,11 +5890,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -5141,11 +5917,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		}
  	}
  
