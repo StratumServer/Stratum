@@ -26,13 +26,16 @@ while the stored flag is set clears both on the next join.
 - The player entity itself: spawn, despawn, position, animation, attribute and
   tag packets, for every client that must not see them.
 - Player data (packet 41): inventory, armor, and privileges. An observer who is
-  already connected may retain the name in its player list until the player
-  leaves range; new observers do not receive the vanished player's entry.
+  already connected may retain the name in its player list for the rest of that
+  session because the vanilla client only removes it after a real disconnect;
+  new observers do not receive the vanished player's entry.
 - The active hotbar slot, so observers never learn what a vanished player holds.
-- A mount they are riding, unless the observer is riding the same mount.
+- A mount carrying only vanished passengers, for clients that must not see them.
+  A mount shared with an ordinary player remains visible to bystanders, so its
+  seat data can still reveal the vanished passenger and their position.
 - Projectiles they fire: arrows, thrown spears, thrown stones and snowballs,
   and fishing bobbers, for the whole flight rather than only at spawn.
-- `/near` results, map disclosure, join and leave messages.
+- `/near` results, map disclosure, join, leave, and death messages.
 
 ## What vanish does NOT hide
 
@@ -52,4 +55,6 @@ packets are equally unfiltered.
 
 A vanished staff member's movement, look, and commands do not emit the entity or
 player packets filtered above, but anything that touches the world is visible to
-everyone nearby regardless of vanish.
+everyone nearby regardless of vanish. Sharing a mount with an ordinary player is
+also a known limitation: the mount stays visible and its seat data can disclose
+the vanished passenger.

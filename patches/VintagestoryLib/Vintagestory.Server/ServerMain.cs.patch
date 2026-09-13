@@ -1584,6 +1584,7 @@ index 6f69cd3..a654aca 100644
 +		};
 +		// Stratum #312: teleports and other entity packets skip clients that cannot see the entity.
 +		// Covers /tp, /back, /home, /spawn, jail, respawn and mounted teleport in one place.
++		// Stratum #312: compute the per-client hide list before broadcasting a teleport packet.
 +		List<IServerPlayer> hiddenPlayers = null;
 +		if (LoadedEntities.TryGetValue(entityId, out Entity entity))
 +		{

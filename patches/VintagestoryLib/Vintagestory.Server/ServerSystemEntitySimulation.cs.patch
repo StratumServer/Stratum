@@ -1643,6 +1643,7 @@ index ea1d5c0..a2fce0c 100644
  			item.WorldData.Deaths++;
  			server.EventManager.TriggerPlayerDeath(item.Player, item.Entityplayer.DeathReason);
 -			server.BroadcastPacket(new Packet_Server
++			// Stratum #312: do not disclose a vanished player's death to clients that cannot see them.
 +			Packet_Server deathPacket = new Packet_Server
  			{
  				Id = 45,
@@ -1666,6 +1667,7 @@ index ea1d5c0..a2fce0c 100644
 +				}
 +			}
 +			server.BroadcastPacket(deathPacket, hiddenPlayers?.ToArray());
++			// Stratum end
 +			if (StratumLivesStore.ShouldAutoRespawn(server, item)) // Stratum: auto-respawn players with bonus lives
 +			{
 +				server.EventManager.TriggerPlayerRespawn(item.Player);

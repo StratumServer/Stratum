@@ -213,10 +213,10 @@ internal static class StratumStaffCommandState
 			return false;
 		}
 
-		// Stratum #312: every seat is inspected before deciding. A mount is never hidden from a
-		// client riding it, even when another seat holds vanished staff: otherwise a regular player
-		// sharing a boat or elk gets their own mount despawned by UpdateTrackedEntityLists while
-		// the server still has them mounted.
+		// Stratum #312: every seat is inspected before deciding. A shared mount stays visible to
+		// bystanders when it carries an ordinary player, because hiding it leaves that player
+		// floating and still exposes the vanished passenger's position. The documented limitation
+		// is that the mount's seat data can still reveal the vanished passenger.
 		EntityPlayer vanishedPassenger = null;
 		foreach (IMountableSeat seat in mountable.Seats)
 		{
@@ -236,7 +236,7 @@ internal static class StratumStaffCommandState
 				return false;
 			}
 
-			if (vanishedPassenger == null && IsVanished(passenger.PlayerUID))
+			if (vanishedPassenger == null)
 			{
 				vanishedPassenger = passenger;
 			}
