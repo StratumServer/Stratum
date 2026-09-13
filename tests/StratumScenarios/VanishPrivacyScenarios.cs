@@ -19,8 +19,9 @@ namespace StratumScenarios;
 /// now restored in FinalizePlayerIdentification, before the first SpawnEntity and before
 /// ServerReady, so a vanished player reconnecting announces nothing. Restoring it later, from
 /// OnPlayerJoin, leaves a window of several seconds in which nearby players get a join message, a
-/// spawn with an exact position and a nametag, position updates, and then a despawn. This
-/// scenario fails against that older code, which is the reason it exists.
+/// entity spawn with an exact position and a nametag, position updates, and then a despawn. This
+/// scenario fails against that older code, which is the reason it exists. The reconnect assertion
+/// checks the spawn packet directly, rather than relying only on the separate join message.
 /// </summary>
 public class VanishPrivacyScenarios : AtlasScenarioBase
 {
@@ -70,6 +71,7 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		ITestPlayer observer = await World.JoinPlayer("reconnect-obs");
 		ITestPlayer staff = await World.JoinPlayer("reconnect-mod");
 		await GrantVanishRole(staff);
+		await DemoteToPlainPlayer(observer);
 
 		TextCommandResult vanish = await ExecuteAs(staff, "/vanish on");
 		Assert.Equal(EnumCommandStatus.Success, vanish.Status);
@@ -86,6 +88,7 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		await World.Ticks(60);
 
 		Assert.True(rejoined.IsConnected, "the vanished player did not come back");
+		Assert.DoesNotContain(rejoined.Player.Entity.EntityId, probe.NewEntitySpawnIds());
 		IReadOnlyList<string> announcements = probe.NewJoinLeaveMessages();
 		Assert.DoesNotContain(
 			announcements,
@@ -175,6 +178,7 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 internal sealed class ChatProbe
 {
 	private const int ChatLinePacketId = 8;
+	private const int EntitySpawnPacketId = 34;
 	private const BindingFlags Internal = BindingFlags.Instance | BindingFlags.NonPublic;
 
 	private readonly IEnumerable queue;
@@ -210,6 +214,53 @@ internal sealed class ChatProbe
 
 	public IReadOnlyList<string> NewJoinLeaveMessages()
 	{
+		var messages = new List<string>();
+		foreach (dynamic packet in NewPackets())
+		{
+			if ((int)packet.Id != ChatLinePacketId)
+			{
+				continue;
+			}
+
+			object? chatline = packet.Chatline;
+			if (chatline == null)
+			{
+				continue;
+			}
+
+			dynamic line = chatline;
+			if ((int)line.ChatType == (int)EnumChatType.JoinLeave)
+			{
+				messages.Add((string)line.Message);
+			}
+		}
+
+		return messages;
+	}
+
+	public IReadOnlyList<long> NewEntitySpawnIds()
+	{
+		var ids = new List<long>();
+		foreach (dynamic packet in NewPackets())
+		{
+			if ((int)packet.Id != EntitySpawnPacketId || packet.EntitySpawn == null)
+			{
+				continue;
+			}
+
+			dynamic spawn = packet.EntitySpawn;
+			int count = (int)spawn.EntityCount;
+			for (int index = 0; index < count; index++)
+			{
+				ids.Add((long)spawn.Entity[index].EntityId);
+			}
+		}
+
+		return ids;
+	}
+
+	private IReadOnlyList<object> NewPackets()
+	{
 		var payloads = new List<(byte[] Data, int Length)>();
 		lock (gate)
 		{
@@ -230,30 +281,12 @@ internal sealed class ChatProbe
 		Type packetType = Type.GetType("Packet_Server, VintagestoryLib")!;
 		MethodInfo deserialize = serializerType.GetMethod("DeserializeBuffer")!;
 
-		var messages = new List<string>();
+		var packets = new List<object>();
 		foreach ((byte[] data, int length) in payloads)
 		{
-			dynamic packet = deserialize.Invoke(null, new object?[] { data, length, Activator.CreateInstance(packetType) })!;
-			if ((int)packet.Id != ChatLinePacketId)
-			{
-				continue;
-			}
-
-			object? chatline = packet.Chatline;
-			if (chatline == null)
-			{
-				continue;
-			}
-
-			dynamic line = chatline;
-			if ((int)line.ChatType != (int)EnumChatType.JoinLeave)
-			{
-				continue;
-			}
-
-			messages.Add((string)line.Message);
+			packets.Add(deserialize.Invoke(null, new object?[] { data, length, Activator.CreateInstance(packetType) })!);
 		}
 
-		return messages;
+		return packets;
 	}
 }

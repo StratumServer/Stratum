@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..cc8d357 100644
+index ea1d5c0..a2fce0c 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -555,7 +555,7 @@ index ea1d5c0..cc8d357 100644
 +			// for the configured grace period. Runs before throttling/ticking so we don't waste
 +			// budget on an entity that's about to unload.
 +			if (EvaluateStratumHardDespawn(value, dt, out EntityDespawnData hardReason))
- 			{
++			{
 +				stratumEntityTickStates.TryRemove(value.EntityId, out _);
 +				list.Add(new KeyValuePair<Entity, EntityDespawnData>(value, hardReason));
 +				stratumEntitiesThrottled++;
@@ -564,7 +564,7 @@ index ea1d5c0..cc8d357 100644
 +
 +			bool shouldTickDimension = !Dimensions.ShouldNotTick(value.Pos, value.Api);
 +			if (shouldTickDimension)
-+			{
+ 			{
 +				if (ShouldThrottleStratumEntityTick(value, stratumEntityTicking, dt, out float tickDeltaTime, out bool stratumExcludedFromBudget))
 +				{
 +					stratumEntitiesThrottled++;
@@ -1615,7 +1615,7 @@ index ea1d5c0..cc8d357 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,16 +1753,24 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1753,64 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1642,7 +1642,8 @@ index ea1d5c0..cc8d357 100644
  			item.Entityplayer.DeadNotify = false;
  			item.WorldData.Deaths++;
  			server.EventManager.TriggerPlayerDeath(item.Player, item.Entityplayer.DeathReason);
-@@ -401,13 +1778,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+-			server.BroadcastPacket(new Packet_Server
++			Packet_Server deathPacket = new Packet_Server
  			{
  				Id = 45,
  				PlayerDeath = new Packet_PlayerDeath
@@ -1651,7 +1652,20 @@ index ea1d5c0..cc8d357 100644
 -					LivesLeft = ((num < 0) ? (-1) : Math.Max(0, num - item.WorldData.Deaths))
 +					LivesLeft = StratumLivesStore.GetLivesLeft(server, item.ServerData, item.WorldData) // Stratum: include bonus lives in death packets
  				}
- 			});
+-			});
++			};
++			List<IServerPlayer> hiddenPlayers = null;
++			if (StratumStaffCommandState.IsVanished(item.Player.PlayerUID))
++			{
++				foreach (ConnectedClient client in server.Clients.Values)
++				{
++					if (client.Player != null && StratumStaffCommandState.ShouldHideEntityFromClient(item.Entityplayer, client))
++					{
++						(hiddenPlayers ??= new List<IServerPlayer>()).Add(client.Player);
++					}
++				}
++			}
++			server.BroadcastPacket(deathPacket, hiddenPlayers?.ToArray());
 +			if (StratumLivesStore.ShouldAutoRespawn(server, item)) // Stratum: auto-respawn players with bonus lives
 +			{
 +				server.EventManager.TriggerPlayerRespawn(item.Player);
@@ -1661,7 +1675,18 @@ index ea1d5c0..cc8d357 100644
  			string text = "";
  			if (num2)
  			{
-@@ -422,10 +1803,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 				text = GetDeathMessage(item, deathReason);
+-				server.joinLeaveDeathMessage(text, EnumChatType.Notification, item.Player);
++				if (!StratumStaffCommandState.IsVanished(item.Player.PlayerUID))
++				{
++					server.joinLeaveDeathMessage(text, EnumChatType.Notification, item.Player);
++				}
+ 			}
+ 			if (deathReason?.GetCauseEntity() is EntityPlayer entityPlayer)
+ 			{
+ 				string playerName = server.PlayerByUid(entityPlayer.PlayerUID).PlayerName;
+ 				ServerMain.Logger.Audit(Lang.Get("{0} killed {1}, with item (if any): {2}", playerName, item.PlayerName, entityPlayer.RightHandItemSlot?.Itemstack?.Collectible.Code));
+@@ -422,10 +1818,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

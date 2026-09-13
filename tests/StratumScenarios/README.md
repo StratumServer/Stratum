@@ -1,6 +1,6 @@
 # StratumScenarios
 
-Seventeen end-to-end scenarios that boot a real server in-process (through the
+Nineteen end-to-end scenarios that boot a real server in-process (through the
 [Atlas](https://github.com/Pixnop/Atlas) test harness) and assert documented fork
 behavior: chunk persistence across save/unload/reload, the simulation distance throttles
 for entities, random ticks and block tick listeners, and the fact that each
@@ -17,7 +17,7 @@ they materialize the install with one `--stratum-prepare-only` launch and run
 `CONFIGURATION` (Release by default). Extra arguments go to `dotnet test`, so
 `bash scripts/scenarios.sh --filter BootScenarios` runs a single class. The test phase
 alone takes between a minute and a half and two and a half minutes depending on the
-machine, the eight server boots included, on top of the builds and the prepare launch.
+machine, the nine server boots included, on top of the builds and the prepare launch.
 It pulls four NuGet packages: xunit, its Visual Studio runner, Microsoft.NET.Test.Sdk, and
 `Pixnop.Atlas.XUnit`, which must be 0.13.1 or newer: older Atlas releases open the
 synthetic join with the identification packet, which Stratum's first-packet gate drops,

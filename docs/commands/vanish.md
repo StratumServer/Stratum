@@ -25,8 +25,9 @@ while the stored flag is set clears both on the next join.
 
 - The player entity itself: spawn, despawn, position, animation, attribute and
   tag packets, for every client that must not see them.
-- Player data (packet 41): inventory, armor, privileges, and the entry in the
-  client's player list.
+- Player data (packet 41): inventory, armor, and privileges. An observer who is
+  already connected may retain the name in its player list until the player
+  leaves range; new observers do not receive the vanished player's entry.
 - The active hotbar slot, so observers never learn what a vanished player holds.
 - A mount they are riding, unless the observer is riding the same mount.
 - Projectiles they fire: arrows, thrown spears, thrown stones and snowballs,
@@ -49,6 +50,6 @@ world. Specifically, out of scope today:
 Block entity contents, chunk updates and any mod that broadcasts its own
 packets are equally unfiltered.
 
-A vanished staff member who needs to stay undetected should observe only: move,
-look, and use commands. Anything that touches the world is visible to everyone
-nearby regardless of vanish.
+A vanished staff member's movement, look, and commands do not emit the entity or
+player packets filtered above, but anything that touches the world is visible to
+everyone nearby regardless of vanish.

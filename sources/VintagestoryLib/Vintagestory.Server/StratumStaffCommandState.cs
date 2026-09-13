@@ -230,6 +230,12 @@ internal static class StratumStaffCommandState
 				return false;
 			}
 
+			if (!IsVanished(passenger.PlayerUID))
+			{
+				// A bystander must still see a mount carrying an ordinary player.
+				return false;
+			}
+
 			if (vanishedPassenger == null && IsVanished(passenger.PlayerUID))
 			{
 				vanishedPassenger = passenger;
