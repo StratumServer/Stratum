@@ -1615,7 +1615,7 @@ index ea1d5c0..a2fce0c 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,37 +1753,64 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1753,66 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{

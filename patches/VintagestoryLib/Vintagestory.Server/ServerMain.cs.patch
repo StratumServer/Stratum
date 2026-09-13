@@ -1569,7 +1569,7 @@ index 6f69cd3..a654aca 100644
  		{
  			Classname = ClassRegistry.blockEntityTypeToClassnameMapping[blockentity.GetType()],
  			Data = memoryStream.ToArray(),
-@@ -3979,15 +4662,30 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3979,15 +4662,31 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			Packetid = packetId,
  			EntityId = entityId
