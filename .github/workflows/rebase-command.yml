@@ -1,0 +1,239 @@
+name: Rebase command
+
+on:
+  # A maintainer comments "/rebase" on a pull request and CI rebases that pull
+  # request's branch onto the current tip of its base branch, strips trailing
+  # whitespace from the lines the pull request added, then force-pushes it
+  # back. issue_comment workflows only ever run from the default branch, so
+  # this file lives on main even though the pull requests it serves target
+  # indev.
+  #
+  # Only comment metadata and the pull request's git history are used. Nothing
+  # from the pull request tree is built or executed: no dotnet, no scripts, and
+  # git hooks cannot arrive through a fetch. The pull request's files are never
+  # written into the workspace either; the rebase script does its work in a
+  # throwaway repository so that the checkout holding the scripts this job runs
+  # cannot be replaced by a copy the pull request ships.
+  #
+  # Setup. Pushing to a contributor's fork needs a user token; the base
+  # repository's GITHUB_TOKEN cannot do it even when the pull request allows
+  # edits by maintainers. Add a repository secret named PR_MAINTENANCE_TOKEN
+  # holding a classic personal access token with the "repo" scope, issued by a
+  # maintainer account that has write access here. Without it the command still
+  # works for branches that live in this repository; on a fork it comments
+  # explaining why and ends the run red, so the maintainer who commented
+  # notices instead of a quietly green run.
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  # write, not read: a pull request whose branch lives in this repository is
+  # pushed with GITHUB_TOKEN, and writing a ref needs contents: write. The job
+  # only ever pushes to the pull request's own head ref, under a lease pinned
+  # to the sha the run started from, and the script refuses outright when that
+  # head ref is main or indev in this repository. That last case is the release
+  # pull request, indev into main, where a rebase would flatten indev and force
+  # it over every clone.
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: rebase-command-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    name: Rebase pull request branch
+    runs-on: ubuntu-latest
+
+    # Cheap prefilter. The comment must be on a pull request and mention the
+    # command; the exact match happens in the first step, which can trim the
+    # body. Workflow expressions have no trim function.
+    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/rebase')
+
+    steps:
+      - name: Parse command
+        id: cmd
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -eu
+          line=$(printf '%s' "$COMMENT_BODY" | head -n 1 | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          if [ "$line" = "/rebase" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Comment is not a bare /rebase command, nothing to do"
+          fi
+
+      - name: Check commenter permission
+        id: perm
+        if: steps.cmd.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Reading a collaborator's permission needs push access. The
+          # maintenance token has it for certain, so it goes first.
+          PERMISSION_TOKEN: ${{ secrets.PR_MAINTENANCE_TOKEN }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          # The endpoint answers 200 with "none" for someone who is not a
+          # collaborator, so a non-zero exit means the check itself did not
+          # run: rate limit, 5xx, a token without the scope. Saying "you are
+          # not a maintainer" in public on that is wrong and unrecoverable.
+          #
+          # Both tokens are tried. A classic personal access token expires on
+          # its own, is revoked when the maintainer who issued it rotates it,
+          # and starts answering 403 the day the organisation turns SAML on.
+          # Reading permission through it alone would take the command down
+          # for every pull request, including the ones whose branch lives here
+          # and never needed that secret at all.
+          level=""
+          for token in "${PERMISSION_TOKEN:-}" "$GH_TOKEN"; do
+            [ -n "$token" ] || continue
+            if level=$(GH_TOKEN="$token" \
+              gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission'); then
+              break
+            fi
+            level=""
+          done
+          case "$level" in
+            admin | maintain | write)
+              echo "$ACTOR has permission: $level"
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+              ;;
+            "")
+              echo "ok=false" >> "$GITHUB_OUTPUT"
+              gh pr comment "$ISSUE" --repo "$REPO" \
+                --body "\`/rebase\` could not check whether @$ACTOR has write access here, so nothing was done. See the [run log]($RUN_URL)."
+              ;;
+            *)
+              # Not a maintainer, and the run says so in the log and nowhere
+              # else. A bot comment here would let anyone with an account turn
+              # /rebase into a way to post on any pull request they like.
+              echo "ok=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::$ACTOR has permission $level, ignoring /rebase"
+              ;;
+          esac
+
+      # Our own code, from the branch this workflow file itself lives on, which
+      # is where the rebase script ships. This checkout carries the scripts and
+      # nothing else: the script clones both sides of the pull request by URL
+      # into its own directory, so neither the ref nor the history here matters
+      # and one commit is enough. persist-credentials is off so that the
+      # checkout's own token cannot be sent to the fork on push.
+      #
+      # It runs before the pull request is read because the report step at
+      # the end needs these scripts on disk to say anything at all, and a
+      # failed read is exactly when it has something to say.
+      - name: Checkout
+        if: steps.perm.outputs.ok == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Read pull request
+        id: pr
+        if: steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          gh api "repos/$REPO/pulls/$ISSUE" > "$RUNNER_TEMP/pr.json"
+          {
+            echo "base_url=$(jq -r '.base.repo.clone_url' "$RUNNER_TEMP/pr.json")"
+            echo "base_ref=$(jq -r '.base.ref' "$RUNNER_TEMP/pr.json")"
+            echo "head_url=$(jq -r '.head.repo.clone_url' "$RUNNER_TEMP/pr.json")"
+            echo "head_ref=$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")"
+            echo "head_sha=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
+            echo "can_modify=$(jq -r '.maintainer_can_modify' "$RUNNER_TEMP/pr.json")"
+            echo "fork=$(jq -r 'if .head.repo.full_name == .base.repo.full_name then "false" else "true" end' "$RUNNER_TEMP/pr.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rebase branch
+        id: rebase
+        if: steps.perm.outputs.ok == 'true'
+        env:
+          BASE_REPO_URL: ${{ steps.pr.outputs.base_url }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          HEAD_REPO_URL: ${{ steps.pr.outputs.head_url }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          IS_FORK: ${{ steps.pr.outputs.fork }}
+          CAN_MODIFY: ${{ steps.pr.outputs.can_modify }}
+          MAINTENANCE_TOKEN: ${{ secrets.PR_MAINTENANCE_TOKEN }}
+          DEFAULT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if [ "$IS_FORK" = "true" ]; then
+            AUTH_TOKEN="$MAINTENANCE_TOKEN"
+            if [ -z "$AUTH_TOKEN" ]; then
+              echo 'result={"result":"error","reason":"no_token"}' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$CAN_MODIFY" != "true" ]; then
+              echo 'result={"result":"error","reason":"no_maintainer_edits"}' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            AUTH_TOKEN="$DEFAULT_TOKEN"
+          fi
+          export AUTH_TOKEN
+
+          # The script prints one JSON line on stdout and its log on stderr. A
+          # conflict is an outcome to report, not a broken run, so the exit
+          # status is read from the result line instead. json.dumps guarantees
+          # the line carries no newline, so appending it here cannot forge a
+          # second output.
+          result=$(bash .github/scripts/rebase-pr.sh) || true
+          if [ -z "${result:-}" ]; then
+            result='{"result":"error","reason":"script_failed"}'
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+      - name: Report outcome
+        if: always() && steps.perm.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          RESULT: ${{ steps.rebase.outputs.result }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          # RUNNER_TEMP, not the workspace: a comment.md of our own in the
+          # checkout would be overwritten, and the workspace is what the next
+          # run of this workflow starts from.
+          COMMENT_FILE="$RUNNER_TEMP/comment.md" python3 .github/scripts/rebase-comment.py ||
+            printf 'The rebase did not complete. See the [run log](%s).\n' "$RUN_URL" \
+              > "$RUNNER_TEMP/comment.md"
+          gh pr comment "$ISSUE" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"
+
+          # rebased, noop, empty and conflict are normal news about the pull
+          # request itself, and the run stays green for them. Anything else,
+          # an error result or no result at all because an earlier step never
+          # ran, is CI's own news: turn the run red so the maintainer who
+          # commented sees it in the Actions tab and gets the failure email,
+          # instead of a green run quietly hiding an expired token or the
+          # like. The comment above is already posted either way.
+          python3 -c '
+          import json, os, sys
+          raw = os.environ.get("RESULT") or ""
+          try:
+              data = json.loads(raw) if raw.strip() else {}
+          except ValueError:
+              data = {}
+          if not isinstance(data, dict):
+              data = {}
+          if data.get("result", "error") not in ("rebased", "noop", "empty", "conflict"):
+              sys.exit(1)
+          '
