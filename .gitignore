@@ -57,6 +57,11 @@ build_output.txt
 .DS_Store
 Thumbs.db
 
+# Python bytecode (the CI scripts under .github/scripts/ are plain scripts,
+# not a package, but py_compile / import still drop this)
+__pycache__/
+*.pyc
+
 # Local-only docs scratch
 /wiki/
 /.wiki-push/

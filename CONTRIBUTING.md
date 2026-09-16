@@ -182,6 +182,10 @@ Pull requests from branches created directly in `StratumServer/Stratum` are rese
 
 Rebase onto the latest `upstream/indev` before requesting final review. Keep the branch rebased while the pull request is open if other changes land in the same area.
 
+If the branch falls behind or picks up a merge commit, a maintainer can comment `/rebase` on the pull request. CI replays your commits onto the current tip of `indev`, drops merge commits, keeps you as the author of each one, and force-pushes the result to your branch. Your local clone is behind after that, so run `git pull --rebase` before pushing again. A conflict stops the rebase and nothing is pushed; resolve it locally instead. So does a merge commit that carries changes of its own, a conflict you resolved by hand for instance: replaying the other commits would drop that work, so the command refuses rather than push a branch missing it. The command needs **Allow edits by maintainers** left on, which is the default when you open the pull request.
+
+The same command also strips trailing whitespace, on the lines your pull request added and nothing else, as one separate commit on top of yours. Markdown keeps its trailing spaces because two of them are a hard line break, the generated trees are skipped, and in a `.patch` file only the diff's own `+` lines are touched: context and removed lines have to stay byte identical to the vanilla baseline or the patch stops applying.
+
 In the description, say what changed and why. For perf work, include the numbers.
 
 If your PR sits without review for a week, ping it in [Discord](https://discord.gg/pd24fawhsD).
