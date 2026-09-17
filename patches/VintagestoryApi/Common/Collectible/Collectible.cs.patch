@@ -1,0 +1,60 @@
+diff --git a/VintagestoryApi/Common/Collectible/Collectible.cs b/VintagestoryApi/Common/Collectible/Collectible.cs
+index 37c8ea5..3ba2292 100644
+--- a/VintagestoryApi/Common/Collectible/Collectible.cs
++++ b/VintagestoryApi/Common/Collectible/Collectible.cs
+@@ -721,18 +721,27 @@ namespace Vintagestory.API.Common
+             bool preventDefault = false;
+ 
+             foreach (CollectibleBehavior behavior in CollectibleBehaviors)
+             {
+                 EnumHandling handled = EnumHandling.PassThrough;
+-                bool behaviorResult = behavior.OnBlockBrokenWith(world, byEntity, itemslot, blockSel, dropQuantityMultiplier, ref handled);
+-                if (handled != EnumHandling.PassThrough)
++                // Stratum: Catch behavior exceptions so one faulty mod behavior does not crash the server (#282)
++                try
+                 {
+-                    result &= behaviorResult;
+-                    preventDefault = true;
+-                }
++                    bool behaviorResult = behavior.OnBlockBrokenWith(world, byEntity, itemslot, blockSel, dropQuantityMultiplier, ref handled);
++                    if (handled != EnumHandling.PassThrough)
++                    {
++                        result &= behaviorResult;
++                        preventDefault = true;
++                    }
+ 
+-                if (handled == EnumHandling.PreventSubsequent) return result;
++                    if (handled == EnumHandling.PreventSubsequent) return result;
++                }
++                catch (Exception e)
++                {
++                    api?.Logger?.Error("Exception thrown in CollectibleBehavior {0}.OnBlockBrokenWith for {1}:", behavior?.GetType()?.FullName, Code);
++                    api?.Logger?.Error(e);
++                }
+             }
+ 
+             if (preventDefault) return result;
+ 
+ 
+@@ -3554,11 +3563,20 @@ namespace Vintagestory.API.Common
+         {
+             bool executeDefault = true;
+             foreach (CollectibleBehavior behavior in CollectibleBehaviors)
+             {
+                 EnumHandling handling = EnumHandling.PassThrough;
+-                onBehavior(behavior, ref handling);
++                // Stratum: Catch behavior exceptions so one faulty mod behavior does not crash the server or abort the action (#282)
++                try
++                {
++                    onBehavior(behavior, ref handling);
++                }
++                catch (Exception e)
++                {
++                    api?.Logger?.Error("Exception thrown in CollectibleBehavior {0} for {1}:", behavior?.GetType()?.FullName, Code);
++                    api?.Logger?.Error(e);
++                }
+ 
+                 if (handling == EnumHandling.PreventSubsequent) return;
+                 if (handling == EnumHandling.PreventDefault) executeDefault = false;
+             }
+ 
