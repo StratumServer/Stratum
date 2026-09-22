@@ -47,7 +47,7 @@ index 6b3cdd0..28ea78f 100644
  	{
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.PacketHandlers[3] = HandleBlockPlaceOrBreak;
-@@ -319,13 +331,229 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -319,13 +331,231 @@ public class ServerSystemBlockSimulation : ServerSystem
  	}
  
  	private void HandleBlockEntityPacket(Packet_Client packet, ConnectedClient client)
@@ -91,7 +91,9 @@ index 6b3cdd0..28ea78f 100644
 +			return false;
 +		}
 +
-+		if (!IsBlockEntityPacketInRange(player, pos))
++		// Stratum: #307 - Hardening.BlockEntityPacketRangeGuard gates this packet path only. The
++		// dev command block path keeps its range check unconditionally.
++		if (StratumRuntime.Config.Hardening.BlockEntityPacketRangeGuard && !IsBlockEntityPacketInRange(player, pos))
 +		{
 +			ServerMain.Logger.Audit("{0} tried to send a block entity packet out of range at {1}", player.PlayerName, pos);
 +			StratumAnticheatReporter.RecordBlockEntityOutOfRange(server, player, pos);
@@ -278,7 +280,7 @@ index 6b3cdd0..28ea78f 100644
  		Packet_ClientBlockPlaceOrBreak blockPlaceOrBreak = packet.BlockPlaceOrBreak;
  		BlockSelection blockSelection = new BlockSelection
  		{
-@@ -338,10 +566,15 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -338,10 +571,15 @@ public class ServerSystemBlockSimulation : ServerSystem
  		};
  		if (client.Player.WorldData.CurrentGameMode == EnumGameMode.Spectator)
  		{
@@ -294,7 +296,7 @@ index 6b3cdd0..28ea78f 100644
  		{
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			string code = "noprivilege-buildbreak-" + enumWorldAccessResponse.ToString().ToLowerInvariant();
-@@ -354,12 +587,29 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -354,12 +592,29 @@ public class ServerSystemBlockSimulation : ServerSystem
  				code = "noprivilege-buildbreak-" + claimant.Substring("custommessage-".Length);
  			}
  			client.Player.SendIngameError(code, null, claimant);
@@ -324,7 +326,7 @@ index 6b3cdd0..28ea78f 100644
  				worldChunk.BreakDecor(server, blockSelection.Position, blockSelection.Face);
  				worldChunk.MarkModified();
  			}
-@@ -391,10 +641,13 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -391,10 +646,13 @@ public class ServerSystemBlockSimulation : ServerSystem
  		Packet_ClientHandInteraction handInteraction = packet.HandInteraction;
  		if (client.Player.WorldData.CurrentGameMode == EnumGameMode.Spectator || handInteraction.UseType == 0 || handInteraction.MouseButton != 2)
  		{
@@ -338,7 +340,7 @@ index 6b3cdd0..28ea78f 100644
  		Vec3d hitPosition = new Vec3d(CollectibleNet.DeserializeDoublePrecise(handInteraction.HitX), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitY), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitZ));
  		BlockSelection blockSelection = new BlockSelection
  		{
-@@ -402,11 +655,17 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -402,11 +660,17 @@ public class ServerSystemBlockSimulation : ServerSystem
  			Face = face,
  			HitPosition = hitPosition,
  			SelectionBoxIndex = handInteraction.SelectionBoxIndex,
@@ -357,7 +359,7 @@ index 6b3cdd0..28ea78f 100644
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			return;
  		}
-@@ -418,11 +677,10 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -418,11 +682,10 @@ public class ServerSystemBlockSimulation : ServerSystem
  			LandClaim blockingLandClaimant = server.WorldMap.GetBlockingLandClaimant(client.Player, blockSelection.Position, EnumBlockAccessFlags.BuildOrBreak);
  			client.Player.SendIngameError(code, null, blockingLandClaimant?.LastKnownOwnerName);
  			return;
@@ -369,7 +371,7 @@ index 6b3cdd0..28ea78f 100644
  		{
  		default:
  			return;
-@@ -483,10 +741,21 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -483,10 +746,21 @@ public class ServerSystemBlockSimulation : ServerSystem
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.UP), sendPlayerData: false);
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.DOWN), sendPlayerData: false);
  		server.SendOwnPlayerData(targetPlayer);
@@ -391,7 +393,7 @@ index 6b3cdd0..28ea78f 100644
  		server.SendSetBlock(targetPlayer, server.WorldMap.RawRelaxedBlockAccess.GetBlockId(pos), pos.X, pos.InternalY, pos.Z);
  		BlockEntity blockEntity = server.WorldMap.RawRelaxedBlockAccess.GetBlockEntity(pos);
  		if (blockEntity != null)
-@@ -503,11 +772,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -503,11 +777,12 @@ public class ServerSystemBlockSimulation : ServerSystem
  	{
  		BlockPos blockPos = new BlockPos(cmd.X, cmd.Y, cmd.Z);
  		Vec3d hitPosition = new Vec3d(CollectibleNet.DeserializeDouble(cmd.HitX), CollectibleNet.DeserializeDouble(cmd.HitY), CollectibleNet.DeserializeDouble(cmd.HitZ));
@@ -405,7 +407,7 @@ index 6b3cdd0..28ea78f 100644
  			activeHotbarSlot.MarkDirty();
  			return false;
  		}
-@@ -573,11 +843,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -573,11 +848,12 @@ public class ServerSystemBlockSimulation : ServerSystem
  					server.BroadcastHotbarSlot(player);
  				}
  				activeHotbarSlot.MarkDirty();
@@ -419,7 +421,7 @@ index 6b3cdd0..28ea78f 100644
  			int index = ((!block3.SideSolid.Any) ? server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 1).Id : block3.BlockId);
  			Block block4 = (blockSelection.Block = server.Blocks[index]);
  			IItemStack itemstack = activeHotbarSlot.Itemstack;
-@@ -619,10 +890,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -619,10 +895,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (activeHotbarSlot.Itemstack == null && itemstack != null)
  			{
  				server.BroadcastHotbarSlot(player);
@@ -434,7 +436,7 @@ index 6b3cdd0..28ea78f 100644
  	}
  
  	internal bool IsAnyPlayerInBlock(BlockPos pos, Block block, IPlayer ignorePlayer)
-@@ -650,11 +925,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -650,11 +930,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  		return false;
  	}
  
@@ -450,7 +452,7 @@ index 6b3cdd0..28ea78f 100644
  	private void UpdateEvery100ms(float t1)
  	{
  		HandleDirtyAndUpdatedBlocks();
-@@ -716,17 +994,23 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -716,17 +999,23 @@ public class ServerSystemBlockSimulation : ServerSystem
  			}
  			server.SendSetDecorsPackets(list3);
  		}
@@ -474,7 +476,7 @@ index 6b3cdd0..28ea78f 100644
  		ConcurrentQueue<BlockPos> dirtyBlockEntities = server.DirtyBlockEntities;
  		if (!dirtyBlockEntities.IsEmpty)
  		{
-@@ -737,11 +1021,16 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -737,11 +1026,16 @@ public class ServerSystemBlockSimulation : ServerSystem
  				if (positionsDone.Add(result))
  				{
  					BlockEntity blockEntity = server.WorldMap.GetBlockEntity(result);
@@ -492,7 +494,7 @@ index 6b3cdd0..28ea78f 100644
  					{
  						noblockEntities.Add(result);
  					}
-@@ -762,28 +1051,54 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -762,28 +1056,54 @@ public class ServerSystemBlockSimulation : ServerSystem
  			foreach (Packet_BlockEntity item in blockEntitiesPacked)
  			{
  				long index3d = server.WorldMap.ChunkIndex3D(new ChunkPos(item.PosX / 32, item.PosY / 32, item.PosZ / 32));
@@ -550,7 +552,7 @@ index 6b3cdd0..28ea78f 100644
  			{
  				continue;
  			}
-@@ -812,22 +1127,37 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -812,22 +1132,37 @@ public class ServerSystemBlockSimulation : ServerSystem
  			catch (Exception e)
  			{
  				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
@@ -589,7 +591,7 @@ index 6b3cdd0..28ea78f 100644
  			foreach (int clientId in clientIds)
  			{
  				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
-@@ -862,34 +1192,116 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -862,34 +1197,116 @@ public class ServerSystemBlockSimulation : ServerSystem
  						}
  					}
  				}
@@ -709,7 +711,7 @@ index 6b3cdd0..28ea78f 100644
  		{
  			int num6 = rand.Next(32);
  			int num7 = rand.Next(32);
-@@ -905,35 +1317,79 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -905,35 +1322,79 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (fluid != 0)
  			{
  				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));
