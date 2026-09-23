@@ -1,57 +1,73 @@
 diff --git a/VintagestoryApi/Common/Collectible/Collectible.cs b/VintagestoryApi/Common/Collectible/Collectible.cs
-index 37c8ea5..3ba2292 100644
+index 37c8ea5..a87a52f 100644
 --- a/VintagestoryApi/Common/Collectible/Collectible.cs
 +++ b/VintagestoryApi/Common/Collectible/Collectible.cs
-@@ -721,18 +721,27 @@ namespace Vintagestory.API.Common
+@@ -22,10 +22,26 @@ namespace Vintagestory.API.Common
+     /// <summary>
+     /// Contains all properties shared by Blocks and Items
+     /// </summary>
+     public abstract class CollectibleObject : RegistryObject
+     {
++
++        // Stratum: Bound repeated behavior failures to one log per collectible and behavior type.
++        private System.Collections.Concurrent.ConcurrentDictionary<Type, byte> StratumLoggedBehaviorExceptions;
++
++        private void StratumLogBehaviorException(ILogger StratumLogger, CollectibleBehavior StratumBehavior, Exception StratumException, string StratumCallback)
++        {
++            if (StratumLogger == null) return;
++
++            Type StratumBehaviorType = StratumBehavior?.GetType() ?? typeof(CollectibleBehavior);
++            System.Collections.Concurrent.ConcurrentDictionary<Type, byte> StratumLoggedExceptions =
++                System.Threading.LazyInitializer.EnsureInitialized(ref StratumLoggedBehaviorExceptions);
++            if (!StratumLoggedExceptions.TryAdd(StratumBehaviorType, 0)) return;
++
++            StratumLogger.Error("Exception thrown in CollectibleBehavior {0} during {1} for {2}:", StratumBehaviorType.FullName, StratumCallback, Code);
++            StratumLogger.Error(StratumException);
++        }
+         // ---- Some default objects which are common to many Block and Item objects
+         public readonly static Size3f DefaultSize = new Size3f(0.5f, 0.5f, 0.5f);
+ 
+         /// <summary>
+         /// Liquids are handled and rendered differently than solid blocks.
+@@ -721,11 +737,21 @@ namespace Vintagestory.API.Common
              bool preventDefault = false;
  
              foreach (CollectibleBehavior behavior in CollectibleBehaviors)
              {
                  EnumHandling handled = EnumHandling.PassThrough;
 -                bool behaviorResult = behavior.OnBlockBrokenWith(world, byEntity, itemslot, blockSel, dropQuantityMultiplier, ref handled);
--                if (handled != EnumHandling.PassThrough)
-+                // Stratum: Catch behavior exceptions so one faulty mod behavior does not crash the server (#282)
++                bool behaviorResult = false;
++                // Stratum: Preserve a break veto even when its behavior throws (#282).
 +                try
-                 {
--                    result &= behaviorResult;
--                    preventDefault = true;
--                }
-+                    bool behaviorResult = behavior.OnBlockBrokenWith(world, byEntity, itemslot, blockSel, dropQuantityMultiplier, ref handled);
-+                    if (handled != EnumHandling.PassThrough)
-+                    {
-+                        result &= behaviorResult;
-+                        preventDefault = true;
-+                    }
- 
--                if (handled == EnumHandling.PreventSubsequent) return result;
-+                    if (handled == EnumHandling.PreventSubsequent) return result;
++                {
++                    behaviorResult = behavior.OnBlockBrokenWith(world, byEntity, itemslot, blockSel, dropQuantityMultiplier, ref handled);
 +                }
 +                catch (Exception e)
 +                {
-+                    api?.Logger?.Error("Exception thrown in CollectibleBehavior {0}.OnBlockBrokenWith for {1}:", behavior?.GetType()?.FullName, Code);
-+                    api?.Logger?.Error(e);
++                    StratumLogBehaviorException(world.Logger, behavior, e, nameof(OnBlockBrokenWith));
 +                }
-             }
- 
-             if (preventDefault) return result;
- 
- 
-@@ -3554,11 +3563,20 @@ namespace Vintagestory.API.Common
++
+                 if (handled != EnumHandling.PassThrough)
+                 {
+                     result &= behaviorResult;
+                     preventDefault = true;
+                 }
+@@ -3554,11 +3580,20 @@ namespace Vintagestory.API.Common
          {
              bool executeDefault = true;
              foreach (CollectibleBehavior behavior in CollectibleBehaviors)
              {
                  EnumHandling handling = EnumHandling.PassThrough;
 -                onBehavior(behavior, ref handling);
-+                // Stratum: Catch behavior exceptions so one faulty mod behavior does not crash the server or abort the action (#282)
++                // Stratum: Failed behavior handling must not suppress the default action (#282).
 +                try
 +                {
 +                    onBehavior(behavior, ref handling);
 +                }
 +                catch (Exception e)
 +                {
-+                    api?.Logger?.Error("Exception thrown in CollectibleBehavior {0} for {1}:", behavior?.GetType()?.FullName, Code);
-+                    api?.Logger?.Error(e);
++                    handling = EnumHandling.PassThrough;
++                    StratumLogBehaviorException(api?.Logger, behavior, e, nameof(WalkBehaviors));
 +                }
  
                  if (handling == EnumHandling.PreventSubsequent) return;
