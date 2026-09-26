@@ -59,6 +59,9 @@ probe_commands=(
   "/stratum timings start"
   "/stratum timings stop"
   "/stratum timings report"
+  "/class"
+  "/classrequests"
+  "/classrequests approve 999999"
 )
 probe_expect=(
   "No kits exist yet."
@@ -81,6 +84,9 @@ probe_expect=(
   "Stratum timings started"
   "Stratum timings stopped"
   "Stratum Timings"
+  "Only a connected player can use /class."
+  "No pending class change requests."
+  "No class change request #999999."
 )
 
 # Data path handling.

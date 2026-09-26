@@ -64,6 +64,8 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("reports", "/reports", commands.ReportManage, "Use /reports staff queue commands");
 		yield return new StratumCommandAccessEntry("kit", "/kit", commands.Kits, "Use /kit");
 		yield return new StratumCommandAccessEntry("kitedit", "/kitedit", commands.KitEdit, "Manage kits");
+		yield return new StratumCommandAccessEntry("class", "/class", commands.ClassChange, "Use /class to change class or request a change");
+		yield return new StratumCommandAccessEntry("classrequests", "/classrequests", commands.ClassChangeManage, "Approve or deny class change requests");
 	}
 
 	public static StratumCommandAccessEntry Find(StratumCommandsConfig commands, string command)

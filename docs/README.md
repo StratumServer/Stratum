@@ -12,6 +12,7 @@ Pages in this folder, by audience.
 ## Running a server
 
 - [commands/kits.md](commands/kits.md): `/kit` and `/kitedit`.
+- [commands/class-changes.md](commands/class-changes.md): `/class` and `/classrequests`, class changes with staff approval.
 - [commands/friendlyfire.md](commands/friendlyfire.md): `/friendlyfire`, the runtime group friendly-fire toggle.
 - [commands/inventory-privacy.md](commands/inventory-privacy.md): the `hardening.inventoryGuards` inventory privacy setting.
 - [commands/vanish.md](commands/vanish.md): `/vanish`, what it hides, and the blocks, particles and sounds it does not.

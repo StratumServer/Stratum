@@ -1653,6 +1653,12 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig KitEdit { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
 
+	public StratumCommandAccessConfig ClassChange { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.classchange");
+
+	public StratumCommandAccessConfig ClassChangeManage { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.classrequests");
+
+	public StratumClassChangeConfig ClassChangeSettings { get; set; } = new StratumClassChangeConfig();
+
 	public int NearDefaultRadiusBlocks { get; set; } = 128;
 
 	public int NearMaxRadiusBlocks { get; set; } = 512;
@@ -1699,6 +1705,9 @@ internal class StratumCommandsConfig
 		ClearItems ??= StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
 		Kits ??= StratumCommandAccessConfig.ForPrivilege("stratum.kits");
 		KitEdit ??= StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
+		ClassChange ??= StratumCommandAccessConfig.ForPrivilege("stratum.classchange");
+		ClassChangeManage ??= StratumCommandAccessConfig.ForPrivilege("stratum.classrequests");
+		ClassChangeSettings ??= new StratumClassChangeConfig();
 		JailSettings ??= new StratumJailConfig();
 		Spawn.EnsurePopulated("stratum.spawn");
 		SetSpawn.EnsurePopulated("setspawn");
@@ -1734,12 +1743,32 @@ internal class StratumCommandsConfig
 		ClearItems.EnsurePopulated("stratum.clearitems");
 		Kits.EnsurePopulated("stratum.kits");
 		KitEdit.EnsurePopulated("stratum.kitedit");
+		ClassChange.EnsurePopulated("stratum.classchange");
+		ClassChangeManage.EnsurePopulated("stratum.classrequests");
+		ClassChangeSettings.EnsureSane();
 		NearDefaultRadiusBlocks = Math.Max(1, NearDefaultRadiusBlocks);
 		NearMaxRadiusBlocks = Math.Max(NearDefaultRadiusBlocks, NearMaxRadiusBlocks);
 		SlowmodeMaxSeconds = Math.Max(0, SlowmodeMaxSeconds);
 		ClearChatLines = Math.Min(200, Math.Max(1, ClearChatLines));
 		VanishReminderIntervalSeconds = Math.Min(30, Math.Max(3, VanishReminderIntervalSeconds));
 		JailSettings.EnsureSane();
+	}
+}
+
+// #278: /class lets a player switch class on their own a limited number of times, then files a
+// request that holders of Commands.ClassChangeManage approve or deny with /classrequests.
+internal class StratumClassChangeConfig
+{
+	// How many times a player may change class with /class change before a change needs staff
+	// approval. -1 means unlimited, 0 means every change goes through a request.
+	public int SelfServiceChanges { get; set; } = 0;
+
+	public int MaxReasonLength { get; set; } = 200;
+
+	public void EnsureSane()
+	{
+		SelfServiceChanges = Math.Max(-1, SelfServiceChanges);
+		MaxReasonLength = Math.Min(1000, Math.Max(1, MaxReasonLength));
 	}
 }
 
