@@ -1,0 +1,42 @@
+{
+  "ConfigVersion": 4,
+  "Groups": {
+    "Enabled": true,
+    "DefaultKind": null,
+    "Kinds": [
+      {
+        "Code": "faction",
+        "Exclusive": true,
+        "MaxMembers": 0,
+        "Lockable": true,
+        "CountsAsSameSide": true,
+        "PlayerCreatable": true,
+        "TagPriority": 100
+      },
+      {
+        "Code": "squad",
+        "Exclusive": false,
+        "MaxMembers": 1,
+        "Lockable": true,
+        "CountsAsSameSide": true,
+        "PlayerCreatable": true,
+        "TagPriority": 50
+      },
+      {
+        "Code": "utility",
+        "Exclusive": false,
+        "MaxMembers": 0,
+        "Lockable": false,
+        "CountsAsSameSide": false,
+        "PlayerCreatable": true,
+        "TagPriority": 10
+      }
+    ],
+    "RelationsEnabled": true,
+    "AlliesCountAsSameSide": true,
+    "ShowTagInChat": true,
+    "ShowTagInNametag": true,
+    "TagFormat": "[{tag}]",
+    "MaxTagLength": 8
+  }
+}

@@ -32,18 +32,39 @@ internal static class StratumChatFormatter
 		config.EnsurePopulated();
 		StratumRolePrefixesConfig rolePrefixes = config.Appearance.RolePrefixes;
 
-		if (!config.Chat.Enabled || !rolePrefixes.Enabled || player?.Role == null)
+		if (!config.Chat.Enabled || player == null)
 		{
 			return false;
 		}
 
-		List<StratumRolePrefixConfig> prefixes = rolePrefixes.ResolveFor(player.Role.Code);
-		if (prefixes == null)
+		// Stratum #335: a group tag renders on its own, so a server can run group tags with role
+		// prefixes switched off. Null unless the player holds a tagged group.
+		string groupTag = null;
+		StratumGroupsConfig groups = config.Groups;
+		if (groups.Enabled && groups.ShowTagInChat)
+		{
+			string tag = StratumGroupPolicy.ResolveTag(player);
+			if (tag != null)
+			{
+				groupTag = ApplyColorAndWeight(FormatTag(groups.TagFormat, tag), groups.TagColor, bold: false);
+			}
+		}
+
+		List<StratumRolePrefixConfig> prefixes = rolePrefixes.Enabled && player.Role != null
+			? rolePrefixes.ResolveFor(player.Role.Code)
+			: null;
+		if (prefixes == null && groupTag == null)
 		{
 			return false;
 		}
 
+		prefixes ??= new List<StratumRolePrefixConfig>();
 		StringBuilder renderedTags = new StringBuilder();
+		if (groupTag != null)
+		{
+			renderedTags.Append(prefixes.Count == 0 ? EnsureTrailingSpace(groupTag) : groupTag + " ");
+		}
+
 		for (int index = 0; index < prefixes.Count; index++)
 		{
 			StratumRolePrefixConfig prefix = prefixes[index];

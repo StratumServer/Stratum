@@ -108,6 +108,7 @@ internal class ServerSystemStratum : ServerSystem
 		StratumServerStats.Start(server);
 		StratumHarmonyVisibility.LogPatchedMethods(server);
 		StratumHarmonyVisibility.WarnFriendlyFireConflicts();
+		StratumGroupPolicy.WarnExclusiveViolations(server);
 		if (StratumRuntime.Config.Backup.Enabled)
 		{
 			new StratumBackupScheduler(server);

@@ -64,6 +64,7 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("reports", "/reports", commands.ReportManage, "Use /reports staff queue commands");
 		yield return new StratumCommandAccessEntry("kit", "/kit", commands.Kits, "Use /kit");
 		yield return new StratumCommandAccessEntry("kitedit", "/kitedit", commands.KitEdit, "Manage kits");
+		yield return new StratumCommandAccessEntry("groupadmin", "/group admin", commands.GroupAdmin, "Administer player groups: kinds, locks, roster freeze, relations, tags");
 	}
 
 	public static StratumCommandAccessEntry Find(StratumCommandsConfig commands, string command)

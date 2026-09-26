@@ -60,6 +60,8 @@ internal class StratumConfig
 
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
 
+	public StratumGroupsConfig Groups { get; set; } = new StratumGroupsConfig();
+
 	public void EnsurePopulated()
 	{
 		Diagnostics ??= new StratumDiagnosticsConfig();
@@ -87,6 +89,7 @@ internal class StratumConfig
 		CoopCombat ??= new StratumCoopCombatConfig();
 		FriendlyFire ??= new StratumFriendlyFireConfig();
 		ServerStats ??= new StratumServerStatsConfig();
+		Groups ??= new StratumGroupsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
 		BlockBreakGuards.EnsureSane();
@@ -108,6 +111,7 @@ internal class StratumConfig
 		CoopCombat.EnsureSane();
 		FriendlyFire.EnsureSane();
 		ServerStats.EnsureSane();
+		Groups.EnsurePopulated();
 		UpdateChecker.EnsureSane();
 	}
 
@@ -1653,6 +1657,9 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig KitEdit { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
 
+	// Stratum #335: /group admin, staff authority over player groups.
+	public StratumCommandAccessConfig GroupAdmin { get; set; } = StratumCommandAccessConfig.ForPrivilege("manageotherplayergroups");
+
 	public int NearDefaultRadiusBlocks { get; set; } = 128;
 
 	public int NearMaxRadiusBlocks { get; set; } = 512;
@@ -1699,6 +1706,7 @@ internal class StratumCommandsConfig
 		ClearItems ??= StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
 		Kits ??= StratumCommandAccessConfig.ForPrivilege("stratum.kits");
 		KitEdit ??= StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
+		GroupAdmin ??= StratumCommandAccessConfig.ForPrivilege("manageotherplayergroups");
 		JailSettings ??= new StratumJailConfig();
 		Spawn.EnsurePopulated("stratum.spawn");
 		SetSpawn.EnsurePopulated("setspawn");
@@ -1734,6 +1742,7 @@ internal class StratumCommandsConfig
 		ClearItems.EnsurePopulated("stratum.clearitems");
 		Kits.EnsurePopulated("stratum.kits");
 		KitEdit.EnsurePopulated("stratum.kitedit");
+		GroupAdmin.EnsurePopulated("manageotherplayergroups");
 		NearDefaultRadiusBlocks = Math.Max(1, NearDefaultRadiusBlocks);
 		NearMaxRadiusBlocks = Math.Max(NearDefaultRadiusBlocks, NearMaxRadiusBlocks);
 		SlowmodeMaxSeconds = Math.Max(0, SlowmodeMaxSeconds);

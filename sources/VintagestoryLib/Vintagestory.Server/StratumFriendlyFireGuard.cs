@@ -20,7 +20,7 @@ internal static class StratumFriendlyFireGuard
 		if (attacker == null || target is not EntityPlayer targetPlayer) return false;
 		if (targetPlayer.Player is not IServerPlayer targetServerPlayer) return false;
 		if (attacker.PlayerUID == targetServerPlayer.PlayerUID) return false;
-		if (!StratumPlayerGroups.SharesGroup(attacker, targetServerPlayer)) return false;
+		if (!StratumPlayerGroups.OnSameSide(attacker, targetServerPlayer)) return false;
 
 		StratumFriendlyFireHook.OnBlockedAttack?.Invoke(attacker.PlayerUID, targetServerPlayer.PlayerUID);
 		return true;

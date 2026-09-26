@@ -18,7 +18,7 @@ index 7279e48..b425833 100644
 +                && damageSource.Type != EnumDamageType.Heal
 +                && damageSource.GetCauseEntity() is EntityPlayer stratumAttacker
 +                && stratumAttacker != this
-+                && StratumPlayerGroups.SharesGroup(stratumAttacker.Player, Player))
++                && StratumPlayerGroups.OnSameSide(stratumAttacker.Player, Player))
 +            {
 +                return false;
 +            }

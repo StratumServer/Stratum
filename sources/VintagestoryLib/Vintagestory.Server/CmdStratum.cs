@@ -219,6 +219,14 @@ internal class CmdStratum
 			// Stratum: clear region ticking fallback state on reload (#10)
 			var sim = server.Systems.OfType<ServerSystemEntitySimulation>().FirstOrDefault();
 			sim?.StratumClearFallbackState();
+			// Issue #335: a kind turned exclusive in stratum.json applies to its existing groups
+			// unchecked, so say who now holds two of them rather than leave it for staff to find.
+			List<string> exclusiveViolations = StratumGroupPolicy.WarnExclusiveViolations(server);
+			if (exclusiveViolations.Count > 0)
+			{
+				result += "\n" + StratumCommandText.Warning("Exclusive group kinds")
+					+ ": " + StratumCommandText.Escape(string.Join("; ", exclusiveViolations)) + ". Use /group admin remove to settle it.";
+			}
 			StratumRuntime.LogInfo($"config reloaded: {message}; preflight {report.Summary}");
 		}
 		else

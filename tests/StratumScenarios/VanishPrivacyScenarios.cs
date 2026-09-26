@@ -163,7 +163,8 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 }
 
 /// <summary>
-/// Reads the chat lines the server actually sent to one test player.
+/// Reads the packets the server actually sent to one test player: chat lines, entity spawns
+/// and group lists.
 /// </summary>
 /// <remarks>
 /// Atlas has no chat sink and the server has no hook on the outgoing path
@@ -179,6 +180,7 @@ internal sealed class ChatProbe
 {
 	private const int ChatLinePacketId = 8;
 	private const int EntitySpawnPacketId = 34;
+	private const int PlayerGroupsPacketId = 49;
 	private const BindingFlags Internal = BindingFlags.Instance | BindingFlags.NonPublic;
 
 	private readonly IEnumerable queue;
@@ -257,6 +259,35 @@ internal sealed class ChatProbe
 		}
 
 		return ids;
+	}
+
+	/// <summary>
+	/// The group names in each full group list (packet 49, SendPlayerGroups) the player was sent,
+	/// oldest first. A single-group update (packet 50, SendPlayerGroup) is not a listing and is
+	/// left out: only the full list tells the client to drop a group it no longer holds.
+	/// </summary>
+	public IReadOnlyList<IReadOnlyList<string>> NewGroupListings()
+	{
+		var listings = new List<IReadOnlyList<string>>();
+		foreach (dynamic packet in NewPackets())
+		{
+			if ((int)packet.Id != PlayerGroupsPacketId || packet.PlayerGroups == null)
+			{
+				continue;
+			}
+
+			dynamic groups = packet.PlayerGroups;
+			int count = (int)groups.GroupsCount;
+			var names = new List<string>();
+			for (int index = 0; index < count; index++)
+			{
+				names.Add((string)groups.Groups[index].Name);
+			}
+
+			listings.Add(names);
+		}
+
+		return listings;
 	}
 
 	private IReadOnlyList<object> NewPackets()

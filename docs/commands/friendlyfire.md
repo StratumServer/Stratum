@@ -72,6 +72,13 @@ server info, and so on) never count. Membership is read from
 chat and `/group` commands use. Open player-created groups count too: the
 toggle follows membership, not the group's join policy.
 
+Group administration refines this. A shared group only counts when its kind
+has `CountsAsSameSide` set, and players in different groups count as the same
+side when those groups are allied and `Groups.AlliesCountAsSameSide` is on,
+unless another pair of their groups is marked as enemies. The full
+precedence is in [Relations](groups.md#relations). Map privacy does not
+follow these rules. It still uses plain shared membership.
+
 ## What the toggle does and does not cover
 
 - **Melee and projectiles:** the branch guards the melee interaction and
@@ -137,7 +144,7 @@ enabled and its effective privilege on a running server.
 | Registration, privilege, argument words | `StratumFriendlyFireSystem` constructor |
 | Status and toggle wording | `StratumFriendlyFireSystem.HandleToggle` |
 | Config default | `StratumFriendlyFireConfig.AllowGroupDamage` |
-| Group membership rule | `StratumPlayerGroups.SharesGroup` |
+| Same-side rule (shared groups, kinds, and relations) | `StratumPlayerGroups.OnSameSide` |
 | The blocking hit | `EntityPlayer.ShouldReceiveDamage`, `ServerMain.CreateExplosion`, `ServerSystemEntitySimulation.HandleEntityInteraction`, and `EntityProjectileBase.CanDealDamage` |
 
 `scripts/smoke-test.sh` pipes `/friendlyfire` commands into a running

@@ -50,31 +50,59 @@ internal sealed class StratumNametags
 	/// </summary>
 	public static bool RefreshFor(IServerPlayer player)
 	{
-		return instance?.Refresh(player) == true;
+		return instance?.Refresh(player, entitlements: true) == true;
 	}
 
-	private bool Refresh(IServerPlayer player)
+	/// <summary>
+	/// Stratum #335: re-applies the name after a group membership, kind or tag change. Called
+	/// from the vanilla group packet senders, which every join, leave, kick, disband and staff
+	/// move already goes through, so no membership path can leave a stale tag behind. Leaves
+	/// the role entitlement alone: that only changes with the role, and swapping it here would
+	/// churn the entitlement list on every group packet.
+	/// </summary>
+	public static void RefreshGroupTagFor(IServerPlayer player)
 	{
+		instance?.Refresh(player, entitlements: false);
+	}
+
+	private bool Refresh(IServerPlayer player, bool entitlements)
+	{
+		if (player == null) return false;
+
 		StratumNametagsConfig cfg = Cfg;
-		if (cfg == null || !cfg.Enabled) return false;
-		if (player?.Role == null) return false;
-
 		StratumConfig root = StratumRuntime.Config;
-		List<StratumRolePrefixConfig> prefixes = root?.Appearance?.RolePrefixes?.ResolveFor(player.Role.Code);
 
-		if (cfg.ApplyRolePrefix)
+		// Stratum #335: group tags ride the same nametag rewrite as role prefixes, but they are
+		// their own feature with their own switch. A server can run group tags with
+		// Appearance.Nametags off, so the role half below is gated separately.
+		StratumGroupsConfig groups = root?.Groups;
+		bool groupTags = groups != null && groups.Enabled && groups.ShowTagInNametag;
+		bool roleTags = cfg != null && cfg.Enabled && player.Role != null;
+		if (!groupTags && !roleTags) return false;
+
+		// Null when the player holds no tagged group, which also has to reach
+		// ApplyNametagPrefix: that is how a cleared tag gets stripped off the name again.
+		string groupTag = groupTags ? StratumGroupPolicy.FormatTag(StratumGroupPolicy.ResolveTag(server, player)) : null;
+		bool rolePrefixes = roleTags && cfg.ApplyRolePrefix;
+		List<StratumRolePrefixConfig> prefixes = rolePrefixes ? root?.Appearance?.RolePrefixes?.ResolveFor(player.Role.Code) : null;
+
+		if (rolePrefixes || groupTags)
 		{
-			ApplyNametagPrefix(player, prefixes, cfg.PrefixFormat);
+			ApplyNametagPrefix(player, prefixes, cfg?.PrefixFormat, groupTag);
 		}
 
-		RemoveInjectedEntitlement(player);
-		MaybeInjectEntitlement(player, cfg);
+		if (roleTags && entitlements)
+		{
+			RemoveInjectedEntitlement(player);
+			MaybeInjectEntitlement(player, cfg);
+		}
+
 		return true;
 	}
 
 	private void OnPlayerJoin(IServerPlayer player)
 	{
-		Refresh(player);
+		Refresh(player, entitlements: true);
 	}
 
 	private void OnPlayerDisconnect(IServerPlayer player)
@@ -83,7 +111,7 @@ internal sealed class StratumNametags
 		injectedByUid.Remove(player.PlayerUID);
 	}
 
-	private void ApplyNametagPrefix(IServerPlayer player, List<StratumRolePrefixConfig> prefixes, string format)
+	private void ApplyNametagPrefix(IServerPlayer player, List<StratumRolePrefixConfig> prefixes, string format, string groupTag)
 	{
 		EntityPlayer entity = player.Entity;
 		if (entity == null) return;
@@ -93,6 +121,11 @@ internal sealed class StratumNametags
 
 		string fmt = string.IsNullOrEmpty(format) ? "[{tag}] " : format;
 		StringBuilder prefixText = new StringBuilder();
+		if (groupTag != null)
+		{
+			prefixText.Append(groupTag).Append(' ');
+		}
+
 		if (prefixes != null)
 		{
 			foreach (StratumRolePrefixConfig prefix in prefixes)

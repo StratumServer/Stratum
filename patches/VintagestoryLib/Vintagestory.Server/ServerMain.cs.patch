@@ -1064,7 +1064,7 @@ index 6f69cd3..a654aca 100644
 +			&& !(stratumIgniter != null
 +				&& e is EntityPlayer stratumVictim
 +				&& stratumVictim.PlayerUID != ignitedByPlayerUid
-+				&& StratumPlayerGroups.SharesGroup(stratumIgniter, stratumVictim.Player)));
++				&& StratumPlayerGroups.OnSameSide(stratumIgniter, stratumVictim.Player)));
 +		// Stratum end
  		Dictionary<long, double> dictionary = new Dictionary<long, double>();
  		for (int num5 = 0; num5 < entitiesAround.Length; num5++)

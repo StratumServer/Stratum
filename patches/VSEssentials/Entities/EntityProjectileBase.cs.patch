@@ -15,7 +15,7 @@ index 64c42af..28917e7 100644
 +                if (canDamage && targetIsPlayer && StratumFriendlyFireHook.BlockGroupDamage
 +                    && target is EntityPlayer stratumTarget && stratumTarget.Player is IServerPlayer stratumTargetPlayer
 +                    && stratumTargetPlayer.PlayerUID != fromPlayer.PlayerUID
-+                    && StratumPlayerGroups.SharesGroup(fromPlayer, stratumTargetPlayer))
++                    && StratumPlayerGroups.OnSameSide(fromPlayer, stratumTargetPlayer))
 +                {
 +                    canDamage = false;
 +                    StratumFriendlyFireHook.OnBlockedAttack?.Invoke(fromPlayer.PlayerUID, stratumTargetPlayer.PlayerUID);
