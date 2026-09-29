@@ -1,3 +1,4 @@
+using System;
 using System.Reflection;
 using Atlas.Api;
 using Atlas.XUnit;
@@ -262,6 +263,18 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		Block block = World.BlockAt(blockPos);
 		BlockBehavior[] originalBehaviors = block.BlockBehaviors;
 		var faultyBehavior = new FaultyBlockBehavior(block);
+		ILogger logger = World.Api.World.Logger;
+		int loggedBreakFailures = 0;
+		LogEntryDelegate logEntry = (logType, message, _) =>
+		{
+			if (logType == EnumLogType.Error &&
+				(message.StartsWith("Exception thrown while breaking block", StringComparison.Ordinal) ||
+				 message.StartsWith("Exception thrown during fallback block break", StringComparison.Ordinal)))
+			{
+				loggedBreakFailures++;
+			}
+		};
+		logger.EntryAdded += logEntry;
 		try
 		{
 			block.BlockBehaviors = block.BlockBehaviors.Append(faultyBehavior).ToArray();
@@ -272,10 +285,19 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 
 			Assert.True(player.IsConnected, "player was disconnected after block behavior threw an exception");
 			Assert.Equal(2, faultyBehavior.InvocationCount);
+			Assert.Equal(2, loggedBreakFailures);
+
+			DispatchPacket(World, player, packet);
+			await World.Ticks(5);
+
+			Assert.True(player.IsConnected, "player was disconnected after a repeated block behavior exception");
+			Assert.Equal(4, faultyBehavior.InvocationCount);
+			Assert.Equal(2, loggedBreakFailures);
 			Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
 		}
 		finally
 		{
+			logger.EntryAdded -= logEntry;
 			block.BlockBehaviors = originalBehaviors;
 		}
 	}
@@ -425,7 +447,14 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		public override void OnBlockBroken(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, float dropQuantityMultiplier, ref EnumHandling handling)
 		{
 			InvocationCount++;
-			throw new InvalidOperationException("Simulated deterministic block break failure");
+			throw new RepeatedBlockBehaviorException("Simulated deterministic block break failure");
+		}
+	}
+
+	private sealed class RepeatedBlockBehaviorException : Exception
+	{
+		public RepeatedBlockBehaviorException(string message) : base(message)
+		{
 		}
 	}
 
