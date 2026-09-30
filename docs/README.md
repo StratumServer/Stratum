@@ -12,6 +12,7 @@ Pages in this folder, by audience.
 ## Running a server
 
 - [commands/kits.md](commands/kits.md): `/kit` and `/kitedit`.
+- [commands/class-changes.md](commands/class-changes.md): `/class` and `/classrequests`, class changes with staff approval.
 - [commands/friendlyfire.md](commands/friendlyfire.md): `/friendlyfire`, the runtime group friendly-fire toggle.
 - [commands/groups.md](commands/groups.md): `/group admin`, group kinds, membership locks, roster freeze, relations and group tags.
 - [commands/inventory-privacy.md](commands/inventory-privacy.md): the `hardening.inventoryGuards` inventory privacy setting.

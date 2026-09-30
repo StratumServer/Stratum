@@ -1,0 +1,15 @@
+diff --git a/VSSurvivalMod/Systems/Character/Character.cs b/VSSurvivalMod/Systems/Character/Character.cs
+index 0b59246..1513117 100644
+--- a/VSSurvivalMod/Systems/Character/Character.cs
++++ b/VSSurvivalMod/Systems/Character/Character.cs
+@@ -589,6 +589,10 @@ namespace Vintagestory.GameContent
+ 
+             api.Event.PlayerJoin += Event_PlayerJoinServer;
+             api.Event.ServerRunPhase(EnumServerRunPhase.ModsAndConfigReady, loadCharacterClasses);
++
++            // Stratum: expose the class list and runtime class changes to /class, see #278
++            StratumCharacterClassHook.ListClasses = () => characterClasses.Select(c => c.Code).ToArray();
++            StratumCharacterClassHook.ApplyClass = (player, classCode) => setCharacterClass(player.Entity, classCode, false);
+         }
+ 
+         private void Event_PlayerJoinServer(IServerPlayer byPlayer)
