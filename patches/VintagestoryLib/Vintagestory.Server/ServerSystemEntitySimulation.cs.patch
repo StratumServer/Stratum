@@ -673,7 +673,7 @@ index ea1d5c0..a2fce0c 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +716,855 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +716,872 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -1310,25 +1310,42 @@ index ea1d5c0..a2fce0c 100644
 +	}
 +	// Stratum end
 +
++	// Stratum: ConcurrentDictionary.TryRemove locks its bucket even when the id was never
++	// stored. Players, disabled throttling, and near-band entities take that lock every tick
++	// and almost never have an entry. ContainsKey does not. See #315.
++	private void StratumForgetTickStateIfPresent(long entityId)
++	{
++		if (stratumEntityTickStates.ContainsKey(entityId))
++		{
++			stratumEntityTickStates.TryRemove(entityId, out _);
++		}
++	}
++
 +	private bool ShouldThrottleStratumEntityTick(Entity entity, StratumEntityTickingConfig config, float dt, out float tickDeltaTime, out bool isExcludedFromThrottle)
 +	{
 +		tickDeltaTime = dt;
 +		isExcludedFromThrottle = false;
-+		if (!config.Enabled || entity is EntityPlayer || stratumPlayerPositions.Count == 0)
++		// Stratum: players are never inserted. Skipping the dictionary is the common case
++		// on a full bot run (1k-2k players, every tick).
++		if (entity is EntityPlayer)
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			return false;
++		}
++		if (!config.Enabled || stratumPlayerPositions.Count == 0)
++		{
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
 +		if ((entity.IsCreature && !config.ThrottleCreatures) || (!entity.IsCreature && !config.ThrottleInanimate))
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
 +		if (config.SkipMovingEntities && IsStratumMovingEntity(entity, config.MovingEntitySpeedThreshold))
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
@@ -1405,7 +1422,7 @@ index ea1d5c0..a2fce0c 100644
 +			// tick. State object is tiny; OnDespawn paths handle removal.
 +			if (!stratumAmbientTierEnabledCached || !entity.IsCreature)
 +			{
-+				stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++				StratumForgetTickStateIfPresent(entity.EntityId);
 +			}
 +			return false;
 +		}
