@@ -1,8 +1,6 @@
 using System.Text.RegularExpressions;
 using Atlas.Api;
 using Atlas.XUnit;
-using Vintagestory.API.Common;
-using Vintagestory.API.Config;
 using Xunit;
 
 namespace StratumScenarios;
@@ -29,21 +27,21 @@ public class ClassChangeScenarios : AtlasScenarioBase
 		await SetSelfServiceChanges(1);
 		ITestPlayer player = await JoinWithCharacter("class-ladder");
 
-		TextCommandResult selfService = await ExecuteAs(player, $"/class change {FirstClass}");
-		Assert.Equal(EnumCommandStatus.Success, selfService.Status);
+		CommandResult selfService = await player.ExecuteCommand($"/class change {FirstClass}");
+		Assert.True(selfService.Ok, selfService.Message);
 		Assert.Equal(FirstClass, CurrentClass(player));
 
-		TextCommandResult requested = await ExecuteAs(player, $"/class change {SecondClass} picked the wrong one");
-		Assert.Equal(EnumCommandStatus.Success, requested.Status);
-		Assert.Contains("Request", requested.StatusMessage);
+		CommandResult requested = await player.ExecuteCommand($"/class change {SecondClass} picked the wrong one");
+		Assert.True(requested.Ok, requested.Message);
+		Assert.Contains("Request", requested.Message);
 		Assert.Equal(FirstClass, CurrentClass(player));
 
 		CommandResult approve = await World.ExecuteCommand($"/classrequests approve {RequestId(requested)}");
 		Assert.True(approve.Ok, approve.Message);
 		Assert.Equal(SecondClass, CurrentClass(player));
 
-		TextCommandResult deniedRequest = await ExecuteAs(player, $"/class change {ThirdClass}");
-		Assert.Equal(EnumCommandStatus.Success, deniedRequest.Status);
+		CommandResult deniedRequest = await player.ExecuteCommand($"/class change {ThirdClass}");
+		Assert.True(deniedRequest.Ok, deniedRequest.Message);
 		CommandResult deny = await World.ExecuteCommand($"/classrequests deny {RequestId(deniedRequest)} not this season");
 		Assert.True(deny.Ok, deny.Message);
 		Assert.Equal(SecondClass, CurrentClass(player));
@@ -62,8 +60,8 @@ public class ClassChangeScenarios : AtlasScenarioBase
 		string before = CurrentClass(player);
 		string target = before == FirstClass ? SecondClass : FirstClass;
 
-		TextCommandResult requested = await ExecuteAs(player, $"/class change {target}");
-		Assert.Equal(EnumCommandStatus.Success, requested.Status);
+		CommandResult requested = await player.ExecuteCommand($"/class change {target}");
+		Assert.True(requested.Ok, requested.Message);
 		int requestId = RequestId(requested);
 
 		player.Player.Disconnect();
@@ -99,31 +97,11 @@ public class ClassChangeScenarios : AtlasScenarioBase
 		return player.Player.Entity.WatchedAttributes.GetString("characterClass");
 	}
 
-	private static int RequestId(TextCommandResult result)
+	private static int RequestId(CommandResult result)
 	{
-		Match match = Regex.Match(result.StatusMessage ?? string.Empty, @"Request #(\d+)");
-		Assert.True(match.Success, $"no request id in: {result.StatusMessage}");
+		Match match = Regex.Match(result.Message, @"Request #(\d+)");
+		Assert.True(match.Success, $"no request id in: {result.Message}");
 		return int.Parse(match.Groups[1].Value);
-	}
-
-	private Task<TextCommandResult> ExecuteAs(ITestPlayer player, string command)
-	{
-		// IWorldSession.ExecuteCommand runs as the console, which is not a player and cannot
-		// use /class.
-		var completion = new TaskCompletionSource<TextCommandResult>();
-		World.Api.ChatCommands.ExecuteUnparsed(
-			command,
-			new TextCommandCallingArgs
-			{
-				Caller = new Caller
-				{
-					Type = EnumCallerType.Player,
-					Player = player.Player,
-					FromChatGroupId = GlobalConstants.GeneralChatGroup,
-				},
-			},
-			result => completion.TrySetResult(result));
-		return completion.Task;
 	}
 
 	private async Task<ITestPlayer> RejoinAfterDisconnect(string name)

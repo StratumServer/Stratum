@@ -16,9 +16,9 @@ namespace StratumScenarios;
 /// set through /stratum set (they are a list), so they arrive through the fixture, seeded at the
 /// current config version so the boot loads it without running a migration.
 ///
-/// Every scenario drives real commands: group creation and invites run as the player through the
-/// command API with an explicit Caller, staff actions run as the console. The class shares one
-/// server boot, so each scenario uses its own group and player names.
+/// Every scenario drives real commands: group creation and invites run as the player through
+/// ITestPlayer.ExecuteCommand, staff actions run as the console. The class shares one server
+/// boot, so each scenario uses its own group and player names.
 /// </summary>
 [AtlasDataFiles("fixtures/stratum-groups", TargetPath = "")]
 public class GroupAdminScenarios : AtlasScenarioBase
@@ -524,7 +524,7 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await StaffAdd("RedListed", moved);
 		await World.Ticks(5);
 
-		ChatProbe probe = ChatProbe.Attach(World, moved);
+		PacketProbe probe = PacketProbe.Attach(World, moved);
 		TextCommandResult added = await ExecuteAs(blueOwner, $"/group addplayer BlueListed {moved.Player.PlayerName} 1");
 		Assert.Equal(EnumCommandStatus.Success, added.Status);
 		await World.Ticks(5);
@@ -798,23 +798,12 @@ public class GroupAdminScenarios : AtlasScenarioBase
 	/// <summary>
 	/// Runs a command as the player rather than the console. /group leans on the caller for
 	/// ownership, group privileges and the chat group it was typed in, so the console's
-	/// all-privileges caller would prove nothing here.
+	/// all-privileges caller would prove nothing here. Hands back the engine's raw result because
+	/// the scenarios assert EnumCommandStatus.Error, not merely "not Success", and CommandResult
+	/// only carries the Ok flag.
 	/// </summary>
-	private Task<TextCommandResult> ExecuteAs(ITestPlayer player, string command)
+	private async Task<TextCommandResult> ExecuteAs(ITestPlayer player, string command)
 	{
-		var completion = new TaskCompletionSource<TextCommandResult>();
-		World.Api.ChatCommands.ExecuteUnparsed(
-			command,
-			new TextCommandCallingArgs
-			{
-				Caller = new Caller
-				{
-					Type = EnumCallerType.Player,
-					Player = player.Player,
-					FromChatGroupId = GlobalConstants.GeneralChatGroup,
-				},
-			},
-			result => completion.TrySetResult(result));
-		return completion.Task;
+		return (await player.ExecuteCommand(command)).Raw;
 	}
 }

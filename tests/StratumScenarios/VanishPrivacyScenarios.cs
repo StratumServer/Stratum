@@ -3,7 +3,6 @@ using System.Reflection;
 using Atlas.Api;
 using Atlas.XUnit;
 using Vintagestory.API.Common;
-using Vintagestory.API.Config;
 using Xunit;
 
 namespace StratumScenarios;
@@ -11,9 +10,9 @@ namespace StratumScenarios;
 /// <summary>
 /// Two ends of issue #312. The first scenario is the per-caller half of the vanish rule: /near
 /// must still list the world for the vanished staff member and must not list the vanished staff
-/// member for anyone else. It runs each /near through the command API with an explicit Caller,
-/// because IWorldSession.ExecuteCommand runs as the console, which is an admin and would see
-/// everything regardless of the filter under test.
+/// member for anyone else. It runs each /near through ITestPlayer.ExecuteCommand, which carries
+/// the caller's real role and privileges, because IWorldSession.ExecuteCommand runs as the
+/// console, which is an admin and would see everything regardless of the filter under test.
 ///
 /// The second is the reconnect window fixed by this PR. Vanish persists in player data and is
 /// now restored in FinalizePlayerIdentification, before the first SpawnEntity and before
@@ -43,26 +42,26 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		await staff.TeleportTo(World.Spawn.AddCopy(4, 1, 0));
 		await World.Ticks(10);
 
-		TextCommandResult before = await ExecuteAs(observer, "/near 60");
-		Assert.Contains("vanish-mod", before.StatusMessage);
+		CommandResult before = await observer.ExecuteCommand("/near 60");
+		Assert.Contains("vanish-mod", before.Message);
 
-		TextCommandResult vanish = await ExecuteAs(staff, "/vanish on");
-		Assert.Equal(EnumCommandStatus.Success, vanish.Status);
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
 		await World.Ticks(10);
 
 		// The vanished player still sees the world.
-		TextCommandResult fromStaff = await ExecuteAs(staff, "/near 60");
-		Assert.Contains("vanish-obs", fromStaff.StatusMessage);
+		CommandResult fromStaff = await staff.ExecuteCommand("/near 60");
+		Assert.Contains("vanish-obs", fromStaff.Message);
 
 		// The plain observer does not see the vanished player.
-		TextCommandResult fromObserver = await ExecuteAs(observer, "/near 60");
-		Assert.DoesNotContain("vanish-mod", fromObserver.StatusMessage);
+		CommandResult fromObserver = await observer.ExecuteCommand("/near 60");
+		Assert.DoesNotContain("vanish-mod", fromObserver.Message);
 
-		TextCommandResult unvanish = await ExecuteAs(staff, "/vanish off");
-		Assert.Equal(EnumCommandStatus.Success, unvanish.Status);
+		CommandResult unvanish = await staff.ExecuteCommand("/vanish off");
+		Assert.True(unvanish.Ok, unvanish.Message);
 		await World.Ticks(10);
-		TextCommandResult after = await ExecuteAs(observer, "/near 60");
-		Assert.Contains("vanish-mod", after.StatusMessage);
+		CommandResult after = await observer.ExecuteCommand("/near 60");
+		Assert.Contains("vanish-mod", after.Message);
 	}
 
 	[AtlasScenario(TimeoutMs = 300_000)]
@@ -73,35 +72,40 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		await GrantVanishRole(staff);
 		await DemoteToPlainPlayer(observer);
 
-		TextCommandResult vanish = await ExecuteAs(staff, "/vanish on");
-		Assert.Equal(EnumCommandStatus.Success, vanish.Status);
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
 		await World.Ticks(10);
 
 		staff.Player.Disconnect();
 		await World.Until(() => !staff.IsConnected, timeoutTicks: 600);
 
-		// Snapshot the observer's outbound queue AFTER the disconnect, so only the rejoin's own
-		// traffic is inspected.
-		ChatProbe probe = ChatProbe.Attach(World, observer);
+		// Start both readers from "nothing sent yet". Clear() empties the observer's connection
+		// queue and the cumulative chat log Client keeps, the original non-vanished join of
+		// "reconnect-mod" included; the probe then takes its baseline from the emptied queue.
+		observer.Client.Clear();
+		PacketProbe probe = PacketProbe.Attach(World, observer);
 
 		ITestPlayer rejoined = await RejoinAfterDisconnect("reconnect-mod");
 		await World.Ticks(60);
 
 		Assert.True(rejoined.IsConnected, "the vanished player did not come back");
 		Assert.DoesNotContain(rejoined.Player.Entity.EntityId, probe.NewEntitySpawnIds());
-		IReadOnlyList<string> announcements = probe.NewJoinLeaveMessages();
-		Assert.DoesNotContain(
-			announcements,
-			line => line.Contains("reconnect-mod", StringComparison.Ordinal));
 
-		// Sanity check: the probe is wired up correctly and does see a join it should see, so an
-		// empty result above means "no message was sent", not "the probe caught nothing".
+		// Sanity check: the observer does receive what it should, so the empty results above and
+		// below mean "nothing was sent", not "the readers caught nothing".
 		ITestPlayer plain = await World.JoinPlayer("reconnect-plain");
 		await World.Ticks(60);
 		Assert.True(plain.IsConnected);
-		Assert.Contains(
-			probe.NewJoinLeaveMessages(),
-			line => line.Contains("reconnect-plain", StringComparison.Ordinal));
+		Assert.Contains(plain.Player.Entity.EntityId, probe.NewEntitySpawnIds());
+
+		// Client drains the connection queue the probe peeks at (see the PacketProbe remarks), so it
+		// is read last, once the probe is done with this player.
+		IReadOnlyList<string> announcements = observer.Client.Chat()
+			.Where(line => line.Type == EnumChatType.JoinLeave)
+			.Select(line => line.Message)
+			.ToList();
+		Assert.DoesNotContain(announcements, line => line.Contains("reconnect-mod", StringComparison.Ordinal));
+		Assert.Contains(announcements, line => line.Contains("reconnect-plain", StringComparison.Ordinal));
 	}
 
 	private async Task GrantVanishRole(ITestPlayer player)
@@ -120,26 +124,6 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		CommandResult result = await World.ExecuteCommand($"/player {player.Player.PlayerName} role suplayer");
 		Assert.True(result.Ok, $"could not demote {player.Player.PlayerName}: {result.Message}");
 		await World.Until(() => !player.Player.HasPrivilege("stratum.vanish"), timeoutTicks: 200);
-	}
-
-	private Task<TextCommandResult> ExecuteAs(ITestPlayer player, string command)
-	{
-		// IWorldSession.ExecuteCommand runs as the console, an admin with every privilege and no
-		// world position: useless for a per-caller visibility rule like /near or /vanish.
-		var completion = new TaskCompletionSource<TextCommandResult>();
-		World.Api.ChatCommands.ExecuteUnparsed(
-			command,
-			new TextCommandCallingArgs
-			{
-				Caller = new Caller
-				{
-					Type = EnumCallerType.Player,
-					Player = player.Player,
-					FromChatGroupId = GlobalConstants.GeneralChatGroup,
-				},
-			},
-			result => completion.TrySetResult(result));
-		return completion.Task;
 	}
 
 	private async Task<ITestPlayer> RejoinAfterDisconnect(string name)
@@ -163,22 +147,50 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 }
 
 /// <summary>
-/// Reads the packets the server actually sent to one test player: chat lines, entity spawns
-/// and group lists.
+/// Peeks at two packets the server sends a test player that Atlas 0.15.0's IClientObservations
+/// does not decode (it keeps highlights, particles, mod channel packets and chat lines only).
+/// Everything is read from the raw Packet_Server, deserialized with Packet_ServerSerializer:
+/// <list type="bullet">
+/// <item>Packet_Server.Id 34 (Packet_ServerIdEnum.EntitySpawn), field Packet_Server.EntitySpawn
+/// of class Packet_EntitySpawn: EntityCount, then Entity[0..EntityCount) of class Packet_Entity,
+/// of which only EntityId (long) is read. Used by VanishedReconnect_Should_NotAnnounceJoin_When_
+/// StillVanished to prove no spawn of the vanished player's entity reached the observer: that
+/// packet carries the exact position and the nametag, so it leaks more than the join message.</item>
+/// <item>Packet_Server.Id 49 (Packet_ServerIdEnum.PlayerGroups), field Packet_Server.PlayerGroups
+/// of class Packet_PlayerGroups: GroupsCount, then Groups[0..GroupsCount) of class
+/// Packet_PlayerGroup, of which only Name (string) is read. Used by GroupAdminScenarios.
+/// AddPlayer_Should_SendFullGroupList_When_DisplacingFromFaction to tell the full list from the
+/// single-group update (Packet_Server.Id 50, PlayerGroup): only the full list makes a client drop
+/// a group it no longer holds.</item>
+/// </list>
 /// </summary>
 /// <remarks>
-/// Atlas has no chat sink and the server has no hook on the outgoing path
-/// (joinLeaveDeathMessage -> SendMessageToGeneral/SendMessageToGroup -> SendMessage ->
-/// SendPacket), so this reads the one place the traffic lands: the player's dummy socket.
-/// Nothing ever drains those buffers, so everything the server sent is still queued, in order.
+/// Both live in the player's dummy connection: every server-to-client send ends in
+/// DummyNetConnection.Send or SendPreparedPacket, which enqueue a DummyNetworkPacket (fields Data
+/// and Length) in DummyNetwork.ClientReceiveBuffer, under DummyNetwork.ClientReceiveBufferLock. The
+/// DummyNetwork is the internal field "network" of ConnectedClient.Socket. This class enumerates
+/// that queue under the lock, past the index it had at Attach, and removes nothing.
+///
+/// Atlas's own reader is the opposite. Every IClientObservations member (Chat, ChatLines,
+/// Highlights, Particles, Packets&lt;T&gt;, Clear) empties the same queue through
+/// DummyTcpNetClient.ReadMessage(), and ClientObservations.Apply keeps only the sub-messages it
+/// knows: an EntitySpawn or PlayerGroups packet is decoded and dropped. So once a scenario has
+/// called player.Client on a player, this probe can no longer see what that player was sent
+/// before the call, and an Attach made before a Client.Clear() keeps an index past the packets
+/// that come after it. Either way the probe silently misses packets, a false green for a
+/// DoesNotContain. Attach after any Client.Clear(), read the probe first and player.Client last.
+///
 /// Reflection rather than a typed reference on purpose: this project references only
 /// VintagestoryAPI, and adding VintagestoryLib would put decompiled-tree types in signatures
 /// that xUnit reflects over during discovery, before Atlas installs its AssemblyResolve hook
 /// (see BootScenarios.Server_Should_RunPatchedLib_When_Built for the same constraint).
+///
+/// Ask for Atlas: IClientObservations.EntitySpawns() (entity ids, ideally with EntityType) and
+/// GroupListings() (group names per full listing), built like Chat() in 0.15.0, would retire
+/// this class.
 /// </remarks>
-internal sealed class ChatProbe
+internal sealed class PacketProbe
 {
-	private const int ChatLinePacketId = 8;
 	private const int EntitySpawnPacketId = 34;
 	private const int PlayerGroupsPacketId = 49;
 	private const BindingFlags Internal = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -187,14 +199,14 @@ internal sealed class ChatProbe
 	private readonly object gate;
 	private readonly int baseline;
 
-	private ChatProbe(IEnumerable queue, object gate, int baseline)
+	private PacketProbe(IEnumerable queue, object gate, int baseline)
 	{
 		this.queue = queue;
 		this.gate = gate;
 		this.baseline = baseline;
 	}
 
-	public static ChatProbe Attach(IWorldSession world, ITestPlayer player)
+	public static PacketProbe Attach(IWorldSession world, ITestPlayer player)
 	{
 		object server = world.Api.World;
 		dynamic clients = server.GetType().GetField("Clients")!.GetValue(server)!;
@@ -211,33 +223,7 @@ internal sealed class ChatProbe
 			baseline = ((ICollection)queue).Count;
 		}
 
-		return new ChatProbe(queue, gate, baseline);
-	}
-
-	public IReadOnlyList<string> NewJoinLeaveMessages()
-	{
-		var messages = new List<string>();
-		foreach (dynamic packet in NewPackets())
-		{
-			if ((int)packet.Id != ChatLinePacketId)
-			{
-				continue;
-			}
-
-			object? chatline = packet.Chatline;
-			if (chatline == null)
-			{
-				continue;
-			}
-
-			dynamic line = chatline;
-			if ((int)line.ChatType == (int)EnumChatType.JoinLeave)
-			{
-				messages.Add((string)line.Message);
-			}
-		}
-
-		return messages;
+		return new PacketProbe(queue, gate, baseline);
 	}
 
 	public IReadOnlyList<long> NewEntitySpawnIds()
