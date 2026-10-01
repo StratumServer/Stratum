@@ -884,7 +884,7 @@ index 6b3cdd0..d1f5a50 100644
  		byte[] array = ms.ToArray();
  		Packet_BlockEntity packet_BlockEntity = new Packet_BlockEntity();
  		packet_BlockEntity.Classname = text;
-@@ -975,6 +1459,101 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -975,6 +1459,107 @@ public class ServerSystemBlockSimulation : ServerSystem
  		{
  			Id = 48,
  			BlockEntities = packet_BlockEntities
@@ -983,6 +983,12 @@ index 6b3cdd0..d1f5a50 100644
 +		{
 +			return;
 +		}
++		long now = server.ElapsedMilliseconds;
++		if (now - stratumDirtyBacklogLogMs < 1000)
++		{
++			return;
++		}
++		stratumDirtyBacklogLogMs = now;
 +		ServerMain.Logger.Debug("[Stratum] dirty block pass left queued: dirty={0} modified={1} modifiedNoRelight={2}", dirtyLeft, modifiedLeft, modifiedNoRelightLeft);
 +	}
  }
