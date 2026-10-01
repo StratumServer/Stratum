@@ -19,7 +19,9 @@ namespace StratumScenarios;
 /// entity spawn with an exact position and a nametag, position updates, and then a despawn. This
 /// scenario fails against that older code, which is the reason it exists. The reconnect assertion
 /// checks what the observer's client was sent (the entity on any of its three paths, and the
-/// player data), rather than relying only on the separate join message.
+/// player data), rather than relying only on the separate join message. It ends with /vanish off,
+/// after which the same observer has to receive both: that is the control that tells "hidden
+/// because vanished" from an observer that was never listening.
 /// </summary>
 public class VanishPrivacyScenarios : AtlasScenarioBase
 {
@@ -93,6 +95,8 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		ITestPlayer plain = await World.JoinPlayer("reconnect-plain");
 		Assert.True(rejoined.IsConnected, "the vanished player did not come back");
 		Assert.True(plain.IsConnected);
+		long vanishedId = rejoined.Player.Entity.EntityId;
+		string vanishedUid = rejoined.Player.PlayerUID;
 
 		// A client gets an entity on one of three paths and the slowest takes dozens of passes, so
 		// wait the whole AbsenceWindowTicks (see its documentation) before reading an absence.
@@ -108,9 +112,9 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		// The vanished player's entity (spawn, tracked range or join list: HasReceivedEntity is the
 		// union of the three) and its player data (packet 41) must not have reached the observer.
 		Assert.False(
-			observer.Client.HasReceivedEntity(rejoined.Player.Entity.EntityId),
-			$"the vanished player's entity reached the observer: {Describe(observer, rejoined.Player.Entity.EntityId)}");
-		Assert.False(observer.Client.HasReceivedPlayerData(rejoined.Player.PlayerUID));
+			observer.Client.HasReceivedEntity(vanishedId),
+			$"the vanished player's entity reached the observer: {Describe(observer, vanishedId)}");
+		Assert.False(observer.Client.HasReceivedPlayerData(vanishedUid));
 
 		IReadOnlyList<string> announcements = observer.Client.Chat()
 			.Where(line => line.Type == EnumChatType.JoinLeave)
@@ -118,6 +122,22 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 			.ToList();
 		Assert.DoesNotContain(announcements, line => line.Contains("reconnect-mod", StringComparison.Ordinal));
 		Assert.Contains(announcements, line => line.Contains("reconnect-plain", StringComparison.Ordinal));
+
+		// The other end: the condition lifts, and the same observer must now receive the entity and
+		// its player data. Without this the scenario cannot tell "hidden because vanished" from
+		// "never sent to this observer at all".
+		int revealTick = World.CurrentTick;
+		CommandResult reveal = await rejoined.ExecuteCommand("/vanish off");
+		Assert.True(reveal.Ok, reveal.Message);
+		await World.Until(() => observer.Client.HasReceivedEntity(vanishedId), timeoutTicks: AbsenceWindowTicks);
+
+		ReceivedEntity arrival = observer.Client.EntityArrivals().First(a => a.EntityId == vanishedId);
+		// A sanity check on Atlas's stamp, not a second proof: nothing awaits between the absence read
+		// above and the command, so an arrival stamped at or before revealTick would already have
+		// failed that read. Atlas stamps an arrival with the pass that drained it, so the entity the
+		// command sent is stamped revealTick + 1.
+		Assert.True(arrival.Tick > revealTick, $"the entity arrival is not stamped after /vanish off ran: {arrival}, reveal at tick {revealTick}");
+		Assert.True(observer.Client.HasReceivedPlayerData(vanishedUid), "the player data did not follow the entity");
 	}
 
 	private async Task GrantVanishRole(ITestPlayer player)
