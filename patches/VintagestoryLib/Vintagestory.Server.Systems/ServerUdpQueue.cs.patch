@@ -2,7 +2,35 @@ diff --git a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs b/Vin
 index 2f84679..42b944a 100644
 --- a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
 +++ b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
-@@ -66,10 +66,27 @@ public class ServerUdpQueue
+@@ -26,5 +26,11 @@ public class ServerUdpQueue
+ 	internal void QueuePacket(ConnectedClient client, Packet_UdpPacket packet)
+ 	{
++		// Stratum: disconnects can hand this queue a packet with no client. Enqueueing
++		// that kills the UDP thread when the send path dereferences the client.
++		if (client == null || packet == null)
++		{
++			return;
++		}
+ 		queue.Enqueue(new QueuedUDPPacket(client, packet));
+ 		if (idle)
+ 		{
+@@ -57,17 +63,40 @@ public class ServerUdpQueue
+ 			long num = Environment.TickCount - 750;
+ 			QueuedUDPPacket result;
+ 			while (queue.TryDequeue(out result))
+ 			{
+-				if (result.creationTime > num)
++				// Stratum: a null client here is what took the process down under an 800-bot join.
++				if (result?.client == null || result.packet == null)
++				{
++					network.physicsManager.StratumReturnBulkPositionPacket(result?.packet, false);
++					continue;
++				}
++				if (result.creationTime > num)
+ 				{
+ 					try
+ 					{
+ 						server.SendPacketBlocking(result.client, result.packet);
  					}
  					catch (Exception e)
  					{
@@ -28,5 +56,3 @@ index 2f84679..42b944a 100644
  				}
  			}
  		}
- 	}
- }
