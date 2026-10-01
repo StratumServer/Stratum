@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Reflection;
 using Atlas.Api;
 using Atlas.XUnit;
 using Vintagestory.API.Common;
@@ -20,10 +18,17 @@ namespace StratumScenarios;
 /// OnPlayerJoin, leaves a window of several seconds in which nearby players get a join message, a
 /// entity spawn with an exact position and a nametag, position updates, and then a despawn. This
 /// scenario fails against that older code, which is the reason it exists. The reconnect assertion
-/// checks the spawn packet directly, rather than relying only on the separate join message.
+/// checks what the observer's client was sent (the entity on any of its three paths, and the
+/// player data), rather than relying only on the separate join message.
 /// </summary>
 public class VanishPrivacyScenarios : AtlasScenarioBase
 {
+	/// <summary>
+	/// How long to wait before reading "the observer never received X". 31 passes is the slowest
+	/// measured arrival of an entity on any path; 60 leaves a margin for a loaded run.
+	/// </summary>
+	private const int AbsenceWindowTicks = 60;
+
 	[AtlasScenario(TimeoutMs = 300_000)]
 	public async Task Near_Should_HideVanishedStaff_When_CalledByPlainPlayer()
 	{
@@ -79,27 +84,34 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		staff.Player.Disconnect();
 		await World.Until(() => !staff.IsConnected, timeoutTicks: 600);
 
-		// Start both readers from "nothing sent yet". Clear() empties the observer's connection
-		// queue and the cumulative chat log Client keeps, the original non-vanished join of
-		// "reconnect-mod" included; the probe then takes its baseline from the emptied queue.
+		// Start from "nothing received yet". Clear() forgets everything the observer was sent so far,
+		// the original non-vanished join of "reconnect-mod" included: its entity, its player data and
+		// its join announcement.
 		observer.Client.Clear();
-		PacketProbe probe = PacketProbe.Attach(World, observer);
 
 		ITestPlayer rejoined = await RejoinAfterDisconnect("reconnect-mod");
-		await World.Ticks(60);
-
-		Assert.True(rejoined.IsConnected, "the vanished player did not come back");
-		Assert.DoesNotContain(rejoined.Player.Entity.EntityId, probe.NewEntitySpawnIds());
-
-		// Sanity check: the observer does receive what it should, so the empty results above and
-		// below mean "nothing was sent", not "the readers caught nothing".
 		ITestPlayer plain = await World.JoinPlayer("reconnect-plain");
-		await World.Ticks(60);
+		Assert.True(rejoined.IsConnected, "the vanished player did not come back");
 		Assert.True(plain.IsConnected);
-		Assert.Contains(plain.Player.Entity.EntityId, probe.NewEntitySpawnIds());
 
-		// Client drains the connection queue the probe peeks at (see the PacketProbe remarks), so it
-		// is read last, once the probe is done with this player.
+		// A client gets an entity on one of three paths and the slowest takes dozens of passes, so
+		// wait the whole AbsenceWindowTicks (see its documentation) before reading an absence.
+		await World.Ticks(AbsenceWindowTicks);
+
+		// The control first: the same observer, the same window, a player who is not vanished. If this
+		// fails, the absence below would only mean "nothing was captured".
+		Assert.True(
+			observer.Client.HasReceivedEntity(plain.Player.Entity.EntityId),
+			"the observer never received the plain player's entity, so its observations prove nothing");
+		Assert.True(observer.Client.HasReceivedPlayerData(plain.Player.PlayerUID));
+
+		// The vanished player's entity (spawn, tracked range or join list: HasReceivedEntity is the
+		// union of the three) and its player data (packet 41) must not have reached the observer.
+		Assert.False(
+			observer.Client.HasReceivedEntity(rejoined.Player.Entity.EntityId),
+			$"the vanished player's entity reached the observer: {Describe(observer, rejoined.Player.Entity.EntityId)}");
+		Assert.False(observer.Client.HasReceivedPlayerData(rejoined.Player.PlayerUID));
+
 		IReadOnlyList<string> announcements = observer.Client.Chat()
 			.Where(line => line.Type == EnumChatType.JoinLeave)
 			.Select(line => line.Message)
@@ -126,6 +138,11 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		await World.Until(() => !player.Player.HasPrivilege("stratum.vanish"), timeoutTicks: 200);
 	}
 
+	private static string Describe(ITestPlayer observer, long entityId)
+	{
+		return string.Join(", ", observer.Client.EntityArrivals().Where(a => a.EntityId == entityId));
+	}
+
 	private async Task<ITestPlayer> RejoinAfterDisconnect(string name)
 	{
 		// JoinPlayer frees the joined-name claim from a game-thread check that runs a few ticks
@@ -143,167 +160,5 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		}
 
 		throw new InvalidOperationException($"'{name}' never became rejoinable after the disconnect.");
-	}
-}
-
-/// <summary>
-/// Peeks at two packets the server sends a test player that Atlas 0.15.0's IClientObservations
-/// does not decode (it keeps highlights, particles, mod channel packets and chat lines only).
-/// Everything is read from the raw Packet_Server, deserialized with Packet_ServerSerializer:
-/// <list type="bullet">
-/// <item>Packet_Server.Id 34 (Packet_ServerIdEnum.EntitySpawn), field Packet_Server.EntitySpawn
-/// of class Packet_EntitySpawn: EntityCount, then Entity[0..EntityCount) of class Packet_Entity,
-/// of which only EntityId (long) is read. Used by VanishedReconnect_Should_NotAnnounceJoin_When_
-/// StillVanished to prove no spawn of the vanished player's entity reached the observer: that
-/// packet carries the exact position and the nametag, so it leaks more than the join message.</item>
-/// <item>Packet_Server.Id 49 (Packet_ServerIdEnum.PlayerGroups), field Packet_Server.PlayerGroups
-/// of class Packet_PlayerGroups: GroupsCount, then Groups[0..GroupsCount) of class
-/// Packet_PlayerGroup, of which only Name (string) is read. Used by GroupAdminScenarios.
-/// AddPlayer_Should_SendFullGroupList_When_DisplacingFromFaction to tell the full list from the
-/// single-group update (Packet_Server.Id 50, PlayerGroup): only the full list makes a client drop
-/// a group it no longer holds.</item>
-/// </list>
-/// </summary>
-/// <remarks>
-/// Both live in the player's dummy connection: every server-to-client send ends in
-/// DummyNetConnection.Send or SendPreparedPacket, which enqueue a DummyNetworkPacket (fields Data
-/// and Length) in DummyNetwork.ClientReceiveBuffer, under DummyNetwork.ClientReceiveBufferLock. The
-/// DummyNetwork is the internal field "network" of ConnectedClient.Socket. This class enumerates
-/// that queue under the lock, past the index it had at Attach, and removes nothing.
-///
-/// Atlas's own reader is the opposite. Every IClientObservations member (Chat, ChatLines,
-/// Highlights, Particles, Packets&lt;T&gt;, Clear) empties the same queue through
-/// DummyTcpNetClient.ReadMessage(), and ClientObservations.Apply keeps only the sub-messages it
-/// knows: an EntitySpawn or PlayerGroups packet is decoded and dropped. So once a scenario has
-/// called player.Client on a player, this probe can no longer see what that player was sent
-/// before the call, and an Attach made before a Client.Clear() keeps an index past the packets
-/// that come after it. Either way the probe silently misses packets, a false green for a
-/// DoesNotContain. Attach after any Client.Clear(), read the probe first and player.Client last.
-///
-/// Reflection rather than a typed reference on purpose: this project references only
-/// VintagestoryAPI, and adding VintagestoryLib would put decompiled-tree types in signatures
-/// that xUnit reflects over during discovery, before Atlas installs its AssemblyResolve hook
-/// (see BootScenarios.Server_Should_RunPatchedLib_When_Built for the same constraint).
-///
-/// Ask for Atlas: IClientObservations.EntitySpawns() (entity ids, ideally with EntityType) and
-/// GroupListings() (group names per full listing), built like Chat() in 0.15.0, would retire
-/// this class.
-/// </remarks>
-internal sealed class PacketProbe
-{
-	private const int EntitySpawnPacketId = 34;
-	private const int PlayerGroupsPacketId = 49;
-	private const BindingFlags Internal = BindingFlags.Instance | BindingFlags.NonPublic;
-
-	private readonly IEnumerable queue;
-	private readonly object gate;
-	private readonly int baseline;
-
-	private PacketProbe(IEnumerable queue, object gate, int baseline)
-	{
-		this.queue = queue;
-		this.gate = gate;
-		this.baseline = baseline;
-	}
-
-	public static PacketProbe Attach(IWorldSession world, ITestPlayer player)
-	{
-		object server = world.Api.World;
-		dynamic clients = server.GetType().GetField("Clients")!.GetValue(server)!;
-		object client = clients[player.Player.ClientId];
-		object socket = client.GetType().GetProperty("Socket")!.GetValue(client)!;
-
-		object network = socket.GetType().GetField("network", Internal)!.GetValue(socket)!;
-		object gate = network.GetType().GetField("ClientReceiveBufferLock", Internal)!.GetValue(network)!;
-		var queue = (IEnumerable)network.GetType().GetField("ClientReceiveBuffer", Internal)!.GetValue(network)!;
-
-		int baseline;
-		lock (gate)
-		{
-			baseline = ((ICollection)queue).Count;
-		}
-
-		return new PacketProbe(queue, gate, baseline);
-	}
-
-	public IReadOnlyList<long> NewEntitySpawnIds()
-	{
-		var ids = new List<long>();
-		foreach (dynamic packet in NewPackets())
-		{
-			if ((int)packet.Id != EntitySpawnPacketId || packet.EntitySpawn == null)
-			{
-				continue;
-			}
-
-			dynamic spawn = packet.EntitySpawn;
-			int count = (int)spawn.EntityCount;
-			for (int index = 0; index < count; index++)
-			{
-				ids.Add((long)spawn.Entity[index].EntityId);
-			}
-		}
-
-		return ids;
-	}
-
-	/// <summary>
-	/// The group names in each full group list (packet 49, SendPlayerGroups) the player was sent,
-	/// oldest first. A single-group update (packet 50, SendPlayerGroup) is not a listing and is
-	/// left out: only the full list tells the client to drop a group it no longer holds.
-	/// </summary>
-	public IReadOnlyList<IReadOnlyList<string>> NewGroupListings()
-	{
-		var listings = new List<IReadOnlyList<string>>();
-		foreach (dynamic packet in NewPackets())
-		{
-			if ((int)packet.Id != PlayerGroupsPacketId || packet.PlayerGroups == null)
-			{
-				continue;
-			}
-
-			dynamic groups = packet.PlayerGroups;
-			int count = (int)groups.GroupsCount;
-			var names = new List<string>();
-			for (int index = 0; index < count; index++)
-			{
-				names.Add((string)groups.Groups[index].Name);
-			}
-
-			listings.Add(names);
-		}
-
-		return listings;
-	}
-
-	private IReadOnlyList<object> NewPackets()
-	{
-		var payloads = new List<(byte[] Data, int Length)>();
-		lock (gate)
-		{
-			int index = 0;
-			foreach (object item in queue)
-			{
-				if (index++ < baseline)
-				{
-					continue;
-				}
-
-				dynamic entry = item;
-				payloads.Add(((byte[])entry.Data, (int)entry.Length));
-			}
-		}
-
-		Type serializerType = Type.GetType("Packet_ServerSerializer, VintagestoryLib")!;
-		Type packetType = Type.GetType("Packet_Server, VintagestoryLib")!;
-		MethodInfo deserialize = serializerType.GetMethod("DeserializeBuffer")!;
-
-		var packets = new List<object>();
-		foreach ((byte[] data, int length) in payloads)
-		{
-			packets.Add(deserialize.Invoke(null, new object?[] { data, length, Activator.CreateInstance(packetType) })!);
-		}
-
-		return packets;
 	}
 }

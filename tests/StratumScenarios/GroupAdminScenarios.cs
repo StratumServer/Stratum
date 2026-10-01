@@ -524,14 +524,24 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await StaffAdd("RedListed", moved);
 		await World.Ticks(5);
 
-		PacketProbe probe = PacketProbe.Attach(World, moved);
+		// Control: the client was told about RedListed before the move, either by a single-group
+		// update or by a listing, so its absence below is a removal and not a group it never knew.
+		Assert.True(
+			moved.Client.GroupUpdates().Any(update => update.Group.Name == "RedListed")
+			|| moved.Client.GroupListings().Any(listing => listing.Groups.Any(group => group.Name == "RedListed")),
+			"the moved player's client never learned about RedListed");
+
+		int tickBefore = World.CurrentTick;
 		TextCommandResult added = await ExecuteAs(blueOwner, $"/group addplayer BlueListed {moved.Player.PlayerName} 1");
 		Assert.Equal(EnumCommandStatus.Success, added.Status);
 		await World.Ticks(5);
 
-		IReadOnlyList<IReadOnlyList<string>> listings = probe.NewGroupListings();
+		// Only the listings sent by the command: the join and the earlier staff add sent theirs before.
+		IReadOnlyList<ReceivedGroupListing> listings = moved.Client.GroupListings()
+			.Where(listing => listing.Tick > tickBefore)
+			.ToList();
 		Assert.NotEmpty(listings);
-		IReadOnlyList<string> latest = listings[^1];
+		IReadOnlyList<string> latest = listings[^1].Groups.Select(group => group.Name).ToList();
 		Assert.Contains("BlueListed", latest);
 		Assert.DoesNotContain("RedListed", latest);
 
