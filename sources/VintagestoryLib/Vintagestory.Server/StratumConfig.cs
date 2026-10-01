@@ -1523,6 +1523,12 @@ internal class StratumBlockTickConfig
 
 	public int MaxMainThreadBlockTicksPerPass { get; set; } = 5000;
 
+	// One 100ms pass publishes at most this many dirty blocks, and the same cap applies
+	// separately to modified and no-relight blocks. Past the cap, the rest waits for the
+	// next pass. DirtyBlocks otherwise calls SendSetBlock once per block, and that walks
+	// every connected client on the gameplay thread.
+	public int MaxDirtyBlocksPerPass { get; set; } = 512;
+
 	// Spread the random tick pass across N smaller slices instead of one burst. Each slice
 	// runs at BlockTickInterval/SliceCount ms and processes 1/SliceCount of the chunk set.
 	// Same aggregate rate per chunk, removes the periodic sawtooth spike. 1 = vanilla batch.
@@ -1545,6 +1551,7 @@ internal class StratumBlockTickConfig
 		MaxChunksPerPass = Math.Max(1, MaxChunksPerPass);
 		MaxRandomTicksPerChunk = Math.Max(0, MaxRandomTicksPerChunk);
 		MaxMainThreadBlockTicksPerPass = Math.Max(1, MaxMainThreadBlockTicksPerPass);
+		MaxDirtyBlocksPerPass = Math.Max(1, MaxDirtyBlocksPerPass);
 		RandomTickSliceCount = Math.Max(1, Math.Min(16, RandomTickSliceCount));
 		OverloadTickMs = Math.Max(10, Math.Min(1000, OverloadTickMs));
 		OverloadScale = Math.Max(0.05f, Math.Min(1f, OverloadScale));
