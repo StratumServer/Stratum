@@ -632,11 +632,12 @@ internal class StratumPerformanceConfig
 
 internal class StratumNetworkConfig
 {
-	// Off by default. The queue removes the packet reordering bug from the old
-	// StratumNetworkFlush (disabled after client crashes, see PR #138), but it is new code
-	// on the hottest path in the server. Soak on a community server before flipping the
-	// shipped default.
-	public bool SendQueueEnabled { get; set; } = false;
+	// On by default. With the queue off, TcpNetConnection.Send calls Socket.SendAsync on
+	// the gameplay thread. A 1000-player capture on a 130k-chunk world spent about half of
+	// ServerMain.Process samples in SocketAsyncEventArgs.DoOperationSendSingleBuffer.
+	// The queue is the only sender for the connection and runs on the thread pool. Set
+	// this false to restore the direct send path. See #325.
+	public bool SendQueueEnabled { get; set; } = true;
 
 	// Packets at or above this size skip coalescing and go out alone. Matches the TCP MTU
 	// assumption the old flush buffer used.
