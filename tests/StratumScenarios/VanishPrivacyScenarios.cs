@@ -26,8 +26,15 @@ namespace StratumScenarios;
 public class VanishPrivacyScenarios : AtlasScenarioBase
 {
 	/// <summary>
-	/// How long to wait before reading "the observer never received X". 31 passes is the slowest
-	/// measured arrival of an entity on any path; 60 leaves a margin for a loaded run.
+	/// How long to wait before reading "the observer never received X". On this fork, which sends
+	/// the entities entering a client's range as one packet 40 (see the PhysicsManager patch), a
+	/// player returning into range was measured on one install over two runs of 20 rounds for each
+	/// Atlas version. With 0.16.0-rc.1: 8 to 9 passes in 12 rounds of each run, 14 to 39 in the
+	/// others. With 0.16.0-rc.3: 8 to 9 passes in 19 rounds of each run, 13 in the other. rc.2 made
+	/// TeleportTo register the player in the target chunk, which the engine alone does 20 to 30
+	/// passes late, and that fits the slow rounds, but the comparison did not isolate that change
+	/// from the rest of rc.2 and rc.3, and the final 0.16.0 was not measured separately. 60 is a
+	/// margin over the largest value seen with either release candidate, not a derived bound.
 	/// </summary>
 	private const int AbsenceWindowTicks = 60;
 
