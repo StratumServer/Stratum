@@ -1,25 +1,35 @@
 diff --git a/VintagestoryApi/Common/Collectible/Collectible.cs b/VintagestoryApi/Common/Collectible/Collectible.cs
-index 37c8ea5..a87a52f 100644
+index 37c8ea5..683f060 100644
 --- a/VintagestoryApi/Common/Collectible/Collectible.cs
 +++ b/VintagestoryApi/Common/Collectible/Collectible.cs
-@@ -22,10 +22,26 @@ namespace Vintagestory.API.Common
+@@ -1,8 +1,9 @@
+ using System;
+ using System.Collections.Generic;
+ using System.Linq;
++using System.Runtime.CompilerServices;
+ using System.Text;
+ using Vintagestory.API.Client;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Datastructures;
+@@ -22,10 +23,26 @@ namespace Vintagestory.API.Common
      /// <summary>
      /// Contains all properties shared by Blocks and Items
      /// </summary>
      public abstract class CollectibleObject : RegistryObject
      {
 +
-+        // Stratum: Bound repeated behavior failures to one log per collectible and behavior type.
-+        private System.Collections.Concurrent.ConcurrentDictionary<Type, byte> StratumLoggedBehaviorExceptions;
++        // Stratum: Bound repeated behavior failures to one log per collectible, callback, and behavior type.
++        private System.Collections.Concurrent.ConcurrentDictionary<(Type BehaviorType, string Callback), byte> StratumLoggedBehaviorExceptions;
 +
 +        private void StratumLogBehaviorException(ILogger StratumLogger, CollectibleBehavior StratumBehavior, Exception StratumException, string StratumCallback)
 +        {
 +            if (StratumLogger == null) return;
 +
 +            Type StratumBehaviorType = StratumBehavior?.GetType() ?? typeof(CollectibleBehavior);
-+            System.Collections.Concurrent.ConcurrentDictionary<Type, byte> StratumLoggedExceptions =
++            System.Collections.Concurrent.ConcurrentDictionary<(Type BehaviorType, string Callback), byte> StratumLoggedExceptions =
 +                System.Threading.LazyInitializer.EnsureInitialized(ref StratumLoggedBehaviorExceptions);
-+            if (!StratumLoggedExceptions.TryAdd(StratumBehaviorType, 0)) return;
++            if (!StratumLoggedExceptions.TryAdd((StratumBehaviorType, StratumCallback), 0)) return;
 +
 +            StratumLogger.Error("Exception thrown in CollectibleBehavior {0} during {1} for {2}:", StratumBehaviorType.FullName, StratumCallback, Code);
 +            StratumLogger.Error(StratumException);
@@ -29,7 +39,7 @@ index 37c8ea5..a87a52f 100644
  
          /// <summary>
          /// Liquids are handled and rendered differently than solid blocks.
-@@ -721,11 +737,21 @@ namespace Vintagestory.API.Common
+@@ -721,11 +738,21 @@ namespace Vintagestory.API.Common
              bool preventDefault = false;
  
              foreach (CollectibleBehavior behavior in CollectibleBehaviors)
@@ -52,7 +62,14 @@ index 37c8ea5..a87a52f 100644
                      result &= behaviorResult;
                      preventDefault = true;
                  }
-@@ -3554,11 +3580,20 @@ namespace Vintagestory.API.Common
+@@ -3548,17 +3575,26 @@ namespace Vintagestory.API.Common
+         {
+             return MatterState == EnumMatterState.Liquid;
+         }
+ 
+ 
+-        protected void WalkBehaviors(CollectibleBehaviorDelegate onBehavior, Action defaultAction)
++        protected void WalkBehaviors(CollectibleBehaviorDelegate onBehavior, Action defaultAction, [CallerMemberName] string callbackName = "")
          {
              bool executeDefault = true;
              foreach (CollectibleBehavior behavior in CollectibleBehaviors)
@@ -67,7 +84,7 @@ index 37c8ea5..a87a52f 100644
 +                catch (Exception e)
 +                {
 +                    handling = EnumHandling.PassThrough;
-+                    StratumLogBehaviorException(api?.Logger, behavior, e, nameof(WalkBehaviors));
++                    StratumLogBehaviorException(api?.Logger, behavior, e, callbackName);
 +                }
  
                  if (handling == EnumHandling.PreventSubsequent) return;

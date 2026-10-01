@@ -263,13 +263,17 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		Block block = World.BlockAt(blockPos);
 		BlockBehavior[] originalBehaviors = block.BlockBehaviors;
 		var faultyBehavior = new FaultyBlockBehavior(block);
-		ILogger logger = World.Api.World.Logger;
+		ILogger logger = GetServerLogger();
 		int loggedBreakFailures = 0;
+		var loggedMessages = new List<string>();
+		int didBreakCount = 0;
+		BlockBrokenDelegate didBreakHandler = (_, _, _) => didBreakCount++;
+		World.Api.Event.DidBreakBlock += didBreakHandler;
 		LogEntryDelegate logEntry = (logType, message, _) =>
 		{
+			if (logType == EnumLogType.Error) loggedMessages.Add(message);
 			if (logType == EnumLogType.Error &&
-				(message.StartsWith("Exception thrown while breaking block", StringComparison.Ordinal) ||
-				 message.StartsWith("Exception thrown during fallback block break", StringComparison.Ordinal)))
+				message.StartsWith("Exception thrown during {0}", StringComparison.Ordinal))
 			{
 				loggedBreakFailures++;
 			}
@@ -285,21 +289,180 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 
 			Assert.True(player.IsConnected, "player was disconnected after block behavior threw an exception");
 			Assert.Equal(2, faultyBehavior.InvocationCount);
-			Assert.Equal(2, loggedBreakFailures);
+			Assert.True(loggedBreakFailures == 2, $"both original and fallback failures should be logged; errors: {string.Join(" | ", loggedMessages)}");
+			Assert.True(didBreakCount == 0, "DidBreakBlock must not fire when both the original and fallback break fail");
 
 			DispatchPacket(World, player, packet);
 			await World.Ticks(5);
 
 			Assert.True(player.IsConnected, "player was disconnected after a repeated block behavior exception");
 			Assert.Equal(4, faultyBehavior.InvocationCount);
-			Assert.Equal(2, loggedBreakFailures);
+			Assert.True(loggedBreakFailures == 2, $"repeated failures should be capped after two callback types; errors: {string.Join(" | ", loggedMessages)}");
+			Assert.True(didBreakCount == 0, "a failed break must not be reported as successful on retry");
 			Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
 		}
 		finally
 		{
+			World.Api.Event.DidBreakBlock -= didBreakHandler;
 			logger.EntryAdded -= logEntry;
 			block.BlockBehaviors = originalBehaviors;
 		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_NotRetryOldBlockOrDuplicateDropsAfterReplacement()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-replaced");
+		player.Player.WorldData.CurrentGameMode = EnumGameMode.Survival;
+		BlockPos playerPos = World.Spawn.AddCopy(18, 1, 18);
+		await player.TeleportTo(playerPos);
+
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		Block block = World.BlockAt(blockPos);
+		Block replacement = World.Api.World.GetBlock(new AssetLocation("game:soil-medium-normal"))!;
+		BlockBehavior[] originalBehaviors = block.BlockBehaviors;
+		var behavior = new SpawnDropsThenReplaceThenThrowBehavior(block, replacement.BlockId);
+		await player.GiveItem("game:pickaxe-steel", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		Assert.NotNull(activeSlot.Itemstack);
+		int heldTier = activeSlot.Itemstack!.Collectible.GetToolTier(activeSlot);
+		int requiredTier = block.GetRequiredMiningTier(World.Api.World, blockPos);
+		Assert.True(heldTier >= requiredTier, $"test pickaxe must meet mining tier; held={heldTier} required={requiredTier} item={activeSlot.Itemstack.Collectible.Code}");
+		int itemCountBefore = CountNearbyItemEntities(blockPos);
+		int itemCountAfterFirstDrop = itemCountBefore;
+		behavior.AfterDropSpawned = () => itemCountAfterFirstDrop = CountNearbyItemEntities(blockPos);
+		try
+		{
+			block.BlockBehaviors = block.BlockBehaviors.Append(behavior).ToArray();
+
+			// This packet simulates an instant break, so bypass progress validation for this focused recovery scenario.
+			bool blockBreakGuardEnabled = SetBlockBreakGuardEnabled(false);
+			try
+			{
+				DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+			}
+			finally
+			{
+				SetBlockBreakGuardEnabled(blockBreakGuardEnabled);
+			}
+			await World.Ticks(5);
+
+			Assert.True(player.IsConnected, "player was disconnected after the block behavior threw");
+			Assert.True(behavior.InvocationCount == 1, $"the replaced block must not be retried through its stale Block instance; invoked {behavior.InvocationCount}, current block {World.BlockAt(blockPos).Code}");
+			Assert.True(replacement.Code.Equals(World.BlockAt(blockPos).Code), "the replacement block must remain in the world");
+			Assert.True(itemCountAfterFirstDrop > itemCountBefore, "the survival break must spawn at least one item entity");
+			Assert.True(itemCountAfterFirstDrop == CountNearbyItemEntities(blockPos), "the failed original break must not spawn its drops twice");
+		}
+		finally
+		{
+			block.BlockBehaviors = originalBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_LogCollectibleBehaviorOncePerCallback()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-coll-log");
+		BlockPos playerPos = World.Spawn.AddCopy(20, 1, 20);
+		await player.TeleportTo(playerPos);
+
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		await player.GiveItem("game:pickaxe-iron", 1);
+		CollectibleObject pickaxe = player.Player.InventoryManager.ActiveHotbarSlot.Itemstack!.Collectible;
+		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
+		var faultyBehavior = new FaultyMultiCallbackBehavior(pickaxe);
+		ILogger logger = World.Api.World.Logger;
+		var loggedMessages = new List<string>();
+		LogEntryDelegate logEntry = (logType, message, _) =>
+		{
+			if (logType != EnumLogType.Error || !message.StartsWith("Exception thrown in CollectibleBehavior", StringComparison.Ordinal)) return;
+			loggedMessages.Add(message);
+		};
+		logger.EntryAdded += logEntry;
+		try
+		{
+			pickaxe.CollectibleBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
+			DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+			await World.Ticks(5);
+
+			Assert.True(faultyBehavior.BrokenWithInvoked, "OnBlockBrokenWith should be invoked");
+			Assert.True(faultyBehavior.DamageInvoked, "DamageItem should be invoked after the block break");
+			Assert.True(loggedMessages.Count == 2, $"the same behavior type must be logged independently for each callback; messages: {string.Join(" | ", loggedMessages)}");
+		}
+		finally
+		{
+			logger.EntryAdded -= logEntry;
+			pickaxe.CollectibleBehaviors = originalBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_CapRepeatedCollectibleBehaviorLogs()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-coll-cap");
+		BlockPos playerPos = World.Spawn.AddCopy(22, 1, 22);
+		await player.TeleportTo(playerPos);
+
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		await player.GiveItem("game:pickaxe-iron", 1);
+		CollectibleObject pickaxe = player.Player.InventoryManager.ActiveHotbarSlot.Itemstack!.Collectible;
+		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
+		var faultyBehavior = new FaultyRepeatedLogBehavior(pickaxe);
+		var loggedBehaviorFailures = new List<string>();
+		ILogger logger = World.Api.World.Logger;
+		LogEntryDelegate logEntry = (logType, message, _) =>
+		{
+			if (logType == EnumLogType.Error && message.StartsWith("Exception thrown in CollectibleBehavior", StringComparison.Ordinal)) loggedBehaviorFailures.Add(message);
+		};
+		logger.EntryAdded += logEntry;
+		try
+		{
+			pickaxe.CollectibleBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
+			for (int i = 0; i < 3; i++)
+			{
+				DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+				await World.Ticks(1);
+			}
+
+			Assert.True(faultyBehavior.InvocationCount == 3);
+			Assert.True(loggedBehaviorFailures.Count == 1, $"repeated failures in one callback should emit only one full stack trace; found {loggedBehaviorFailures.Count}");
+			Assert.True(World.BlockAt(blockPos).Code.ToString() == "game:rock-granite", "the explicit PreventDefault veto remains intact");
+		}
+		finally
+		{
+			logger.EntryAdded -= logEntry;
+			pickaxe.CollectibleBehaviors = originalBehaviors;
+		}
+	}
+
+	private int CountNearbyItemEntities(BlockPos center)
+	{
+		var area = new Cuboidi(center.X - 4, center.Y - 4, center.Z - 4, center.X + 4, center.Y + 4, center.Z + 4);
+		return World.EntitiesIn(area).OfType<EntityItem>().Count();
+	}
+
+	private static ILogger GetServerLogger()
+	{
+		Type serverMainType = Type.GetType("Vintagestory.Server.ServerMain, VintagestoryLib", throwOnError: true)!;
+		FieldInfo loggerField = serverMainType.GetField("Logger", BindingFlags.Public | BindingFlags.Static)!;
+		return (ILogger)loggerField.GetValue(null)!;
+	}
+
+	private static bool SetBlockBreakGuardEnabled(bool enabled)
+	{
+		Type runtimeType = Type.GetType("Vintagestory.Server.StratumRuntime, VintagestoryLib", throwOnError: true)!;
+		object config = runtimeType.GetProperty("Config", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
+		object hardening = config.GetType().GetProperty("Hardening")!.GetValue(config)!;
+		PropertyInfo guardProperty = hardening.GetType().GetProperty("BlockBreakGuards")!;
+		bool previous = (bool)guardProperty.GetValue(hardening)!;
+		guardProperty.SetValue(hardening, enabled);
+		return previous;
 	}
 
 	[AtlasScenario(TimeoutMs = 60_000)]
@@ -390,7 +553,8 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 	private sealed class FaultyBrokenWithBehavior : CollectibleBehavior
 	{
 		private readonly EnumHandling _handlingBeforeThrow;
-		public bool BrokenWithInvoked { get; private set; }
+		public int InvocationCount { get; private set; }
+		public bool BrokenWithInvoked => InvocationCount > 0;
 
 		public FaultyBrokenWithBehavior(CollectibleObject collObj, EnumHandling handlingBeforeThrow = EnumHandling.PassThrough) : base(collObj)
 		{
@@ -399,9 +563,47 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 
 		public override bool OnBlockBrokenWith(IWorldAccessor world, Entity byEntity, ItemSlot itemslot, BlockSelection blockSel, float dropQuantityMultiplier, ref EnumHandling bhHandling)
 		{
-			BrokenWithInvoked = true;
+			InvocationCount++;
 			bhHandling = _handlingBeforeThrow;
 			throw new InvalidOperationException("Simulated external mod exception during OnBlockBrokenWith");
+		}
+	}
+
+	private sealed class FaultyMultiCallbackBehavior : CollectibleBehavior
+	{
+		public bool BrokenWithInvoked { get; private set; }
+		public bool DamageInvoked { get; private set; }
+
+		public FaultyMultiCallbackBehavior(CollectibleObject collObj) : base(collObj)
+		{
+		}
+
+		public override bool OnBlockBrokenWith(IWorldAccessor world, Entity byEntity, ItemSlot itemslot, BlockSelection blockSel, float dropQuantityMultiplier, ref EnumHandling bhHandling)
+		{
+			BrokenWithInvoked = true;
+			throw new InvalidOperationException("Simulated external mod exception during OnBlockBrokenWith");
+		}
+
+		public override void OnDamageItem(IWorldAccessor world, Entity byEntity, ItemSlot itemslot, ref int amount, ref EnumHandling bhHandling)
+		{
+			DamageInvoked = true;
+			throw new InvalidOperationException("Simulated external mod exception during OnDamageItem");
+		}
+	}
+
+	private sealed class FaultyRepeatedLogBehavior : CollectibleBehavior
+	{
+		public int InvocationCount { get; private set; }
+
+		public FaultyRepeatedLogBehavior(CollectibleObject collObj) : base(collObj)
+		{
+		}
+
+		public override bool OnBlockBrokenWith(IWorldAccessor world, Entity byEntity, ItemSlot itemslot, BlockSelection blockSel, float dropQuantityMultiplier, ref EnumHandling bhHandling)
+		{
+			InvocationCount++;
+			bhHandling = EnumHandling.PreventDefault;
+			throw new InvalidOperationException("Simulated repeated behavior failure");
 		}
 	}
 
@@ -471,6 +673,29 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 			InvocationCount++;
 			if (InvocationCount == 1) throw new InvalidOperationException("Simulated recoverable block break failure");
 			handling = EnumHandling.PassThrough;
+		}
+	}
+
+	private sealed class SpawnDropsThenReplaceThenThrowBehavior : BlockBehavior
+	{
+		private readonly int _replacementBlockId;
+		public int InvocationCount { get; private set; }
+		public Action? AfterDropSpawned { get; set; }
+
+		public SpawnDropsThenReplaceThenThrowBehavior(Block block, int replacementBlockId) : base(block)
+		{
+			_replacementBlockId = replacementBlockId;
+		}
+
+		public override void OnBlockBroken(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, float dropQuantityMultiplier, ref EnumHandling handling)
+		{
+			InvocationCount++;
+			if (InvocationCount > 1) return;
+
+			block.SpawnDropsAndRemoveBlock(world, pos, byPlayer, dropQuantityMultiplier);
+			AfterDropSpawned?.Invoke();
+			world.BlockAccessor.SetBlock(_replacementBlockId, pos, BlockLayersAccess.Solid);
+			throw new InvalidOperationException("Simulated failure after drops spawned and block was replaced");
 		}
 	}
 }
