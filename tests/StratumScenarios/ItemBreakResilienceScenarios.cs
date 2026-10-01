@@ -113,6 +113,9 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
 		FaultyBrokenWithBehavior faultyVetoBehavior = new FaultyBrokenWithBehavior(pickaxe, EnumHandling.PreventDefault);
 		SentinelBrokenWithBehavior sentinelBehavior = new SentinelBrokenWithBehavior(pickaxe);
+		int didBreakCount = 0;
+		BlockBrokenDelegate didBreakHandler = (_, _, _) => didBreakCount++;
+		World.Api.Event.DidBreakBlock += didBreakHandler;
 		try
 		{
 			pickaxe.CollectibleBehaviors = originalBehaviors.Append(faultyVetoBehavior).Append(sentinelBehavior).ToArray();
@@ -124,12 +127,14 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 			Assert.True(faultyVetoBehavior.BrokenWithInvoked, "FaultyBrokenWithBehavior was not invoked");
 			Assert.True(player.IsConnected, "player was disconnected");
 			Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(0, didBreakCount);
 			Assert.True(sentinelBehavior.BrokenWithInvoked, "PreventDefault should not stop subsequent behaviors");
 			Assert.NotNull(activeSlot.Itemstack);
 			Assert.Equal(durabilityBefore, pickaxe.GetRemainingDurability(activeSlot.Itemstack));
 		}
 		finally
 		{
+			World.Api.Event.DidBreakBlock -= didBreakHandler;
 			pickaxe.CollectibleBehaviors = originalBehaviors;
 		}
 	}
@@ -697,5 +702,19 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 			world.BlockAccessor.SetBlock(_replacementBlockId, pos, BlockLayersAccess.Solid);
 			throw new InvalidOperationException("Simulated failure after drops spawned and block was replaced");
 		}
+	}
+}
+
+public sealed class CollectibleApiCompatibilityTests
+{
+	[Fact]
+	public void Collectible_Should_KeepTheOriginalWalkBehaviorsExtensionSignature()
+	{
+		MethodInfo? method = typeof(CollectibleObject).GetMethod("WalkBehaviors", BindingFlags.Instance | BindingFlags.NonPublic);
+
+		Assert.NotNull(method);
+		Assert.True(method!.IsFamily, "WalkBehaviors must remain protected for existing collectible subclasses");
+		Assert.Equal(typeof(void), method.ReturnType);
+		Assert.Equal(new[] { typeof(CollectibleBehaviorDelegate), typeof(Action) }, Array.ConvertAll(method.GetParameters(), parameter => parameter.ParameterType));
 	}
 }
