@@ -32,6 +32,10 @@ internal sealed class StratumSendQueue
 	private readonly int coalesceLimit;
 	private readonly long maxPendingBytes;
 
+	private readonly object startGate = new object();
+	private Task drainTask;
+	private int closed;
+
 	private int pendingCount;
 	private long pendingBytes;
 	private int overflowDisconnectStarted;
@@ -57,9 +61,57 @@ internal sealed class StratumSendQueue
 		});
 	}
 
-	public void Start()
+	// The drain task and its coalesce buffer stay unallocated until the first packet.
+	// A connection that never sends (a scanner holding the socket open) then costs the
+	// socket alone, not a 64 KiB buffer and a thread-pool task.
+	private void EnsureDrainStarted()
 	{
-		TyronThreadPool.QueueTask((Func<Task>)DrainAsync, "StratumSendQueueDrain");
+		if (drainTask != null)
+		{
+			return;
+		}
+
+		var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		drainTask = done.Task;
+		TyronThreadPool.QueueTask(async () =>
+		{
+			try
+			{
+				await DrainAsync().ConfigureAwait(false);
+				done.TrySetResult();
+			}
+			catch (Exception ex)
+			{
+				done.TrySetException(ex);
+			}
+		}, "StratumSendQueueDrain");
+	}
+
+	// Finish bytes already queued, then return. Close and Shutdown call this before they
+	// cancel the socket, so a disconnect reason enqueued just above them still reaches
+	// the client. The wait is bounded: a wedged socket does not hold the caller forever.
+	public void FlushPending(int timeoutMs)
+	{
+		Task task;
+		lock (startGate)
+		{
+			closed = 1;
+			channel.Writer.TryComplete();
+			task = drainTask;
+		}
+
+		if (task == null)
+		{
+			return;
+		}
+
+		try
+		{
+			task.Wait(Math.Max(0, timeoutMs));
+		}
+		catch (AggregateException)
+		{
+		}
 	}
 
 	// dataWithLength must already carry the 4-byte length prefix. Callers hand off a buffer
@@ -86,12 +138,18 @@ internal sealed class StratumSendQueue
 		}
 
 		Interlocked.Increment(ref pendingCount);
-		if (!channel.Writer.TryWrite(dataWithLength))
+		lock (startGate)
 		{
-			// Writer already completed (connection closing). Drop, matches vanilla behavior
-			// of a send attempted after Close()/Dispose().
-			Interlocked.Decrement(ref pendingCount);
-			Interlocked.Add(ref pendingBytes, -length);
+			if (closed != 0 || !channel.Writer.TryWrite(dataWithLength))
+			{
+				// Writer already completed (connection closing). Drop, matches vanilla behavior
+				// of a send attempted after Close()/Dispose().
+				Interlocked.Decrement(ref pendingCount);
+				Interlocked.Add(ref pendingBytes, -length);
+				return;
+			}
+
+			EnsureDrainStarted();
 		}
 	}
 
@@ -102,7 +160,19 @@ internal sealed class StratumSendQueue
 			return;
 		}
 
-		StratumRuntime.LogWarning("StratumSendQueue disconnected a connection: pending bytes exceeded MaxPendingBytes (" + maxPendingBytes + ").");
+		string player = connection.client?.PlayerName;
+		if (string.IsNullOrEmpty(player))
+		{
+			player = "unidentified";
+		}
+
+		string address = connection.Address;
+		if (string.IsNullOrEmpty(address))
+		{
+			address = connection.TcpSocket?.RemoteEndPoint?.ToString() ?? "unknown";
+		}
+
+		StratumRuntime.LogWarning("StratumSendQueue disconnected " + player + " at " + address + ": pending bytes exceeded Performance.Network.MaxPendingBytes (" + maxPendingBytes + ").");
 		connection.InvokeDisconnected();
 	}
 
@@ -114,13 +184,13 @@ internal sealed class StratumSendQueue
 	private async Task DrainAsync()
 	{
 		ChannelReader<byte[]> reader = channel.Reader;
-		byte[] coalesceBuffer = new byte[coalesceLimit];
+		byte[] coalesceBuffer = null;
 		try
 		{
 			while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
 			{
 				int coalescedLength = 0;
-				while (coalescedLength < coalesceBuffer.Length && reader.TryRead(out byte[] packet))
+				while (coalescedLength < coalesceLimit && reader.TryRead(out byte[] packet))
 				{
 					if (packet.Length >= largeThreshold)
 					{
@@ -137,7 +207,8 @@ internal sealed class StratumSendQueue
 						continue;
 					}
 
-					if (coalescedLength + packet.Length > coalesceBuffer.Length)
+					coalesceBuffer ??= new byte[coalesceLimit];
+					if (coalescedLength + packet.Length > coalesceLimit)
 					{
 						if (!await SendAsync(coalesceBuffer, coalescedLength).ConfigureAwait(false)) return;
 						coalescedLength = 0;

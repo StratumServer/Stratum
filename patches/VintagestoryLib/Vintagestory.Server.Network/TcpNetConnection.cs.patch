@@ -35,8 +35,8 @@ index ae86835..34c0f3d 100644
  		cts = new CancellationTokenSource();
 +		if (StratumRuntime.Config.Performance.Network.SendQueueEnabled)
 +		{
++			// The drain task starts on the first enqueued packet, not here.
 +			stratumSendQueue = new StratumSendQueue(this, TcpSocket, cts.Token);
-+			stratumSendQueue.Start();
 +		}
  		TyronThreadPool.QueueTask((Func<Task>)ReceiveData, "TcpNetConReceiveData");
  	}
@@ -88,19 +88,26 @@ index ae86835..34c0f3d 100644
  		catch
  		{
  			InvokeDisconnected();
-@@ -281,10 +313,11 @@ public class TcpNetConnection : NetConnection
+@@ -269,4 +301,6 @@ public class TcpNetConnection : NetConnection
+ 	public override void Shutdown()
+ 	{
++		// Stratum: put queued bytes, including a disconnect reason, on the socket before FIN.
++		stratumSendQueue?.FlushPending(250);
+ 		if (TcpSocket == null)
+ 		{
+@@ -281,10 +315,11 @@ public class TcpNetConnection : NetConnection
  		}
  	}
- 
+
  	public override void Close()
  	{
-+		stratumSendQueue?.Complete();
++		stratumSendQueue?.FlushPending(250);
  		try
  		{
  			cts?.Cancel();
  		}
  		catch
-@@ -302,10 +335,11 @@ public class TcpNetConnection : NetConnection
+@@ -302,10 +337,11 @@ public class TcpNetConnection : NetConnection
  
  	internal void InvokeDisconnected()
  	{
