@@ -1523,12 +1523,14 @@ internal class StratumBlockTickConfig
 
 	public int MaxMainThreadBlockTicksPerPass { get; set; } = 5000;
 
-	// One 100ms pass publishes at most this many dirty blocks, and the same cap applies
-	// separately to modified and no-relight blocks. Past the cap, the rest waits for the
-	// next pass. 512 left about 415,000 dirty blocks queued on a 1000-player world, and
-	// that pass was 0.3 percent of the tick. Raising this to 8192 on the same world
-	// dropped 1-minute TPS from about 1.3 to 0.18, so the default stays 512 until each
-	// publish is cheaper than a per-client packet.
+	// One pass publishes at most this many DirtyBlocks. Modified and no-relight queues
+	// are not capped: their block packets have to stay ahead of block-entity packets,
+	// and their neighbour callbacks have to run before the chunk unloads. Past the cap,
+	// leftover dirty blocks wait for the next pass. The cap stays in force when
+	// BlockTicks is turned off, so that switch cannot dump a dirty backlog in one tick.
+	// 512 left about 415,000 dirty blocks queued on a 1000-player world, and that pass
+	// was 0.3 percent of the tick. 8192 on a 977-player, 126k-chunk world dropped
+	// 1-minute TPS to 0.18, so the default stays 512.
 	public int MaxDirtyBlocksPerPass { get; set; } = 512;
 
 	// Spread the random tick pass across N smaller slices instead of one burst. Each slice
