@@ -1,6 +1,7 @@
 using Atlas.Api;
 using Atlas.XUnit;
 using Vintagestory.API.Common;
+using Vintagestory.API.Server;
 using Xunit;
 
 namespace StratumScenarios;
@@ -28,6 +29,11 @@ namespace StratumScenarios;
 /// (IClientObservations.KnowsEntity), because an arrival list cannot tell "hidden" from "never
 /// sent again": the observer already has the entity, so nothing new would reach it either way.
 /// The hide shows up as the server telling the observer's client the entity is gone.
+///
+/// The fourth is the join: a plain observer joins after the staff member vanished. A test player is
+/// an admin from its first packet, and an admin is sent vanished staff, so this observer is joined
+/// through JoinAsPlainPlayer, which lowers its role inside a PlayerJoin handler before the server
+/// builds the player list it sends a joiner.
 /// </summary>
 public class VanishPrivacyScenarios : AtlasScenarioBase
 {
@@ -229,6 +235,62 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		Assert.True(observer.Client.KnowsEntity(controlId), "the observer lost the control player by the end");
 	}
 
+	/// <summary>
+	/// The join half of the same rule: the staff member is already vanished when the observer joins,
+	/// so what the server sends a new joiner (its player list and the entities around it) must not
+	/// carry the staff member. Demoting the observer after the join, as the other scenarios do, is
+	/// too late for the player list: it is built while the observer is still the admin every test
+	/// player starts as. A player who is not vanished and joins after the observer is the control.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Vanish_Should_StayHiddenFromJoinList_When_PlainObserverJoinsAfterTheVanish()
+	{
+		// The staff member keeps the admin role every test player joins with, which carries
+		// stratum.vanish, so there is nothing to grant.
+		ITestPlayer staff = await World.JoinPlayer("late-mod");
+		await staff.TeleportTo(World.Spawn.AddCopy(4, 1, 0));
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
+		long staffId = staff.Player.Entity.EntityId;
+		string staffUid = staff.Player.PlayerUID;
+
+		ITestPlayer observer = await JoinAsPlainPlayer("late-obs");
+		Assert.Equal("suplayer", observer.Player.Role.Code);
+		Assert.False(observer.Player.HasPrivilege("stratum.vanish"), "the observer is not an ordinary player, so it would be sent vanished staff");
+		await observer.TeleportTo(World.Spawn.AddCopy(0, 1, 0));
+
+		ITestPlayer control = await World.JoinPlayer("late-ctl");
+		await control.TeleportTo(World.Spawn.AddCopy(-4, 1, 0));
+		long controlId = control.Player.Entity.EntityId;
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(controlId),
+			() => $"the observer never came to know the control player: {Describe(observer, controlId)}");
+		await World.Ticks(AbsenceWindowTicks);
+
+		// The control first: the observer was listening, and was sent a player who is not vanished
+		// both as an entity and as player data.
+		Assert.True(observer.Client.HasReceivedPlayerData(control.Player.PlayerUID), "the observer was not sent the control player's data, so its observations prove nothing");
+
+		Assert.False(
+			observer.Client.HasReceivedPlayerData(staffUid),
+			$"the vanished staff member's player data reached the observer on its join: {string.Join(", ", observer.Client.PlayerData().Where(p => p.PlayerUid == staffUid))}");
+		Assert.False(
+			observer.Client.KnowsEntity(staffId) || observer.Client.HasReceivedEntity(staffId),
+			$"the vanished staff member's entity reached the observer: {Describe(observer, staffId)}");
+		Assert.Equal("suplayer", observer.Player.Role.Code);
+
+		int revealTick = World.CurrentTick;
+		CommandResult reveal = await staff.ExecuteCommand("/vanish off");
+		Assert.True(reveal.Ok, reveal.Message);
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(staffId),
+			() => $"the observer does not hold the staff member's entity {ChangeWindowTicks} ticks after /vanish off, arrivals: [{Describe(observer, staffId)}]");
+
+		ReceivedEntity arrival = observer.Client.EntityArrivals().First(a => a.EntityId == staffId);
+		Assert.True(arrival.Tick > revealTick, $"the entity arrival is not stamped after /vanish off ran: {arrival}, reveal at tick {revealTick}");
+		Assert.True(observer.Client.HasReceivedPlayerData(staffUid), "the player data did not follow the entity");
+	}
+
 	private async Task GrantVanishRole(ITestPlayer player)
 	{
 		// stratum.vanish lives in the staff privilege set, which the sumod role carries. The
@@ -271,6 +333,40 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		catch (ScenarioTimeoutException)
 		{
 			Assert.Fail(failure());
+		}
+	}
+
+	/// <summary>
+	/// Joins a test player that is an ordinary player (suplayer) by the time the server builds what
+	/// it sends a joiner. JoinPlayer takes no role and the engine makes every test player an admin
+	/// at three points of its join, the last of them its own PlayerJoin handler, so the role is
+	/// lowered in a PlayerJoin handler subscribed before the join, which runs after all three.
+	/// Two limits, both the engine's. The handlers subscribed at boot, the fork's own included
+	/// (restoring a persisted vanish, the update and class-request staff notices), run first and
+	/// see the joiner as an admin; none of them matters to an observer that is not vanished and
+	/// has nothing pending in a scenario world. And the role lasts only until the engine next
+	/// fetches the player's record, which a privilege grant, revoke or deny, /op and the /player
+	/// role, privilege and whitelist subcommands aimed at it do: this class never does that to
+	/// the observer, and the scenario asserts the role again at its end.
+	/// </summary>
+	private async Task<ITestPlayer> JoinAsPlainPlayer(string name)
+	{
+		void LowerRole(IServerPlayer joiner)
+		{
+			if (joiner.PlayerName == name)
+			{
+				joiner.SetRole("suplayer");
+			}
+		}
+
+		World.Api.Event.PlayerJoin += LowerRole;
+		try
+		{
+			return await World.JoinPlayer(name);
+		}
+		finally
+		{
+			World.Api.Event.PlayerJoin -= LowerRole;
 		}
 	}
 
