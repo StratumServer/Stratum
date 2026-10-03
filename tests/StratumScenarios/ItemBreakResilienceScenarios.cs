@@ -140,6 +140,45 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 	}
 
 	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_ContinueWhenFalseCallbackAlreadyRemovedBlock()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-veto-rm");
+		BlockPos playerPos = World.Spawn.AddCopy(26, 1, 26);
+		await player.TeleportTo(playerPos);
+
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		await player.GiveItem("game:pickaxe-iron", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		CollectibleObject pickaxe = activeSlot.Itemstack!.Collectible;
+		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
+		var removeThenVetoBehavior = new RemoveThenVetoBrokenWithBehavior(pickaxe);
+		int didBreakCount = 0;
+		BlockBrokenDelegate didBreakHandler = (_, _, _) => didBreakCount++;
+		World.Api.Event.DidBreakBlock += didBreakHandler;
+		dynamic server = World.Api.World;
+		dynamic chunk = server.WorldMap.GetChunk(blockPos);
+		int blocksRemovedBefore = (int)chunk.BlocksRemoved;
+		try
+		{
+			pickaxe.CollectibleBehaviors = originalBehaviors.Append(removeThenVetoBehavior).ToArray();
+			DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+			await World.Ticks(5);
+
+			Assert.True(player.IsConnected, "player was disconnected after the callback removed the block and returned false");
+			Assert.Equal("game:air", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(blocksRemovedBefore + 1, (int)chunk.BlocksRemoved);
+			Assert.Equal(1, didBreakCount);
+		}
+		finally
+		{
+			World.Api.Event.DidBreakBlock -= didBreakHandler;
+			pickaxe.CollectibleBehaviors = originalBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
 	public async Task BlockBreak_Should_ClearToolSlotWhenFailedDamageBehaviorReachesZeroDurability()
 	{
 		ITestPlayer player = await World.JoinPlayer("brk-damage-zero");
@@ -315,6 +354,76 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 	}
 
 	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_KeyFailureLogsByItemAndBlockCode()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-log-keys");
+		BlockPos playerPos = World.Spawn.AddCopy(32, 1, 32);
+		await player.TeleportTo(playerPos);
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		Block granite = World.BlockAt(blockPos);
+		BlockBehavior[] originalGraniteBehaviors = granite.BlockBehaviors;
+		var graniteBehavior = new FaultyBlockBehavior(granite);
+		await player.GiveItem("game:pickaxe-steel", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		Assert.NotNull(activeSlot.Itemstack);
+
+		ILogger logger = GetServerLogger();
+		var loggedHeaders = new List<string>();
+		LogEntryDelegate logEntry = (logType, message, arguments) =>
+		{
+			string formattedMessage = FormatLogMessage(message, arguments);
+			if (logType == EnumLogType.Error &&
+				formattedMessage.StartsWith("Exception thrown during OnBlockBrokenWith", StringComparison.Ordinal))
+			{
+				loggedHeaders.Add(formattedMessage);
+			}
+		};
+		logger.EntryAdded += logEntry;
+		Block? soil = null;
+		BlockBehavior[]? originalSoilBehaviors = null;
+		try
+		{
+			granite.BlockBehaviors = originalGraniteBehaviors.Append(graniteBehavior).ToArray();
+			object packet = CreateBlockBreakPacket(blockPos);
+			DispatchPacket(World, player, packet);
+			await World.Ticks(2);
+			DispatchPacket(World, player, packet);
+			await World.Ticks(2);
+			Assert.Single(loggedHeaders);
+
+			World.SetBlock("game:soil-medium-normal", blockPos);
+			await World.Ticks(5);
+			soil = World.BlockAt(blockPos);
+			originalSoilBehaviors = soil.BlockBehaviors;
+			soil.BlockBehaviors = originalSoilBehaviors.Append(new FaultyBlockBehavior(soil)).ToArray();
+			DispatchPacket(World, player, packet);
+			await World.Ticks(2);
+			Assert.Equal(2, loggedHeaders.Count);
+
+			World.SetBlock("game:rock-granite", blockPos);
+			await World.Ticks(5);
+			activeSlot.Itemstack = new ItemStack(World.Api.World.GetItem(new AssetLocation("game:pickaxe-iron")));
+			activeSlot.MarkDirty();
+			granite.BlockBehaviors = originalGraniteBehaviors.Append(new FaultyBlockBehavior(granite)).ToArray();
+			DispatchPacket(World, player, packet);
+			await World.Ticks(2);
+
+			Assert.Equal(3, loggedHeaders.Count);
+			Assert.True(loggedHeaders[0].Contains("game:rock-granite", StringComparison.Ordinal) && loggedHeaders[0].Contains("game:pickaxe-steel", StringComparison.Ordinal));
+			Assert.True(loggedHeaders[1].Contains("game:soil-medium-normal", StringComparison.Ordinal) && loggedHeaders[1].Contains("game:pickaxe-steel", StringComparison.Ordinal));
+			Assert.True(loggedHeaders[2].Contains("game:rock-granite", StringComparison.Ordinal) && loggedHeaders[2].Contains("game:pickaxe-iron", StringComparison.Ordinal));
+		}
+		finally
+		{
+			logger.EntryAdded -= logEntry;
+			granite.BlockBehaviors = originalGraniteBehaviors;
+			if (soil != null && originalSoilBehaviors != null) soil.BlockBehaviors = originalSoilBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
 	public async Task BlockBreak_Should_NotRetryOldBlockOrDuplicateDropsAfterReplacement()
 	{
 		ITestPlayer player = await World.JoinPlayer("brk-replaced");
@@ -322,7 +431,7 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		BlockPos playerPos = World.Spawn.AddCopy(18, 1, 18);
 		await player.TeleportTo(playerPos);
 
-		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		BlockPos blockPos = playerPos.AddCopy(3, 0, 0);
 		World.SetBlock("game:rock-granite", blockPos);
 		await World.Ticks(5);
 		Block block = World.BlockAt(blockPos);
@@ -382,10 +491,10 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		var faultyBehavior = new FaultyMultiCallbackBehavior(pickaxe);
 		ILogger logger = World.Api.World.Logger;
 		var loggedMessages = new List<string>();
-		LogEntryDelegate logEntry = (logType, message, _) =>
+		LogEntryDelegate logEntry = (logType, message, arguments) =>
 		{
 			if (logType != EnumLogType.Error || !message.StartsWith("Exception thrown in CollectibleBehavior", StringComparison.Ordinal)) return;
-			loggedMessages.Add(message);
+			loggedMessages.Add(FormatLogMessage(message, arguments));
 		};
 		logger.EntryAdded += logEntry;
 		try
@@ -397,10 +506,77 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 			Assert.True(faultyBehavior.BrokenWithInvoked, "OnBlockBrokenWith should be invoked");
 			Assert.True(faultyBehavior.DamageInvoked, "DamageItem should be invoked after the block break");
 			Assert.True(loggedMessages.Count == 2, $"the same behavior type must be logged independently for each callback; messages: {string.Join(" | ", loggedMessages)}");
+			Assert.True(loggedMessages.Exists(message => message.Contains("OnBlockBrokenWith", StringComparison.Ordinal)), "the first log should name OnBlockBrokenWith");
+			Assert.True(loggedMessages.Exists(message => message.Contains("DamageItem", StringComparison.Ordinal)), "the second log should name DamageItem");
 		}
 		finally
 		{
 			logger.EntryAdded -= logEntry;
+			pickaxe.CollectibleBehaviors = originalBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_LogTemperatureCallbacksSeparately()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-temp-log");
+		BlockPos playerPos = World.Spawn.AddCopy(28, 1, 28);
+		await player.TeleportTo(playerPos);
+		await player.GiveItem("game:pickaxe-iron", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		ItemStack stack = activeSlot.Itemstack!;
+		CollectibleObject pickaxe = stack.Collectible;
+		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
+		var faultyBehavior = new FaultyTemperatureBehavior(pickaxe);
+		var loggedMessages = new List<string>();
+		ILogger logger = World.Api.World.Logger;
+		LogEntryDelegate logEntry = (logType, message, arguments) =>
+		{
+			if (logType == EnumLogType.Error && message.StartsWith("Exception thrown in CollectibleBehavior", StringComparison.Ordinal))
+			{
+				loggedMessages.Add(FormatLogMessage(message, arguments));
+			}
+		};
+		logger.EntryAdded += logEntry;
+		try
+		{
+			pickaxe.CollectibleBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
+			pickaxe.GetTemperature(World.Api.World, stack);
+
+			Assert.Equal(2, loggedMessages.Count);
+			Assert.True(loggedMessages.Exists(message => message.Contains("during GetTemperature", StringComparison.Ordinal)), "GetTemperature should have its own callback key");
+			Assert.True(loggedMessages.Exists(message => message.Contains("during AfterGetTemperature", StringComparison.Ordinal)), "AfterGetTemperature should have its own callback key");
+		}
+		finally
+		{
+			logger.EntryAdded -= logEntry;
+			pickaxe.CollectibleBehaviors = originalBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_RethrowCollectibleBehaviorFailureWhenApiLoggerIsUnavailable()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-api-null-log");
+		BlockPos playerPos = World.Spawn.AddCopy(30, 1, 30);
+		await player.TeleportTo(playerPos);
+		await player.GiveItem("game:pickaxe-iron", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		ItemStack stack = activeSlot.Itemstack!;
+		CollectibleObject pickaxe = stack.Collectible;
+		FieldInfo apiField = typeof(CollectibleObject).GetField("api", BindingFlags.Instance | BindingFlags.NonPublic)!;
+		object? originalApi = apiField.GetValue(pickaxe);
+		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
+		var faultyBehavior = new FaultyAttackPowerBehavior(pickaxe);
+		try
+		{
+			pickaxe.CollectibleBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
+			apiField.SetValue(pickaxe, null);
+			Assert.Throws<InvalidOperationException>(() => { pickaxe.GetAttackPower(stack); });
+		}
+		finally
+		{
+			apiField.SetValue(pickaxe, originalApi);
 			pickaxe.CollectibleBehaviors = originalBehaviors;
 		}
 	}
@@ -452,6 +628,11 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		return World.EntitiesIn(area).OfType<EntityItem>().Count();
 	}
 
+	private static string FormatLogMessage(string message, object[]? arguments)
+	{
+		return arguments == null || arguments.Length == 0 ? message : string.Format(message, arguments);
+	}
+
 	private static ILogger GetServerLogger()
 	{
 		Type serverMainType = Type.GetType("Vintagestory.Server.ServerMain, VintagestoryLib", throwOnError: true)!;
@@ -481,6 +662,11 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		World.SetBlock("game:rock-granite", blockPos);
 		await World.Ticks(5);
 		Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
+		await player.GiveItem("game:pickaxe-steel", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		Assert.NotNull(activeSlot.Itemstack);
+		CollectibleObject pickaxe = activeSlot.Itemstack.Collectible;
+		int durabilityBefore = pickaxe.GetRemainingDurability(activeSlot.Itemstack);
 
 		Block block = World.BlockAt(blockPos);
 		BlockBehavior[] originalBehaviors = block.BlockBehaviors;
@@ -496,10 +682,48 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 			Assert.True(player.IsConnected, "player was disconnected after block behavior threw an exception");
 			Assert.Equal(2, faultyBehavior.InvocationCount);
 			Assert.Equal("game:air", World.BlockAt(blockPos).Code.ToString());
+			Assert.NotNull(activeSlot.Itemstack);
+			Assert.Equal(durabilityBefore - 1, pickaxe.GetRemainingDurability(activeSlot.Itemstack));
 		}
 		finally
 		{
 			block.BlockBehaviors = originalBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_FallbackWhenSelectedBlockIsInFluidLayer()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-fluid-fb");
+		BlockPos playerPos = World.Spawn.AddCopy(24, 1, 24);
+		await player.TeleportTo(playerPos);
+
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:air", blockPos);
+		Block fluidBlock = World.Api.World.GetBlock(new AssetLocation("game:lakeice"))!;
+		Assert.True(fluidBlock.ForFluidsLayer && fluidBlock.SideSolid.Any, "lake ice must be selected from the fluid layer when no solid block is present");
+		World.Api.World.BlockAccessor.SetBlock(fluidBlock.BlockId, blockPos, BlockLayersAccess.Fluid);
+		await World.Ticks(5);
+		Assert.Equal(0, World.Api.World.BlockAccessor.GetBlock(blockPos, BlockLayersAccess.Solid).BlockId);
+		Assert.Equal(fluidBlock.BlockId, World.Api.World.BlockAccessor.GetBlock(blockPos, BlockLayersAccess.Fluid).BlockId);
+
+		BlockBehavior[] originalBehaviors = fluidBlock.BlockBehaviors;
+		var faultyBehavior = new OneShotBlockBehavior(fluidBlock);
+		try
+		{
+			fluidBlock.BlockBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
+			DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+			await World.Ticks(5);
+
+			Assert.True(player.IsConnected, "player was disconnected after a fluid-layer behavior threw");
+			Assert.Equal(2, faultyBehavior.InvocationCount);
+			Block fluidAfterBreak = World.Api.World.BlockAccessor.GetBlock(blockPos, BlockLayersAccess.Fluid);
+			Assert.NotEqual(fluidBlock.BlockId, fluidAfterBreak.BlockId);
+			Assert.True(fluidAfterBreak.IsLiquid(), "breaking lake ice should restore liquid water in the fluid layer");
+		}
+		finally
+		{
+			fluidBlock.BlockBehaviors = originalBehaviors;
 		}
 	}
 
@@ -537,6 +761,49 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 
 		MethodInfo dispatchMethod = server.GetType().GetMethod("DispatchClientPacket_mainthread", BindingFlags.Instance | BindingFlags.NonPublic)!;
 		dispatchMethod.Invoke(server, new[] { receivedPacket });
+	}
+
+	private sealed class FaultyAttackPowerBehavior : CollectibleBehavior
+	{
+		public FaultyAttackPowerBehavior(CollectibleObject collObj) : base(collObj)
+		{
+		}
+
+		public override float GetAttackPower(ItemStack itemstack, float attackPower, ref EnumHandling bhHandling)
+		{
+			throw new InvalidOperationException("Simulated behavior failure before OnLoadedNative");
+		}
+	}
+
+	private sealed class FaultyTemperatureBehavior : CollectibleBehavior
+	{
+		public FaultyTemperatureBehavior(CollectibleObject collObj) : base(collObj)
+		{
+		}
+
+		public override float GetTemperature(IWorldAccessor world, ItemStack itemstack, ref EnumHandling handling)
+		{
+			throw new InvalidOperationException("Simulated GetTemperature behavior failure");
+		}
+
+		public override void AfterGetTemperature(IWorldAccessor world, ItemStack itemstack, float temperature, ref EnumHandling handling)
+		{
+			throw new InvalidOperationException("Simulated AfterGetTemperature behavior failure");
+		}
+	}
+
+	private sealed class RemoveThenVetoBrokenWithBehavior : CollectibleBehavior
+	{
+		public RemoveThenVetoBrokenWithBehavior(CollectibleObject collObj) : base(collObj)
+		{
+		}
+
+		public override bool OnBlockBrokenWith(IWorldAccessor world, Entity byEntity, ItemSlot itemslot, BlockSelection blockSel, float dropQuantityMultiplier, ref EnumHandling bhHandling)
+		{
+			world.BlockAccessor.SetBlock(0, blockSel.Position, BlockLayersAccess.Solid);
+			bhHandling = EnumHandling.PreventDefault;
+			return false;
+		}
 	}
 
 	private sealed class FaultyDamageBehavior : CollectibleBehavior
