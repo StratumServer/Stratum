@@ -22,6 +22,12 @@ namespace StratumScenarios;
 /// player data), rather than relying only on the separate join message. It ends with /vanish off,
 /// after which the same observer has to receive both: that is the control that tells "hidden
 /// because vanished" from an observer that was never listening.
+///
+/// The third is the live toggle: the observer is already in range and holds the staff member's
+/// entity when the vanish starts. What it asserts is what the observer's client holds
+/// (IClientObservations.KnowsEntity), because an arrival list cannot tell "hidden" from "never
+/// sent again": the observer already has the entity, so nothing new would reach it either way.
+/// The hide shows up as the server telling the observer's client the entity is gone.
 /// </summary>
 public class VanishPrivacyScenarios : AtlasScenarioBase
 {
@@ -37,6 +43,16 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 	/// margin over the largest value seen with either release candidate, not a derived bound.
 	/// </summary>
 	private const int AbsenceWindowTicks = 60;
+
+	/// <summary>
+	/// The bound of a wait for the observer's client to be told something changed (an entity gone,
+	/// an entity back). Measured on this fork, /vanish on and /vanish off send their packets inside
+	/// the command, so the wait holds on its first poll. The engine's own despawn report comes 1 to
+	/// 7 passes after a despawn and a return into range took up to 38, so the bound is far above
+	/// all of them: a wait that reaches it means the server did not send the packet, not that it
+	/// was slow. A run that passes never waits for it.
+	/// </summary>
+	private const int ChangeWindowTicks = 600;
 
 	[AtlasScenario(TimeoutMs = 300_000)]
 	public async Task Near_Should_HideVanishedStaff_When_CalledByPlainPlayer()
@@ -147,6 +163,72 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		Assert.True(observer.Client.HasReceivedPlayerData(vanishedUid), "the player data did not follow the entity");
 	}
 
+	/// <summary>
+	/// The live half of the same rule. The observer is in range and holds the staff member's entity,
+	/// so the hide has to reach it as a departure: it must stop knowing the entity once the vanish
+	/// starts, keep not knowing it, and know it again after /vanish off. A third player who is not
+	/// vanished is the control: the same observer keeps knowing that entity over the whole period,
+	/// so the loss is the staff member's and not a client that stopped listening or drifted out of
+	/// range.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Vanish_Should_MakeObserverDropEntity_ThenKnowItAgain_When_ToggledInRange()
+	{
+		ITestPlayer observer = await World.JoinPlayer("toggle-obs");
+		ITestPlayer staff = await World.JoinPlayer("toggle-mod");
+		ITestPlayer control = await World.JoinPlayer("toggle-ctl");
+		await GrantVanishRole(staff);
+		await DemoteToPlainPlayer(observer);
+		await observer.TeleportTo(World.Spawn.AddCopy(0, 1, 0));
+		await staff.TeleportTo(World.Spawn.AddCopy(4, 1, 0));
+		await control.TeleportTo(World.Spawn.AddCopy(-4, 1, 0));
+		long staffId = staff.Player.Entity.EntityId;
+		long controlId = control.Player.Entity.EntityId;
+		string staffUid = staff.Player.PlayerUID;
+
+		// The starting state is asserted, not assumed: the observer holds both entities. It joined
+		// as an admin, which is why it was sent the staff member at all.
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(staffId) && observer.Client.KnowsEntity(controlId),
+			() => $"the observer does not hold both entities before the vanish: {Describe(observer, staffId)}, {Describe(observer, controlId)}");
+
+		// Clear() opens the window the departures and arrivals below are read in. KnowsEntity is not
+		// part of it: the entities the observer holds stay held across the Clear().
+		observer.Client.Clear();
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
+		int vanishTick = World.CurrentTick;
+
+		await UntilOrFail(
+			() => !observer.Client.KnowsEntity(staffId),
+			() => $"the observer still holds the vanished staff member's entity {ChangeWindowTicks} ticks after /vanish on, arrivals: [{Describe(observer, staffId)}], departures: [{DescribeDepartures(observer)}]");
+		Assert.Contains(observer.Client.EntityDepartures(), d => d.EntityId == staffId);
+
+		// It stays gone: nothing re-sends the entity or its player data while the vanish lasts.
+		await World.Ticks(AbsenceWindowTicks);
+		Assert.False(
+			observer.Client.KnowsEntity(staffId),
+			$"the vanished staff member's entity came back to the observer: {Describe(observer, staffId)}");
+		Assert.False(observer.Client.HasReceivedEntity(staffId), $"the observer was sent the vanished staff member again: {Describe(observer, staffId)}");
+		Assert.False(observer.Client.HasReceivedPlayerData(staffUid), "the observer was sent the vanished staff member's player data again");
+
+		// The control, over the same period: still held, and never reported gone.
+		Assert.True(observer.Client.KnowsEntity(controlId), "the observer lost the control player over the same period, so its observations prove nothing");
+		Assert.DoesNotContain(observer.Client.EntityDepartures(), d => d.EntityId == controlId);
+
+		int revealTick = World.CurrentTick;
+		CommandResult reveal = await staff.ExecuteCommand("/vanish off");
+		Assert.True(reveal.Ok, reveal.Message);
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(staffId),
+			() => $"the observer does not hold the staff member's entity {ChangeWindowTicks} ticks after /vanish off, arrivals: [{Describe(observer, staffId)}], departures: [{DescribeDepartures(observer)}]");
+
+		ReceivedEntity arrival = observer.Client.EntityArrivals().First(a => a.EntityId == staffId);
+		Assert.True(arrival.Tick > revealTick, $"the entity arrival is not stamped after /vanish off ran: {arrival}, reveal at tick {revealTick}, vanish at {vanishTick}");
+		Assert.True(observer.Client.HasReceivedPlayerData(staffUid), "the player data did not follow the entity");
+		Assert.True(observer.Client.KnowsEntity(controlId), "the observer lost the control player by the end");
+	}
+
 	private async Task GrantVanishRole(ITestPlayer player)
 	{
 		// stratum.vanish lives in the staff privilege set, which the sumod role carries. The
@@ -168,6 +250,28 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 	private static string Describe(ITestPlayer observer, long entityId)
 	{
 		return string.Join(", ", observer.Client.EntityArrivals().Where(a => a.EntityId == entityId));
+	}
+
+	private static string DescribeDepartures(ITestPlayer observer)
+	{
+		return string.Join(", ", observer.Client.EntityDepartures());
+	}
+
+	/// <summary>
+	/// World.Until, with the failure naming what was waited for: its own timeout message can only
+	/// say that a predicate stayed false, and the predicates here are lambdas. The message is a
+	/// function so it reads the observations when the wait fails, not when it starts.
+	/// </summary>
+	private async Task UntilOrFail(Func<bool> condition, Func<string> failure)
+	{
+		try
+		{
+			await World.Until(condition, timeoutTicks: ChangeWindowTicks);
+		}
+		catch (ScenarioTimeoutException)
+		{
+			Assert.Fail(failure());
+		}
 	}
 
 	private async Task<ITestPlayer> RejoinAfterDisconnect(string name)

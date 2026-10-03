@@ -19,10 +19,12 @@ they materialize the install with one `--stratum-prepare-only` launch and run
 alone takes between a minute and a half and two and a half minutes depending on the
 machine, the server boots included, one per scenario class, on top of the builds and the prepare launch.
 It pulls four NuGet packages: xunit, its Visual Studio runner, Microsoft.NET.Test.Sdk, and
-`Pixnop.Atlas.XUnit`, which must be 0.16.0-rc.1 or newer: the scenarios run commands as a joined
+`Pixnop.Atlas.XUnit`, which must be 0.16.0-rc.2 or newer: the scenarios run commands as a joined
 player (`ITestPlayer.ExecuteCommand`) and read chat through `Client.Chat()` (both new in 0.15.0),
-and read the entities and player-group listings a client was sent through
-`Client.HasReceivedEntity` and `Client.GroupListings()` (new in 0.16.0).
+read the entities and player-group listings a client was sent through
+`Client.HasReceivedEntity` and `Client.GroupListings()` (new in 0.16.0), and read the entities a
+client currently holds through `Client.KnowsEntity` and `Client.EntityDepartures()` (new in
+0.16.0-rc.2).
 Anything older than 0.13.1 also opens the synthetic join with the identification packet, which
 Stratum's first-packet gate drops, so every scenario that joins a player times out.
 
