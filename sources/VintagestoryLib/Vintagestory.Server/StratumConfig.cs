@@ -632,11 +632,12 @@ internal class StratumPerformanceConfig
 
 internal class StratumNetworkConfig
 {
-	// Off by default. The queue removes the packet reordering bug from the old
-	// StratumNetworkFlush (disabled after client crashes, see PR #138), but it is new code
-	// on the hottest path in the server. Soak on a community server before flipping the
-	// shipped default.
-	public bool SendQueueEnabled { get; set; } = false;
+	// On by default. With the queue off, TcpNetConnection.Send calls Socket.SendAsync on
+	// the gameplay thread. A 1000-player capture on a 130k-chunk world spent about half of
+	// ServerMain.Process samples in SocketAsyncEventArgs.DoOperationSendSingleBuffer.
+	// The queue is the only sender for the connection and runs on the thread pool. Set
+	// this false to restore the direct send path. See #325.
+	public bool SendQueueEnabled { get; set; } = true;
 
 	// Packets at or above this size skip coalescing and go out alone. Matches the TCP MTU
 	// assumption the old flush buffer used.
@@ -646,10 +647,19 @@ internal class StratumNetworkConfig
 	// a single SendAsync call carries.
 	public int CoalesceLimitBytes { get; set; } = 65536;
 
+	// Bytes StratumSendQueue may retain for one connection. Chunk scheduling already
+	// slows that client at OutboundPressurePendingBytesHardLimit (1 MiB) and still
+	// sends a minimum budget there, so this cap sits above that line. An enqueue that
+	// would grow a non-empty queue past the cap is refused and the connection is
+	// disconnected. One packet is still accepted when the queue is empty, so a single
+	// large send is not dropped on the floor. See #345.
+	public int MaxPendingBytes { get; set; } = 8 * 1024 * 1024;
+
 	public void EnsureSane()
 	{
 		LargeThresholdBytes = Math.Max(64, LargeThresholdBytes);
 		CoalesceLimitBytes = Math.Max(LargeThresholdBytes, CoalesceLimitBytes);
+		MaxPendingBytes = Math.Max(CoalesceLimitBytes, MaxPendingBytes);
 	}
 }
 
