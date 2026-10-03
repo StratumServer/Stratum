@@ -673,7 +673,7 @@ index ea1d5c0..a2fce0c 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +716,855 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +716,872 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -1310,25 +1310,42 @@ index ea1d5c0..a2fce0c 100644
 +	}
 +	// Stratum end
 +
++	// Stratum: ConcurrentDictionary.TryRemove locks its bucket even when the id was never
++	// stored. Players, disabled throttling, and near-band entities take that lock every tick
++	// and almost never have an entry. ContainsKey does not. See #315.
++	private void StratumForgetTickStateIfPresent(long entityId)
++	{
++		if (stratumEntityTickStates.ContainsKey(entityId))
++		{
++			stratumEntityTickStates.TryRemove(entityId, out _);
++		}
++	}
++
 +	private bool ShouldThrottleStratumEntityTick(Entity entity, StratumEntityTickingConfig config, float dt, out float tickDeltaTime, out bool isExcludedFromThrottle)
 +	{
 +		tickDeltaTime = dt;
 +		isExcludedFromThrottle = false;
-+		if (!config.Enabled || entity is EntityPlayer || stratumPlayerPositions.Count == 0)
++		// Stratum: players are never inserted. Skipping the dictionary is the common case
++		// on a full bot run (1k-2k players, every tick).
++		if (entity is EntityPlayer)
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			return false;
++		}
++		if (!config.Enabled || stratumPlayerPositions.Count == 0)
++		{
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
 +		if ((entity.IsCreature && !config.ThrottleCreatures) || (!entity.IsCreature && !config.ThrottleInanimate))
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
 +		if (config.SkipMovingEntities && IsStratumMovingEntity(entity, config.MovingEntitySpeedThreshold))
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
@@ -1405,7 +1422,7 @@ index ea1d5c0..a2fce0c 100644
 +			// tick. State object is tiny; OnDespawn paths handle removal.
 +			if (!stratumAmbientTierEnabledCached || !entity.IsCreature)
 +			{
-+				stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++				StratumForgetTickStateIfPresent(entity.EntityId);
 +			}
 +			return false;
 +		}
@@ -1533,7 +1550,7 @@ index ea1d5c0..a2fce0c 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -251,16 +1573,31 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -251,16 +1590,31 @@ public class ServerSystemEntitySimulation : ServerSystem
  		bool flag = p.MouseButton == 0;
  		if ((cuboidd.ShortestDistanceFrom(x, y, z) > (double)(num * 2f) && flag) || (flag && (((!server.Config.AllowPvP || !player.HasPrivilege("attackplayers")) && entity is EntityPlayer) || (!player.HasPrivilege("attackcreatures") && entity is EntityAgent))) || (entity is EntityPlayer entityPlayer && !(entityPlayer.Player is IServerPlayer { ConnectionState: EnumClientState.Playing })))
  		{
@@ -1566,7 +1583,7 @@ index ea1d5c0..a2fce0c 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1616,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1633,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1615,7 +1632,7 @@ index ea1d5c0..a2fce0c 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,37 +1753,66 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1770,66 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1688,7 +1705,7 @@ index ea1d5c0..a2fce0c 100644
  			{
  				string playerName = server.PlayerByUid(entityPlayer.PlayerUID).PlayerName;
  				ServerMain.Logger.Audit(Lang.Get("{0} killed {1}, with item (if any): {2}", playerName, item.PlayerName, entityPlayer.RightHandItemSlot?.Itemstack?.Collectible.Code));
-@@ -422,10 +1818,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1837,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));
