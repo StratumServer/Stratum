@@ -111,6 +111,12 @@ internal sealed class StratumPerformanceStats
 	private int peakBlockGameTickListenersSkipped;
 	private int lastTcpFallbackClients;
 	private int peakTcpFallbackClients;
+	private int lastDirtyBlocksBefore;
+	private int lastDirtyBlocksAfter;
+	private int lastModifiedBlocksBefore;
+	private int lastModifiedBlocksAfter;
+	private int lastModifiedNoRelightBefore;
+	private int lastModifiedNoRelightAfter;
 
 	public void RecordChunkSendTick(int chunkBudget, int chunksSent, int deferredClients, int columnRequestBudget, int columnRequests, int generationDeferredClients, int pendingColumnRequests, int workerColumnRequests, int cancelledColumnRequests, int prioritizedChunkRings, int skippedClientChunkCap, int skippedServerChunkCap, int skippedOutboundPressure, int nearRingChunkSends, int farRingChunkSends, int trackedColumnRequests, int wantedByColumnLinks, int sharedColumnRequests, int workerTrackedColumnRequests)
 	{
@@ -284,6 +290,19 @@ internal sealed class StratumPerformanceStats
 		}
 	}
 
+	public void RecordDirtyBlockPublish(int dirtyBefore, int dirtyAfter, int modifiedBefore, int modifiedAfter, int noRelightBefore, int noRelightAfter)
+	{
+		lock (gate)
+		{
+			lastDirtyBlocksBefore = dirtyBefore;
+			lastDirtyBlocksAfter = dirtyAfter;
+			lastModifiedBlocksBefore = modifiedBefore;
+			lastModifiedBlocksAfter = modifiedAfter;
+			lastModifiedNoRelightBefore = noRelightBefore;
+			lastModifiedNoRelightAfter = noRelightAfter;
+		}
+	}
+
 	public void RecordMainThreadBlockTicks(int queuedBefore, int executed, int queuedAfter)
 	{
 		lock (gate)
@@ -349,7 +368,8 @@ internal sealed class StratumPerformanceStats
 				$"  Flush: lastLoaded={lastIncrementalLoadedChunksSaved}/{lastIncrementalLoadedChunksScanned}/{lastIncrementalLoadedChunkScanSize} lastMap={lastIncrementalMapChunksSaved}/{lastIncrementalMapChunksScanned}/{lastIncrementalMapChunkScanSize}\n" +
 				$"  Totals: completed={totalAutoSavesCompleted} delayedChecks={totalAutoSaveDelays} peakDelay={peakAutoSaveDelaySeconds}s flushes={totalIncrementalSaveFlushes} saved={totalIncrementalLoadedChunksSaved}/{totalIncrementalMapChunksSaved} peaks={peakIncrementalLoadedChunksSaved}/{peakIncrementalMapChunksSaved}\n" +
 				"\nBlock Ticks\n" +
-				$"  Budgets: {(blockTicks.Enabled ? "on" : "off")} chunks={blockTicks.MaxChunksPerPass} randomPerChunk={blockTicks.MaxRandomTicksPerChunk} mainThread={blockTicks.MaxMainThreadBlockTicksPerPass}\n" +
+				$"  Budgets: {(blockTicks.Enabled ? "on" : "off")} chunks={blockTicks.MaxChunksPerPass} randomPerChunk={blockTicks.MaxRandomTicksPerChunk} mainThread={blockTicks.MaxMainThreadBlockTicksPerPass} dirty={blockTicks.MaxDirtyBlocksPerPass}\n" +
+				$"  Dirty publish: dirty={lastDirtyBlocksBefore}->{lastDirtyBlocksAfter} modified={lastModifiedBlocksBefore}->{lastModifiedBlocksAfter} noRelight={lastModifiedNoRelightBefore}->{lastModifiedNoRelightAfter}\n" +
 				$"  Simulation: {(simulationDistance.Enabled ? "on" : "off")} randomRange={lastRandomTickRangeChunks} chunks listenerRange={simulationDistance.BlockGameTickListenerDistanceBlocks} forceLoaded={(simulationDistance.TickForceLoadedBlockListeners ? "yes" : "no")}\n" +
 				$"  Last: chunks={lastBlockTickChunksTicked}/{lastBlockTickChunksSeen} deferred={lastBlockTickChunksDeferred} random={lastRandomTickAttempts} queue={lastQueuedBlockTicksBefore}->{lastQueuedBlockTicksAfter}\n" +
 				$"  Listeners: last={lastBlockGameTickListenersTriggered}/{lastBlockGameTickListenersReady} skipped={lastBlockGameTickListenersSkipped} totalSkipped={totalBlockGameTickListenersSkipped} peakSkipped={peakBlockGameTickListenersSkipped}\n" +

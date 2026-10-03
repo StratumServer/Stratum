@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
-index 6b3cdd0..28ea78f 100644
+index 6b3cdd0..d1f5a50 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 @@ -3,10 +3,11 @@ using System.Collections.Concurrent;
@@ -29,7 +29,7 @@ index 6b3cdd0..28ea78f 100644
  		public BlockPos pos;
  
  		public object extra;
-@@ -52,10 +57,17 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -52,10 +57,28 @@ public class ServerSystemBlockSimulation : ServerSystem
  
  	private BlockPos tmpPos = new BlockPos(0);
  
@@ -42,12 +42,23 @@ index 6b3cdd0..28ea78f 100644
 +	private int stratumPosPoolIndex;
 +	private FluidBlockPos[] stratumFluidPosPool;
 +	private int stratumFluidPosPoolIndex;
++	private readonly Dictionary<long, List<StratumDirtyBlockUpdate>> stratumDirtyBlocksByChunk = new();
++	private readonly List<long> stratumDirtyChunkScratch = new();
++	private long stratumDirtyBacklogLogMs;
++	private struct StratumDirtyBlockUpdate
++	{
++		public int X;
++		public int Y;
++		public int Z;
++		public int BlockId;
++		public int ExceptClientId;
++	}
  	public ServerSystemBlockSimulation(ServerMain server)
  		: base(server)
  	{
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.PacketHandlers[3] = HandleBlockPlaceOrBreak;
-@@ -319,13 +331,231 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -319,13 +342,231 @@ public class ServerSystemBlockSimulation : ServerSystem
  	}
  
  	private void HandleBlockEntityPacket(Packet_Client packet, ConnectedClient client)
@@ -119,8 +130,8 @@ index 6b3cdd0..28ea78f 100644
 +
 +		blockEntity = null;
 +		return false;
-+	}
-+
+ 	}
+ 
 +	private static bool HasOpenInventorySessionForBlockEntityPacket(BlockEntity blockEntity, ServerPlayer player, int packetId)
 +	{
 +		if (packetId == (int)EnumBlockEntityPacketId.Open || packetId == (int)EnumBlockEntityPacketId.Close)
@@ -200,8 +211,8 @@ index 6b3cdd0..28ea78f 100644
 +			SelectionBoxIndex = 0
 +		});
 +		return true;
- 	}
- 
++	}
++
 +	private bool TryAllowDevCommandBlockUse(BlockPos pos, ConnectedClient client)
 +	{
 +		ServerPlayer player = client?.Player;
@@ -280,7 +291,7 @@ index 6b3cdd0..28ea78f 100644
  		Packet_ClientBlockPlaceOrBreak blockPlaceOrBreak = packet.BlockPlaceOrBreak;
  		BlockSelection blockSelection = new BlockSelection
  		{
-@@ -338,10 +571,15 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -338,10 +579,15 @@ public class ServerSystemBlockSimulation : ServerSystem
  		};
  		if (client.Player.WorldData.CurrentGameMode == EnumGameMode.Spectator)
  		{
@@ -296,7 +307,7 @@ index 6b3cdd0..28ea78f 100644
  		{
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			string code = "noprivilege-buildbreak-" + enumWorldAccessResponse.ToString().ToLowerInvariant();
-@@ -354,12 +592,29 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -354,12 +600,29 @@ public class ServerSystemBlockSimulation : ServerSystem
  				code = "noprivilege-buildbreak-" + claimant.Substring("custommessage-".Length);
  			}
  			client.Player.SendIngameError(code, null, claimant);
@@ -326,7 +337,7 @@ index 6b3cdd0..28ea78f 100644
  				worldChunk.BreakDecor(server, blockSelection.Position, blockSelection.Face);
  				worldChunk.MarkModified();
  			}
-@@ -391,10 +646,13 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -391,10 +654,13 @@ public class ServerSystemBlockSimulation : ServerSystem
  		Packet_ClientHandInteraction handInteraction = packet.HandInteraction;
  		if (client.Player.WorldData.CurrentGameMode == EnumGameMode.Spectator || handInteraction.UseType == 0 || handInteraction.MouseButton != 2)
  		{
@@ -340,7 +351,7 @@ index 6b3cdd0..28ea78f 100644
  		Vec3d hitPosition = new Vec3d(CollectibleNet.DeserializeDoublePrecise(handInteraction.HitX), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitY), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitZ));
  		BlockSelection blockSelection = new BlockSelection
  		{
-@@ -402,11 +660,17 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -402,11 +668,17 @@ public class ServerSystemBlockSimulation : ServerSystem
  			Face = face,
  			HitPosition = hitPosition,
  			SelectionBoxIndex = handInteraction.SelectionBoxIndex,
@@ -359,7 +370,7 @@ index 6b3cdd0..28ea78f 100644
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			return;
  		}
-@@ -418,11 +682,10 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -418,11 +690,10 @@ public class ServerSystemBlockSimulation : ServerSystem
  			LandClaim blockingLandClaimant = server.WorldMap.GetBlockingLandClaimant(client.Player, blockSelection.Position, EnumBlockAccessFlags.BuildOrBreak);
  			client.Player.SendIngameError(code, null, blockingLandClaimant?.LastKnownOwnerName);
  			return;
@@ -371,7 +382,7 @@ index 6b3cdd0..28ea78f 100644
  		{
  		default:
  			return;
-@@ -483,10 +746,21 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -483,10 +754,21 @@ public class ServerSystemBlockSimulation : ServerSystem
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.UP), sendPlayerData: false);
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.DOWN), sendPlayerData: false);
  		server.SendOwnPlayerData(targetPlayer);
@@ -393,7 +404,7 @@ index 6b3cdd0..28ea78f 100644
  		server.SendSetBlock(targetPlayer, server.WorldMap.RawRelaxedBlockAccess.GetBlockId(pos), pos.X, pos.InternalY, pos.Z);
  		BlockEntity blockEntity = server.WorldMap.RawRelaxedBlockAccess.GetBlockEntity(pos);
  		if (blockEntity != null)
-@@ -503,11 +777,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -503,11 +785,12 @@ public class ServerSystemBlockSimulation : ServerSystem
  	{
  		BlockPos blockPos = new BlockPos(cmd.X, cmd.Y, cmd.Z);
  		Vec3d hitPosition = new Vec3d(CollectibleNet.DeserializeDouble(cmd.HitX), CollectibleNet.DeserializeDouble(cmd.HitY), CollectibleNet.DeserializeDouble(cmd.HitZ));
@@ -407,7 +418,7 @@ index 6b3cdd0..28ea78f 100644
  			activeHotbarSlot.MarkDirty();
  			return false;
  		}
-@@ -573,11 +848,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -573,11 +856,12 @@ public class ServerSystemBlockSimulation : ServerSystem
  					server.BroadcastHotbarSlot(player);
  				}
  				activeHotbarSlot.MarkDirty();
@@ -421,7 +432,7 @@ index 6b3cdd0..28ea78f 100644
  			int index = ((!block3.SideSolid.Any) ? server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 1).Id : block3.BlockId);
  			Block block4 = (blockSelection.Block = server.Blocks[index]);
  			IItemStack itemstack = activeHotbarSlot.Itemstack;
-@@ -619,10 +895,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -619,10 +903,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (activeHotbarSlot.Itemstack == null && itemstack != null)
  			{
  				server.BroadcastHotbarSlot(player);
@@ -436,7 +447,7 @@ index 6b3cdd0..28ea78f 100644
  	}
  
  	internal bool IsAnyPlayerInBlock(BlockPos pos, Block block, IPlayer ignorePlayer)
-@@ -650,11 +930,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -650,11 +938,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  		return false;
  	}
  
@@ -452,7 +463,88 @@ index 6b3cdd0..28ea78f 100644
  	private void UpdateEvery100ms(float t1)
  	{
  		HandleDirtyAndUpdatedBlocks();
-@@ -716,17 +999,23 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -667,41 +958,48 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 		while (server.UpdatedBlocks.Count > 0 && num++ < 500)
+ 		{
+ 			BlockPos pos = server.UpdatedBlocks.Dequeue();
+ 			server.TriggerNeighbourBlocksUpdate(pos);
+ 		}
+-		Vec4i result;
+-		while (!server.DirtyBlocks.IsEmpty && server.DirtyBlocks.TryDequeue(out result))
+-		{
+-			server.SendSetBlock(server.BlockAccessor.GetBlockRaw(result.X, result.Y, result.Z).Id, result.X, result.Y, result.Z, result.W, exchangeOnly: true);
+-		}
+-		if (!server.ModifiedBlocks.IsEmpty)
+-		{
+-			List<BlockPos> list = new List<BlockPos>();
+-			BlockPos result2;
+-			while (!server.ModifiedBlocks.IsEmpty && server.ModifiedBlocks.TryDequeue(out result2))
+-			{
+-				Block block = server.WorldMap.RelaxedBlockAccess.GetBlock(result2, 2);
+-				if (block.Id != 0)
+-				{
+-					block.OnNeighbourBlockChange(server, result2, result2);
+-				}
+-				server.WorldMap.RelaxedBlockAccess.GetBlock(result2, 1).OnNeighbourBlockChange(server, result2, result2);
+-				list.Add(result2);
+-			}
+-			server.SendSetBlocksPacket(list, 47);
+-		}
+-		if (!server.ModifiedBlocksNoRelight.IsEmpty)
+-		{
+-			List<BlockPos> list2 = new List<BlockPos>();
+-			BlockPos result3;
+-			while (!server.ModifiedBlocksNoRelight.IsEmpty && server.ModifiedBlocksNoRelight.TryDequeue(out result3))
+-			{
+-				server.WorldMap.RelaxedBlockAccess.GetBlock(result3).OnNeighbourBlockChange(server, result3, result3);
+-				list2.Add(result3);
+-			}
+-			server.SendSetBlocksPacket(list2, 63);
+-		}
++		// Stratum: cap DirtyBlocks only. The block id is read at publish time, so the
++		// cap only delays those packets. Modified queues keep the vanilla full drain,
++		// so packets 47 and 63 still precede packet 48, and OnNeighbourBlockChange is
++		// not deferred past a chunk unload. The cap also applies when BlockTicks is
++		// off, so turning that switch off cannot publish a dirty backlog in one tick.
++		StratumBlockTickConfig stratumBlockTicks = StratumRuntime.Config.Performance.BlockTicks;
++		int stratumDirtyBefore = server.DirtyBlocks.Count;
++		int stratumModifiedBefore = server.ModifiedBlocks.Count;
++		int stratumNoRelightBefore = server.ModifiedBlocksNoRelight.Count;
++		StratumDrainDirtyBlocks(stratumBlockTicks.MaxDirtyBlocksPerPass);
++		if (!server.ModifiedBlocks.IsEmpty)
++		{
++			List<BlockPos> list = new List<BlockPos>();
++			BlockPos result2;
++			while (!server.ModifiedBlocks.IsEmpty && server.ModifiedBlocks.TryDequeue(out result2))
++			{
++				Block block = server.WorldMap.RelaxedBlockAccess.GetBlock(result2, 2);
++				if (block.Id != 0)
++				{
++					block.OnNeighbourBlockChange(server, result2, result2);
++				}
++				server.WorldMap.RelaxedBlockAccess.GetBlock(result2, 1).OnNeighbourBlockChange(server, result2, result2);
++				list.Add(result2);
++			}
++			server.SendSetBlocksPacket(list, 47);
++		}
++		if (!server.ModifiedBlocksNoRelight.IsEmpty)
++		{
++			List<BlockPos> list2 = new List<BlockPos>();
++			BlockPos result3;
++			while (!server.ModifiedBlocksNoRelight.IsEmpty && server.ModifiedBlocksNoRelight.TryDequeue(out result3))
++			{
++				server.WorldMap.RelaxedBlockAccess.GetBlock(result3).OnNeighbourBlockChange(server, result3, result3);
++				list2.Add(result3);
++			}
++			server.SendSetBlocksPacket(list2, 63);
++		}
++		StratumRuntime.PerformanceStats.RecordDirtyBlockPublish(stratumDirtyBefore, server.DirtyBlocks.Count, stratumModifiedBefore, server.ModifiedBlocks.Count, stratumNoRelightBefore, server.ModifiedBlocksNoRelight.Count);
++		StratumLogDirtyBlockBacklog();
+ 		if (server.ModifiedBlocksMinimal.Count > 0)
+ 		{
+ 			server.SendSetBlocksPacket(server.ModifiedBlocksMinimal, 70);
+ 			server.ModifiedBlocksMinimal.Clear();
+@@ -716,17 +1014,23 @@ public class ServerSystemBlockSimulation : ServerSystem
  			}
  			server.SendSetDecorsPackets(list3);
  		}
@@ -476,7 +568,7 @@ index 6b3cdd0..28ea78f 100644
  		ConcurrentQueue<BlockPos> dirtyBlockEntities = server.DirtyBlockEntities;
  		if (!dirtyBlockEntities.IsEmpty)
  		{
-@@ -737,11 +1026,16 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -737,11 +1041,16 @@ public class ServerSystemBlockSimulation : ServerSystem
  				if (positionsDone.Add(result))
  				{
  					BlockEntity blockEntity = server.WorldMap.GetBlockEntity(result);
@@ -494,7 +586,7 @@ index 6b3cdd0..28ea78f 100644
  					{
  						noblockEntities.Add(result);
  					}
-@@ -762,28 +1056,54 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -762,28 +1071,54 @@ public class ServerSystemBlockSimulation : ServerSystem
  			foreach (Packet_BlockEntity item in blockEntitiesPacked)
  			{
  				long index3d = server.WorldMap.ChunkIndex3D(new ChunkPos(item.PosX / 32, item.PosY / 32, item.PosZ / 32));
@@ -552,7 +644,7 @@ index 6b3cdd0..28ea78f 100644
  			{
  				continue;
  			}
-@@ -812,22 +1132,37 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -812,22 +1147,37 @@ public class ServerSystemBlockSimulation : ServerSystem
  			catch (Exception e)
  			{
  				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
@@ -591,7 +683,7 @@ index 6b3cdd0..28ea78f 100644
  			foreach (int clientId in clientIds)
  			{
  				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
-@@ -862,34 +1197,116 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -862,34 +1212,116 @@ public class ServerSystemBlockSimulation : ServerSystem
  						}
  					}
  				}
@@ -711,7 +803,7 @@ index 6b3cdd0..28ea78f 100644
  		{
  			int num6 = rand.Next(32);
  			int num7 = rand.Next(32);
-@@ -905,35 +1322,79 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -905,35 +1337,79 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (fluid != 0)
  			{
  				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));
@@ -794,3 +886,78 @@ index 6b3cdd0..28ea78f 100644
  		byte[] array = ms.ToArray();
  		Packet_BlockEntity packet_BlockEntity = new Packet_BlockEntity();
  		packet_BlockEntity.Classname = text;
+@@ -975,6 +1451,74 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 		{
+ 			Id = 48,
+ 			BlockEntities = packet_BlockEntities
+ 		});
+ 	}
++
++	private void StratumDrainDirtyBlocks(int budget)
++	{
++		stratumDirtyBlocksByChunk.Clear();
++		stratumDirtyChunkScratch.Clear();
++		if (server.DirtyBlocks.IsEmpty)
++		{
++			return;
++		}
++		int taken = 0;
++		while (taken < budget && server.DirtyBlocks.TryDequeue(out Vec4i result))
++		{
++			taken++;
++			int blockId = server.BlockAccessor.GetBlockRaw(result.X, result.Y, result.Z).Id;
++			long chunkIndex = server.WorldMap.ChunkIndex3D(result.X / 32, result.Y / 32, result.Z / 32);
++			if (!stratumDirtyBlocksByChunk.TryGetValue(chunkIndex, out List<StratumDirtyBlockUpdate> updates))
++			{
++				updates = new List<StratumDirtyBlockUpdate>();
++				stratumDirtyBlocksByChunk[chunkIndex] = updates;
++				stratumDirtyChunkScratch.Add(chunkIndex);
++			}
++			updates.Add(new StratumDirtyBlockUpdate
++			{
++				X = result.X,
++				Y = result.Y,
++				Z = result.Z,
++				BlockId = blockId,
++				ExceptClientId = result.W
++			});
++		}
++		foreach (long chunkIndex in stratumDirtyChunkScratch)
++		{
++			List<StratumDirtyBlockUpdate> updates = stratumDirtyBlocksByChunk[chunkIndex];
++			foreach (ConnectedClient client in server.Clients.Values)
++			{
++				if (!client.State.ConnectedOrPlaying() || client.Player == null || !client.DidSendChunk(chunkIndex))
++				{
++					continue;
++				}
++				for (int i = 0; i < updates.Count; i++)
++				{
++					StratumDirtyBlockUpdate update = updates[i];
++					if (update.ExceptClientId == client.Id)
++					{
++						continue;
++					}
++					server.SendSetBlock(client.Player, update.BlockId, update.X, update.Y, update.Z, exchangeOnly: true);
++				}
++			}
++		}
++	}
++	private void StratumLogDirtyBlockBacklog()
++	{
++		int dirtyLeft = server.DirtyBlocks.Count;
++		int modifiedLeft = server.ModifiedBlocks.Count;
++		int modifiedNoRelightLeft = server.ModifiedBlocksNoRelight.Count;
++		if (dirtyLeft == 0 && modifiedLeft == 0 && modifiedNoRelightLeft == 0)
++		{
++			return;
++		}
++		long now = server.ElapsedMilliseconds;
++		if (now - stratumDirtyBacklogLogMs < 1000)
++		{
++			return;
++		}
++		stratumDirtyBacklogLogMs = now;
++		ServerMain.Logger.Debug("[Stratum] dirty block pass left queued: dirty={0} modified={1} modifiedNoRelight={2}", dirtyLeft, modifiedLeft, modifiedNoRelightLeft);
++	}
+ }
