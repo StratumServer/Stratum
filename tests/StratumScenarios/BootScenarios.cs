@@ -73,7 +73,7 @@ public class BootScenarios : AtlasScenarioBase
 		CommandResult result = await World.ExecuteCommand("/nosuchcommandanywhere");
 
 		Assert.False(result.Ok);
-		Assert.Equal("nosuchcommand", result.Raw.ErrorCode);
+		Assert.Equal("nosuchcommand", result.ErrorCode);
 	}
 
 	[AtlasScenario]
