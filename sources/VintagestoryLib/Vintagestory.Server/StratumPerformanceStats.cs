@@ -117,6 +117,7 @@ internal sealed class StratumPerformanceStats
 	private int lastModifiedBlocksAfter;
 	private int lastModifiedNoRelightBefore;
 	private int lastModifiedNoRelightAfter;
+	private int peakDirtyBlocksAfter;
 
 	public void RecordChunkSendTick(int chunkBudget, int chunksSent, int deferredClients, int columnRequestBudget, int columnRequests, int generationDeferredClients, int pendingColumnRequests, int workerColumnRequests, int cancelledColumnRequests, int prioritizedChunkRings, int skippedClientChunkCap, int skippedServerChunkCap, int skippedOutboundPressure, int nearRingChunkSends, int farRingChunkSends, int trackedColumnRequests, int wantedByColumnLinks, int sharedColumnRequests, int workerTrackedColumnRequests)
 	{
@@ -300,6 +301,7 @@ internal sealed class StratumPerformanceStats
 			lastModifiedBlocksAfter = modifiedAfter;
 			lastModifiedNoRelightBefore = noRelightBefore;
 			lastModifiedNoRelightAfter = noRelightAfter;
+			peakDirtyBlocksAfter = Math.Max(peakDirtyBlocksAfter, dirtyAfter);
 		}
 	}
 
@@ -369,7 +371,7 @@ internal sealed class StratumPerformanceStats
 				$"  Totals: completed={totalAutoSavesCompleted} delayedChecks={totalAutoSaveDelays} peakDelay={peakAutoSaveDelaySeconds}s flushes={totalIncrementalSaveFlushes} saved={totalIncrementalLoadedChunksSaved}/{totalIncrementalMapChunksSaved} peaks={peakIncrementalLoadedChunksSaved}/{peakIncrementalMapChunksSaved}\n" +
 				"\nBlock Ticks\n" +
 				$"  Budgets: {(blockTicks.Enabled ? "on" : "off")} chunks={blockTicks.MaxChunksPerPass} randomPerChunk={blockTicks.MaxRandomTicksPerChunk} mainThread={blockTicks.MaxMainThreadBlockTicksPerPass} dirty={blockTicks.MaxDirtyBlocksPerPass}\n" +
-				$"  Dirty publish: dirty={lastDirtyBlocksBefore}->{lastDirtyBlocksAfter} modified={lastModifiedBlocksBefore}->{lastModifiedBlocksAfter} noRelight={lastModifiedNoRelightBefore}->{lastModifiedNoRelightAfter}\n" +
+				$"  Dirty publish: dirty={lastDirtyBlocksBefore}->{lastDirtyBlocksAfter} modified={lastModifiedBlocksBefore}->{lastModifiedBlocksAfter} noRelight={lastModifiedNoRelightBefore}->{lastModifiedNoRelightAfter} peakDirty={peakDirtyBlocksAfter}\n" +
 				$"  Simulation: {(simulationDistance.Enabled ? "on" : "off")} randomRange={lastRandomTickRangeChunks} chunks listenerRange={simulationDistance.BlockGameTickListenerDistanceBlocks} forceLoaded={(simulationDistance.TickForceLoadedBlockListeners ? "yes" : "no")}\n" +
 				$"  Last: chunks={lastBlockTickChunksTicked}/{lastBlockTickChunksSeen} deferred={lastBlockTickChunksDeferred} random={lastRandomTickAttempts} queue={lastQueuedBlockTicksBefore}->{lastQueuedBlockTicksAfter}\n" +
 				$"  Listeners: last={lastBlockGameTickListenersTriggered}/{lastBlockGameTickListenersReady} skipped={lastBlockGameTickListenersSkipped} totalSkipped={totalBlockGameTickListenersSkipped} peakSkipped={peakBlockGameTickListenersSkipped}\n" +

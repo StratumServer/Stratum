@@ -29,7 +29,7 @@ index 6b3cdd0..d1f5a50 100644
  		public BlockPos pos;
  
  		public object extra;
-@@ -52,10 +57,28 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -52,10 +57,29 @@ public class ServerSystemBlockSimulation : ServerSystem
  
  	private BlockPos tmpPos = new BlockPos(0);
  
@@ -44,6 +44,7 @@ index 6b3cdd0..d1f5a50 100644
 +	private int stratumFluidPosPoolIndex;
 +	private readonly Dictionary<long, List<StratumDirtyBlockUpdate>> stratumDirtyBlocksByChunk = new();
 +	private readonly List<long> stratumDirtyChunkScratch = new();
++	private readonly Dictionary<(int X, int Y, int Z), int> stratumDirtyPosIndex = new();
 +	private long stratumDirtyBacklogLogMs;
 +	private struct StratumDirtyBlockUpdate
 +	{
@@ -463,7 +464,7 @@ index 6b3cdd0..d1f5a50 100644
  	private void UpdateEvery100ms(float t1)
  	{
  		HandleDirtyAndUpdatedBlocks();
-@@ -667,41 +958,48 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -667,41 +958,56 @@ public class ServerSystemBlockSimulation : ServerSystem
  		while (server.UpdatedBlocks.Count > 0 && num++ < 500)
  		{
  			BlockPos pos = server.UpdatedBlocks.Dequeue();
@@ -510,7 +511,15 @@ index 6b3cdd0..d1f5a50 100644
 +		int stratumDirtyBefore = server.DirtyBlocks.Count;
 +		int stratumModifiedBefore = server.ModifiedBlocks.Count;
 +		int stratumNoRelightBefore = server.ModifiedBlocksNoRelight.Count;
-+		StratumDrainDirtyBlocks(stratumBlockTicks.MaxDirtyBlocksPerPass);
++		int stratumDirtyBudget = stratumBlockTicks.MaxDirtyBlocksPerPass;
++		int stratumDirtyWaiting = server.DirtyBlocks.Count;
++		// A deep backlog may publish up to 4x the configured cap. The 600-entry
++		// scenario stays at the base cap. A 400k queue can shrink instead of only growing.
++		if (stratumDirtyWaiting > stratumDirtyBudget * 8)
++		{
++			stratumDirtyBudget = Math.Min(stratumDirtyWaiting, stratumDirtyBudget * 4);
++		}
++		StratumDrainDirtyBlocks(stratumDirtyBudget);
 +		if (!server.ModifiedBlocks.IsEmpty)
 +		{
 +			List<BlockPos> list = new List<BlockPos>();
@@ -886,7 +895,7 @@ index 6b3cdd0..d1f5a50 100644
  		byte[] array = ms.ToArray();
  		Packet_BlockEntity packet_BlockEntity = new Packet_BlockEntity();
  		packet_BlockEntity.Classname = text;
-@@ -975,6 +1451,74 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -975,6 +1451,87 @@ public class ServerSystemBlockSimulation : ServerSystem
  		{
  			Id = 48,
  			BlockEntities = packet_BlockEntities
@@ -897,6 +906,7 @@ index 6b3cdd0..d1f5a50 100644
 +	{
 +		stratumDirtyBlocksByChunk.Clear();
 +		stratumDirtyChunkScratch.Clear();
++		stratumDirtyPosIndex.Clear();
 +		if (server.DirtyBlocks.IsEmpty)
 +		{
 +			return;
@@ -904,8 +914,19 @@ index 6b3cdd0..d1f5a50 100644
 +		int taken = 0;
 +		while (taken < budget && server.DirtyBlocks.TryDequeue(out Vec4i result))
 +		{
-+			taken++;
 +			int blockId = server.BlockAccessor.GetBlockRaw(result.X, result.Y, result.Z).Id;
++			var posKey = (result.X, result.Y, result.Z);
++			if (stratumDirtyPosIndex.TryGetValue(posKey, out int existingIndex))
++			{
++				long existingChunk = server.WorldMap.ChunkIndex3D(result.X / 32, result.Y / 32, result.Z / 32);
++				List<StratumDirtyBlockUpdate> existing = stratumDirtyBlocksByChunk[existingChunk];
++				StratumDirtyBlockUpdate prior = existing[existingIndex];
++				prior.BlockId = blockId;
++				prior.ExceptClientId = result.W;
++				existing[existingIndex] = prior;
++				continue;
++			}
++			taken++;
 +			long chunkIndex = server.WorldMap.ChunkIndex3D(result.X / 32, result.Y / 32, result.Z / 32);
 +			if (!stratumDirtyBlocksByChunk.TryGetValue(chunkIndex, out List<StratumDirtyBlockUpdate> updates))
 +			{
@@ -913,6 +934,7 @@ index 6b3cdd0..d1f5a50 100644
 +				stratumDirtyBlocksByChunk[chunkIndex] = updates;
 +				stratumDirtyChunkScratch.Add(chunkIndex);
 +			}
++			stratumDirtyPosIndex[posKey] = updates.Count;
 +			updates.Add(new StratumDirtyBlockUpdate
 +			{
 +				X = result.X,

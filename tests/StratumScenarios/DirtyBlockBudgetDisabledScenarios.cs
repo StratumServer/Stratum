@@ -17,11 +17,15 @@ public class DirtyBlockBudgetDisabledScenarios : AtlasScenarioBase
 		await player.TeleportTo(World.Spawn);
 		await World.Ticks(5);
 
-		(int dirtyAfter, int modifiedAfter, string report) =
+		(int dirtyAfter, int dirtySecond, int modifiedAfter, int noRelightAfter, string report) =
 			await DirtyBlockBudgetScenarios.Measure(World, player.Position);
 
 		Assert.Equal(88, dirtyAfter);
-		Assert.True(modifiedAfter < 88, $"modified queue still held {modifiedAfter} after a full drain");
+		Assert.Equal(0, dirtySecond);
+		Assert.Equal(0, modifiedAfter);
+		Assert.Equal(0, noRelightAfter);
 		Assert.Contains("Budgets: off", report, StringComparison.Ordinal);
+		Assert.Contains("modified=600->0", report, StringComparison.Ordinal);
+		Assert.Contains("noRelight=600->0", report, StringComparison.Ordinal);
 	}
 }

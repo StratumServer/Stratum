@@ -24,17 +24,32 @@ public class DirtyBlockBudgetScenarios : AtlasScenarioBase
 		await player.TeleportTo(World.Spawn);
 		await World.Ticks(5);
 
-		(int dirtyLeft, int modifiedAfter, string report) = await Measure(World, player.Position);
+		(int dirtyLeft, int dirtySecond, int modifiedAfter, int noRelightAfter, string report) =
+			await Measure(World, player.Position);
 
 		Assert.Equal(Queued - Cap, dirtyLeft);
-		Assert.True(modifiedAfter < Queued - Cap, $"modified queue still held {modifiedAfter} after a full drain");
-		Assert.Contains("Dirty publish:", report, StringComparison.Ordinal);
+		Assert.Equal(0, dirtySecond);
+		Assert.Equal(0, modifiedAfter);
+		Assert.Equal(0, noRelightAfter);
+		Assert.Contains("modified=600->0", report, StringComparison.Ordinal);
+		Assert.Contains("noRelight=600->0", report, StringComparison.Ordinal);
 	}
 
-	internal static async Task<(int DirtyAfter, int ModifiedAfter, string Report)> Measure(
+	[AtlasScenario(TimeoutMs = 120_000)]
+	public async Task RepeatedPosition_Should_NotConsumeTheCap()
+	{
+		ITestPlayer player = await World.JoinPlayer("dirty-cap-dup");
+		await player.TeleportTo(World.Spawn);
+		await World.Ticks(5);
+
+		int left = await MeasureDuplicates(World, player.Position);
+		Assert.Equal(0, left);
+	}
+
+	internal static async Task<(int DirtyAfter, int DirtySecond, int ModifiedAfter, int NoRelightAfter, string Report)> Measure(
 		IWorldSession world, BlockPos origin)
 	{
-		var done = new TaskCompletionSource<(int, int, string)>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var done = new TaskCompletionSource<(int, int, int, int, string)>(TaskCreationOptions.RunContinuationsAsynchronously);
 		int fired = 0;
 		world.Api.Event.RegisterGameTickListener(_ =>
 		{
@@ -56,26 +71,27 @@ public class DirtyBlockBudgetScenarios : AtlasScenarioBase
 		return await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
 	}
 
-	private static (int DirtyAfter, int ModifiedAfter, string Report) MeasureOnGameThread(
+	private static (int DirtyAfter, int DirtySecond, int ModifiedAfter, int NoRelightAfter, string Report) MeasureOnGameThread(
 		IWorldSession world, BlockPos origin)
 	{
 		object server = world.Api.World;
 		object simulation = FindBlockSimulation(server);
 		object dirty = Field(server, "DirtyBlocks");
 		object modified = Field(server, "ModifiedBlocks");
+		object noRelight = Field(server, "ModifiedBlocksNoRelight");
 		MethodInfo pass = simulation.GetType().GetMethod(
 			"HandleDirtyAndUpdatedBlocks",
 			BindingFlags.Instance | BindingFlags.NonPublic)!;
 
 		// The 100ms listener cannot run inside this callback. Clear anything already
 		// queued, then the next call is the only pass that sees the 600 new entries.
-		for (int i = 0; i < 40 && Count(dirty) > 0; i++)
+		for (int i = 0; i < 40 && (Count(dirty) > 0 || Count(modified) > 0 || Count(noRelight) > 0); i++)
 		{
 			pass.Invoke(simulation, null);
 		}
 
 		int dirtyBefore = Count(dirty);
-		EnqueueDirty(dirty, origin, Queued);
+		EnqueueDirty(dirty, origin, Queued, repeats: false);
 		pass.Invoke(simulation, null);
 		int dirtyAfter = Count(dirty);
 		int drained = dirtyBefore + Queued - dirtyAfter;
@@ -86,26 +102,64 @@ public class DirtyBlockBudgetScenarios : AtlasScenarioBase
 				+ $"(before {dirtyBefore}, after {dirtyAfter})");
 		}
 
-		for (int i = 0; i < 40 && Count(modified) > 0; i++)
-		{
-			pass.Invoke(simulation, null);
-		}
+		pass.Invoke(simulation, null);
+		int dirtySecond = Count(dirty);
 
 		EnqueueModified(modified, origin, Queued);
+		EnqueueModified(noRelight, origin, Queued);
 		pass.Invoke(simulation, null);
 		int modifiedAfter = Count(modified);
+		int noRelightAfter = Count(noRelight);
 		string report = PerformanceReport();
-		return (Queued - Cap, modifiedAfter, report);
+		return (dirtyAfter, dirtySecond, modifiedAfter, noRelightAfter, report);
 	}
 
-	private static void EnqueueDirty(object queue, BlockPos origin, int count)
+	private static async Task<int> MeasureDuplicates(IWorldSession world, BlockPos origin)
+	{
+		var done = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+		int fired = 0;
+		world.Api.Event.RegisterGameTickListener(_ =>
+		{
+			if (Interlocked.Exchange(ref fired, 1) != 0)
+			{
+				return;
+			}
+
+			try
+			{
+				object server = world.Api.World;
+				object simulation = FindBlockSimulation(server);
+				object dirty = Field(server, "DirtyBlocks");
+				MethodInfo pass = simulation.GetType().GetMethod(
+					"HandleDirtyAndUpdatedBlocks",
+					BindingFlags.Instance | BindingFlags.NonPublic)!;
+				for (int i = 0; i < 40 && Count(dirty) > 0; i++)
+				{
+					pass.Invoke(simulation, null);
+				}
+
+				EnqueueDirty(dirty, origin, Queued, repeats: true);
+				pass.Invoke(simulation, null);
+				done.TrySetResult(Count(dirty));
+			}
+			catch (Exception ex)
+			{
+				done.TrySetException(ex);
+			}
+		}, 20);
+
+		return await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+	}
+
+	private static void EnqueueDirty(object queue, BlockPos origin, int count, bool repeats)
 	{
 		MethodInfo enqueue = queue.GetType().GetMethod("Enqueue")!;
 		int x0 = origin.X & ~31;
 		int z0 = origin.Z & ~31;
 		for (int i = 0; i < count; i++)
 		{
-			enqueue.Invoke(queue, new object[] { new Vec4i(x0 + (i % 30), origin.Y, z0 + (i / 30), 0) });
+			int n = repeats ? 0 : i;
+			enqueue.Invoke(queue, new object[] { new Vec4i(x0 + (n % 30), origin.Y, z0 + (n / 30), 0) });
 		}
 	}
 
