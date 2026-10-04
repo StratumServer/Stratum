@@ -1122,7 +1122,7 @@ index 6f69cd3..a654aca 100644
  	public IPlayer PlayerByUid(string playerUid)
  	{
  		if (playerUid == null)
-@@ -3414,44 +3895,63 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -3414,44 +3895,62 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			return;
  		}
@@ -1160,10 +1160,9 @@ index 6f69cd3..a654aca 100644
 +				if (requestId == Packet_ClientIdEnum.ServerQuery)
 +				{
 +					connection.SendPreparedPacket(StratumServerListQuery.Instance.PreparedPacket, false, Logger);
-+					if (!StratumRuntime.Config.Performance.Network.SendQueueEnabled)
-+					{
-+						connection.Shutdown();
-+					}
++					// Stratum: always close the query socket. Shutdown flushes the answer
++					// and returns without waiting, so the packet thread is not stalled.
++					connection.Shutdown();
 +					TotalReceivedBytes += msg.messageLength;
 +					return;
 +				}

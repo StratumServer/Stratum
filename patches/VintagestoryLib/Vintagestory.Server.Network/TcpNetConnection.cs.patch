@@ -88,26 +88,42 @@ index ae86835..34c0f3d 100644
  		catch
  		{
  			InvokeDisconnected();
-@@ -269,4 +301,6 @@ public class TcpNetConnection : NetConnection
+@@ -269,4 +301,21 @@ public class TcpNetConnection : NetConnection
  	public override void Shutdown()
  	{
-+		// Stratum: put queued bytes, including a disconnect reason, on the socket before FIN.
-+		stratumSendQueue?.FlushPending(250);
++		// Stratum: complete the writer and return. The FIN runs after the drain
++		// finishes, or after 250 ms, whichever is first. Waiting here stalled the
++		// main thread for the full timeout when the peer never read.
++		if (stratumSendQueue != null)
++		{
++			stratumSendQueue.ScheduleShutdown(250, delegate
++			{
++				try
++				{
++					TcpSocket?.Shutdown(SocketShutdown.Both);
++				}
++				catch
++				{
++				}
++			});
++			return;
++		}
  		if (TcpSocket == null)
  		{
-@@ -281,10 +315,11 @@ public class TcpNetConnection : NetConnection
+@@ -281,10 +329,12 @@ public class TcpNetConnection : NetConnection
  		}
  	}
 
  	public override void Close()
  	{
-+		stratumSendQueue?.FlushPending(250);
++		// Stratum: do not wait. Cancel is the hard bound. Shutdown already scheduled the FIN.
++		stratumSendQueue?.Complete();
  		try
  		{
  			cts?.Cancel();
  		}
  		catch
-@@ -302,10 +337,11 @@ public class TcpNetConnection : NetConnection
+@@ -302,10 +353,11 @@ public class TcpNetConnection : NetConnection
  
  	internal void InvokeDisconnected()
  	{

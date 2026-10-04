@@ -38,6 +38,7 @@ internal sealed class StratumSendQueue
 
 	private int pendingCount;
 	private long pendingBytes;
+	private int exemptInFlight;
 	private int overflowDisconnectStarted;
 
 	public int PendingCount => Volatile.Read(ref pendingCount);
@@ -87,10 +88,11 @@ internal sealed class StratumSendQueue
 		}, "StratumSendQueueDrain");
 	}
 
-	// Finish bytes already queued, then return. Close and Shutdown call this before they
-	// cancel the socket, so a disconnect reason enqueued just above them still reaches
-	// the client. The wait is bounded: a wedged socket does not hold the caller forever.
-	public void FlushPending(int timeoutMs)
+	// Stop accepting packets and let the drain finish what is already queued. Returns
+	// immediately. shutdownSocket runs after the drain completes, or after timeoutMs,
+	// whichever comes first. The caller must not wait: DisconnectPlayer runs on the
+	// main thread, and a peer that never reads would otherwise stall that thread.
+	public void ScheduleShutdown(int timeoutMs, Action shutdownSocket)
 	{
 		Task task;
 		lock (startGate)
@@ -102,14 +104,28 @@ internal sealed class StratumSendQueue
 
 		if (task == null)
 		{
+			shutdownSocket();
 			return;
+		}
+
+		_ = ObserveShutdown(task, Math.Max(0, timeoutMs), shutdownSocket);
+	}
+
+	private static async Task ObserveShutdown(Task drain, int timeoutMs, Action shutdownSocket)
+	{
+		try
+		{
+			await Task.WhenAny(drain, Task.Delay(timeoutMs)).ConfigureAwait(false);
+		}
+		catch (Exception)
+		{
 		}
 
 		try
 		{
-			task.Wait(Math.Max(0, timeoutMs));
+			shutdownSocket();
 		}
-		catch (AggregateException)
+		catch (Exception)
 		{
 		}
 	}
@@ -124,17 +140,39 @@ internal sealed class StratumSendQueue
 		}
 
 		int length = dataWithLength.Length;
-		long queued = Interlocked.Add(ref pendingBytes, length);
-		// Queue was already holding data and this packet would pass the cap. Roll it
-		// back and disconnect. Dropping the packet without closing would split the
-		// length-prefixed stream. Blocking here would put the gameplay thread back
-		// on the slow client. An empty queue still accepts one packet so a single
-		// large send is not refused.
-		if (queued > maxPendingBytes && queued - length > 0)
+		bool exempt = length >= maxPendingBytes;
+		if (exempt)
 		{
-			Interlocked.Add(ref pendingBytes, -length);
-			DisconnectOverflow();
-			return;
+			// One packet at or above the cap is accepted when the queue holds nothing
+			// else, and it is not added to pendingBytes. The packets behind it are
+			// judged on their own size. A second packet that large disconnects.
+			if (Interlocked.Read(ref pendingBytes) > 0)
+			{
+				DisconnectOverflow();
+				return;
+			}
+			if (Interlocked.Increment(ref exemptInFlight) != 1)
+			{
+				Interlocked.Decrement(ref exemptInFlight);
+				DisconnectOverflow();
+				return;
+			}
+			if (Interlocked.Read(ref pendingBytes) > 0)
+			{
+				Interlocked.Decrement(ref exemptInFlight);
+				DisconnectOverflow();
+				return;
+			}
+		}
+		else
+		{
+			long queued = Interlocked.Add(ref pendingBytes, length);
+			if (queued > maxPendingBytes)
+			{
+				Interlocked.Add(ref pendingBytes, -length);
+				DisconnectOverflow();
+				return;
+			}
 		}
 
 		Interlocked.Increment(ref pendingCount);
@@ -144,8 +182,7 @@ internal sealed class StratumSendQueue
 			{
 				// Writer already completed (connection closing). Drop, matches vanilla behavior
 				// of a send attempted after Close()/Dispose().
-				Interlocked.Decrement(ref pendingCount);
-				Interlocked.Add(ref pendingBytes, -length);
+				Release(length);
 				return;
 			}
 
@@ -178,7 +215,11 @@ internal sealed class StratumSendQueue
 
 	public void Complete()
 	{
-		channel.Writer.TryComplete();
+		lock (startGate)
+		{
+			closed = 1;
+			channel.Writer.TryComplete();
+		}
 	}
 
 	private async Task DrainAsync()
@@ -202,7 +243,7 @@ internal sealed class StratumSendQueue
 							coalescedLength = 0;
 						}
 
-						Decrement(packet.Length);
+						Release(packet.Length);
 						if (!await SendAsync(packet, packet.Length).ConfigureAwait(false)) return;
 						continue;
 					}
@@ -214,7 +255,7 @@ internal sealed class StratumSendQueue
 						coalescedLength = 0;
 					}
 
-					Decrement(packet.Length);
+					Release(packet.Length);
 					Buffer.BlockCopy(packet, 0, coalesceBuffer, coalescedLength, packet.Length);
 					coalescedLength += packet.Length;
 				}
@@ -231,9 +272,15 @@ internal sealed class StratumSendQueue
 		}
 	}
 
-	private void Decrement(int bytes)
+	private void Release(int bytes)
 	{
 		Interlocked.Decrement(ref pendingCount);
+		if (bytes >= maxPendingBytes)
+		{
+			Interlocked.Decrement(ref exemptInFlight);
+			return;
+		}
+
 		Interlocked.Add(ref pendingBytes, -bytes);
 	}
 
