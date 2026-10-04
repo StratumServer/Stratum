@@ -2,7 +2,123 @@ diff --git a/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.c
 index 0c59a67..a7ed24d 100644
 --- a/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
 +++ b/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
-@@ -320,46 +320,76 @@
+@@ -212,59 +212,67 @@
+ 
+ 	public byte[] GetPlayerData(string playeruid)
+ 	{
+-		SqliteCommand val = sqliteConn.CreateCommand();
+-		try
+-		{
+-			((DbCommand)(object)val).CommandText = "SELECT data FROM playerdata WHERE playeruid=@playeruid";
+-			((DbParameterCollection)(object)val.Parameters).Add((object)CreateParameter("playeruid", DbType.String, playeruid, (DbCommand)(object)val));
+-			SqliteDataReader val2 = val.ExecuteReader();
+-			try
+-			{
+-				if (((DbDataReader)(object)val2).Read())
+-				{
+-					return ((DbDataReader)(object)val2)["data"] as byte[];
+-				}
+-				return null;
+-			}
+-			finally
+-			{
+-				((IDisposable)val2)?.Dispose();
+-			}
+-		}
+-		finally
+-		{
+-			((IDisposable)val)?.Dispose();
++		// Stratum: join reads player data on the main thread while the chunk thread saves. Both must hold transactionLock or SqliteConnection.RemoveCommand throws and the server shuts down.
++		lock (transactionLock)
++		{
++			SqliteCommand val = sqliteConn.CreateCommand();
++			try
++			{
++				((DbCommand)(object)val).CommandText = "SELECT data FROM playerdata WHERE playeruid=@playeruid";
++				((DbParameterCollection)(object)val.Parameters).Add((object)CreateParameter("playeruid", DbType.String, playeruid, (DbCommand)(object)val));
++				SqliteDataReader val2 = val.ExecuteReader();
++				try
++				{
++					if (((DbDataReader)(object)val2).Read())
++					{
++						return ((DbDataReader)(object)val2)["data"] as byte[];
++					}
++					return null;
++				}
++				finally
++				{
++					((IDisposable)val2)?.Dispose();
++				}
++			}
++			finally
++			{
++				((IDisposable)val)?.Dispose();
++			}
+ 		}
+ 	}
+ 
+ 	public void SetPlayerData(string playeruid, byte[] data)
+ 	{
+-		if (data == null)
+-		{
+-			using (DbCommand dbCommand = sqliteConn.CreateCommand())
+-			{
+-				dbCommand.CommandText = "DELETE FROM playerdata WHERE playeruid=@playeruid";
+-				dbCommand.Parameters.Add(CreateParameter("playeruid", DbType.String, playeruid, dbCommand));
+-				dbCommand.ExecuteNonQuery();
+-				return;
+-			}
+-		}
+-		if (GetPlayerData(playeruid) == null)
+-		{
+-			using (DbCommand dbCommand2 = sqliteConn.CreateCommand())
+-			{
+-				dbCommand2.CommandText = "INSERT INTO playerdata (playeruid, data) VALUES (@playeruid,@data)";
+-				dbCommand2.Parameters.Add(CreateParameter("playeruid", DbType.String, playeruid, dbCommand2));
+-				dbCommand2.Parameters.Add(CreateParameter("data", DbType.Object, data, dbCommand2));
+-				dbCommand2.ExecuteNonQuery();
+-				return;
+-			}
+-		}
+-		using DbCommand dbCommand3 = sqliteConn.CreateCommand();
+-		dbCommand3.CommandText = "UPDATE playerdata set data=@data where playeruid=@playeruid";
+-		dbCommand3.Parameters.Add(CreateParameter("data", DbType.Object, data, dbCommand3));
+-		dbCommand3.Parameters.Add(CreateParameter("playeruid", DbType.String, playeruid, dbCommand3));
+-		dbCommand3.ExecuteNonQuery();
++		// Stratum: same lock as GetPlayerData. The nested read takes the lock again; it is re-entrant.
++		lock (transactionLock)
++		{
++			if (data == null)
++			{
++				using (DbCommand dbCommand = sqliteConn.CreateCommand())
++				{
++					dbCommand.CommandText = "DELETE FROM playerdata WHERE playeruid=@playeruid";
++					dbCommand.Parameters.Add(CreateParameter("playeruid", DbType.String, playeruid, dbCommand));
++					dbCommand.ExecuteNonQuery();
++					return;
++				}
++			}
++			if (GetPlayerData(playeruid) == null)
++			{
++				using (DbCommand dbCommand2 = sqliteConn.CreateCommand())
++				{
++					dbCommand2.CommandText = "INSERT INTO playerdata (playeruid, data) VALUES (@playeruid,@data)";
++					dbCommand2.Parameters.Add(CreateParameter("playeruid", DbType.String, playeruid, dbCommand2));
++					dbCommand2.Parameters.Add(CreateParameter("data", DbType.Object, data, dbCommand2));
++					dbCommand2.ExecuteNonQuery();
++					return;
++				}
++			}
++			using DbCommand dbCommand3 = sqliteConn.CreateCommand();
++			dbCommand3.CommandText = "UPDATE playerdata set data=@data where playeruid=@playeruid";
++			dbCommand3.Parameters.Add(CreateParameter("data", DbType.Object, data, dbCommand3));
++			dbCommand3.Parameters.Add(CreateParameter("playeruid", DbType.String, playeruid, dbCommand3));
++			dbCommand3.ExecuteNonQuery();
++		}
+ 	}
+ 
+ 	public IEnumerable<byte[]> GetChunks(IEnumerable<ChunkPos> chunkpositions)
+@@ -320,46 +328,76 @@
  
  	public bool ChunkExists(ulong position, string tablename)
  	{
@@ -106,3 +222,24 @@ index 0c59a67..a7ed24d 100644
  	}
  
  	public void DeleteChunks(IEnumerable<ChunkPos> chunkpositions)
+@@ -427,11 +465,15 @@
+ 
+ 	public void SetMapRegions(IEnumerable<DbChunk> mapregions)
+ 	{
+-		using DbCommand dbCommand = sqliteConn.CreateCommand();
+-		dbCommand.CommandText = "INSERT OR REPLACE INTO mapregion (position, data) VALUES (@position,@data)";
+-		dbCommand.Parameters.Add(CreateParameter("position", DbType.UInt64, 0, dbCommand));
+-		dbCommand.Parameters.Add(CreateParameter("data", DbType.Object, null, dbCommand));
+-		SetMulti(mapregions, dbCommand, doZeroY: true);
++		// Stratum: create and dispose this command inside the lock. SetMulti takes it again.
++		lock (transactionLock)
++		{
++			using DbCommand dbCommand = sqliteConn.CreateCommand();
++			dbCommand.CommandText = "INSERT OR REPLACE INTO mapregion (position, data) VALUES (@position,@data)";
++			dbCommand.Parameters.Add(CreateParameter("position", DbType.UInt64, 0, dbCommand));
++			dbCommand.Parameters.Add(CreateParameter("data", DbType.Object, null, dbCommand));
++			SetMulti(mapregions, dbCommand, doZeroY: true);
++		}
+ 	}
+ 
+ 	private void SetMulti(IEnumerable<DbChunk> chunks, DbCommand cmd, bool doZeroY)
