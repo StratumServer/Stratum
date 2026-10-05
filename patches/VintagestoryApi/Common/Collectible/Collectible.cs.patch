@@ -1,0 +1,397 @@
+diff --git a/VintagestoryApi/Common/Collectible/Collectible.cs b/VintagestoryApi/Common/Collectible/Collectible.cs
+index 37c8ea5..9354be7 100644
+--- a/VintagestoryApi/Common/Collectible/Collectible.cs
++++ b/VintagestoryApi/Common/Collectible/Collectible.cs
+@@ -1,8 +1,9 @@
+ using System;
+ using System.Collections.Generic;
+ using System.Linq;
++using System.Runtime.CompilerServices;
+ using System.Text;
+ using Vintagestory.API.Client;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Datastructures;
+@@ -22,10 +23,26 @@ namespace Vintagestory.API.Common
+     /// <summary>
+     /// Contains all properties shared by Blocks and Items
+     /// </summary>
+     public abstract class CollectibleObject : RegistryObject
+     {
++
++        // Stratum: Bound repeated behavior failures to one log per collectible, callback, and behavior type.
++        private System.Collections.Concurrent.ConcurrentDictionary<(Type BehaviorType, string Callback), byte> StratumLoggedBehaviorExceptions;
++
++        private void StratumLogBehaviorException(ILogger StratumLogger, CollectibleBehavior StratumBehavior, Exception StratumException, string StratumCallback)
++        {
++            if (StratumLogger == null) return;
++
++            Type StratumBehaviorType = StratumBehavior?.GetType() ?? typeof(CollectibleBehavior);
++            System.Collections.Concurrent.ConcurrentDictionary<(Type BehaviorType, string Callback), byte> StratumLoggedExceptions =
++                System.Threading.LazyInitializer.EnsureInitialized(ref StratumLoggedBehaviorExceptions);
++            if (!StratumLoggedExceptions.TryAdd((StratumBehaviorType, StratumCallback), 0)) return;
++
++            StratumLogger.Error("Exception thrown in CollectibleBehavior {0} during {1} for {2}:", StratumBehaviorType.FullName, StratumCallback, Code);
++            StratumLogger.Error(StratumException);
++        }
+         // ---- Some default objects which are common to many Block and Item objects
+         public readonly static Size3f DefaultSize = new Size3f(0.5f, 0.5f, 0.5f);
+ 
+         /// <summary>
+         /// Liquids are handled and rendered differently than solid blocks.
+@@ -484,11 +501,11 @@ namespace Vintagestory.API.Common
+         /// <returns></returns>
+         public virtual int GetMaxDurability(ItemStack itemstack)
+         {
+             int durability = Durability;
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     int bhduramax = bh.GetMaxDurability(itemstack, durability, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         durability = bhduramax;
+@@ -504,11 +521,11 @@ namespace Vintagestory.API.Common
+ 
+         public virtual int GetRemainingDurability(ItemStack itemstack)
+         {
+             int durability = (int)itemstack.Attributes.GetDecimal("durability", GetMaxDurability(itemstack));
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     int bhdura = bh.GetRemainingDurability(itemstack, durability, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         durability = bhdura;
+@@ -529,11 +546,11 @@ namespace Vintagestory.API.Common
+         /// <returns></returns>
+         public virtual float GetAttackPower(ItemStack itemStack)
+         {
+             float atp = AttackPower;
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     float attackpower = bh.GetAttackPower(itemStack, atp, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         atp = attackpower;
+@@ -559,11 +576,11 @@ namespace Vintagestory.API.Common
+         public virtual float GetDamageToEntity(float baseDamage, Entity entity, ItemStack itemStack, ref bool isCriticalHit)
+         {
+             float outDamage = 0;
+             bool outCrit = false;
+             bool bhcrit = isCriticalHit;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     outDamage = bh.GetDamageToEntity(baseDamage, entity, itemStack, ref bhcrit, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         baseDamage = outDamage;
+@@ -589,11 +606,11 @@ namespace Vintagestory.API.Common
+         /// <returns></returns>
+         public virtual float GetAttackRange(IItemStack withItemStack)
+         {
+             float atr = AttackRange;
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     float attackrange = bh.GetAttackRange((ItemStack)withItemStack, atr, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         atr = attackrange;
+@@ -721,11 +738,21 @@ namespace Vintagestory.API.Common
+             bool preventDefault = false;
+ 
+             foreach (CollectibleBehavior behavior in CollectibleBehaviors)
+             {
+                 EnumHandling handled = EnumHandling.PassThrough;
+-                bool behaviorResult = behavior.OnBlockBrokenWith(world, byEntity, itemslot, blockSel, dropQuantityMultiplier, ref handled);
++                bool behaviorResult = false;
++                // Stratum: Preserve a break veto even when its behavior throws (#282).
++                try
++                {
++                    behaviorResult = behavior.OnBlockBrokenWith(world, byEntity, itemslot, blockSel, dropQuantityMultiplier, ref handled);
++                }
++                catch (Exception e)
++                {
++                    StratumLogBehaviorException(world.Logger, behavior, e, nameof(OnBlockBrokenWith));
++                }
++
+                 if (handled != EnumHandling.PassThrough)
+                 {
+                     result &= behaviorResult;
+                     preventDefault = true;
+                 }
+@@ -771,11 +798,11 @@ namespace Vintagestory.API.Common
+             }
+ 
+             float toolMiningSpeed = 1;
+             Dictionary<EnumBlockMaterial, float> miningSpeeds = GetMiningSpeeds(new DummySlot((ItemStack)itemstack));
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     float miningSpeedMultiplier = bh.GetMiningSpeed(itemstack as ItemStack, blockSel, block, forPlayer, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         toolMiningSpeed *= miningSpeedMultiplier;
+@@ -803,11 +830,11 @@ namespace Vintagestory.API.Common
+         /// <param name="itemStack"></param>
+         /// <returns></returns>
+         public virtual float GetMiningSpeedModifier(IItemStack itemStack)
+         {
+             float toolMiningSpeed = 1;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (bh, ref handling) => {
+                     var miningSpeedMultiplier = bh.GetMiningSpeedModifier(itemStack as ItemStack, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         toolMiningSpeed *= miningSpeedMultiplier;
+@@ -894,11 +921,11 @@ namespace Vintagestory.API.Common
+         /// <param name="byEntity"></param>
+         /// <returns></returns>
+         public virtual string GetHeldTpHitAnimation(ItemSlot slot, Entity byEntity)
+         {
+             string anim = HeldTpHitAnimation;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     string bhanim = bh.GetHeldTpHitAnimation(slot, byEntity, ref handling);
+                     if (handling != EnumHandling.PassThrough) anim = bhanim;
+                 },
+                 () => {
+@@ -917,11 +944,11 @@ namespace Vintagestory.API.Common
+         /// <param name="hand"></param>
+         /// <returns></returns>
+         public virtual string GetHeldReadyAnimation(ItemSlot activeHotbarSlot, Entity forEntity, EnumHand hand)
+         {
+             string anim = anim = hand == EnumHand.Left ? HeldLeftReadyAnimation : HeldRightReadyAnimation;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     string bhanim = bh.GetHeldReadyAnimation(activeHotbarSlot, forEntity, hand, ref handling);
+                     if (handling != EnumHandling.PassThrough) anim = bhanim;
+                 },
+                 () => {
+@@ -951,11 +978,11 @@ namespace Vintagestory.API.Common
+         /// <param name="hand"></param>
+         /// <returns></returns>
+         public virtual string GetHeldTpIdleAnimation(ItemSlot activeHotbarSlot, Entity forEntity, EnumHand hand)
+         {
+             string anim = anim = hand == EnumHand.Left ? HeldLeftTpIdleAnimation : HeldRightTpIdleAnimation;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     string bhanim = bh.GetHeldTpIdleAnimation(activeHotbarSlot, forEntity, hand, ref handling);
+                     if (handling != EnumHandling.PassThrough) anim = bhanim;
+                 },
+                 () => {
+@@ -978,11 +1005,11 @@ namespace Vintagestory.API.Common
+             if (GetNutritionProperties(forEntity.World, activeHotbarSlot.Itemstack, forEntity) == null)
+             {
+                 anim = HeldTpUseAnimation;
+             }
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     string bhanim = bh.GetHeldTpUseAnimation(activeHotbarSlot, forEntity, ref handling);
+                     if (handling != EnumHandling.PassThrough) anim = bhanim;
+                 },
+                 () => {
+@@ -1077,11 +1104,11 @@ namespace Vintagestory.API.Common
+         /// <param name="allInputslots"></param>
+         /// <param name="outputSlot"></param>
+         /// <param name="byRecipe"></param>
+         public virtual void OnCreatedByCrafting(ItemSlot[] allInputSlots, ItemSlot outputSlot, IRecipeBase byRecipe)
+         {
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => {
+                     bh.OnCreatedByCrafting(allInputSlots, outputSlot, byRecipe, ref hd);
+                 },
+                 () => {
+ 
+@@ -1179,11 +1206,11 @@ namespace Vintagestory.API.Common
+         /// </summary>
+         /// <param name="itemstack"></param>
+         /// <param name="amount"></param>
+         public virtual void SetDurability(ItemStack itemstack, int amount)
+         {
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => {
+                     bh.OnSetDurability(itemstack, ref amount, ref hd);
+                 },
+                 () => {
+                     itemstack.Attributes.SetInt("durability", amount);
+@@ -1198,11 +1225,11 @@ namespace Vintagestory.API.Common
+         /// <param name="byEntity"></param>
+         /// <param name="itemSlot"></param>
+         /// <param name="amount">Amount of damage</param>
+         public virtual void DamageItem(IWorldAccessor world, Entity byEntity, ItemSlot itemSlot, int amount = 1, bool destroyOnZeroDurability = true)
+         {
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => {
+                     bh.OnDamageItem(world, byEntity, itemSlot, ref amount, ref hd);
+                 },
+                 () => {
+                     ItemStack itemstack = itemSlot.Itemstack;
+@@ -1234,11 +1261,11 @@ namespace Vintagestory.API.Common
+         /// <param name="world"></param>
+         /// <param name="byEntity"></param>
+         /// <param name="itemSlot"></param>
+         public virtual void DestroyItem(IWorldAccessor world, Entity byEntity, ItemSlot itemSlot)
+         {
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => {
+                     bh.OnDestroyItem(world, byEntity, itemSlot, ref hd);
+                 },
+                 () => {
+                     EnumTool? tool = itemSlot?.Itemstack?.Collectible?.GetTool(itemSlot);
+@@ -1534,11 +1561,11 @@ namespace Vintagestory.API.Common
+         /// <param name="handling">Whether or not to do any subsequent actions. If not set or set to NotHandled, the action will not called on the server.</param>
+         /// <returns></returns>
+         public virtual void OnHeldAttackStart(ItemSlot slot, EntityAgent byEntity, BlockSelection blockSel, EntitySelection entitySel, ref EnumHandHandling handling)
+         {
+             EnumHandHandling bhHandHandling = EnumHandHandling.NotHandled;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => bh.OnHeldAttackStart(slot, byEntity, blockSel, entitySel, ref bhHandHandling, ref hd),
+                 () =>
+                 {
+                     if (HeldSounds?.Attack.Location != null)
+                     {
+@@ -1560,11 +1587,11 @@ namespace Vintagestory.API.Common
+         /// <param name="cancelReason"></param>
+         /// <returns></returns>
+         public virtual bool OnHeldAttackCancel(float secondsPassed, ItemSlot slot, EntityAgent byEntity, BlockSelection blockSelection, EntitySelection entitySel, EnumItemUseCancelReason cancelReason)
+         {
+             bool retval = false;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => {
+                     var bhretval = bh.OnHeldAttackCancel(secondsPassed, slot, byEntity, blockSelection, entitySel, cancelReason, ref hd);
+                     if (hd != EnumHandling.PassThrough) retval = bhretval;
+                 },
+                 () => { }
+@@ -1583,11 +1610,11 @@ namespace Vintagestory.API.Common
+         /// <param name="entitySel"></param>
+         /// <returns></returns>
+         public virtual bool OnHeldAttackStep(float secondsPassed, ItemSlot slot, EntityAgent byEntity, BlockSelection blockSelection, EntitySelection entitySel)
+         {
+             bool retval = false;
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => {
+                     var bhretval = bh.OnHeldAttackStep(secondsPassed, slot, byEntity, blockSelection, entitySel, ref hd);
+                     if (hd != EnumHandling.PassThrough) retval = bhretval;
+                 },
+                 () => { }
+@@ -1604,11 +1631,11 @@ namespace Vintagestory.API.Common
+         /// <param name="byEntity"></param>
+         /// <param name="blockSelection"></param>
+         /// <param name="entitySel"></param>
+         public virtual void OnHeldAttackStop(float secondsPassed, ItemSlot slot, EntityAgent byEntity, BlockSelection blockSelection, EntitySelection entitySel)
+         {
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling hd) => bh.OnHeldAttackStop(secondsPassed, slot, byEntity, blockSelection, entitySel, ref hd),
+                 () => { }
+             );
+         }
+ 
+@@ -3292,11 +3319,12 @@ namespace Vintagestory.API.Common
+         /// <returns></returns>
+         public virtual float GetTemperature(IWorldAccessor world, ItemStack itemstack)
+         {
+             float outTemp = GlobalConstants.CollectibleDefaultTemperature;
+ 
+-            WalkBehaviors(
++            // Stratum: Keep paired temperature callback logs distinct (#282).
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     float temp = bh.GetTemperature(world, itemstack, ref handling);
+                     if (handling != EnumHandling.PassThrough)
+                     {
+                         outTemp = temp;
+@@ -3324,18 +3352,20 @@ namespace Vintagestory.API.Common
+                         float velocity = attr.GetFloat("cooldownSpeed", 120) * Math.Max(1, outTemp / 200);
+                         outTemp = Math.Max(0, outTemp - Math.Max(0, (float)(nowHours - lastUpdateHours) * velocity));
+                         attr.SetFloat("temperature", outTemp);
+                         attr.SetDouble("temperatureLastUpdate", nowHours);
+                     }
+-                }
++                },
++                nameof(CollectibleBehavior.GetTemperature)
+             );
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     bh.AfterGetTemperature(world, itemstack, outTemp, ref handling);
+                 },
+-                () => { }
++                () => { },
++                nameof(CollectibleBehavior.AfterGetTemperature)
+             );
+ 
+             return outTemp;
+         }
+ 
+@@ -3355,11 +3385,11 @@ namespace Vintagestory.API.Common
+             if (attr == null)
+             {
+                 itemstack.Attributes["temperature"] = attr = new TreeAttribute();
+             }
+ 
+-            WalkBehaviors(
++            WalkBehaviorsCore(
+                 (CollectibleBehavior bh, ref EnumHandling handling) => {
+                     bh.SetTemperature(world, itemstack, temperature, delayCooldown, ref handling);
+                 },
+                 () => {
+                     double nowHours = world.Calendar.TotalHours;
+@@ -3549,16 +3579,33 @@ namespace Vintagestory.API.Common
+             return MatterState == EnumMatterState.Liquid;
+         }
+ 
+ 
+         protected void WalkBehaviors(CollectibleBehaviorDelegate onBehavior, Action defaultAction)
++        {
++            WalkBehaviorsCore(onBehavior, defaultAction, nameof(WalkBehaviors));
++        }
++
++        private void WalkBehaviorsCore(CollectibleBehaviorDelegate onBehavior, Action defaultAction, [CallerMemberName] string callbackName = "")
+         {
+             bool executeDefault = true;
+             foreach (CollectibleBehavior behavior in CollectibleBehaviors)
+             {
+                 EnumHandling handling = EnumHandling.PassThrough;
+-                onBehavior(behavior, ref handling);
++                // Stratum: Failed behavior handling must not suppress the default action (#282).
++                try
++                {
++                    onBehavior(behavior, ref handling);
++                }
++                catch (Exception e)
++                {
++                    ILogger behaviorLogger = api?.Logger;
++                    if (behaviorLogger == null) throw;
++
++                    handling = EnumHandling.PassThrough;
++                    StratumLogBehaviorException(behaviorLogger, behavior, e, callbackName);
++                }
+ 
+                 if (handling == EnumHandling.PreventSubsequent) return;
+                 if (handling == EnumHandling.PreventDefault) executeDefault = false;
+             }
+ 
