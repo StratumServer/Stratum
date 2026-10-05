@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..a2fce0c 100644
+index ea1d5c0..dade04f 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -500,7 +500,7 @@ index ea1d5c0..a2fce0c 100644
  		SendEntityDespawns();
  		int count = server.DelayedSpawnQueue.Count;
  		if (count <= 0)
-@@ -185,19 +542,151 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -185,19 +542,155 @@ public class ServerSystemEntitySimulation : ServerSystem
  		}
  	}
  
@@ -541,6 +541,7 @@ index ea1d5c0..a2fce0c 100644
 +		long stratumInanimateEntityTickTicks = 0L;
 +		bool stratumRecordEntityCategoryTimings = StratumRuntime.Timings.Enabled;
 +		StratumEntityBehaviorTimings.SetEnabled(stratumRecordEntityCategoryTimings);
++		bool stratumRecordEntityTypeTimings = StratumEntityBehaviorTimings.Enabled; // Stratum: admin switch or a reader's lease, so entity types are recorded for readers too
 +		int stratumCreatureBudget = Math.Max(0, stratumEntityTicking.MaxCreatureTicksPerTick);
 +		int stratumCreatureEligibleSeen = 0;
 +		int stratumCreatureBudgetTicked = 0;
@@ -610,7 +611,7 @@ index ea1d5c0..a2fce0c 100644
 -					value.OnGameTick(dt);
 +					bool stratumIsPlayerEntity = value is EntityPlayer;
 +					bool stratumIsCreatureEntity = !stratumIsPlayerEntity && value.IsCreature;
-+					long stratumEntityTickStart = stratumRecordEntityCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
++					long stratumEntityTickStart = stratumRecordEntityTypeTimings ? Stopwatch.GetTimestamp() : 0L;
 +					try
 +					{
 +					value.OnGameTick(tickDeltaTime);
@@ -632,6 +633,9 @@ index ea1d5c0..a2fce0c 100644
 +							{
 +								stratumInanimateEntityTickTicks += stratumEntityTickElapsed;
 +							}
++						}
++						if (stratumRecordEntityTypeTimings)
++						{
 +							// Stratum: per-entity-type timing (#7)
 +							string stratumTypeKey = stratumEntityTypeTimingKeys.GetOrAdd(value.Code?.Path ?? "unknown", static k => "entity.type." + k);
 +							StratumEntityBehaviorTimings.RecordNamed(stratumTypeKey, stratumEntityTickStart);
@@ -655,7 +659,7 @@ index ea1d5c0..a2fce0c 100644
  				{
  					if (value is EntityPlayer entityPlayer)
  					{
-@@ -209,12 +698,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -209,12 +702,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
  						ServerMain.Logger.Error(e);
  					}
@@ -673,7 +677,7 @@ index ea1d5c0..a2fce0c 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +716,872 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +720,876 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -786,6 +790,7 @@ index ea1d5c0..a2fce0c 100644
 +
 +		bool recordCategoryTimings = StratumRuntime.Timings.Enabled;
 +		StratumEntityBehaviorTimings.SetEnabled(recordCategoryTimings);
++		bool recordEntityTypeTimings = StratumEntityBehaviorTimings.Enabled; // Stratum: admin switch or a reader's lease, so entity types are recorded for readers too
 +
 +		// Player tick on main thread (sequential).
 +		int seen = 0, ticked = 0, throttled = 0;
@@ -856,7 +861,7 @@ index ea1d5c0..a2fce0c 100644
 +				else
 +				{
 +					bool isCreature = value.IsCreature;
-+					long t0 = recordCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
++					long t0 = recordEntityTypeTimings ? Stopwatch.GetTimestamp() : 0L;
 +					try { value.OnGameTick(tickDeltaTime); }
 +					catch (Exception e)
 +					{
@@ -879,6 +884,9 @@ index ea1d5c0..a2fce0c 100644
 +						long el = Stopwatch.GetTimestamp() - t0;
 +						if (isCreature) Interlocked.Add(ref creatureTicksP, el);
 +						else Interlocked.Add(ref inanimateTicksP, el);
++					}
++					if (recordEntityTypeTimings)
++					{
 +						// Stratum: per-entity-type timing (#7)
 +						string stratumTypeKey = stratumEntityTypeTimingKeys.GetOrAdd(value.Code?.Path ?? "unknown", static k => "entity.type." + k);
 +						StratumEntityBehaviorTimings.RecordNamed(stratumTypeKey, t0);
@@ -1550,7 +1558,7 @@ index ea1d5c0..a2fce0c 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -251,16 +1590,31 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -251,16 +1598,31 @@ public class ServerSystemEntitySimulation : ServerSystem
  		bool flag = p.MouseButton == 0;
  		if ((cuboidd.ShortestDistanceFrom(x, y, z) > (double)(num * 2f) && flag) || (flag && (((!server.Config.AllowPvP || !player.HasPrivilege("attackplayers")) && entity is EntityPlayer) || (!player.HasPrivilege("attackcreatures") && entity is EntityAgent))) || (entity is EntityPlayer entityPlayer && !(entityPlayer.Player is IServerPlayer { ConnectionState: EnumClientState.Playing })))
  		{
@@ -1583,7 +1591,7 @@ index ea1d5c0..a2fce0c 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1633,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1641,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1632,7 +1640,7 @@ index ea1d5c0..a2fce0c 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,37 +1770,66 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1778,66 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1705,7 +1713,7 @@ index ea1d5c0..a2fce0c 100644
  			{
  				string playerName = server.PlayerByUid(entityPlayer.PlayerUID).PlayerName;
  				ServerMain.Logger.Audit(Lang.Get("{0} killed {1}, with item (if any): {2}", playerName, item.PlayerName, entityPlayer.RightHandItemSlot?.Itemstack?.Collectible.Code));
-@@ -422,10 +1837,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1845,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));
