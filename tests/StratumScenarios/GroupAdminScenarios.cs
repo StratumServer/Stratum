@@ -37,21 +37,21 @@ public class GroupAdminScenarios : AtlasScenarioBase
 
 		// First faction is fine.
 		await Invite(red, "RedOne", recruit);
-		TextCommandResult joinedRed = await ExecuteAs(recruit, "/group acceptinvite RedOne");
+		CommandResult joinedRed = await recruit.ExecuteCommand("/group acceptinvite RedOne");
 		Assert.Equal(EnumCommandStatus.Success, joinedRed.Status);
 
 		// Second one is not, because the kind is exclusive.
 		await Invite(blue, "BlueOne", recruit);
-		TextCommandResult joinedBlue = await ExecuteAs(recruit, "/group acceptinvite BlueOne");
+		CommandResult joinedBlue = await recruit.ExecuteCommand("/group acceptinvite BlueOne");
 		Assert.Equal(EnumCommandStatus.Error, joinedBlue.Status);
-		Assert.Contains("RedOne", joinedBlue.StatusMessage);
+		Assert.Contains("RedOne", joinedBlue.Message);
 
 		// A non-exclusive kind alongside it still works, which is the whole point of kinds:
 		// only factions are one-at-a-time, administrative groupings are not.
 		await CreateGroup(red, "HelpDesk");
 		await SetKind("HelpDesk", "utility");
 		await Invite(red, "HelpDesk", recruit);
-		TextCommandResult joinedUtility = await ExecuteAs(recruit, "/group acceptinvite HelpDesk");
+		CommandResult joinedUtility = await recruit.ExecuteCommand("/group acceptinvite HelpDesk");
 		Assert.Equal(EnumCommandStatus.Success, joinedUtility.Status);
 
 		await Leave(red, blue, recruit);
@@ -102,14 +102,14 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		CommandResult locked = await World.ExecuteCommand($"/group admin lock LockedSquad {member.Player.PlayerName}");
 		Assert.True(locked.Ok, locked.Message);
 
-		TextCommandResult leaveWhileLocked = await ExecuteAs(member, "/group leave LockedSquad");
+		CommandResult leaveWhileLocked = await member.ExecuteCommand("/group leave LockedSquad");
 		Assert.Equal(EnumCommandStatus.Error, leaveWhileLocked.Status);
-		Assert.Contains("locked", leaveWhileLocked.StatusMessage);
+		Assert.Contains("locked", leaveWhileLocked.Message);
 
 		CommandResult unlocked = await World.ExecuteCommand($"/group admin unlock LockedSquad {member.Player.PlayerName}");
 		Assert.True(unlocked.Ok, unlocked.Message);
 
-		TextCommandResult leaveAfterUnlock = await ExecuteAs(member, "/group leave LockedSquad");
+		CommandResult leaveAfterUnlock = await member.ExecuteCommand("/group leave LockedSquad");
 		Assert.Equal(EnumCommandStatus.Success, leaveAfterUnlock.Status);
 
 		await Leave(owner, member);
@@ -128,7 +128,7 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		CommandResult locked = await World.ExecuteCommand($"/group admin lock TimedSquad {member.Player.PlayerName} 3s");
 		Assert.True(locked.Ok, locked.Message);
 
-		TextCommandResult duringLock = await ExecuteAs(member, "/group leave TimedSquad");
+		CommandResult duringLock = await member.ExecuteCommand("/group leave TimedSquad");
 		Assert.Equal(EnumCommandStatus.Error, duringLock.Status);
 
 		// The expiry is wall-clock, not tick-driven: nothing sweeps locks, they lapse the next
@@ -136,7 +136,7 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await Task.Delay(TimeSpan.FromSeconds(4));
 		await World.Ticks(10);
 
-		TextCommandResult afterExpiry = await ExecuteAs(member, "/group leave TimedSquad");
+		CommandResult afterExpiry = await member.ExecuteCommand("/group leave TimedSquad");
 		Assert.Equal(EnumCommandStatus.Success, afterExpiry.Status);
 
 		await Leave(owner, member);
@@ -155,9 +155,9 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		Assert.True(locked.Ok, locked.Message);
 
 		// Without this gate the group owner could void a staff lock from the group UI.
-		TextCommandResult kick = await ExecuteAs(owner, $"/group kick KickSquad {member.Player.PlayerName}");
+		CommandResult kick = await owner.ExecuteCommand($"/group kick KickSquad {member.Player.PlayerName}");
 		Assert.Equal(EnumCommandStatus.Error, kick.Status);
-		Assert.Contains("locked", kick.StatusMessage);
+		Assert.Contains("locked", kick.Message);
 
 		// Staff removal is deliberate, so it clears the lock instead of tripping over it.
 		CommandResult staffRemove = await World.ExecuteCommand($"/group admin remove KickSquad {member.Player.PlayerName}");
@@ -180,19 +180,19 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		CommandResult frozen = await World.ExecuteCommand("/group admin freeze FrozenTeam on");
 		Assert.True(frozen.Ok, frozen.Message);
 
-		TextCommandResult invite = await ExecuteAs(owner, $"/group invite FrozenTeam {outsider.Player.PlayerName}");
+		CommandResult invite = await owner.ExecuteCommand($"/group invite FrozenTeam {outsider.Player.PlayerName}");
 		Assert.Equal(EnumCommandStatus.Error, invite.Status);
 
-		TextCommandResult leave = await ExecuteAs(member, "/group leave FrozenTeam");
+		CommandResult leave = await member.ExecuteCommand("/group leave FrozenTeam");
 		Assert.Equal(EnumCommandStatus.Error, leave.Status);
 
-		TextCommandResult disband = await ExecuteAs(owner, "/group disband FrozenTeam");
+		CommandResult disband = await owner.ExecuteCommand("/group disband FrozenTeam");
 		Assert.Equal(EnumCommandStatus.Error, disband.Status);
 
 		CommandResult thawed = await World.ExecuteCommand("/group admin freeze FrozenTeam off");
 		Assert.True(thawed.Ok, thawed.Message);
 
-		TextCommandResult leaveAfterThaw = await ExecuteAs(member, "/group leave FrozenTeam");
+		CommandResult leaveAfterThaw = await member.ExecuteCommand("/group leave FrozenTeam");
 		Assert.Equal(EnumCommandStatus.Success, leaveAfterThaw.Status);
 
 		await Leave(owner, member, outsider);
@@ -209,9 +209,9 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await SetKind("OneSeat", "squad");
 
 		await Invite(owner, "OneSeat", recruit);
-		TextCommandResult accept = await ExecuteAs(recruit, "/group acceptinvite OneSeat");
+		CommandResult accept = await recruit.ExecuteCommand("/group acceptinvite OneSeat");
 		Assert.Equal(EnumCommandStatus.Error, accept.Status);
-		Assert.Contains("full", accept.StatusMessage);
+		Assert.Contains("full", accept.Message);
 
 		// Staff go past the cap deliberately; the audit log records that they did.
 		CommandResult staffAdd = await World.ExecuteCommand($"/group admin add OneSeat {recruit.Player.PlayerName}");
@@ -330,24 +330,24 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		// Disbanding would push a locked member out, which a kick is not allowed to do either.
 		CommandResult lockMember = await World.ExecuteCommand($"/group admin lock DisbandLocked {member.Player.PlayerName}");
 		Assert.True(lockMember.Ok, lockMember.Message);
-		TextCommandResult withLockedMember = await ExecuteAs(owner, "/group disband DisbandLocked");
+		CommandResult withLockedMember = await owner.ExecuteCommand("/group disband DisbandLocked");
 		Assert.Equal(EnumCommandStatus.Error, withLockedMember.Status);
-		Assert.Contains("locked", withLockedMember.StatusMessage);
+		Assert.Contains("locked", withLockedMember.Message);
 
 		// Nor can a locked owner disband their way out of their own lock.
 		CommandResult unlockMember = await World.ExecuteCommand($"/group admin unlock DisbandLocked {member.Player.PlayerName}");
 		Assert.True(unlockMember.Ok, unlockMember.Message);
 		CommandResult lockOwner = await World.ExecuteCommand($"/group admin lock DisbandLocked {owner.Player.PlayerName}");
 		Assert.True(lockOwner.Ok, lockOwner.Message);
-		TextCommandResult withLockedOwner = await ExecuteAs(owner, "/group disband DisbandLocked");
+		CommandResult withLockedOwner = await owner.ExecuteCommand("/group disband DisbandLocked");
 		Assert.Equal(EnumCommandStatus.Error, withLockedOwner.Status);
 
 		// Once staff lift the lock, disbanding works as vanilla.
 		CommandResult unlockOwner = await World.ExecuteCommand($"/group admin unlock DisbandLocked {owner.Player.PlayerName}");
 		Assert.True(unlockOwner.Ok, unlockOwner.Message);
-		TextCommandResult request = await ExecuteAs(owner, "/group disband DisbandLocked");
+		CommandResult request = await owner.ExecuteCommand("/group disband DisbandLocked");
 		Assert.Equal(EnumCommandStatus.Success, request.Status);
-		TextCommandResult confirm = await ExecuteAs(owner, "/group confirmdisband DisbandLocked");
+		CommandResult confirm = await owner.ExecuteCommand("/group confirmdisband DisbandLocked");
 		Assert.Equal(EnumCommandStatus.Success, confirm.Status);
 
 		await Leave(owner, member);
@@ -368,9 +368,9 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		{
 			await CreateGroup(founder, "CreateFirst");
 
-			TextCommandResult second = await ExecuteAs(founder, "/group create CreateSecond");
+			CommandResult second = await founder.ExecuteCommand("/group create CreateSecond");
 			Assert.Equal(EnumCommandStatus.Error, second.Status);
-			Assert.Contains("CreateFirst", second.StatusMessage);
+			Assert.Contains("CreateFirst", second.Message);
 		}
 		finally
 		{
@@ -396,12 +396,12 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		Assert.True(raised.Ok, raised.Message);
 		try
 		{
-			TextCommandResult refused = await ExecuteAs(player, "/group admin kinds");
+			CommandResult refused = await player.ExecuteCommand("/group admin kinds");
 			Assert.Equal(EnumCommandStatus.Error, refused.Status);
 
 			CommandResult lowered = await World.ExecuteCommand("/stratum set Commands.GroupAdmin.Privilege chat");
 			Assert.True(lowered.Ok, lowered.Message);
-			TextCommandResult allowed = await ExecuteAs(player, "/group admin kinds");
+			CommandResult allowed = await player.ExecuteCommand("/group admin kinds");
 			Assert.Equal(EnumCommandStatus.Success, allowed.Status);
 
 			CommandResult disabled = await World.ExecuteCommand("/stratum set Commands.GroupAdmin.Enabled false");
@@ -436,12 +436,12 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		Assert.True(tagged.Ok, tagged.Message);
 
 		await Invite(owner, "BlueTagged", member);
-		TextCommandResult accepted = await ExecuteAs(member, "/group acceptinvite BlueTagged");
+		CommandResult accepted = await member.ExecuteCommand("/group acceptinvite BlueTagged");
 		Assert.Equal(EnumCommandStatus.Success, accepted.Status);
 		await World.Ticks(5);
 		Assert.Contains("[BLU]", NametagOf(member));
 
-		TextCommandResult left = await ExecuteAs(member, "/group leave BlueTagged");
+		CommandResult left = await member.ExecuteCommand("/group leave BlueTagged");
 		Assert.Equal(EnumCommandStatus.Success, left.Status);
 		await World.Ticks(5);
 		Assert.DoesNotContain("[BLU]", NametagOf(member));
@@ -490,7 +490,7 @@ public class GroupAdminScenarios : AtlasScenarioBase
 
 		// /group addplayer requires a player caller. Test players join with the server's
 		// max-privilege role, so the owner holds manageotherplayergroups.
-		TextCommandResult added = await ExecuteAs(owner, $"/group addplayer Retagged {member.Player.PlayerName} 1");
+		CommandResult added = await owner.ExecuteCommand($"/group addplayer Retagged {member.Player.PlayerName} 1");
 		Assert.Equal(EnumCommandStatus.Success, added.Status);
 		await World.Ticks(5);
 		Assert.Contains("[RED]", NametagOf(member));
@@ -524,14 +524,24 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await StaffAdd("RedListed", moved);
 		await World.Ticks(5);
 
-		PacketProbe probe = PacketProbe.Attach(World, moved);
-		TextCommandResult added = await ExecuteAs(blueOwner, $"/group addplayer BlueListed {moved.Player.PlayerName} 1");
+		// Control: the client was told about RedListed before the move, either by a single-group
+		// update or by a listing, so its absence below is a removal and not a group it never knew.
+		Assert.True(
+			moved.Client.GroupUpdates().Any(update => update.Group.Name == "RedListed")
+			|| moved.Client.GroupListings().Any(listing => listing.Groups.Any(group => group.Name == "RedListed")),
+			"the moved player's client never learned about RedListed");
+
+		int tickBefore = World.CurrentTick;
+		CommandResult added = await blueOwner.ExecuteCommand($"/group addplayer BlueListed {moved.Player.PlayerName} 1");
 		Assert.Equal(EnumCommandStatus.Success, added.Status);
 		await World.Ticks(5);
 
-		IReadOnlyList<IReadOnlyList<string>> listings = probe.NewGroupListings();
+		// Only the listings sent by the command: the join and the earlier staff add sent theirs before.
+		IReadOnlyList<ReceivedGroupListing> listings = moved.Client.GroupListings()
+			.Where(listing => listing.Tick > tickBefore)
+			.ToList();
 		Assert.NotEmpty(listings);
-		IReadOnlyList<string> latest = listings[^1];
+		IReadOnlyList<string> latest = listings[^1].Groups.Select(group => group.Name).ToList();
 		Assert.Contains("BlueListed", latest);
 		Assert.DoesNotContain("RedListed", latest);
 
@@ -576,9 +586,9 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		Assert.False(adminAdd.Ok, adminAdd.Message);
 		Assert.Contains("/group admin remove", adminAdd.Message);
 
-		TextCommandResult vanillaAdd = await ExecuteAs(owner, $"/group addplayer NoneLevel {target.Player.PlayerName} 0");
+		CommandResult vanillaAdd = await owner.ExecuteCommand($"/group addplayer NoneLevel {target.Player.PlayerName} 0");
 		Assert.Equal(EnumCommandStatus.Error, vanillaAdd.Status);
-		Assert.Contains("/group admin remove", vanillaAdd.StatusMessage);
+		Assert.Contains("/group admin remove", vanillaAdd.Message);
 
 		Assert.Equal(1, await MemberCount("NoneLevel"));
 		Assert.DoesNotContain(target.Player.PlayerName, await InfoRow("NoneLevel", "Online members"));
@@ -657,34 +667,34 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		Assert.True(locked.Ok, locked.Message);
 
 		// The owner holds no staff privilege here, so this is the ordinary player's view.
-		TextCommandResult mine = await ExecuteAs(owner, "/group info InfoRed");
+		CommandResult mine = await owner.ExecuteCommand("/group info InfoRed");
 		Assert.Equal(EnumCommandStatus.Success, mine.Status);
-		Assert.Contains("faction", mine.StatusMessage);
-		Assert.Contains("[RED]", mine.StatusMessage);
-		Assert.Contains("InfoBlue", mine.StatusMessage);
-		Assert.Contains("enemy", mine.StatusMessage);
-		Assert.Contains("locked", mine.StatusMessage);
+		Assert.Contains("faction", mine.Message);
+		Assert.Contains("[RED]", mine.Message);
+		Assert.Contains("InfoBlue", mine.Message);
+		Assert.Contains("enemy", mine.Message);
+		Assert.Contains("locked", mine.Message);
 
 		// Someone outside the group reads the same public state, but not another player's lock.
-		TextCommandResult theirs = await ExecuteAs(other, "/group info InfoRed");
+		CommandResult theirs = await other.ExecuteCommand("/group info InfoRed");
 		Assert.Equal(EnumCommandStatus.Success, theirs.Status);
-		Assert.Contains("InfoBlue", theirs.StatusMessage);
-		Assert.DoesNotContain("Your membership", theirs.StatusMessage);
+		Assert.Contains("InfoBlue", theirs.Message);
+		Assert.DoesNotContain("Your membership", theirs.Message);
 
 		CommandResult frozen = await World.ExecuteCommand("/group admin freeze InfoRed on");
 		Assert.True(frozen.Ok, frozen.Message);
 
-		TextCommandResult afterFreeze = await ExecuteAs(owner, "/group info InfoRed");
-		Assert.Contains("frozen", afterFreeze.StatusMessage);
+		CommandResult afterFreeze = await owner.ExecuteCommand("/group info InfoRed");
+		Assert.Contains("frozen", afterFreeze.Message);
 
 		// A group that was never touched by /group admin still reads exactly as vanilla did.
 		await CreateGroup(other, "InfoPlain");
-		TextCommandResult plain = await ExecuteAs(other, "/group info InfoPlain");
+		CommandResult plain = await other.ExecuteCommand("/group info InfoPlain");
 		Assert.Equal(EnumCommandStatus.Success, plain.Status);
-		Assert.Contains("Members", plain.StatusMessage);
-		Assert.DoesNotContain("Kind", plain.StatusMessage);
-		Assert.DoesNotContain("Roster", plain.StatusMessage);
-		Assert.DoesNotContain("Relations", plain.StatusMessage);
+		Assert.Contains("Members", plain.Message);
+		Assert.DoesNotContain("Kind", plain.Message);
+		Assert.DoesNotContain("Roster", plain.Message);
+		Assert.DoesNotContain("Relations", plain.Message);
 
 		await Leave(owner, other);
 	}
@@ -718,7 +728,7 @@ public class GroupAdminScenarios : AtlasScenarioBase
 
 	private async Task CreateGroup(ITestPlayer owner, string groupName)
 	{
-		TextCommandResult result = await ExecuteAs(owner, $"/group create {groupName}");
+		CommandResult result = await owner.ExecuteCommand($"/group create {groupName}");
 		Assert.Equal(EnumCommandStatus.Success, result.Status);
 	}
 
@@ -736,7 +746,7 @@ public class GroupAdminScenarios : AtlasScenarioBase
 
 	private async Task Invite(ITestPlayer inviter, string groupName, ITestPlayer target)
 	{
-		TextCommandResult result = await ExecuteAs(inviter, $"/group invite {groupName} {target.Player.PlayerName}");
+		CommandResult result = await inviter.ExecuteCommand($"/group invite {groupName} {target.Player.PlayerName}");
 		Assert.Equal(EnumCommandStatus.Success, result.Status);
 	}
 
@@ -793,17 +803,5 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		}
 
 		return int.Parse(message[digitStart..digitEnd]);
-	}
-
-	/// <summary>
-	/// Runs a command as the player rather than the console. /group leans on the caller for
-	/// ownership, group privileges and the chat group it was typed in, so the console's
-	/// all-privileges caller would prove nothing here. Hands back the engine's raw result because
-	/// the scenarios assert EnumCommandStatus.Error, not merely "not Success", and CommandResult
-	/// only carries the Ok flag.
-	/// </summary>
-	private async Task<TextCommandResult> ExecuteAs(ITestPlayer player, string command)
-	{
-		return (await player.ExecuteCommand(command)).Raw;
 	}
 }
