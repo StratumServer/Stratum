@@ -1,0 +1,28 @@
+diff --git a/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs b/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs
+index 5427456..e11b9fd 100644
+--- a/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs
++++ b/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs
+@@ -194,10 +194,23 @@ namespace Vintagestory.GameContent
+         public void createFallingBlock(IWorldAccessor world, BlockPos ourPos)
+         {
+             var block = world.BlockAccessor.GetBlock(ourPos);
+             if (this.block != block) return; // Block was already removed
+ 
++            // Stratum start: route through the falling block system when enabled
++            ModSystemFallingBlocks stratumSystem = ModSystemFallingBlocks.Instance;
++            if (stratumSystem != null)
++            {
++                // O(1) replacement for FallingEntityAlreadyExists
++                if (stratumSystem.IsPositionActiveOrPending(ourPos)) return;
++
++                Block stratumBlock = variantAfterFalling != null ? world.BlockAccessor.GetBlock(variantAfterFalling) : block;
++                stratumSystem.RequestSpawn(stratumBlock, world.BlockAccessor.GetBlockEntity(ourPos), ourPos, fallSound, impactDamageMul, true, dustIntensity);
++                return;
++            }
++            // Stratum end
++
+             // Prevents duplication
+             if (FallingEntityAlreadyExists(world, ourPos)) return;
+ 
+             // Change after falling, like a broken variant or a "lower shape"
+             if (variantAfterFalling != null) block = world.BlockAccessor.GetBlock(variantAfterFalling);
