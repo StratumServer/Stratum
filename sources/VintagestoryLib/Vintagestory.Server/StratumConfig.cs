@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Vintagestory.API.Common.Entities;
+using Vintagestory.API.Common;
 
 namespace Vintagestory.Server;
 
@@ -537,6 +538,10 @@ internal class StratumPerformanceConfig
 
 	public StratumPregenConfig Pregen { get; set; } = new StratumPregenConfig();
 
+	public StratumFallingBlocksConfig FallingBlocks { get; set; } = new StratumFallingBlocksConfig();
+
+	public StratumItemClumpConfig ItemClump { get; set; } = new StratumItemClumpConfig();
+
 	public StratumSimulationDistanceConfig SimulationDistance { get; set; } = new StratumSimulationDistanceConfig();
 
 	public StratumPhysicsConfig Physics { get; set; } = new StratumPhysicsConfig();
@@ -583,6 +588,8 @@ internal class StratumPerformanceConfig
 		ChunkGeneration ??= new StratumChunkGenerationConfig();
 		ChunkRequestManagement ??= new StratumChunkRequestManagementConfig();
 		Pregen ??= new StratumPregenConfig();
+		FallingBlocks ??= new StratumFallingBlocksConfig();
+		ItemClump ??= new StratumItemClumpConfig();
 		SimulationDistance ??= new StratumSimulationDistanceConfig();
 		Physics ??= new StratumPhysicsConfig();
 		EntityTicking ??= new StratumEntityTickingConfig();
@@ -607,6 +614,10 @@ internal class StratumPerformanceConfig
 		ChunkGeneration.EnsureSane();
 		ChunkRequestManagement.EnsureSane();
 		Pregen.EnsureSane();
+		FallingBlocks.EnsureSane();
+		StratumFallingBlocksConfig.Active = FallingBlocks; // read by ModSystemFallingBlocks
+		ItemClump.EnsureSane();
+		StratumItemClumpConfig.Active = ItemClump; // read by ModSystemItemClump
 		SimulationDistance.EnsureSane();
 		Physics.EnsureSane();
 		EntityTicking.EnsureSane();
@@ -950,6 +961,8 @@ internal class StratumBodyTemperatureConfig
 		JitterPercent = Math.Clamp(JitterPercent, 0f, 0.9f);
 	}
 }
+
+
 
 internal class StratumPregenConfig
 {
