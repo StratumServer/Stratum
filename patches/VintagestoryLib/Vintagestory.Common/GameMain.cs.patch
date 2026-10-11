@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/GameMain.cs b/VintagestoryLib/Vintagestory.Common/GameMain.cs
-index 48c8694..f7fd804 100644
+index 48c8694..31f96ad 100644
 --- a/VintagestoryLib/Vintagestory.Common/GameMain.cs
 +++ b/VintagestoryLib/Vintagestory.Common/GameMain.cs
 @@ -29,10 +29,21 @@ public abstract class GameMain : IWorldIntersectionSupplier
@@ -24,7 +24,21 @@ index 48c8694..f7fd804 100644
  	public System.Collections.Generic.OrderedDictionary<IRecipeIngredientBase, List<IRecipeBase>> FastSearchRecipesByIngredient { get; }
  
  	public abstract ClassRegistry ClassRegistryInt { get; set; }
-@@ -130,39 +141,65 @@ public abstract class GameMain : IWorldIntersectionSupplier
+@@ -45,10 +56,13 @@ public abstract class GameMain : IWorldIntersectionSupplier
+ 
+ 	public virtual Vec3i MapSize => null;
+ 
+ 	public abstract IBlockAccessor blockAccessor { get; }
+ 
++	// Stratum: entities are stored per chunk by position, so the entity scan range is padded by this many blocks past the selected block
++	private const double StratumRayEntityPad = 12.0;
++
+ 	public GameMain()
+ 	{
+ 		Blocks = new BlockList(this);
+ 		ClassRegistryInt = new ClassRegistry();
+ 		GridRecipes = RegisterRecipeRegistry<RecipeRegistryGeneric<GridRecipe>>("gridrecipes").Recipes;
+@@ -130,39 +144,80 @@ public abstract class GameMain : IWorldIntersectionSupplier
  	{
  		interesectionTester.LoadRayAndPos(ray);
  		interesectionTester.bsTester = supplier;
@@ -35,13 +49,28 @@ index 48c8694..f7fd804 100644
  		double num2 = double.MaxValue;
 -		foreach (Entity entity2 in entitiesAround)
 +		if (ReferenceEquals(supplier, this))
++		{
++			// Stratum start: cap the entity scan range at the selected block distance plus padding, see #355
++			float stratumScanRange = num;
++			if (num > StratumRayEntityPad && blockSelection?.HitPosition != null)
++			{
++				double stratumDx = blockSelection.Position.X + blockSelection.HitPosition.X - ray.origin.X;
++				double stratumDy = blockSelection.Position.InternalY + blockSelection.HitPosition.Y - ray.origin.Y;
++				double stratumDz = blockSelection.Position.Z + blockSelection.HitPosition.Z - ray.origin.Z;
++				float stratumReach = (float)(Math.Sqrt(stratumDx * stratumDx + stratumDy * stratumDy + stratumDz * stratumDz) + StratumRayEntityPad);
++				if (stratumReach < stratumScanRange)
++				{
++					stratumScanRange = stratumReach;
++				}
++			}
++
++			FindNearestRayIntersectingEntity(ray, stratumScanRange, efilter, ref entity, ref num2); 
++			// Stratum end
++		}
++		else
  		{
 -			int selectionBoxIndex = 0;
 -			if (entity2.IntersectsRay(ray, interesectionTester, out var intersectionDistance, ref selectionBoxIndex) && intersectionDistance < num2)
-+			FindNearestRayIntersectingEntity(ray, num, efilter, ref entity, ref num2);
-+		}
-+		else
-+		{
 +			EntityFilter previousFilter = rayTraceEntityFilter;
 +			rayTraceEntityFilter = efilter;
 +			try
@@ -105,7 +134,7 @@ index 48c8694..f7fd804 100644
  				blockSelection = null;
  				entitySelection = entitySelTmp.Clone();
  			}
-@@ -171,10 +208,71 @@ public abstract class GameMain : IWorldIntersectionSupplier
+@@ -171,10 +226,71 @@ public abstract class GameMain : IWorldIntersectionSupplier
  		{
  			entitySelection = entitySelTmp.Clone();
  		}
@@ -177,7 +206,7 @@ index 48c8694..f7fd804 100644
  		Vec3d fromPos = player.Entity.Pos.XYZ.Add(player.Entity.LocalEyePos);
  		RayTraceForSelection(fromPos, player.Entity.Pos.Pitch, player.Entity.Pos.Yaw, player.WorldData.PickingRange, ref blockSelection, ref entitySelection, bfilter, efilter);
  	}
-@@ -208,47 +306,61 @@ public abstract class GameMain : IWorldIntersectionSupplier
+@@ -208,47 +324,61 @@ public abstract class GameMain : IWorldIntersectionSupplier
  		int num2 = (int)((position.X + (double)horRange) / 32.0);
  		int num3 = (int)((position.Y - (double)vertRange) / 32.0);
  		int num4 = (int)((position.Y + (double)vertRange) / 32.0);
@@ -262,3 +291,17 @@ index 48c8694..f7fd804 100644
  	public Entity[] GetEntitiesInsideCuboid(BlockPos startPos, BlockPos endPos, ActionConsumable<Entity> matches = null)
  	{
  		int num = Math.Min(startPos.X, endPos.X);
+@@ -305,11 +435,12 @@ public abstract class GameMain : IWorldIntersectionSupplier
+ 
+ 	public Cuboidf[] GetBlockIntersectionBoxes(BlockPos pos, bool liquidSelectable)
+ 	{
+ 		int num = 0;
+ 		List<Cuboidf> list;
+-		if (blockAccessor.GetChunkAtBlockPos(pos) is WorldChunk worldChunk)
++		// Stratum: GetDecorSelectionBoxes allocates a list on every call, so skip it when the chunk has no decors
++		if (blockAccessor.GetChunkAtBlockPos(pos) is WorldChunk worldChunk && worldChunk.Decors is { Count: > 0 })
+ 		{
+ 			list = worldChunk.GetDecorSelectionBoxes(blockAccessor, pos);
+ 			num = list.Count;
+ 		}
+ 		else
