@@ -13,6 +13,23 @@ namespace Vintagestory.Server;
 
 internal sealed class StratumPregenManager
 {
+	private sealed class PregenJob
+	{
+		public string Mode;
+		public int MinX, MinZ, MaxX, MaxZ;
+		public int CenterX, CenterZ, Radius;
+
+		public string Describe() => Mode == "radius"
+			? $"radius {Radius} @ {CenterX},{CenterZ}"
+			: $"rect {MinX},{MinZ} to {MaxX},{MaxZ}";
+	}
+
+	private const string Usage =
+		"Usage: /stratum pregen [status|pause|resume|stop|skip" +
+		"|start radius <radiusChunks> [centerChunkX] [centerChunkZ]" +
+		"|start rect <chunkX1> <chunkZ1> <chunkX2> <chunkZ2>" +
+		"|queue radius|rect|list|clear]";
+
 	private readonly HashSet<long> activeRequests = new HashSet<long>();
 	private bool running;
 	private bool paused;
@@ -38,6 +55,10 @@ internal sealed class StratumPregenManager
 	private int originalUncompressedChunkTTL;
 	private long originalCompressedChunkTTL;
 	private bool ttlBoosted = false;
+
+	// Queue of pregens waiting to run one after another. Lives in memory only and does not survive a server restart.
+	private readonly Queue<PregenJob> jobQueue = new Queue<PregenJob>();
+	private const int MaxQueuedJobs = 32;
 
 	private long totalColumns;
 	private long inspectedColumns;
@@ -78,7 +99,7 @@ internal sealed class StratumPregenManager
 	}
 
 	/// <summary>
-	/// Handles a /stratum pregen command, dispatching to status/start/pause/resume/stop.
+	/// Handles a /stratum pregen command, dispatching to status/start/pause/resume/stop/skip/queue.
 	/// </summary>
 	public TextCommandResult HandleCommand(ServerMain server, TextCommandCallingArgs args)
 	{
@@ -91,6 +112,11 @@ internal sealed class StratumPregenManager
 		if (string.Equals(action, "start", StringComparison.OrdinalIgnoreCase))
 		{
 			return HandleStart(server, args);
+		}
+
+		if (string.Equals(action, "queue", StringComparison.OrdinalIgnoreCase))
+		{
+			return HandleQueue(server, args);
 		}
 
 		if (string.Equals(action, "pause", StringComparison.OrdinalIgnoreCase))
@@ -125,8 +151,18 @@ internal sealed class StratumPregenManager
 
 		if (string.Equals(action, "stop", StringComparison.OrdinalIgnoreCase))
 		{
+			jobQueue.Clear();   // stop halts everything: current job and the queue. Done here so skip can drain without wiping the queue.
 			Stop(server, "stopped by command");
 			return TextCommandResult.Success(BuildStatus(server));
+		}
+
+		if (string.Equals(action, "skip", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!running) return TextCommandResult.Error("No pregen job is running.");
+			Stop(server, "skipped by command");
+			return TryStartNext(server)
+				? TextCommandResult.Success(BuildStatus(server))
+				: TextCommandResult.Success("Skipped; queue is empty.");
 		}
 
 		return TextCommandResult.Error(Usage);
@@ -309,42 +345,48 @@ internal sealed class StratumPregenManager
 
 		if (running)
 		{
-			return TextCommandResult.Error("A pregen job is already running. Use /stratum pregen stop first.");
+			return TextCommandResult.Error("A pregen job is already running. Use /stratum pregen stop or queue instead.");
 		}
 
+		PregenJob job; string error;
 		string shape = args[2] as string;
 		if (string.Equals(shape, "radius", StringComparison.OrdinalIgnoreCase))
 		{
-			return StartRadius(server, args, config);
+			if (!TryParseRadius(server, args, config, out job, out error)) return TextCommandResult.Error(error);
 		}
-
-		if (string.Equals(shape, "rect", StringComparison.OrdinalIgnoreCase))
+		else if (string.Equals(shape, "rect", StringComparison.OrdinalIgnoreCase))
 		{
-			return StartRect(server, args, config);
+			if (!TryParseRect(args, config, out job, out error)) return TextCommandResult.Error(error);
+		}
+		else
+		{
+			return TextCommandResult.Error(Usage);
 		}
 
-		return TextCommandResult.Error(Usage);
+		BeginJob(server, job);
+		return TextCommandResult.Success(BuildStatus(server));
 	}
 
 	/// <summary>
-	/// Starts a circular pregen job with the given radius. The center defaults to the caller's position
-	/// (if available) or the world centre.
+	/// Parses the arguments of a circular pregen radius command: radius chunks, optional center chunk coords.
+	/// Center defaults to the caller's position (if available) or the world centre. Position is fixed at parse time.
 	/// </summary>
-	private TextCommandResult StartRadius(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config)
+	private bool TryParseRadius(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config, out PregenJob job, out string error)
 	{
+		job = null;
 		if (!TryParseInt(args[3] as string, out int radiusChunks) || radiusChunks < 1)
 		{
-			return TextCommandResult.Error("Usage: /stratum pregen start radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ]");
+			error = "Usage: /stratum pregen start radius <radiusChunks> [centerChunkX] [centerChunkZ]";
+			return false;
 		}
 
 		if (radiusChunks > config.MaxRadiusChunks)
 		{
-			return TextCommandResult.Error($"Radius {radiusChunks} exceeds configured maximum {config.MaxRadiusChunks} chunks.");
+			error = $"Radius {radiusChunks} exceeds configured maximum {config.MaxRadiusChunks} chunks.";
+			return false;
 		}
 
-		int centerChunkX;
-		int centerChunkZ;
-
+		int centerChunkX, centerChunkZ;
 		if (TryParseInt(args[4] as string, out int parsedCenterX) && TryParseInt(args[5] as string, out int parsedCenterZ))
 		{
 			centerChunkX = parsedCenterX;
@@ -361,67 +403,67 @@ internal sealed class StratumPregenManager
 			centerChunkZ = server.WorldMap.MapSizeZ / MagicNum.ServerChunkSize / 2;
 		}
 
-		int minChunkX = centerChunkX - radiusChunks;
-		int maxChunkX = centerChunkX + radiusChunks;
-		int minChunkZ = centerChunkZ - radiusChunks;
-		int maxChunkZ = centerChunkZ + radiusChunks;
-
-		return Start(server, "radius", minChunkX, minChunkZ, maxChunkX, maxChunkZ, config, centerChunkX, centerChunkZ, radiusChunks);
+		return TryBuildJob("radius", centerChunkX - radiusChunks, centerChunkZ - radiusChunks, centerChunkX + radiusChunks, centerChunkZ + radiusChunks, config, centerChunkX, centerChunkZ, radiusChunks, out job, out error);
 	}
 
 	/// <summary>
-	/// Starts a rectangular pregen job defined by two corner chunk coordinates.
+	/// Parses the arguments of a rectangular pregen command: two corner chunk coordinates in any order.
 	/// </summary>
-	private TextCommandResult StartRect(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config)
+	private bool TryParseRect(TextCommandCallingArgs args, StratumPregenConfig config, out PregenJob job, out string error)
 	{
+		job = null;
 		if (!TryParseInt(args[3] as string, out int x1) || !TryParseInt(args[4] as string, out int z1) || !TryParseInt(args[5] as string, out int x2) || !TryParseInt(args[6] as string, out int z2))
 		{
-			return TextCommandResult.Error("Usage: /stratum pregen start rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;");
+			error = "Usage: /stratum pregen start rect <chunkX1> <chunkZ1> <chunkX2> <chunkZ2>";
+			return false;
 		}
 
-		return Start(server, "rect", x1, z1, x2, z2, config);
+		return TryBuildJob("rect", x1, z1, x2, z2, config, 0, 0, 0, out job, out error);
 	}
 
 	/// <summary>
-	/// Initializes and starts a pregen job with the given boundaries, shape mode, and optional circle parameters.
-	/// Normalizes coordinates so that (x1,z1) may be supplied in any order.
+	/// Builds and validates a PregenJob. Normalizes coordinates so that (x1,z1) may be supplied in any order.
+	/// Validates the area limit; radius/area-limit checks are done by the callers before this is reached.
 	/// </summary>
-	private TextCommandResult Start(ServerMain server, string newMode, int x1, int z1, int x2, int z2, StratumPregenConfig config, int centerX = 0, int centerZ = 0, int radius = 0)
+	private bool TryBuildJob(string newMode, int x1, int z1, int x2, int z2, StratumPregenConfig config,
+		int centerX, int centerZ, int radius, out PregenJob job, out string error)
 	{
-		int normalizedMinX = Math.Min(x1, x2);
-		int normalizedMaxX = Math.Max(x1, x2);
-		int normalizedMinZ = Math.Min(z1, z2);
-		int normalizedMaxZ = Math.Max(z1, z2);
-		long width = (long)normalizedMaxX - normalizedMinX + 1;
-		long height = (long)normalizedMaxZ - normalizedMinZ + 1;
-		long area = width * height;
+		job = null;
+		int minX = Math.Min(x1, x2), maxX = Math.Max(x1, x2);
+		int minZ = Math.Min(z1, z2), maxZ = Math.Max(z1, z2);
+		long area = ((long)maxX - minX + 1) * ((long)maxZ - minZ + 1);
 		if (area <= 0 || area > config.MaxAreaColumns)
 		{
-			return TextCommandResult.Error($"Pregen area is {area} columns; configured maximum is {config.MaxAreaColumns}.");
+			error = $"Pregen area is {area} columns; configured maximum is {config.MaxAreaColumns}.";
+			return false;
 		}
 
-		mode = newMode;
-		minChunkX = normalizedMinX;
-		maxChunkX = normalizedMaxX;
-		minChunkZ = normalizedMinZ;
-		maxChunkZ = normalizedMaxZ;
+		job = new PregenJob { Mode = newMode, MinX = minX, MaxX = maxX, MinZ = minZ, MaxZ = maxZ,
+			CenterX = centerX, CenterZ = centerZ, Radius = radius };
+		error = null;
+		return true;
+	}
 
-		// Block-major cursor initialization.
-		nextBlockX = normalizedMinX;
-		nextBlockZ = normalizedMinZ;
-		blockInner = 0;
+	/// <summary>
+	/// Initializes and starts a pregen job from a built PregenJob: sets boundaries, cursor, shape math,
+	/// resets all counters and budgets, marks running, and applies the TTL boost.
+	/// </summary>
+	private void BeginJob(ServerMain server, PregenJob job)
+	{
+		mode = job.Mode;
+		minChunkX = job.MinX; maxChunkX = job.MaxX;
+		minChunkZ = job.MinZ; maxChunkZ = job.MaxZ;
+		nextBlockX = job.MinX; nextBlockZ = job.MinZ; blockInner = 0;
 
-		// Accurate chunk count based on the selected shape.
-		if (newMode == "radius")
+		if (mode == "radius")
 		{
-			this.centerX = centerX;
-			this.centerZ = centerZ;
-			this.radiusSq = (long)radius * radius;
+			centerX = job.CenterX; centerZ = job.CenterZ;
+			radiusSq = (long)job.Radius * job.Radius;
 
 			long count = 0;
-			for (int dx = 0; dx <= radius; dx++)
+			for (int dx = 0; dx <= job.Radius; dx++)
 			{
-				long rem = this.radiusSq - (long)dx * dx;
+				long rem = radiusSq - (long)dx * dx;
 				int maxDz = (int)Math.Sqrt(rem);
 
 				// Correction for potential floating-point precision issues in Math.Sqrt.
@@ -435,7 +477,7 @@ internal sealed class StratumPregenManager
 		}
 		else
 		{
-			totalColumns = area;
+			totalColumns = ((long)maxChunkX - minChunkX + 1) * ((long)maxChunkZ - minChunkZ + 1);
 		}
 
 		inspectedColumns = 0;
@@ -450,16 +492,84 @@ internal sealed class StratumPregenManager
 		finishedAtMilliseconds = -1;
 		lastProgressLogMilliseconds = server.ElapsedMilliseconds;
 		lastPauseReason = "none";
-		completed = false;
-		paused = false;
-		running = true;
-		StratumRuntime.LogInfo($"pregen started: {mode} chunks {minChunkX},{minChunkZ} to {maxChunkX},{maxChunkZ} ({totalColumns} columns, {BlockSize}x{BlockSize} blocks)");
+		completed = false; paused = false; running = true;
+		lastTickMilliseconds = -1;
+		columnBudgetAccumulator = 0; scanBudgetAccumulator = 0;
+
+		string queuedNote = jobQueue.Count > 0 ? $", {jobQueue.Count} more queued" : "";
+		StratumRuntime.LogInfo($"pregen started: {job.Describe()} ({totalColumns} columns{queuedNote})");
 		ApplyTtlBoost();    // reduce TTL
-		return TextCommandResult.Success(BuildStatus(server));
 	}
 
 	/// <summary>
+	/// Starts the next queued job, if any. Returns true if a job was dequeued and started.
+	/// </summary>
+	private bool TryStartNext(ServerMain server)
+	{
+		if (jobQueue.Count == 0) return false;
+		BeginJob(server, jobQueue.Dequeue());
+		return true;
+	}
+
+	/// <summary>
+	/// Handles /stratum pregen queue: list/clear subcommands, or enqueue a radius/rect job.
+	/// If nothing is running the job starts immediately; otherwise it is appended to the queue.
+	/// </summary>
+	private TextCommandResult HandleQueue(ServerMain server, TextCommandCallingArgs args)
+	{
+		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
+		config.EnsureSane();
+		if (!config.Enabled) return TextCommandResult.Error("Pregen is disabled in stratum.json.");
+		if (!server.AutoGenerateChunks) return TextCommandResult.Error("Cannot pregen while AutoGenerateChunks is disabled.");
+
+		string sub = args[2] as string;
+		if (string.Equals(sub, "list", StringComparison.OrdinalIgnoreCase))
+		{
+			var sb = new StringBuilder($"Queued jobs: {jobQueue.Count}\n");
+			int i = 1;
+			foreach (var j in jobQueue) sb.Append(i++).Append(". ").Append(j.Describe()).Append('\n');
+			return TextCommandResult.Success(sb.ToString());
+		}
+		if (string.Equals(sub, "clear", StringComparison.OrdinalIgnoreCase))
+		{
+			jobQueue.Clear();
+			return TextCommandResult.Success("Queue cleared.");
+		}
+
+		PregenJob job; string error;
+		bool ok;
+		if (string.Equals(sub, "radius", StringComparison.OrdinalIgnoreCase))
+			ok = TryParseRadius(server, args, config, out job, out error);
+		else if (string.Equals(sub, "rect", StringComparison.OrdinalIgnoreCase))
+			ok = TryParseRect(args, config, out job, out error);
+		else
+			return TextCommandResult.Error(Usage);
+
+		if (!ok) return TextCommandResult.Error(error);
+
+		if (!running)
+		{
+			BeginJob(server, job);
+			return TextCommandResult.Success(BuildStatus(server));
+		}
+
+		if (jobQueue.Count >= MaxQueuedJobs)
+			return TextCommandResult.Error($"Queue is full ({MaxQueuedJobs}).");
+
+		jobQueue.Enqueue(job);
+		return TextCommandResult.Success($"Queued #{jobQueue.Count}: {job.Describe()}");
+	}
+
+	/// <summary>
+	/// Temporarily reduces chunk TTL to speed up unloading during pregen.
+	/// Original values are saved for later restoration.
+	/// Divides by 5, but never below 1000 ms (1 second) to prevent the server from going crazy,
+	// trying to dump chunks to disk every tick.
+	/// </summary>
+
+	/// <summary>
 	/// Stops the current pregen job and marks it as non-running. The provided reason is recorded in logs.
+	/// Does not clear the queue: that is done explicitly by the stop command so skip can drain one item at a time.
 	/// </summary>
 	private void Stop(ServerMain server, string reason)
 	{
@@ -481,6 +591,7 @@ internal sealed class StratumPregenManager
 
 	/// <summary>
 	/// Marks the current pregen job as completed, records timing statistics and per-stage breakdown.
+	/// If there are queued jobs, starts the next one (leaving TTL boosted) instead of restoring it.
 	/// </summary>
 	private void Complete(ServerMain server)
 	{
@@ -489,8 +600,6 @@ internal sealed class StratumPregenManager
 		completed = true;
 		finishedAtMilliseconds = server.ElapsedMilliseconds;
 		lastPauseReason = "none";
-
-		RestoreTtl();   // restore TTL
 
 		// Calculate the time spent.
 		long elapsedMilliseconds = Math.Max(0, finishedAtMilliseconds - startedAtMilliseconds);
@@ -504,6 +613,16 @@ internal sealed class StratumPregenManager
 		if (!string.IsNullOrEmpty(stageReport))
 		{
 			StratumRuntime.LogInfo($"pregen stage timings: {stageReport}");
+		}
+
+		if (jobQueue.Count > 0)
+		{
+			TryStartNext(server);
+			StratumRuntime.LogInfo($"pregen: next job started, {jobQueue.Count} remaining in queue");
+		}
+		else
+		{
+			RestoreTtl();   // restore TTL only when nothing follows (avoids a needless "restore -> boost" log pair)
 		}
 	}
 
@@ -784,8 +903,9 @@ internal sealed class StratumPregenManager
 		output.Append("Progress: inspected=").Append(inspectedColumns).Append('/').Append(totalColumns).Append(" queued=").Append(queuedColumns).Append(" completed=").Append(completedColumns).Append(" active=").Append(activeRequests.Count).Append('\n');
 		output.Append("Skipped: loaded=").Append(skippedLoadedColumns).Append(" invalid=").Append(skippedInvalidColumns).Append(" alreadyQueued=").Append(alreadyQueuedColumns).Append('\n');
 		output.Append("Pressure pauses: ").Append(pressurePauses).Append(" last=").Append(lastPauseReason).Append('\n');
+		output.Append("Queue: ").Append(jobQueue.Count).Append(" job(s)\n");
 		output.Append("Config: rate=").Append(StratumRuntime.Config.Performance.Pregen.MaxColumnsPerSecond).Append("/s queues=").Append(StratumRuntime.Config.Performance.Pregen.MaxPendingColumnQueue).Append('/').Append(StratumRuntime.Config.Performance.Pregen.MaxWorkerColumnQueue).Append(" loadedColumns=").Append(StratumRuntime.Config.Performance.Pregen.MaxLoadedChunkColumns).Append('\n');
-		output.Append("Commands: /stratum pregen start radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ], /stratum pregen start rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;, /stratum pregen pause|resume|stop|status");
+		output.Append("Commands: /stratum pregen start radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ], /stratum pregen start rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;, /stratum pregen queue radius|rect, queue list|clear, skip, /stratum pregen pause|resume|stop|status");
 		return output.ToString();
 	}
 
@@ -844,5 +964,5 @@ internal sealed class StratumPregenManager
 		return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
 	}
 
-	private const string Usage = "Usage: /stratum pregen [status|pause|resume|stop|start radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ]|start rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;]";
+	
 }
