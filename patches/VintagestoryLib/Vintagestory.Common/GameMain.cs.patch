@@ -64,7 +64,7 @@ index 48c8694..31f96ad 100644
 +				}
 +			}
 +
-+			FindNearestRayIntersectingEntity(ray, stratumScanRange, efilter, ref entity, ref num2); 
++			FindNearestRayIntersectingEntity(ray, stratumScanRange, efilter, ref entity, ref num2);
 +			// Stratum end
 +		}
 +		else
