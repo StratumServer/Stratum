@@ -964,5 +964,5 @@ internal sealed class StratumPregenManager
 		return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
 	}
 
-	
+
 }
