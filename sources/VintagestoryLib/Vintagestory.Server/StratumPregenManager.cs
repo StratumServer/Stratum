@@ -24,10 +24,12 @@ internal sealed class StratumPregenManager
 			: $"rect {MinX},{MinZ} to {MaxX},{MaxZ}";
 	}
 
+	// Chat is rendered as VTML: raw '<' opens a tag and swallows the rest of the line (see #76),
+	// so every placeholder in user-facing text must be written as &lt;...&gt;.
 	private const string Usage =
 		"Usage: /stratum pregen [status|pause|resume|stop|skip" +
-		"|start radius <radiusChunks> [centerChunkX] [centerChunkZ]" +
-		"|start rect <chunkX1> <chunkZ1> <chunkX2> <chunkZ2>" +
+		"|start radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ]" +
+		"|start rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;" +
 		"|queue radius|rect|list|clear]";
 
 	private readonly HashSet<long> activeRequests = new HashSet<long>();
@@ -352,11 +354,11 @@ internal sealed class StratumPregenManager
 		string shape = args[2] as string;
 		if (string.Equals(shape, "radius", StringComparison.OrdinalIgnoreCase))
 		{
-			if (!TryParseRadius(server, args, config, out job, out error)) return TextCommandResult.Error(error);
+			if (!TryParseRadius(server, args, config, "start", out job, out error)) return TextCommandResult.Error(error);
 		}
 		else if (string.Equals(shape, "rect", StringComparison.OrdinalIgnoreCase))
 		{
-			if (!TryParseRect(args, config, out job, out error)) return TextCommandResult.Error(error);
+			if (!TryParseRect(args, config, "start", out job, out error)) return TextCommandResult.Error(error);
 		}
 		else
 		{
@@ -370,13 +372,14 @@ internal sealed class StratumPregenManager
 	/// <summary>
 	/// Parses the arguments of a circular pregen radius command: radius chunks, optional center chunk coords.
 	/// Center defaults to the caller's position (if available) or the world centre. Position is fixed at parse time.
+	/// <paramref name="verb"/> ("start" or "queue") is only used to show the correct usage in the error message.
 	/// </summary>
-	private bool TryParseRadius(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config, out PregenJob job, out string error)
+	private bool TryParseRadius(ServerMain server, TextCommandCallingArgs args, StratumPregenConfig config, string verb, out PregenJob job, out string error)
 	{
 		job = null;
 		if (!TryParseInt(args[3] as string, out int radiusChunks) || radiusChunks < 1)
 		{
-			error = "Usage: /stratum pregen start radius <radiusChunks> [centerChunkX] [centerChunkZ]";
+			error = $"Usage: /stratum pregen {verb} radius &lt;radiusChunks&gt; [centerChunkX] [centerChunkZ]";
 			return false;
 		}
 
@@ -408,13 +411,14 @@ internal sealed class StratumPregenManager
 
 	/// <summary>
 	/// Parses the arguments of a rectangular pregen command: two corner chunk coordinates in any order.
+	/// <paramref name="verb"/> ("start" or "queue") is only used to show the correct usage in the error message.
 	/// </summary>
-	private bool TryParseRect(TextCommandCallingArgs args, StratumPregenConfig config, out PregenJob job, out string error)
+	private bool TryParseRect(TextCommandCallingArgs args, StratumPregenConfig config, string verb, out PregenJob job, out string error)
 	{
 		job = null;
 		if (!TryParseInt(args[3] as string, out int x1) || !TryParseInt(args[4] as string, out int z1) || !TryParseInt(args[5] as string, out int x2) || !TryParseInt(args[6] as string, out int z2))
 		{
-			error = "Usage: /stratum pregen start rect <chunkX1> <chunkZ1> <chunkX2> <chunkZ2>";
+			error = $"Usage: /stratum pregen {verb} rect &lt;chunkX1&gt; &lt;chunkZ1&gt; &lt;chunkX2&gt; &lt;chunkZ2&gt;";
 			return false;
 		}
 
@@ -503,10 +507,21 @@ internal sealed class StratumPregenManager
 
 	/// <summary>
 	/// Starts the next queued job, if any. Returns true if a job was dequeued and started.
+	/// If AutoGenerateChunks was switched off while jobs were waiting, start/queue refuse to run,
+	/// so the handoff must too: the queue is dropped with a log line (otherwise it would sit
+	/// there with no running job and nothing to pick it up again).
 	/// </summary>
 	private bool TryStartNext(ServerMain server)
 	{
 		if (jobQueue.Count == 0) return false;
+
+		if (!server.AutoGenerateChunks)
+		{
+			StratumRuntime.LogWarning($"pregen: AutoGenerateChunks is disabled, dropping {jobQueue.Count} queued job(s)");
+			jobQueue.Clear();
+			return false;
+		}
+
 		BeginJob(server, jobQueue.Dequeue());
 		return true;
 	}
@@ -514,14 +529,11 @@ internal sealed class StratumPregenManager
 	/// <summary>
 	/// Handles /stratum pregen queue: list/clear subcommands, or enqueue a radius/rect job.
 	/// If nothing is running the job starts immediately; otherwise it is appended to the queue.
+	/// list and clear are handled before the Enabled/AutoGenerateChunks checks so pending jobs
+	/// can always be inspected and dropped, even when pregen is switched off.
 	/// </summary>
 	private TextCommandResult HandleQueue(ServerMain server, TextCommandCallingArgs args)
 	{
-		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
-		config.EnsureSane();
-		if (!config.Enabled) return TextCommandResult.Error("Pregen is disabled in stratum.json.");
-		if (!server.AutoGenerateChunks) return TextCommandResult.Error("Cannot pregen while AutoGenerateChunks is disabled.");
-
 		string sub = args[2] as string;
 		if (string.Equals(sub, "list", StringComparison.OrdinalIgnoreCase))
 		{
@@ -536,12 +548,17 @@ internal sealed class StratumPregenManager
 			return TextCommandResult.Success("Queue cleared.");
 		}
 
+		StratumPregenConfig config = StratumRuntime.Config.Performance.Pregen;
+		config.EnsureSane();
+		if (!config.Enabled) return TextCommandResult.Error("Pregen is disabled in stratum.json.");
+		if (!server.AutoGenerateChunks) return TextCommandResult.Error("Cannot pregen while AutoGenerateChunks is disabled.");
+
 		PregenJob job; string error;
 		bool ok;
 		if (string.Equals(sub, "radius", StringComparison.OrdinalIgnoreCase))
-			ok = TryParseRadius(server, args, config, out job, out error);
+			ok = TryParseRadius(server, args, config, "queue", out job, out error);
 		else if (string.Equals(sub, "rect", StringComparison.OrdinalIgnoreCase))
-			ok = TryParseRect(args, config, out job, out error);
+			ok = TryParseRect(args, config, "queue", out job, out error);
 		else
 			return TextCommandResult.Error(Usage);
 
@@ -559,13 +576,6 @@ internal sealed class StratumPregenManager
 		jobQueue.Enqueue(job);
 		return TextCommandResult.Success($"Queued #{jobQueue.Count}: {job.Describe()}");
 	}
-
-	/// <summary>
-	/// Temporarily reduces chunk TTL to speed up unloading during pregen.
-	/// Original values are saved for later restoration.
-	/// Divides by 5, but never below 1000 ms (1 second) to prevent the server from going crazy,
-	// trying to dump chunks to disk every tick.
-	/// </summary>
 
 	/// <summary>
 	/// Stops the current pregen job and marks it as non-running. The provided reason is recorded in logs.
@@ -615,9 +625,8 @@ internal sealed class StratumPregenManager
 			StratumRuntime.LogInfo($"pregen stage timings: {stageReport}");
 		}
 
-		if (jobQueue.Count > 0)
+		if (TryStartNext(server))
 		{
-			TryStartNext(server);
 			StratumRuntime.LogInfo($"pregen: next job started, {jobQueue.Count} remaining in queue");
 		}
 		else
@@ -963,6 +972,4 @@ internal sealed class StratumPregenManager
 	{
 		return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
 	}
-
-
 }
