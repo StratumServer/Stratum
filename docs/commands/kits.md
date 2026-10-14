@@ -20,10 +20,11 @@ step that would otherwise need a typed item code instead snapshots a live
   all default to `true`. Setting one to `false` skips registering that
   command entirely; the change takes effect on the next server restart,
   since registration happens once when the server boots.
-- `stratum.kits` and `stratum.kitedit` are **not** granted to any default
-  role, including `admin`. Grant them with `/roles grant <role>
-  stratum.kitedit` (see the roles command reference) or by editing
-  `serverroles.json` directly.
+- Roles with auto-grant, normally `admin`, receive `stratum.kits` and
+  `stratum.kitedit` automatically. Other roles need them granted explicitly,
+  with `/roles grant <role> stratum.kits` and `/roles grant <role>
+  stratum.kitedit`, or by editing `serverroles.json` directly. A headless
+  server with the default configuration listed both privileges for `admin`.
 - The server console always passes Stratum's own access check (see
   `StratumCommandAccessCatalog.CallerHasAccess`), so both commands can be run
   from the console for diagnostics. A console caller has no player entity,
