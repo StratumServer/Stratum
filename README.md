@@ -86,6 +86,8 @@ release manifest, verifies it, unpacks it, and writes Stratum's patched files on
 top. Later launches use the prepared install unless the Stratum or base version
 changes.
 
+The documentation site at https://stratumvs.dev/docs/ covers installation, configuration, commands, compatibility, moderation, and troubleshooting.
+
 ## Flags
 
 | Flag                       | Effect                                    |
