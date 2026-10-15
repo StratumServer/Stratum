@@ -4,8 +4,10 @@ using Xunit;
 namespace StratumScenarios;
 
 /// <summary>
-/// BlockTicks.Enabled off must not turn a dirty backlog into a single-tick drain.
-/// The 512 cap still applies. Modified queues still drain in that same pass.
+/// BlockTicks.Enabled off does not remove the dirty-position cap.
+/// One pass still publishes only that many distinct positions. Repeats do not
+/// spend a slot, so a queue of repeats can finish in the same pass. Modified
+/// queues still drain fully.
 /// </summary>
 [AtlasDataFiles("fixtures/stratum-blocktick-budget-off", TargetPath = "")]
 public class DirtyBlockBudgetDisabledScenarios : AtlasScenarioBase
