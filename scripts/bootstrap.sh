@@ -65,41 +65,14 @@ require_cmd() {
   fi
 }
 
-install_ilspycmd_if_missing() {
-  # The decompile output depends on the ilspycmd version. Patches are written
-  # against the version pinned in .config/dotnet-tools.json, so a different
-  # installed version can make them fail to apply. Use the pin when it exists.
-  local manifest="$repo_root/.config/dotnet-tools.json"
-  local pinned_version=""
-  if [[ -f "$manifest" ]]; then
-    pinned_version=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tools']['ilspycmd']['version'])" "$manifest" 2>/dev/null || true)
+tools_restored=0
+run_ilspycmd() {
+  if [[ "$tools_restored" == "0" ]]; then
+    dotnet tool restore --tool-manifest "$repo_root/.config/dotnet-tools.json"
+    tools_restored=1
   fi
 
-  if [[ -z "$pinned_version" ]]; then
-    if command -v ilspycmd >/dev/null 2>&1; then
-      return
-    fi
-    echo "Installing ilspycmd (no manifest found, using latest)"
-    dotnet tool install -g ilspycmd >/dev/null
-    export PATH="$HOME/.dotnet/tools:$PATH"
-    return
-  fi
-
-  # A pinned tool is installed into its own folder, so the global tool is left alone.
-  local pinned_dir="$HOME/.dotnet/tools-pinned"
-  local installed=""
-  if command -v ilspycmd >/dev/null 2>&1; then
-    installed=$(ilspycmd --version 2>/dev/null | awk -F': ' '/^ilspycmd:/{print $2}')
-  fi
-  if [[ "$installed" == "$pinned_version" ]]; then
-    return
-  fi
-
-  if [[ ! -x "$pinned_dir/ilspycmd" ]] || [[ "$("$pinned_dir/ilspycmd" --version 2>/dev/null | awk -F': ' '/^ilspycmd:/{print $2}')" != "$pinned_version" ]]; then
-    echo "Installing ilspycmd $pinned_version from the tool manifest into $pinned_dir"
-    dotnet tool install --tool-path "$pinned_dir" ilspycmd --version "$pinned_version" >/dev/null
-  fi
-  export PATH="$pinned_dir:$PATH"
+  (cd "$repo_root" && dotnet tool run ilspycmd "$@")
 }
 
 extract_archive() {
@@ -416,8 +389,6 @@ if [[ -z "$client_lib_dir" ]]; then
   download_missing_client_refs "$vanilla_dir/Lib"
 fi
 
-install_ilspycmd_if_missing
-
 for entry in "${lib_projects[@]}"; do
   IFS=':' read -r project work_rel dll <<<"$entry"
   dll_path="$(find "$vanilla_dir" -type f -name "$dll" -print -quit)"
@@ -431,7 +402,7 @@ for entry in "${lib_projects[@]}"; do
     echo "Decompiling $dll into $out"
     rm -rf "$out"
     mkdir -p "$out"
-    ilspycmd "$dll_path" --project -o "$out" >/dev/null
+    run_ilspycmd "$dll_path" --project -o "$out" >/dev/null
     normalize_lang_version "$out"
   fi
 
@@ -502,7 +473,7 @@ if [[ -d "$patches_dir" ]]; then
     echo
     echo "${#failed[@]} patch(es) failed to apply:" >&2
     printf '  %s\n' "${failed[@]}" >&2
-    echo "Fix the conflicts in the working tree, then run scripts/extract-patches.sh." >&2
+    echo "If this baseline was decompiled with another ilspycmd version, save your working-tree edits and rerun scripts/bootstrap.sh --refresh. Otherwise, fix the conflicts before extracting patches." >&2
     failed_patch_count="${#failed[@]}"
   fi
 else
