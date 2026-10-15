@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using Atlas.XUnit;
 using Xunit;
 
@@ -36,15 +37,77 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 	[AtlasScenario(TimeoutMs = 60_000)]
 	public void Shutdown_Should_ReturnImmediately_When_PeerNeverReads()
 	{
-		using ConnectionHarness harness = ConnectionHarness.Open();
+		// A 4 KiB receive buffer absorbs about 8 KiB. A few MiB stays queued, so the
+		// drain is still inside SendAsync when Shutdown returns, and the FIN follows
+		// the drain or the 250 ms bound.
+		using ConnectionHarness harness = ConnectionHarness.Open(receiveBufferSize: 4096);
 		harness.Accepted.SendBufferSize = 1024;
-		byte[] backlog = new byte[256 * 1024];
+		byte[] backlog = new byte[4 * 1024 * 1024];
 		harness.Send(backlog);
 
 		Stopwatch watch = Stopwatch.StartNew();
 		harness.Shutdown();
 		watch.Stop();
 		Assert.True(watch.ElapsedMilliseconds < 50, "Shutdown blocked for " + watch.ElapsedMilliseconds + " ms");
+		Task drain = harness.DrainTask;
+		Assert.False(drain.IsCompleted, "drain finished before the peer read");
+
+		Socket socket = harness.Client.Client;
+		socket.ReceiveTimeout = 50;
+		byte[] buffer = new byte[64 * 1024];
+		int got = 0;
+		bool closed = false;
+		Stopwatch eof = Stopwatch.StartNew();
+		while (eof.ElapsedMilliseconds < 500)
+		{
+			try
+			{
+				int read = socket.Receive(buffer);
+				if (read == 0)
+				{
+					closed = true;
+					break;
+				}
+				got += read;
+			}
+			catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
+			{
+			}
+		}
+		Assert.True(closed, "no EOF after " + eof.ElapsedMilliseconds + " ms, read " + got + " bytes");
+		Assert.True(got > 8192, "peer absorbed the backlog, read only " + got + " bytes");
+		harness.Close();
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public void ServerQuery_Should_AnswerAndClose_When_SendQueueEnabled()
+	{
+		using ConnectionHarness harness = ConnectionHarness.Open();
+		byte[] query = ConnectionHarness.SerializeServerQuery();
+		object server = World.Api.World;
+		object message = ConnectionHarness.CreateDataMessage(harness.Connection, query);
+		MethodInfo process = server.GetType().GetMethod("ProcessNetMessage", BindingFlags.Instance | BindingFlags.NonPublic)
+			?? throw new InvalidOperationException("ProcessNetMessage was not on the server");
+		process.Invoke(server, new[] { message });
+
+		byte[] expected = ConnectionHarness.PreparedQueryAnswer();
+		byte[] received = new byte[expected.Length];
+		int filled = 0;
+		Socket socket = harness.Client.Client;
+		socket.ReceiveTimeout = 2000;
+		while (filled < received.Length)
+		{
+			int read = socket.Receive(received, filled, received.Length - filled, SocketFlags.None);
+			Assert.NotEqual(0, read);
+			filled += read;
+		}
+		Assert.Equal(expected, received);
+
+		Stopwatch eof = Stopwatch.StartNew();
+		int end = socket.Receive(new byte[16]);
+		eof.Stop();
+		Assert.Equal(0, end);
+		Assert.True(eof.ElapsedMilliseconds < 500, "FIN arrived after " + eof.ElapsedMilliseconds + " ms");
 		harness.Close();
 	}
 
@@ -79,6 +142,16 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 
 		public Socket Accepted { get; }
 
+		public object Connection => connection;
+
+		public Task DrainTask
+		{
+			get
+			{
+				return (Task)queue.GetType().GetField("drainTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(queue)!;
+			}
+		}
+
 		private readonly object queue;
 
 		private ConnectionHarness(TcpListener listener, TcpClient client, Socket accepted, object connection, object queue)
@@ -90,13 +163,17 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 			this.queue = queue;
 		}
 
-		public static ConnectionHarness Open()
+		public static ConnectionHarness Open(int? receiveBufferSize = null)
 		{
 			SetSendQueueEnabled(true);
 			TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
 			listener.Start();
 			int port = ((IPEndPoint)listener.LocalEndpoint).Port;
 			TcpClient client = new TcpClient();
+			if (receiveBufferSize.HasValue)
+			{
+				client.ReceiveBufferSize = receiveBufferSize.Value;
+			}
 			client.Connect(IPAddress.Loopback, port);
 			Socket accepted = listener.AcceptSocket();
 			client.Client.ReceiveTimeout = 2000;
@@ -157,6 +234,39 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 			object performance = config.GetType().GetProperty("Performance")!.GetValue(config)!;
 			object network = performance.GetType().GetProperty("Network")!.GetValue(performance)!;
 			network.GetType().GetProperty("SendQueueEnabled")!.SetValue(network, enabled);
+		}
+
+		public static byte[] SerializeServerQuery()
+		{
+			Type packetType = Type.GetType("Packet_Client, VintagestoryLib")
+				?? throw new InvalidOperationException("Packet_Client was not in the loaded lib");
+			object packet = Activator.CreateInstance(packetType)!;
+			packetType.GetField("Id")!.SetValue(packet, 15);
+			Type serializer = Type.GetType("Packet_ClientSerializer, VintagestoryLib")
+				?? throw new InvalidOperationException("Packet_ClientSerializer was not in the loaded lib");
+			return (byte[])serializer.GetMethod("SerializeToBytes")!.Invoke(null, new[] { packet })!;
+		}
+
+		public static object CreateDataMessage(object connection, byte[] payload)
+		{
+			Type messageType = Type.GetType("Vintagestory.Common.NetIncomingMessage, VintagestoryLib")
+				?? throw new InvalidOperationException("NetIncomingMessage was not in the loaded lib");
+			object message = Activator.CreateInstance(messageType)!;
+			messageType.GetField("SenderConnection")!.SetValue(message, connection);
+			Type typeEnum = Type.GetType("Vintagestory.Common.NetworkMessageType, VintagestoryLib")
+				?? throw new InvalidOperationException("NetworkMessageType was not in the loaded lib");
+			messageType.GetField("Type")!.SetValue(message, Enum.Parse(typeEnum, "Data"));
+			messageType.GetField("message")!.SetValue(message, payload);
+			messageType.GetField("messageLength")!.SetValue(message, payload.Length);
+			return message;
+		}
+
+		public static byte[] PreparedQueryAnswer()
+		{
+			Type queryType = Type.GetType("Vintagestory.Server.StratumServerListQuery, VintagestoryLib")
+				?? throw new InvalidOperationException("StratumServerListQuery was not in the loaded lib");
+			object instance = queryType.GetField("Instance", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+			return (byte[])queryType.GetProperty("PreparedPacket", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;
 		}
 
 		public static void SetMaxPendingBytes(int bytes)
