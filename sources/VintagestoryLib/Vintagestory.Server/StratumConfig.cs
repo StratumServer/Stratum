@@ -632,12 +632,11 @@ internal class StratumPerformanceConfig
 
 internal class StratumNetworkConfig
 {
-	// On by default. With the queue off, TcpNetConnection.Send calls Socket.SendAsync on
-	// the gameplay thread. A 1000-player capture on a 130k-chunk world spent about half of
-	// ServerMain.Process samples in SocketAsyncEventArgs.DoOperationSendSingleBuffer.
-	// The queue is the only sender for the connection and runs on the thread pool. Set
-	// this false to restore the direct send path. See #325.
-	public bool SendQueueEnabled { get; set; } = true;
+	// Off by default. The queue is the only sender for the connection and runs on the
+	// thread pool. The short-write loop, MaxPendingBytes disconnect, and shutdown flush
+	// are in place. The shipped default stays off until a 1000-bot run, a slow real
+	// client, and a play session are recorded on this code. Set this true to enable it.
+	public bool SendQueueEnabled { get; set; } = false;
 
 	// Packets at or above this size skip coalescing and go out alone. Matches the TCP MTU
 	// assumption the old flush buffer used.
@@ -647,12 +646,12 @@ internal class StratumNetworkConfig
 	// a single SendAsync call carries.
 	public int CoalesceLimitBytes { get; set; } = 65536;
 
-	// Bytes StratumSendQueue may retain for one connection. Chunk scheduling already
-	// slows that client at OutboundPressurePendingBytesHardLimit (1 MiB) and still
-	// sends a minimum budget there, so this cap sits above that line. An enqueue that
-	// would grow a non-empty queue past the cap is refused and the connection is
-	// disconnected. One packet is still accepted when the queue is empty, so a single
-	// large send is not dropped on the floor. See #345.
+	// Bytes StratumSendQueue may retain for one connection, not counting one accepted
+	// packet that is already at or above this cap. That oversized packet is not added
+	// to the pending total, so the packets behind it are judged on their own size.
+	// A second packet that large, or an enqueue that would grow an already non-empty
+	// queue past the cap, disconnects the connection. Chunk scheduling already slows
+	// that client at OutboundPressurePendingBytesHardLimit (1 MiB). See #345.
 	public int MaxPendingBytes { get; set; } = 8 * 1024 * 1024;
 
 	public void EnsureSane()
