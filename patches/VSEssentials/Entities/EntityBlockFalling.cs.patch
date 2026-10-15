@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
-index 0615808..c7ce9e8 100644
+index 0615808..f787e0f 100644
 --- a/VSEssentials/Entities/EntityBlockFalling.cs
 +++ b/VSEssentials/Entities/EntityBlockFalling.cs
 @@ -370,10 +370,17 @@ namespace Vintagestory.GameContent
@@ -20,7 +20,7 @@ index 0615808..c7ce9e8 100644
          internal bool nowImpacted;
  
  
-@@ -499,10 +506,25 @@ namespace Vintagestory.GameContent
+@@ -499,10 +506,26 @@ namespace Vintagestory.GameContent
              {
                  // We have captured the BlockEntity and drops, we can now remove the initial block
                  // (but on a server we delay neighbour updates and notifying the client, deferred until later calls to UpdateBlock(true...)
@@ -35,6 +35,7 @@ index 0615808..c7ce9e8 100644
 +                {
 +                    AlwaysActive = true;
 +                    SimulationRange = GlobalConstants.DefaultSimulationRange;
++                    State = EnumEntityState.Active; // ensure passive physics runs even though AlwaysActive bypasses UpdateTrackedEntityState
 +                    StratumSpawnTimeMs = api.World.ElapsedMilliseconds;
 +                    StratumTracked = true;
 +                    stratumSystem.OnFallingBlockInitialized(this);
@@ -46,12 +47,20 @@ index 0615808..c7ce9e8 100644
  
          /// <summary>
          /// Delays behaviors from ticking to reduce flickering
-@@ -604,17 +626,32 @@ namespace Vintagestory.GameContent
+@@ -604,17 +627,40 @@ namespace Vintagestory.GameContent
              {
                  OnFallToGround(0);
                  World.FrameProfiler.Mark("entity-tick-unsstablefalling-falltoground");
              }
  
++            // Stratum: free the dedup slot once the entity has landed or fallen away (item 4), so a block
++            // placed again at initialPos can fall again. Idempotent; safe to call after despawn removed it.
++            if (Api.Side == EnumAppSide.Server && ModSystemFallingBlocks.Instance != null
++                                               && (fallHandled || Pos.Y - initialPos.Y > 1.5))
++            {
++                ModSystemFallingBlocks.Instance.OnFallingBlockLanded(this);
++            }
++
 +            // Stratum: stuck and abandoned entity checks.
 +            if (Api.Side == EnumAppSide.Server && !fallHandled && ModSystemFallingBlocks.Instance != null)
 +            {
@@ -79,7 +88,7 @@ index 0615808..c7ce9e8 100644
                  if (!reusedMeshRef) meshRef?.Dispose();
                  fallingNow.Remove(EntityId);
                  particleSys.Unregister(this);
-@@ -810,10 +847,52 @@ namespace Vintagestory.GameContent
+@@ -810,10 +856,52 @@ namespace Vintagestory.GameContent
              lingerTicks = 50;
              fallHandled = true;
              hopUpHeight = 1;
@@ -120,8 +129,8 @@ index 0615808..c7ce9e8 100644
 +            if (fallHandled) return;
 +            fallHandled = true;
 +
-+            // The block was already removed in Initialize, so doRemoveBlock is false.
-+            ModSystemFallingBlocks.SimulateInstantFall(World, Block, removedBlockentity, blockEntityAttributes, atPos, drops, false);
++            // doRemoveBlock == false here, so source is only used for the (skipped) removal check; pass Block.
++            ModSystemFallingBlocks.SimulateInstantFall(World, Block, Block, removedBlockentity, blockEntityAttributes, atPos, drops, false);
 +
 +            Die(EnumDespawnReason.Removed);
 +        }

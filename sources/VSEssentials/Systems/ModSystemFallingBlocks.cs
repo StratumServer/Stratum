@@ -80,6 +80,28 @@ public class ModSystemFallingBlocks : ModSystem
 			tickListenerId = 0;
 		}
 
+		// Best-effort: resolve queued instant requests before they are discarded on shutdown, so
+		// scattered blocks do not stay hanging. A full column cascade needs the neighbour-update fix.
+		try
+		{
+			IWorldAccessor world = sapi?.World;
+			if (world != null)
+			{
+				foreach (SpawnRequest request in instantQueue)
+				{
+					Block current = world.BlockAccessor.GetBlock(request.InitialPos);
+					if (current == null || current.Id == 0 || current != request.SourceBlock) continue;
+
+					ItemStack[] drops = request.SourceBlock.GetDrops(world, request.InitialPos, null);
+					SimulateInstantFall(
+						world, request.Block, request.SourceBlock,
+						request.BlockEntity, request.BlockEntityTree,
+						request.InitialPos, drops, request.DoRemoveBlock);
+				}
+			}
+		}
+		catch (Exception) { /* world may already be tearing down during shutdown */ }
+
 		requestQueue.Clear();
 		instantQueue.Clear();
 		pendingPositions.Clear();
@@ -100,6 +122,14 @@ public class ModSystemFallingBlocks : ModSystem
 	public void OnFallingBlockDespawned(EntityBlockFalling entity)
 	{
 		totalFallingBlocks = Math.Max(0, totalFallingBlocks - 1);
+		activeFallingPositions.Remove(entity.initialPos);
+	}
+
+	// Free the dedup slot once an entity has landed or fallen away, so a block placed again at
+	// initialPos is allowed to fall again (matches vanilla's short duplicate window). The live count
+	// is intentionally left untouched. Idempotent: safe to call after despawn already removed it.
+	public void OnFallingBlockLanded(EntityBlockFalling entity)
+	{
 		activeFallingPositions.Remove(entity.initialPos);
 	}
 
@@ -142,13 +172,14 @@ public class ModSystemFallingBlocks : ModSystem
 	private void ProcessEntityQueue()
 	{
 		IWorldAccessor world = sapi.World;
+		List<SpawnRequest> blockedThisTick = new List<SpawnRequest>();
 
 		while (totalFallingBlocks < maxFallingLimit && requestQueue.Count > 0)
 		{
 			SpawnRequest request = PopRandom(requestQueue);
 
-			Block block = world.BlockAccessor.GetBlock(request.InitialPos);
-			if (block == null || block.Id == 0 || block != request.Block)
+			Block current = world.BlockAccessor.GetBlock(request.InitialPos);
+			if (current == null || current.Id == 0 || current != request.SourceBlock)
 			{
 				pendingPositions.Remove(request.InitialPos);
 				continue;
@@ -156,17 +187,17 @@ public class ModSystemFallingBlocks : ModSystem
 
 			if (activeFallingPositions.Contains(request.InitialPos))
 			{
+				// Position still occupied: defer to next tick instead of spinning in this one.
 				request.RetryCount++;
 				if (request.RetryCount >= 300)
 				{
+					// Give up: drop the block as items and stop tracking it.
 					pendingPositions.Remove(request.InitialPos);
-					ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
+					ItemStack[] drops = request.SourceBlock.GetDrops(world, request.InitialPos, null);
 					SpawnDrops(world, request.InitialPos, drops, request.BlockEntity);
 					continue;
 				}
-
-				// The guard stays set, the request is still in progress.
-				requestQueue.Add(request);
+				blockedThisTick.Add(request);
 				continue;
 			}
 
@@ -188,6 +219,9 @@ public class ModSystemFallingBlocks : ModSystem
 			// Initialize has already run and added the position to activeFallingPositions.
 			pendingPositions.Remove(request.InitialPos);
 		}
+
+		// Put back requests blocked this tick so they retry next tick (one retry per tick).
+		if (blockedThisTick.Count > 0) requestQueue.AddRange(blockedThisTick);
 	}
 
 	private void ProcessInstantQueue()
@@ -202,7 +236,7 @@ public class ModSystemFallingBlocks : ModSystem
 			processed++;
 
 			Block current = world.BlockAccessor.GetBlock(request.InitialPos);
-			if (current == null || current.Id == 0 || current != request.Block)
+			if (current == null || current.Id == 0 || current != request.SourceBlock)
 			{
 				continue;
 			}
@@ -212,6 +246,7 @@ public class ModSystemFallingBlocks : ModSystem
 			SimulateInstantFall(
 				world,
 				request.Block,
+				request.SourceBlock,
 				request.BlockEntity,
 				request.BlockEntityTree,
 				request.InitialPos,
@@ -244,7 +279,8 @@ public class ModSystemFallingBlocks : ModSystem
 
 		SpawnRequest request = new SpawnRequest
 		{
-			Block = block,
+			Block = block,                        // falling/landing variant
+			SourceBlock = sapi.World.BlockAccessor.GetBlock(initialPos), // original source at the position
 			BlockEntity = be,
 			BlockEntityTree = beTree,
 			InitialPos = initialPos.Copy(),
@@ -287,10 +323,12 @@ public class ModSystemFallingBlocks : ModSystem
 
 	// Walks the fall path without creating an entity. Places the block on the first solid support
 	// or drops its items. beTree is the snapshot taken before the block was removed, be is only
-	// used for DropContents.
+	// used for DropContents. sourceBlock is the original block at startPos and is validated before
+	// removal; block is the falling/landing variant that gets placed.
 	public static void SimulateInstantFall(
 		IWorldAccessor world,
 		Block block,
+		Block sourceBlock,
 		BlockEntity be,
 		TreeAttribute beTree,
 		BlockPos startPos,
@@ -299,7 +337,7 @@ public class ModSystemFallingBlocks : ModSystem
 	{
 		if (doRemoveBlock)
 		{
-			if (world.BlockAccessor.GetBlock(startPos) != block) return;
+			if (world.BlockAccessor.GetBlock(startPos) != sourceBlock) return;
 			world.BlockAccessor.SetBlock(0, startPos);
 		}
 

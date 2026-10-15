@@ -222,11 +222,11 @@ public class ModSystemItemClump : ModSystem
 			//  1) the server marked the entity inactive (outside the simulation range);
 			//  2) no player is near the item (by simulation range);
 			//  3) below: the item hangs without support and did not move between two checks.
-			bool frozen = e.State == EnumEntityState.Inactive || NoPlayerNear(e.ServerPos);
+			bool frozen = e.State == EnumEntityState.Inactive || NoPlayerNear(e.Pos);
 
 			if (!frozen && !IsSettled(e))
 			{
-				EntityPos p = e.ServerPos;
+				EntityPos p = e.Pos;
 
 				// Live physics never lets an unsupported item stand still, it has to move within
 				// 1.5 s. An unchanged position means it hangs in the air outside the simulation
@@ -307,7 +307,7 @@ public class ModSystemItemClump : ModSystem
 		Entity[] found;
 		try
 		{
-			found = sapi.World.GetEntitiesAround(root.ServerPos.XYZ, radius, verticalRadius, matcher);
+			found = sapi.World.GetEntitiesAround(root.Pos.XYZ, radius, verticalRadius, matcher);
 		}
 		finally
 		{
@@ -318,7 +318,7 @@ public class ModSystemItemClump : ModSystem
 		{
 			dbgSamples++;
 			sapi.Logger.Notification("[Stratum] ItemClump sample: {0} x{1} at {2} frozen={3} found={4}",
-				coll.Code, rootStack.StackSize, root.ServerPos.XYZ, frozen, found?.Length ?? -1);
+				coll.Code, rootStack.StackSize, root.Pos.XYZ, frozen, found?.Length ?? -1);
 		}
 
 		if (found == null || found.Length < 2)
