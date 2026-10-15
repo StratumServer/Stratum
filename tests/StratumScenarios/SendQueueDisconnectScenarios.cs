@@ -48,6 +48,24 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 		harness.Close();
 	}
 
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public void OversizedPacket_Should_StayQueued_When_SmallPacketIsAhead()
+	{
+		const int cap = 128 * 1024;
+		ConnectionHarness.SetMaxPendingBytes(cap);
+		try
+		{
+			using ConnectionHarness harness = ConnectionHarness.Open();
+			harness.Send(new byte[64]);
+			harness.Send(new byte[cap - 4]);
+			Assert.False(harness.OverflowStarted);
+		}
+		finally
+		{
+			ConnectionHarness.SetMaxPendingBytes(8 * 1024 * 1024);
+		}
+	}
+
 	private sealed class ConnectionHarness : IDisposable
 	{
 		private static readonly Type ConnectionType = Type.GetType("Vintagestory.Server.Network.TcpNetConnection, VintagestoryLib")
@@ -61,12 +79,15 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 
 		public Socket Accepted { get; }
 
-		private ConnectionHarness(TcpListener listener, TcpClient client, Socket accepted, object connection)
+		private readonly object queue;
+
+		private ConnectionHarness(TcpListener listener, TcpClient client, Socket accepted, object connection, object queue)
 		{
 			this.listener = listener;
 			Client = client;
 			Accepted = accepted;
 			this.connection = connection;
+			this.queue = queue;
 		}
 
 		public static ConnectionHarness Open()
@@ -84,7 +105,15 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 			object queue = ConnectionType.GetField("stratumSendQueue", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(connection)
 				?? throw new InvalidOperationException("SendQueueEnabled did not attach a queue");
 			GC.KeepAlive(queue);
-			return new ConnectionHarness(listener, client, accepted, connection) { sendQueueForced = true };
+			return new ConnectionHarness(listener, client, accepted, connection, queue) { sendQueueForced = true };
+		}
+
+		public bool OverflowStarted
+		{
+			get
+			{
+				return (int)queue.GetType().GetField("overflowDisconnectStarted", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(queue)! != 0;
+			}
 		}
 
 		public void Send(byte[] payload)
@@ -128,6 +157,16 @@ public class SendQueueDisconnectScenarios : AtlasScenarioBase
 			object performance = config.GetType().GetProperty("Performance")!.GetValue(config)!;
 			object network = performance.GetType().GetProperty("Network")!.GetValue(performance)!;
 			network.GetType().GetProperty("SendQueueEnabled")!.SetValue(network, enabled);
+		}
+
+		public static void SetMaxPendingBytes(int bytes)
+		{
+			Type runtime = Type.GetType("Vintagestory.Server.StratumRuntime, VintagestoryLib")
+				?? throw new InvalidOperationException("StratumRuntime was not in the loaded lib");
+			object config = runtime.GetProperty("Config")!.GetValue(null)!;
+			object performance = config.GetType().GetProperty("Performance")!.GetValue(config)!;
+			object network = performance.GetType().GetProperty("Network")!.GetValue(performance)!;
+			network.GetType().GetProperty("MaxPendingBytes")!.SetValue(network, bytes);
 		}
 	}
 }

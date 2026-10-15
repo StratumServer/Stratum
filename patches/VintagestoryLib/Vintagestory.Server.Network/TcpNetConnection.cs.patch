@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs b/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
-index ae86835..34c0f3d 100644
+index ae86835..a99c8d5 100644
 --- a/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
 +++ b/VintagestoryLib/Vintagestory.Server.Network/TcpNetConnection.cs
 @@ -35,26 +35,39 @@ public class TcpNetConnection : NetConnection
@@ -88,7 +88,10 @@ index ae86835..34c0f3d 100644
  		catch
  		{
  			InvokeDisconnected();
-@@ -269,4 +301,21 @@ public class TcpNetConnection : NetConnection
+@@ -266,10 +298,27 @@ public class TcpNetConnection : NetConnection
+ 		return TcpSocket == ((TcpNetConnection)connection).TcpSocket;
+ 	}
+ 
  	public override void Shutdown()
  	{
 +		// Stratum: complete the writer and return. The FIN runs after the drain
@@ -110,10 +113,13 @@ index ae86835..34c0f3d 100644
 +		}
  		if (TcpSocket == null)
  		{
-@@ -281,10 +329,12 @@ public class TcpNetConnection : NetConnection
+ 			return;
+ 		}
+ 		try
+@@ -281,10 +330,12 @@ public class TcpNetConnection : NetConnection
  		}
  	}
-
+ 
  	public override void Close()
  	{
 +		// Stratum: do not wait. Cancel is the hard bound. Shutdown already scheduled the FIN.

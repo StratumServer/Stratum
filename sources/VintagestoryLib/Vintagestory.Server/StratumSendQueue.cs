@@ -143,21 +143,10 @@ internal sealed class StratumSendQueue
 		bool exempt = length >= maxPendingBytes;
 		if (exempt)
 		{
-			// One packet at or above the cap is accepted when the queue holds nothing
-			// else, and it is not added to pendingBytes. The packets behind it are
-			// judged on their own size. A second packet that large disconnects.
-			if (Interlocked.Read(ref pendingBytes) > 0)
-			{
-				DisconnectOverflow();
-				return;
-			}
+			// One packet at or above the cap is accepted even when smaller packets
+			// are already queued. It is not added to pendingBytes, so those packets
+			// are judged on their own size. A second packet that large disconnects.
 			if (Interlocked.Increment(ref exemptInFlight) != 1)
-			{
-				Interlocked.Decrement(ref exemptInFlight);
-				DisconnectOverflow();
-				return;
-			}
-			if (Interlocked.Read(ref pendingBytes) > 0)
 			{
 				Interlocked.Decrement(ref exemptInFlight);
 				DisconnectOverflow();

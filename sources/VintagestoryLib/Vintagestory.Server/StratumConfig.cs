@@ -646,12 +646,13 @@ internal class StratumNetworkConfig
 	// a single SendAsync call carries.
 	public int CoalesceLimitBytes { get; set; } = 65536;
 
-	// Bytes StratumSendQueue may retain for one connection, not counting one accepted
-	// packet that is already at or above this cap. That oversized packet is not added
-	// to the pending total, so the packets behind it are judged on their own size.
-	// A second packet that large, or an enqueue that would grow an already non-empty
-	// queue past the cap, disconnects the connection. Chunk scheduling already slows
-	// that client at OutboundPressurePendingBytesHardLimit (1 MiB). See #345.
+	// Bytes StratumSendQueue may retain for one connection, not counting one
+	// in-flight packet that is already at or above this cap. That oversized packet
+	// is accepted even when smaller packets are already queued, and it is not added
+	// to the pending total. A second packet that large, or an enqueue that would
+	// grow the pending total past the cap, disconnects the connection. Chunk
+	// scheduling already slows that client at OutboundPressurePendingBytesHardLimit
+	// (1 MiB). See #345.
 	public int MaxPendingBytes { get; set; } = 8 * 1024 * 1024;
 
 	public void EnsureSane()
