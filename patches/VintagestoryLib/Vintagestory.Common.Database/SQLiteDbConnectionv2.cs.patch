@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs b/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
-index 0c59a67..2165a45 100644
+index 0c59a67..5581ed8 100644
 --- a/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
 +++ b/VintagestoryLib/Vintagestory.Common.Database/SQLiteDbConnectionv2.cs
 @@ -1,10 +1,11 @@
@@ -126,7 +126,7 @@ index 0c59a67..2165a45 100644
  	public IEnumerable<byte[]> GetChunks(IEnumerable<ChunkPos> chunkpositions)
  	{
  		lock (transactionLock)
-@@ -318,50 +334,80 @@ public class SQLiteDbConnectionv2 : SQLiteDBConnection, IGameDbConnection, IDisp
+@@ -318,50 +334,82 @@ public class SQLiteDbConnectionv2 : SQLiteDBConnection, IGameDbConnection, IDisp
  		return ChunkExists(position, (DbCommand)(object)existsMapRegionCmd);
  	}
  
@@ -136,8 +136,9 @@ index 0c59a67..2165a45 100644
 -		((DbCommand)(object)val).CommandText = "SELECT position FROM " + tablename + " WHERE position=@position";
 -		((DbParameterCollection)(object)val.Parameters).Add((object)CreateParameter("position", DbType.UInt64, position, (DbCommand)(object)val));
 -		return ChunkExists(position, (DbCommand)(object)val);
-+		// Stratum: create and dispose this temporary command under transactionLock.
-+		// SqliteConnection.RemoveCommand walks its command list with no lock of its own.
++		// Stratum: the server does not call this overload. The lock is so a later
++		// caller disposes its temporary command on the same monitor as the shared
++		// commands. The live check is ChunkExists(ulong, DbCommand).
 +		lock (transactionLock)
 +		{
 +			SqliteCommand val = sqliteConn.CreateCommand();
@@ -183,8 +184,9 @@ index 0c59a67..2165a45 100644
 -			return GetChunk(position, (DbCommand)(object)val);
 -		}
 -		finally
-+		// Stratum: same lock as the shared-command read below. The temporary command's
-+		// Dispose must not race RemoveCommand on another thread.
++		// Stratum: the server does not call this overload. The lock is so a later
++		// caller disposes its temporary command on the same monitor as the shared
++		// commands. The live read is GetChunk(ulong, DbCommand).
 +		lock (transactionLock)
  		{
 -			((IDisposable)val)?.Dispose();
@@ -231,7 +233,7 @@ index 0c59a67..2165a45 100644
  	public void DeleteChunks(IEnumerable<ChunkPos> chunkpositions)
  	{
  		DeleteChunks(chunkpositions, "chunk");
-@@ -425,15 +471,19 @@ public class SQLiteDbConnectionv2 : SQLiteDBConnection, IGameDbConnection, IDisp
+@@ -425,15 +473,19 @@ public class SQLiteDbConnectionv2 : SQLiteDBConnection, IGameDbConnection, IDisp
  		SetMulti(mapchunks, (DbCommand)(object)setMapChunksCmd, doZeroY: true);
  	}
  
