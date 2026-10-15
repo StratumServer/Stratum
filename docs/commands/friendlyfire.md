@@ -115,9 +115,9 @@ follow these rules. It still uses plain shared membership.
   `true`. Setting `Commands.FriendlyFire.Enabled` to `false` skips
   registering the command; the change takes effect on the next server
   restart.
-- `stratum.friendlyfire` is **not** granted to any default role. Grant it
-  with `/roles grant <role> stratum.friendlyfire` or by editing
-  `serverroles.json`.
+- Roles with auto-grant, normally `admin`, receive `stratum.friendlyfire`
+  automatically. Other roles need it granted with
+  `/roles grant <role> stratum.friendlyfire` or by editing `serverroles.json`.
 - The server console always passes Stratum's access check, so
   `/friendlyfire` works from the console for diagnostics.
 
