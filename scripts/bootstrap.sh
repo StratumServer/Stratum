@@ -66,32 +66,40 @@ require_cmd() {
 }
 
 install_ilspycmd_if_missing() {
-  if command -v ilspycmd >/dev/null 2>&1; then
-    return
-  fi
-
-  local dotnet_tools="$HOME/.dotnet/tools"
-  if [[ -x "$dotnet_tools/ilspycmd" ]]; then
-    export PATH="$dotnet_tools:$PATH"
-    return
-  fi
-
-  # Install the pinned version from .config/dotnet-tools.json when available.
+  # The decompile output depends on the ilspycmd version. Patches are written
+  # against the version pinned in .config/dotnet-tools.json, so a different
+  # installed version can make them fail to apply. Use the pin when it exists.
   local manifest="$repo_root/.config/dotnet-tools.json"
+  local pinned_version=""
   if [[ -f "$manifest" ]]; then
-    local pinned_version
-    pinned_version=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tools']['ilspycmd']['version'])" "$manifest" 2>/dev/null)
-    if [[ -n "$pinned_version" ]]; then
-      echo "Installing ilspycmd $pinned_version (from tool manifest)"
-      dotnet tool install -g ilspycmd --version "$pinned_version" >/dev/null
-      export PATH="$dotnet_tools:$PATH"
+    pinned_version=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tools']['ilspycmd']['version'])" "$manifest" 2>/dev/null || true)
+  fi
+
+  if [[ -z "$pinned_version" ]]; then
+    if command -v ilspycmd >/dev/null 2>&1; then
       return
     fi
+    echo "Installing ilspycmd (no manifest found, using latest)"
+    dotnet tool install -g ilspycmd >/dev/null
+    export PATH="$HOME/.dotnet/tools:$PATH"
+    return
   fi
 
-  echo "Installing ilspycmd (no manifest found, using latest)"
-  dotnet tool install -g ilspycmd >/dev/null
-  export PATH="$dotnet_tools:$PATH"
+  # A pinned tool is installed into its own folder, so the global tool is left alone.
+  local pinned_dir="$HOME/.dotnet/tools-pinned"
+  local installed=""
+  if command -v ilspycmd >/dev/null 2>&1; then
+    installed=$(ilspycmd --version 2>/dev/null | awk -F': ' '/^ilspycmd:/{print $2}')
+  fi
+  if [[ "$installed" == "$pinned_version" ]]; then
+    return
+  fi
+
+  if [[ ! -x "$pinned_dir/ilspycmd" ]] || [[ "$("$pinned_dir/ilspycmd" --version 2>/dev/null | awk -F': ' '/^ilspycmd:/{print $2}')" != "$pinned_version" ]]; then
+    echo "Installing ilspycmd $pinned_version from the tool manifest into $pinned_dir"
+    dotnet tool install --tool-path "$pinned_dir" ilspycmd --version "$pinned_version" >/dev/null
+  fi
+  export PATH="$pinned_dir:$PATH"
 }
 
 extract_archive() {
