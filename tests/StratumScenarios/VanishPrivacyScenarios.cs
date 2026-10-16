@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Reflection;
 using Atlas.Api;
 using Atlas.XUnit;
 using Vintagestory.API.Common;
@@ -389,3 +391,136 @@ public class VanishPrivacyScenarios : AtlasScenarioBase
 		throw new InvalidOperationException($"'{name}' never became rejoinable after the disconnect.");
 	}
 }
+
+/// <summary>
+/// Reads packets Atlas does not decode. Atlas 0.16.1 empties the dummy receive buffer on
+/// every server pass and drops packet 58, so this has to be read in the same game-thread
+/// turn that sent the packet, before that pass returns.
+/// </summary>
+internal sealed class PacketProbe
+{
+	private const int ExchangeBlockPacketId = 58;
+	private const BindingFlags Internal = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+	private readonly IEnumerable queue;
+	private readonly object gate;
+	private readonly int baseline;
+
+	private PacketProbe(IEnumerable queue, object gate, int baseline)
+	{
+		this.queue = queue;
+		this.gate = gate;
+		this.baseline = baseline;
+	}
+
+	public static PacketProbe Attach(IWorldSession world, ITestPlayer player)
+	{
+		object server = world.Api.World;
+		object clients = server.GetType().GetField("Clients", Internal)!.GetValue(server)!;
+		object client = clients.GetType().GetProperty("Item")!.GetValue(clients, new object[] { player.Player.ClientId })!;
+		object socket = client.GetType().GetProperty("Socket")!.GetValue(client)!;
+		object network = socket.GetType().GetField("network", Internal)!.GetValue(socket)!;
+		object gate = network.GetType().GetField("ClientReceiveBufferLock", Internal)!.GetValue(network)!;
+		var queue = (IEnumerable)network.GetType().GetField("ClientReceiveBuffer", Internal)!.GetValue(network)!;
+		int baseline;
+		lock (gate)
+		{
+			baseline = ((ICollection)queue).Count;
+		}
+
+		return new PacketProbe(queue, gate, baseline);
+	}
+
+	public IReadOnlyList<ExchangeBlock> NewExchangeBlocks()
+	{
+		var found = new List<ExchangeBlock>();
+		foreach (object packet in NewPackets())
+		{
+			if (Member<int>(packet, "Id") != ExchangeBlockPacketId)
+			{
+				continue;
+			}
+
+			object? exchange = NullableMember(packet, "ExchangeBlock");
+			if (exchange == null)
+			{
+				continue;
+			}
+
+			found.Add(new ExchangeBlock(
+				Member<int>(exchange, "X"),
+				Member<int>(exchange, "Y"),
+				Member<int>(exchange, "Z"),
+				Member<int>(exchange, "BlockType")));
+		}
+
+		return found;
+	}
+
+	private IReadOnlyList<object> NewPackets()
+	{
+		var payloads = new List<(byte[] Data, int Length)>();
+		lock (gate)
+		{
+			int index = 0;
+			foreach (object item in queue)
+			{
+				if (index++ < baseline)
+				{
+					continue;
+				}
+
+				payloads.Add((Member<byte[]>(item, "Data"), Member<int>(item, "Length")));
+			}
+		}
+
+		Type serializerType = Type.GetType("Packet_ServerSerializer, VintagestoryLib")!;
+		Type packetType = Type.GetType("Packet_Server, VintagestoryLib")!;
+		MethodInfo deserialize = serializerType.GetMethod("DeserializeBuffer")!;
+		var packets = new List<object>();
+		foreach ((byte[] data, int length) in payloads)
+		{
+			packets.Add(deserialize.Invoke(null, new object?[] { data, length, Activator.CreateInstance(packetType) })!);
+		}
+
+		return packets;
+	}
+
+	private static T Member<T>(object target, string name)
+	{
+		const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+		PropertyInfo? property = target.GetType().GetProperty(name, flags);
+		if (property != null)
+		{
+			return (T)property.GetValue(target)!;
+		}
+
+		FieldInfo? field = target.GetType().GetField(name, flags);
+		if (field != null)
+		{
+			return (T)field.GetValue(target)!;
+		}
+
+		throw new MissingMemberException(target.GetType().FullName, name);
+	}
+
+	private static object? NullableMember(object target, string name)
+	{
+		const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+		PropertyInfo? property = target.GetType().GetProperty(name, flags);
+		if (property != null)
+		{
+			return property.GetValue(target);
+		}
+
+		FieldInfo? field = target.GetType().GetField(name, flags);
+		if (field != null)
+		{
+			return field.GetValue(target);
+		}
+
+		throw new MissingMemberException(target.GetType().FullName, name);
+	}
+}
+
+internal readonly record struct ExchangeBlock(int X, int Y, int Z, int BlockId);

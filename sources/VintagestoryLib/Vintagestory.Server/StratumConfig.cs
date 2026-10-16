@@ -553,6 +553,8 @@ internal class StratumPerformanceConfig
 
 	public StratumTimingsConfig Timings { get; set; } = new StratumTimingsConfig();
 
+	public StratumInventoryFlushConfig InventoryFlush { get; set; } = new StratumInventoryFlushConfig();
+
 	public StratumPathfindingConfig Pathfinding { get; set; } = new StratumPathfindingConfig();
 
 	public StratumRegionTickingConfig RegionTicking { get; set; } = new StratumRegionTickingConfig();
@@ -591,6 +593,7 @@ internal class StratumPerformanceConfig
 		ChunkIo ??= new StratumChunkIoConfig();
 		ChunkPriority ??= new StratumChunkPriorityConfig();
 		Timings ??= new StratumTimingsConfig();
+		InventoryFlush ??= new StratumInventoryFlushConfig();
 		Pathfinding ??= new StratumPathfindingConfig();
 		RegionTicking ??= new StratumRegionTickingConfig();
 		BodyTemperature ??= new StratumBodyTemperatureConfig();
@@ -615,6 +618,7 @@ internal class StratumPerformanceConfig
 		ChunkIo.EnsureSane();
 		ChunkPriority.EnsureSane();
 		Timings.EnsureSane();
+		InventoryFlush.EnsureSane();
 		Pathfinding.EnsureSane();
 		RegionTicking.EnsureSane();
 		BodyTemperature.EnsureSane();
@@ -1533,6 +1537,13 @@ internal class StratumBlockTickConfig
 
 	public int MaxMainThreadBlockTicksPerPass { get; set; } = 5000;
 
+	// One pass publishes at most this many distinct DirtyBlocks. Repeat positions in
+	// the same pass do not consume a slot. Modified and no-relight queues are not
+	// capped. The cap stays in force when BlockTicks is off. When the queue is more
+	// than 8 times this cap, that pass may publish up to 4 times the cap. The
+	// default stays 512.
+	public int MaxDirtyBlocksPerPass { get; set; } = 512;
+
 	// Spread the random tick pass across N smaller slices instead of one burst. Each slice
 	// runs at BlockTickInterval/SliceCount ms and processes 1/SliceCount of the chunk set.
 	// Same aggregate rate per chunk, removes the periodic sawtooth spike. 1 = vanilla batch.
@@ -1555,10 +1566,26 @@ internal class StratumBlockTickConfig
 		MaxChunksPerPass = Math.Max(1, MaxChunksPerPass);
 		MaxRandomTicksPerChunk = Math.Max(0, MaxRandomTicksPerChunk);
 		MaxMainThreadBlockTicksPerPass = Math.Max(1, MaxMainThreadBlockTicksPerPass);
+		// budget * 8 must stay inside a signed 32-bit value. The lib builds unchecked.
+		MaxDirtyBlocksPerPass = Math.Clamp(MaxDirtyBlocksPerPass, 1, int.MaxValue / 8);
 		RandomTickSliceCount = Math.Max(1, Math.Min(16, RandomTickSliceCount));
 		OverloadTickMs = Math.Max(10, Math.Min(1000, OverloadTickMs));
 		OverloadScale = Math.Max(0.05f, Math.Min(1f, OverloadScale));
 		OverloadFloor = Math.Max(0, OverloadFloor);
+	}
+}
+
+internal class StratumInventoryFlushConfig
+{
+	// One dirty-slot flush broadcasts player data for at most this many character
+	// inventories. The rest stay dirty and go out on a later pass. The listener runs
+	// every 30 ms. On the 1,000-bot join, 32 in one pass was still about 2 seconds,
+	// so the default is 4. A normal server does not queue that many at once.
+	public int MaxPlayerDataBroadcastsPerPass { get; set; } = 4;
+
+	public void EnsureSane()
+	{
+		MaxPlayerDataBroadcastsPerPass = Math.Max(1, MaxPlayerDataBroadcastsPerPass);
 	}
 }
 
