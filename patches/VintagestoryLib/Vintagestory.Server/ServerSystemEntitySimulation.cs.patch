@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..6b216fd 100644
+index ea1d5c0..21005d2 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -17,7 +17,7 @@ index ea1d5c0..6b216fd 100644
  using Vintagestory.API.Common.Entities;
  using Vintagestory.API.Config;
  using Vintagestory.API.Datastructures;
-@@ -22,227 +27,1578 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -22,227 +27,1581 @@ public class ServerSystemEntitySimulation : ServerSystem
  
  	private Dictionary<string, List<string>> deathMessagesCache;
  
@@ -372,6 +372,9 @@ index ea1d5c0..6b216fd 100644
 +		StratumEntitySelectionConfig stratumSelection = StratumRuntime.Config.Performance.EntitySelection;
 +		bool stratumOcclusionTrace = stratumSelection.OcclusionTraceEnabled;
 +		int stratumSelectionMaxSkip = stratumSelection.SkipTicks(server.Clients.Count);
++		// A tick already over the threshold waits for the skip. Movement still traces
++		// immediately while the server is keeping up.
++		bool stratumSelectionOverloaded = dt * 1000f > stratumSelection.OverloadTickMs;
 +		foreach (ConnectedClient value in server.Clients.Values)
 +		{
 +			ConnectedClient client = value;
@@ -409,7 +412,7 @@ index ea1d5c0..6b216fd 100644
 +				bool moved = (dx * dx + dy * dy + dz * dz) > StratumSelectionPosThresholdSq;
 +				bool turned = dyaw > StratumSelectionRotThreshold || dpitch > StratumSelectionRotThreshold;
 +				bool ticksElapsed = (stratumSelectionTickIndex - selState.LastTraceTickIndex) >= stratumSelectionMaxSkip;
-+				bool shouldTrace = moved || turned || ticksElapsed;
++				bool shouldTrace = ticksElapsed || (!stratumSelectionOverloaded && (moved || turned));
 +
 +				if (shouldTrace)
 +				{
@@ -1724,7 +1727,7 @@ index ea1d5c0..6b216fd 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -251,16 +1607,31 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -251,16 +1610,31 @@ public class ServerSystemEntitySimulation : ServerSystem
  		bool flag = p.MouseButton == 0;
  		if ((cuboidd.ShortestDistanceFrom(x, y, z) > (double)(num * 2f) && flag) || (flag && (((!server.Config.AllowPvP || !player.HasPrivilege("attackplayers")) && entity is EntityPlayer) || (!player.HasPrivilege("attackcreatures") && entity is EntityAgent))) || (entity is EntityPlayer entityPlayer && !(entityPlayer.Player is IServerPlayer { ConnectionState: EnumClientState.Playing })))
  		{
@@ -1757,7 +1760,7 @@ index ea1d5c0..6b216fd 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1650,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1653,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1806,7 +1809,7 @@ index ea1d5c0..6b216fd 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,37 +1787,66 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1790,66 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1879,7 +1882,7 @@ index ea1d5c0..6b216fd 100644
  			{
  				string playerName = server.PlayerByUid(entityPlayer.PlayerUID).PlayerName;
  				ServerMain.Logger.Audit(Lang.Get("{0} killed {1}, with item (if any): {2}", playerName, item.PlayerName, entityPlayer.RightHandItemSlot?.Itemstack?.Collectible.Code));
-@@ -422,10 +1854,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1857,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));
