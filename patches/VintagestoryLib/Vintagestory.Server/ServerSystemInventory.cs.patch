@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index 19f5199..a8a8f93 100644
+index 19f5199..73907c9 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -133,7 +133,7 @@ index 19f5199..a8a8f93 100644
  		{
  			if (!value.IsPlayingClient)
  			{
-@@ -201,28 +249,49 @@ internal class ServerSystemInventory : ServerSystem
+@@ -201,30 +249,54 @@ internal class ServerSystemInventory : ServerSystem
  				{
  					item.Itemstack?.Collectible?.UpdateAndGetTransitionStates(server, item);
  				}
@@ -179,12 +179,26 @@ index 19f5199..a8a8f93 100644
 +						continue;
 +					}
 +					stratumBroadcasts++;
++					long stratumBroadcastStarted = StratumRuntime.Timings.GetTimestamp();
  					value.Player.BroadcastPlayerData();
++					StratumRuntime.Timings.RecordElapsed("inventory.playerData", stratumBroadcastStarted);
  				}
++				long stratumSlotsStarted = StratumRuntime.Timings.GetTimestamp();
  				foreach (int dirtySlot in value2.dirtySlots)
  				{
  					Packet_Server slotUpdatePacket = (value2.InvNetworkUtil as InventoryNetworkUtil).getSlotUpdatePacket(value.Player, dirtySlot);
-@@ -242,10 +311,15 @@ internal class ServerSystemInventory : ServerSystem
+ 					if (slotUpdatePacket != null)
+ 					{
+@@ -234,18 +306,24 @@ internal class ServerSystemInventory : ServerSystem
+ 						{
+ 							value.Player.inventoryMgr.BroadcastHotbarSlot();
+ 						}
+ 					}
+ 				}
++				StratumRuntime.Timings.RecordElapsed("inventory.slotPackets", stratumSlotsStarted);
+ 				dirtySlots2Clear.Add(value2);
+ 			}
+ 		}
  		foreach (InventoryBase item in dirtySlots2Clear)
  		{
  			item.dirtySlots.Clear();
@@ -200,7 +214,7 @@ index 19f5199..a8a8f93 100644
  	public override void OnPlayerJoin(ServerPlayer player)
  	{
  		foreach (InventoryBase value in player.inventoryMgr.Inventories.Values)
-@@ -369,11 +443,13 @@ internal class ServerSystemInventory : ServerSystem
+@@ -369,11 +447,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ
@@ -215,7 +229,7 @@ index 19f5199..a8a8f93 100644
  			if (blockSelection != null)
  			{
  				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();
-@@ -494,10 +570,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -494,10 +574,12 @@ internal class ServerSystemInventory : ServerSystem
  		player.InventoryManager.GetInventory(createItemstack.TargetInventoryId, out var invFound);
  		ItemSlot itemSlot = invFound?[createItemstack.TargetSlot];
  		if (player.WorldData.CurrentGameMode == EnumGameMode.Creative && itemSlot != null)

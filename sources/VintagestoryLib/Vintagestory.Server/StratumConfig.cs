@@ -1570,9 +1570,9 @@ internal class StratumInventoryFlushConfig
 {
 	// One dirty-slot flush broadcasts player data for at most this many character
 	// inventories. The rest stay dirty and go out on a later pass. The listener runs
-	// every 30 ms. A normal server does not reach this. The 1,000-bot join was
-	// spending about 2 seconds in a single flush.
-	public int MaxPlayerDataBroadcastsPerPass { get; set; } = 32;
+	// every 30 ms. On the 1,000-bot join, 32 in one pass was still about 2 seconds,
+	// so the default is 4. A normal server does not queue that many at once.
+	public int MaxPlayerDataBroadcastsPerPass { get; set; } = 4;
 
 	public void EnsureSane()
 	{
