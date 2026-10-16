@@ -60,6 +60,32 @@ public class UdpFallbackScenarios : AtlasScenarioBase
 		ret.Invoke(physics, new[] { packet, false });
 	}
 
+	[AtlasScenario(TimeoutMs = 120_000)]
+	public async Task SinglePlayerPositionPacket_Should_RemainIntact_WhileQueued()
+	{
+		await World.JoinPlayer("udp-singleplayer");
+		object physics = Physics(World.Api.World);
+		Type positionType = Type.GetType("Packet_EntityPosition, VintagestoryLib")
+			?? throw new InvalidOperationException("Packet_EntityPosition was not in the loaded lib");
+		Array positions = Array.CreateInstance(positionType, 4);
+		Type bulkType = Type.GetType("Packet_BulkEntityPosition, VintagestoryLib")
+			?? throw new InvalidOperationException("Packet_BulkEntityPosition was not in the loaded lib");
+		object bulk = Activator.CreateInstance(bulkType)!;
+		bulkType.GetMethod("SetEntityPositions", new[] { positions.GetType() })!.Invoke(bulk, new object[] { positions });
+
+		Type udpType = Type.GetType("Packet_UdpPacket, VintagestoryLib")!;
+		object packet = Activator.CreateInstance(udpType)!;
+		udpType.GetField("Id")!.SetValue(packet, 4);
+		udpType.GetField("BulkPositions")!.SetValue(packet, bulk);
+
+		MethodInfo ret = physics.GetType().GetMethod("StratumReturnBulkPositionPacket", BindingFlags.Instance | BindingFlags.NonPublic)
+			?? throw new InvalidOperationException("StratumReturnBulkPositionPacket was not on the physics manager");
+		ret.Invoke(physics, new[] { packet, true });
+
+		Assert.Same(positions, bulkType.GetField("EntityPositions")!.GetValue(bulk));
+		Assert.Equal(4, bulkType.GetField("EntityPositionsCount")!.GetValue(bulk));
+	}
+
 	private static object Client(object server, int clientId)
 	{
 		object clients = server.GetType().GetField("Clients")!.GetValue(server)!;

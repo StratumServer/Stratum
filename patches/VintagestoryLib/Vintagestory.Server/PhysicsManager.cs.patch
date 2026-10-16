@@ -910,7 +910,7 @@ index 2c2605d..bd65936 100644
  		EntityTagPacket result = null;
  		SyncedTreeAttribute watchedAttributes = entity.WatchedAttributes;
  		if (watchedAttributes.AllDirty)
-@@ -779,82 +1292,242 @@ public class PhysicsManager : LoadBalancedTask
+@@ -779,82 +1292,249 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		watchedAttributes.MarkClean();
  		return result;
@@ -946,13 +946,20 @@ index 2c2605d..bd65936 100644
 +		{
 +			return;
 +		}
++		// Stratum: keep the queued singleplayer packet intact until its consumer reads it.
++		// The dummy singleplayer transport queues the raw packet for asynchronous
++		// consumption. Do not clear or return its array before that consumer is done.
++		if (isSinglePlayerClient)
++		{
++			return;
++		}
 +		Packet_EntityPosition[] array = bulk.EntityPositions;
 +		bulk.EntityPositions = null;
 +		bulk.EntityPositionsCount = 0;
 +		bulk.EntityPositionsLength = 0;
 +		// Stratum: only an array this process rented may go back to the pool.
 +		// A plain array throws from Shared.Return and takes the UDP thread down.
-+		if (array != null && !isSinglePlayerClient && stratumRentedPositionArrays.TryRemove(array, out _))
++		if (array != null && stratumRentedPositionArrays.TryRemove(array, out _))
 +		{
 +			ArrayPool<Packet_EntityPosition>.Shared.Return(array, clearArray: true);
 +		}
