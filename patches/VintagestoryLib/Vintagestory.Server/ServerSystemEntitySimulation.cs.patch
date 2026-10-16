@@ -364,6 +364,9 @@ index ea1d5c0..3791d9f 100644
 +		int stratumLookedAtBlocks = 0;
 +		int stratumTcpFallbackClients = 0; // Stratum: count clients stuck on TCP position fallback
 +		int stratumSelectionTickIndex = ++stratumSelectionTickCounter;
++		StratumEntitySelectionConfig stratumSelection = StratumRuntime.Config.Performance.EntitySelection;
++		bool stratumOcclusionTrace = stratumSelection.OcclusionTraceEnabled;
++		int stratumSelectionMaxSkip = stratumSelection.SkipTicks(server.Clients.Count);
 +		foreach (ConnectedClient value in server.Clients.Values)
 +		{
 +			ConnectedClient client = value;
@@ -373,6 +376,10 @@ index ea1d5c0..3791d9f 100644
 +				ServerPlayer player = client.Player;
 +				EntityPlayer entityPlayer = player.Entity;
 +				UpdateStratumPreviousBlockSelection(entityPlayer);
++				if (!stratumOcclusionTrace)
++				{
++					continue;
++				}
 +
 +				// Stratum: throttle the per-client raytrace. At 350 players the per-tick
 +				// fanout of RayTraceForSelection dominated entity.selection. Skip the trace
@@ -382,7 +389,7 @@ index ea1d5c0..3791d9f 100644
 +				{
 +					selState = new StratumSelectionState
 +					{
-+						LastTraceTickIndex = stratumSelectionTickIndex - StratumSelectionMaxSkipTicks - 1
++						LastTraceTickIndex = stratumSelectionTickIndex - stratumSelectionMaxSkip - 1
 +					};
 +					stratumSelectionState[client.Id] = selState;
 +				}
@@ -395,7 +402,7 @@ index ea1d5c0..3791d9f 100644
 +				float dpitch = System.MathF.Abs(serverPos.Pitch - selState.LastPitch);
 +				bool moved = (dx * dx + dy * dy + dz * dz) > StratumSelectionPosThresholdSq;
 +				bool turned = dyaw > StratumSelectionRotThreshold || dpitch > StratumSelectionRotThreshold;
-+				bool ticksElapsed = (stratumSelectionTickIndex - selState.LastTraceTickIndex) >= StratumSelectionMaxSkipTicks;
++				bool ticksElapsed = (stratumSelectionTickIndex - selState.LastTraceTickIndex) >= stratumSelectionMaxSkip;
 +				bool shouldTrace = moved || turned || ticksElapsed;
 +
 +				if (shouldTrace)
@@ -448,7 +455,6 @@ index ea1d5c0..3791d9f 100644
 +
 +	private readonly Dictionary<int, StratumSelectionState> stratumSelectionState = new Dictionary<int, StratumSelectionState>();
 +	private int stratumSelectionTickCounter;
-+	private const int StratumSelectionMaxSkipTicks = 3;             // re-trace at least every 3 server ticks
 +	private const double StratumSelectionPosThresholdSq = 0.0025;   // 5cm
 +	private const float StratumSelectionRotThreshold = 0.015f;      // ~0.86 degrees
 +
