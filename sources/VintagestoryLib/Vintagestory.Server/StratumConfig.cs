@@ -553,6 +553,8 @@ internal class StratumPerformanceConfig
 
 	public StratumTimingsConfig Timings { get; set; } = new StratumTimingsConfig();
 
+	public StratumInventoryFlushConfig InventoryFlush { get; set; } = new StratumInventoryFlushConfig();
+
 	public StratumPathfindingConfig Pathfinding { get; set; } = new StratumPathfindingConfig();
 
 	public StratumRegionTickingConfig RegionTicking { get; set; } = new StratumRegionTickingConfig();
@@ -591,6 +593,7 @@ internal class StratumPerformanceConfig
 		ChunkIo ??= new StratumChunkIoConfig();
 		ChunkPriority ??= new StratumChunkPriorityConfig();
 		Timings ??= new StratumTimingsConfig();
+		InventoryFlush ??= new StratumInventoryFlushConfig();
 		Pathfinding ??= new StratumPathfindingConfig();
 		RegionTicking ??= new StratumRegionTickingConfig();
 		BodyTemperature ??= new StratumBodyTemperatureConfig();
@@ -615,6 +618,7 @@ internal class StratumPerformanceConfig
 		ChunkIo.EnsureSane();
 		ChunkPriority.EnsureSane();
 		Timings.EnsureSane();
+		InventoryFlush.EnsureSane();
 		Pathfinding.EnsureSane();
 		RegionTicking.EnsureSane();
 		BodyTemperature.EnsureSane();
@@ -1559,6 +1563,20 @@ internal class StratumBlockTickConfig
 		OverloadTickMs = Math.Max(10, Math.Min(1000, OverloadTickMs));
 		OverloadScale = Math.Max(0.05f, Math.Min(1f, OverloadScale));
 		OverloadFloor = Math.Max(0, OverloadFloor);
+	}
+}
+
+internal class StratumInventoryFlushConfig
+{
+	// One dirty-slot flush broadcasts player data for at most this many character
+	// inventories. The rest stay dirty and go out on a later pass. The listener runs
+	// every 30 ms. On the 1,000-bot join, 32 in one pass was still about 2 seconds,
+	// so the default is 4. A normal server does not queue that many at once.
+	public int MaxPlayerDataBroadcastsPerPass { get; set; } = 4;
+
+	public void EnsureSane()
+	{
+		MaxPlayerDataBroadcastsPerPass = Math.Max(1, MaxPlayerDataBroadcastsPerPass);
 	}
 }
 
