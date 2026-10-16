@@ -1299,6 +1299,13 @@ internal class StratumEntitySelectionConfig
 
 	public int MaxSkipTicks { get; set; } = 20;
 
+	// While the tick that just ran was longer than this, a move or a turn does not
+	// pull the next trace forward. Looked-at updates then wait for SkipTicks
+	// (5 ticks around 200 players, 20 at 2185). Breaks, placement, and combat
+	// still come from the client packets. A tick under this value keeps the
+	// normal rule: a few centimetres of movement traces immediately.
+	public int OverloadTickMs { get; set; } = 45;
+
 	public int SkipTicks(int onlinePlayers)
 	{
 		int extra = onlinePlayers > 0 ? onlinePlayers / PlayersPerExtraSkip : 0;
@@ -1315,6 +1322,7 @@ internal class StratumEntitySelectionConfig
 		BaseSkipTicks = Math.Max(1, BaseSkipTicks);
 		PlayersPerExtraSkip = Math.Max(1, PlayersPerExtraSkip);
 		MaxSkipTicks = Math.Max(BaseSkipTicks, MaxSkipTicks);
+		OverloadTickMs = Math.Max(1, OverloadTickMs);
 	}
 }
 
