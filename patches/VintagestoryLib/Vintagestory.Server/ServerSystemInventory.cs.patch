@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index 19f5199..a7e814f 100644
+index 19f5199..a8a8f93 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -60,7 +60,14 @@ index 19f5199..a7e814f 100644
  			{
  				player.InventoryManager.CloseInventory(invFound);
  			}
-@@ -138,10 +145,11 @@ internal class ServerSystemInventory : ServerSystem
+@@ -132,16 +139,18 @@ internal class ServerSystemInventory : ServerSystem
+ 		}
+ 	}
+ 
+ 	private void OnUsingTick(float dt)
+ 	{
++		long stratumStarted = StratumRuntime.Timings.GetTimestamp();
+ 		foreach (ServerPlayer value in server.PlayersByUid.Values)
  		{
  			if (value.ConnectionState != EnumClientState.Playing)
  			{
@@ -72,18 +79,23 @@ index 19f5199..a7e814f 100644
  			{
  				activeHotbarSlot.Itemstack.Collectible.OnBlockBreaking(value, value.CurrentBlockSelection, activeHotbarSlot, 99f, dt, value.blockBreakingCounter);
  				value.blockBreakingCounter++;
-@@ -180,10 +188,44 @@ internal class ServerSystemInventory : ServerSystem
+@@ -178,14 +187,53 @@ internal class ServerSystemInventory : ServerSystem
+ 			else
+ 			{
  				value.Entity.Controls.HandUse = EnumHandInteract.None;
  			}
  		}
- 	}
- 
++		StratumRuntime.Timings.RecordElapsed("inventory.onUsing", stratumStarted);
++	}
++
 +	// Stratum: Clear private tooltip data when the player looks away.
 +	private void StratumUpdateInspectedContainers(float dt)
 +	{
++		long stratumStarted = StratumRuntime.Timings.GetTimestamp();
 +		if (!StratumInventoryPrivacy.InventoryGuardsEnabled)
 +		{
 +			stratumInspectedContainers.Clear();
++			StratumRuntime.Timings.RecordElapsed("inventory.inspected", stratumStarted);
 +			return;
 +		}
 +
@@ -110,25 +122,39 @@ index 19f5199..a7e814f 100644
 +				server.SendBlockEntity(player, inspected);
 +			}
 +		}
-+	}
-+
++		StratumRuntime.Timings.RecordElapsed("inventory.inspected", stratumStarted);
+ 	}
+ 
  	private void UpdateTransitionStates(float dt)
  	{
++		long stratumStarted = StratumRuntime.Timings.GetTimestamp();
  		ItemFilterEnabled = server.api.World.Config.GetBool("itemFilterEnabled");
  		foreach (ConnectedClient value in server.Clients.Values)
  		{
-@@ -205,19 +247,26 @@ internal class ServerSystemInventory : ServerSystem
+ 			if (!value.IsPlayingClient)
+ 			{
+@@ -201,28 +249,49 @@ internal class ServerSystemInventory : ServerSystem
+ 				{
+ 					item.Itemstack?.Collectible?.UpdateAndGetTransitionStates(server, item);
+ 				}
+ 			}
  		}
++		StratumRuntime.Timings.RecordElapsed("inventory.transitions", stratumStarted);
  	}
  
  	private void SendDirtySlots(float dt)
  	{
++		long stratumStarted = StratumRuntime.Timings.GetTimestamp();
 +		if (Volatile.Read(ref InventoryBase.StratumAnySlotDirty) == 0)
 +		{
++			StratumRuntime.Timings.RecordElapsed("inventory.dirtySlots", stratumStarted);
 +			return;
 +		}
 +		Volatile.Write(ref InventoryBase.StratumAnySlotDirty, 0);
 +
++		int stratumBroadcastBudget = StratumRuntime.Config.Performance.InventoryFlush.MaxPlayerDataBroadcastsPerPass;
++		int stratumBroadcasts = 0;
++		bool stratumDeferred = false;
  		foreach (ConnectedClient value in server.Clients.Values)
  		{
  			if (!value.IsPlayingClient)
@@ -145,7 +171,36 @@ index 19f5199..a7e814f 100644
  				}
  				if (value2 is InventoryCharacter)
  				{
-@@ -369,11 +418,13 @@ internal class ServerSystemInventory : ServerSystem
++					// A character flush also broadcasts player data to every client. Past the
++					// budget, leave that inventory dirty for the next 30 ms pass.
++					if (stratumBroadcasts >= stratumBroadcastBudget)
++					{
++						stratumDeferred = true;
++						continue;
++					}
++					stratumBroadcasts++;
+ 					value.Player.BroadcastPlayerData();
+ 				}
+ 				foreach (int dirtySlot in value2.dirtySlots)
+ 				{
+ 					Packet_Server slotUpdatePacket = (value2.InvNetworkUtil as InventoryNetworkUtil).getSlotUpdatePacket(value.Player, dirtySlot);
+@@ -242,10 +311,15 @@ internal class ServerSystemInventory : ServerSystem
+ 		foreach (InventoryBase item in dirtySlots2Clear)
+ 		{
+ 			item.dirtySlots.Clear();
+ 		}
+ 		dirtySlots2Clear.Clear();
++		if (stratumDeferred)
++		{
++			Volatile.Write(ref InventoryBase.StratumAnySlotDirty, 1);
++		}
++		StratumRuntime.Timings.RecordElapsed("inventory.dirtySlots", stratumStarted);
+ 	}
+ 
+ 	public override void OnPlayerJoin(ServerPlayer player)
+ 	{
+ 		foreach (InventoryBase value in player.inventoryMgr.Inventories.Values)
+@@ -369,11 +443,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ
@@ -160,7 +215,7 @@ index 19f5199..a7e814f 100644
  			if (blockSelection != null)
  			{
  				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();
-@@ -494,10 +545,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -494,10 +570,12 @@ internal class ServerSystemInventory : ServerSystem
  		player.InventoryManager.GetInventory(createItemstack.TargetInventoryId, out var invFound);
  		ItemSlot itemSlot = invFound?[createItemstack.TargetSlot];
  		if (player.WorldData.CurrentGameMode == EnumGameMode.Creative && itemSlot != null)
