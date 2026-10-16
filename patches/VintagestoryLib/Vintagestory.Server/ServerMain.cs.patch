@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerMain.cs b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
-index 6f69cd3..bf35bfa 100644
+index 6f69cd3..5ea1fd5 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerMain.cs
 @@ -27,10 +27,13 @@ using VintagestoryLib.Server.Systems;
@@ -128,8 +128,7 @@ index 6f69cd3..bf35bfa 100644
 +			{
 +				return cache.Players;
 +			}
- 
--	public IPlayer[] AllPlayers => PlayersByUid.Values.ToArray();
++
 +			// Stratum: build in locals, then publish the array together with its keys.
 +			ICollection<ConnectedClient> clients = Clients.Values;
 +			List<ServerPlayer> players = new List<ServerPlayer>(clients.Count);
@@ -167,7 +166,8 @@ index 6f69cd3..bf35bfa 100644
 +			{
 +				result[idx++] = player;
 +			}
-+
+ 
+-	public IPlayer[] AllPlayers => PlayersByUid.Values.ToArray();
 +			stratumAllPlayersCache = new StratumPlayerCache(sequence, version, result);
 +			return result;
 +		}
@@ -1121,24 +1121,24 @@ index 6f69cd3..bf35bfa 100644
  		float horRangeSq = horRange * horRange;
 -		foreach (ConnectedClient value in Clients.Values)
 +		try
-+		{
+ 		{
+-			if (value.State == EnumClientState.Playing && value.Entityplayer != null && value.Position.InRangeOf(position, horRangeSq, vertRange) && (matches == null || matches(value.Player)))
 +			foreach (ConnectedClient value in Clients.Values)
-+			{
+ 			{
+-				list.Add(value.Player);
 +				if (value.State == EnumClientState.Playing && value.Entityplayer != null && value.Position.InRangeOf(position, horRangeSq, vertRange) && (matches == null || matches(value.Player)))
 +				{
 +					list.Add(value.Player);
 +				}
-+			}
+ 			}
 +			return list.Count == 0 ? Array.Empty<IPlayer>() : list.ToArray();
 +		}
 +		finally
- 		{
--			if (value.State == EnumClientState.Playing && value.Entityplayer != null && value.Position.InRangeOf(position, horRangeSq, vertRange) && (matches == null || matches(value.Player)))
++		{
 +			if (reuseList)
- 			{
--				list.Add(value.Player);
++			{
 +				list.Clear();
- 			}
++			}
 +			reusablePlayersAroundDepth--;
  		}
 -		return list.ToArray();
@@ -1714,7 +1714,93 @@ index 6f69cd3..bf35bfa 100644
  		if (packetBenchmark.ContainsKey(packetId))
  		{
  			packetBenchmark[packetId]++;
-@@ -4695,15 +5438,40 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4322,20 +5065,31 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 	public void SendPacket(ConnectedClient client, Packet_UdpPacket packet)
+ 	{
+ 		ServerUdpNetwork.SendPacket_Threadsafe(client, packet);
+ 	}
+ 
++	[ThreadStatic]
++	private static Packet_Server stratumFallbackPacket;
++
+ 	internal void SendPacketBlocking(ConnectedClient client, Packet_UdpPacket packet)
+ 	{
+ 		if (client.FallBackToTcp)
+ 		{
+-			Packet_Server packet2 = new Packet_Server
++			// Stratum: one wrapper per thread. SendPacket serializes it before returning,
++			// so the next fallback packet can reuse the same object.
++			Packet_Server packet2 = stratumFallbackPacket ??= new Packet_Server();
++			packet2.Id = 79;
++			packet2.UdpPacket = packet;
++			try
+ 			{
+-				Id = 79,
+-				UdpPacket = packet
+-			};
+-			SendPacket(client.Id, packet2);
++				SendPacket(client.Id, packet2);
++			}
++			finally
++			{
++				packet2.Id = 0;
++				packet2.UdpPacket = null;
++			}
+ 		}
+ 		else if (client.IsSinglePlayerClient)
+ 		{
+ 			UdpSockets[0].SendToClient(client.Id, packet);
+ 		}
+@@ -4409,15 +5163,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 			DisconnectPlayer(client, "Lost connection");
+ 			return;
+ 		}
+ 		if (enumSendResult == EnumSendResult.Disconnected)
+ 		{
+-			EnqueueMainThreadTask(delegate
+-			{
+-				DisconnectPlayer(client, "Lost connection/disconnected");
+-				FrameProfiler.Mark("disconnectplayer");
+-			});
++			StratumDisconnectLostClient(client);
+ 		}
+ 	}
+ 
+ 	private void SendPacket(int clientId, BoxedPacket box)
+ 	{
+@@ -4448,19 +5198,26 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+ 		}
+ 		case EnumSendResult.Error:
+ 			DisconnectPlayer(client, "Lost connection");
+ 			break;
+ 		default:
+-			EnqueueMainThreadTask(delegate
+-			{
+-				DisconnectPlayer(client, "Lost connection/disconnected");
+-				FrameProfiler.Mark("disconnectplayer");
+-			});
++			StratumDisconnectLostClient(client);
+ 			break;
+ 		}
+ 	}
+ 
++	// Stratum: the disconnect closure is allocated only when a send actually fails.
++	// A lambda in HandleSendingResult was allocated on every successful send.
++	private void StratumDisconnectLostClient(ConnectedClient client)
++	{
++		EnqueueMainThreadTask(delegate
++		{
++			DisconnectPlayer(client, "Lost connection/disconnected");
++			FrameProfiler.Mark("disconnectplayer");
++		});
++	}
++
+ 	private void SendPlayerEntity(IServerPlayer player, FastMemoryStream ms)
+ 	{
+ 		SendPacket(player, new Packet_Server
+ 		{
+ 			Id = 40,
+@@ -4695,13 +5452,38 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	}
  
  	private void SendWorldMetaData(IServerPlayer player)
@@ -1731,7 +1817,7 @@ index 6f69cd3..bf35bfa 100644
  		{
  			SendPacket(player, WorldMetaDataPacket());
 +			return;
-+		}
+ 		}
 +
 +		string cacheKey = GetStratumWorldMetaDataCacheKey();
 +		lock (stratumJoinPacketCacheLock)
@@ -1742,20 +1828,18 @@ index 6f69cd3..bf35bfa 100644
 +				stratumWorldMetaDataCacheKey = cacheKey;
 +			}
 +			SendPacket(player.ClientId, stratumWorldMetaDataPacket);
- 		}
- 	}
- 
++		}
++	}
++
 +	private string GetStratumWorldMetaDataCacheKey()
 +	{
 +		return string.Concat(SaveGameData.SavegameIdentifier, "|", seaLevel, "|", sunBrightness, "|", blockLightLevels.Length, "|", sunLightLevels.Length);
-+	}
-+
+ 	}
+ 
  	internal Packet_Server WorldMetaDataPacket()
  	{
  		float[] array = blockLightLevels;
- 		Packet_WorldMetaData packet_WorldMetaData = new Packet_WorldMetaData();
- 		int[] array2 = new int[array.Length];
-@@ -4756,14 +5524,53 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4756,14 +5538,53 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			((DummyUdpNetServer)UdpSockets[0]).Client.Player = player;
  		}
@@ -1763,9 +1847,9 @@ index 6f69cd3..bf35bfa 100644
  		{
 -			SendPacket(player, CreatePacketIdentification(player.HasPrivilege("controlserver")));
 +			SendStratumCachedServerIdentification(player);
-+		}
-+	}
-+
+ 		}
+ 	}
+ 
 +	private void SendStratumCachedServerIdentification(ServerPlayer player)
 +	{
 +		bool controlServerPrivilege = player.HasPrivilege("controlserver");
@@ -1786,9 +1870,9 @@ index 6f69cd3..bf35bfa 100644
 +				stratumIdentificationCacheKeys[cacheIndex] = cacheKey;
 +			}
 +			SendPacket(player.ClientId, packet);
- 		}
- 	}
- 
++		}
++	}
++
 +	private string GetStratumIdentificationCacheKey(bool controlServerPrivilege)
 +	{
 +		StratumClientModPolicyConfig clientModPolicy = StratumRuntime.Config.ClientModPolicy;
@@ -1810,7 +1894,7 @@ index 6f69cd3..bf35bfa 100644
  		List<Packet_ModId> list = (from mod in api.ModLoader.Mods
  			where mod.Info.Side.IsUniversal()
  			select new Packet_ModId
-@@ -4792,15 +5599,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4792,15 +5613,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			RequireRemapping = ((controlServerPrivilege && requiresRemaps) ? 1 : 0)
  		};
  		Logger.Notification((Config.DisableAutoRemap ? ("Sending server identification with remap " + requiresRemaps) : "Sending server identification") + ". Server control privilege is " + controlServerPrivilege);
@@ -1833,7 +1917,7 @@ index 6f69cd3..bf35bfa 100644
  		}
  		return new Packet_Server
  		{
-@@ -4812,21 +5624,37 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4812,21 +5638,37 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	public void BroadcastPlayerData(IServerPlayer owningPlayer, bool sendInventory = true, bool sendPrivileges = false)
  	{
  		Packet_Server packet = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacket(owningPlayer, sendInventory, sendPrivileges);
@@ -1872,7 +1956,7 @@ index 6f69cd3..bf35bfa 100644
  	}
  
  	public void BroadcastPlayerPings()
-@@ -4844,12 +5672,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4844,12 +5686,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				array[num] = item.Id;
  				array2[num] = (int)(1000f * item.Player.Ping);
  				num++;
@@ -1887,7 +1971,7 @@ index 6f69cd3..bf35bfa 100644
  			Id = 3,
  			PlayerPing = packet_ServerPlayerPing
  		};
-@@ -5141,11 +5969,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -5141,11 +5983,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		}
  	}
  
