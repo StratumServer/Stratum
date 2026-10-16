@@ -374,12 +374,15 @@ public class DirtyBlockBudgetScenarios : AtlasScenarioBase
 
 		int extraY = (y & 31) == 31 ? y - 1 : y + 1;
 		var extra = (x0, extraY, z0);
+		var sameExcept = (x0: x0 + 1, extraY, z0);
 		PacketProbe exceptedProbe = PacketProbe.Attach(world, excepted);
 		PacketProbe watcherProbe = PacketProbe.Attach(world, watcher);
 		EnqueueDirty(dirty, origin, Queued, repeats: false, excepted.Player.ClientId);
 		MethodInfo enqueue = dirty.GetType().GetMethod("Enqueue")!;
 		enqueue.Invoke(dirty, new object[] { new Vec4i(extra.x0, extra.extraY, extra.z0, excepted.Player.ClientId) });
 		enqueue.Invoke(dirty, new object[] { new Vec4i(extra.x0, extra.extraY, extra.z0, watcher.Player.ClientId) });
+		enqueue.Invoke(dirty, new object[] { new Vec4i(sameExcept.x0, sameExcept.extraY, sameExcept.z0, excepted.Player.ClientId) });
+		enqueue.Invoke(dirty, new object[] { new Vec4i(sameExcept.x0, sameExcept.extraY, sameExcept.z0, excepted.Player.ClientId) });
 		pass.Invoke(simulation, null);
 		pass.Invoke(simulation, null);
 
@@ -389,6 +392,8 @@ public class DirtyBlockBudgetScenarios : AtlasScenarioBase
 		Assert.DoesNotContain(exceptedPackets, p => expected.Contains((p.X, p.Y, p.Z)));
 		Assert.Contains(watcherPackets, p => p.X == extra.x0 && p.Y == extra.extraY && p.Z == extra.z0);
 		Assert.Contains(exceptedPackets, p => p.X == extra.x0 && p.Y == extra.extraY && p.Z == extra.z0);
+		Assert.Contains(watcherPackets, p => p.X == sameExcept.x0 && p.Y == sameExcept.extraY && p.Z == sameExcept.z0);
+		Assert.DoesNotContain(exceptedPackets, p => p.X == sameExcept.x0 && p.Y == sameExcept.extraY && p.Z == sameExcept.z0);
 		foreach (ExchangeBlock packet in watcherPackets)
 		{
 			Assert.Equal(BlockId(server, packet.X, packet.Y, packet.Z), packet.BlockId);
