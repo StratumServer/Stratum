@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
-index 2c2605d..89fa55a 100644
+index 2c2605d..bd65936 100644
 --- a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 +++ b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 @@ -1,6 +1,7 @@
@@ -136,7 +136,7 @@ index 2c2605d..89fa55a 100644
 +			baseMaxPhysicsThreads = stratumPhysicsMaxThreads;
 +		}
 +		else
- 		{
++		{
 +			// MagicNum.MaxPhysicsThreads is 1 in vanilla. Use a sensible Stratum default instead:
 +			// up to 4, but never more than ProcessorCount - 1, and at least 2 on multicore boxes.
 +			int cpus = Math.Max(1, Environment.ProcessorCount);
@@ -145,7 +145,7 @@ index 2c2605d..89fa55a 100644
 +		}
 +		maxPhysicsThreads = Math.Clamp(baseMaxPhysicsThreads, 1, 8);
 +		if (sapi.Server.ReducedServerThreads && stratumPhysicsMaxThreads <= 0)
-+		{
+ 		{
 +			// Honour --reducedthreads only when there's no explicit Stratum override.
  			maxPhysicsThreads = 1;
  		}
@@ -627,10 +627,11 @@ index 2c2605d..89fa55a 100644
 +						long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
 +						long entityId = entity.EntityId;
 +						if (!animationPacketCache.TryGetValue(entityId, out AnimationPacket animationPacket))
-+						{
+ 						{
+-							list.Add(new AnimationPacket(entity));
 +							animationPacket = new AnimationPacket(entity);
 +							animationPacketCache[entityId] = animationPacket;
-+						}
+ 						}
 +						list.Add(animationPacket);
 +						if (stratumRecordSectionTimings)
 +						{
@@ -645,17 +646,16 @@ index 2c2605d..89fa55a 100644
 +					{
 +						Id = 40,
 +						Entities = new Packet_Entities
- 						{
--							list.Add(new AnimationPacket(entity));
++						{
 +							Entities = entityPackets.ToArray(),
 +							EntitiesCount = entityPackets.Count,
 +							EntitiesLength = entityPackets.Count
- 						}
++						}
 +					};
 +					if (client.IsSinglePlayerClient)
 +					{
 +						server.SendPacket(client.Id, packet);
- 					}
++					}
 +					else
 +					{
 +						stateChangeSerializedPacket.Serialize(packet);
@@ -665,7 +665,7 @@ index 2c2605d..89fa55a 100644
 +					if (stratumRecordSectionTimings)
 +					{
 +						stratumFullEntitySendTicks += StratumRuntime.Timings.GetTimestamp() - stratumSectionStart;
-+					}
+ 					}
 +					entityPackets.Clear();
 +				}
 +				if (list.Count > 0)
@@ -910,7 +910,7 @@ index 2c2605d..89fa55a 100644
  		EntityTagPacket result = null;
  		SyncedTreeAttribute watchedAttributes = entity.WatchedAttributes;
  		if (watchedAttributes.AllDirty)
-@@ -779,82 +1292,231 @@ public class PhysicsManager : LoadBalancedTask
+@@ -779,82 +1292,249 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		watchedAttributes.MarkClean();
  		return result;
@@ -946,14 +946,32 @@ index 2c2605d..89fa55a 100644
 +		{
 +			return;
 +		}
++		// Stratum: keep the queued singleplayer packet intact until its consumer reads it.
++		// The dummy singleplayer transport queues the raw packet for asynchronous
++		// consumption. Do not clear or return its array before that consumer is done.
++		if (isSinglePlayerClient)
++		{
++			return;
++		}
 +		Packet_EntityPosition[] array = bulk.EntityPositions;
 +		bulk.EntityPositions = null;
 +		bulk.EntityPositionsCount = 0;
 +		bulk.EntityPositionsLength = 0;
-+		if (array != null && !isSinglePlayerClient)
++		// Stratum: only an array this process rented may go back to the pool.
++		// A plain array throws from Shared.Return and takes the UDP thread down.
++		if (array != null && stratumRentedPositionArrays.TryRemove(array, out _))
 +		{
 +			ArrayPool<Packet_EntityPosition>.Shared.Return(array, clearArray: true);
 +		}
++	}
++
++	private readonly ConcurrentDictionary<Packet_EntityPosition[], byte> stratumRentedPositionArrays = new ConcurrentDictionary<Packet_EntityPosition[], byte>();
++
++	private Packet_EntityPosition[] StratumRentPositionArray(int minimumLength)
++	{
++		Packet_EntityPosition[] array = ArrayPool<Packet_EntityPosition>.Shared.Rent(minimumLength);
++		stratumRentedPositionArrays[array] = 0;
++		return array;
 +	}
 +
  	public void SendPositionsAndAnimations(Dictionary<long, Packet_EntityPosition> entityPositionPackets, Dictionary<long, AnimationPacket> entityAnimPackets, int zeroBasedThreadNum, bool stateUpdateTick)
@@ -1121,7 +1139,7 @@ index 2c2605d..89fa55a 100644
 -						array[j] = list[i + j];
 +						stratumBatchArray[j] = list[i + j];
  					}
-+					Packet_EntityPosition[] snapshot = ArrayPool<Packet_EntityPosition>.Shared.Rent(batchSize);
++					Packet_EntityPosition[] snapshot = StratumRentPositionArray(batchSize);
 +					Array.Copy(stratumBatchArray, snapshot, batchSize);
  					Packet_BulkEntityPosition packet_BulkEntityPosition = new Packet_BulkEntityPosition();
 -					packet_BulkEntityPosition.SetEntityPositions(array);
@@ -1150,7 +1168,7 @@ index 2c2605d..89fa55a 100644
 +			}
  			else if (count > 0)
  			{
-+				Packet_EntityPosition[] snapshot = ArrayPool<Packet_EntityPosition>.Shared.Rent(count);
++				Packet_EntityPosition[] snapshot = StratumRentPositionArray(count);
 +				for (int k = 0; k < count; k++)
 +				{
 +					snapshot[k] = list[k];
@@ -1163,7 +1181,7 @@ index 2c2605d..89fa55a 100644
  			if (list2.Count > 0)
  			{
  				BulkAnimationPacket message = new BulkAnimationPacket
-@@ -872,35 +1534,66 @@ public class PhysicsManager : LoadBalancedTask
+@@ -872,35 +1545,66 @@ public class PhysicsManager : LoadBalancedTask
  				AnimationsAndTagsChannel.SendPacket(item2, client.Player);
  			}
  		}
@@ -1232,7 +1250,7 @@ index 2c2605d..89fa55a 100644
  					flag = true;
  				}
  			}
-@@ -990,11 +1683,14 @@ public class PhysicsManager : LoadBalancedTask
+@@ -990,11 +1694,14 @@ public class PhysicsManager : LoadBalancedTask
  		return ServerPackets.getEntityPositionPacket(entity.Pos, entity, 1);
  	}
  
@@ -1248,7 +1266,7 @@ index 2c2605d..89fa55a 100644
  		{
  			Id = 80,
  			EntityPosition = entityPosition
-@@ -1007,10 +1703,16 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1007,10 +1714,16 @@ public class PhysicsManager : LoadBalancedTask
  			if (client.State.ConnectedOrPlaying() && client.Entityplayer != null)
  			{
  				EntityPos pos2 = client.Entityplayer.Pos;
@@ -1265,7 +1283,7 @@ index 2c2605d..89fa55a 100644
  					server.SendPacket(client.Id, packet);
  				}
  			}
-@@ -1026,16 +1728,29 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1026,16 +1739,29 @@ public class PhysicsManager : LoadBalancedTask
  		if (threadNumber == 0)
  		{
  			threadNumber = 1;
@@ -1300,7 +1318,7 @@ index 2c2605d..89fa55a 100644
  		Dictionary<long, AnimationPacket> dictionary2 = entitiesAnimPackets[threadNumber - 1];
  		dictionary.Clear();
  		dictionary2.Clear();
-@@ -1097,10 +1812,19 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1097,10 +1823,19 @@ public class PhysicsManager : LoadBalancedTask
  		try
  		{
  			int num5 = -1;
@@ -1320,7 +1338,7 @@ index 2c2605d..89fa55a 100644
  				int num6 = (ticksToDo - num5 + 1) % 2;
  				num5 += num6;
  				bool flag2 = num5 == ticksToDo - 1;
-@@ -1108,20 +1832,113 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1108,20 +1843,113 @@ public class PhysicsManager : LoadBalancedTask
  				bool forceUpdate = (num5 + currentTick) % 30 <= num6;
  				for (int j = num3; j < num4; j++)
  				{
@@ -1437,7 +1455,7 @@ index 2c2605d..89fa55a 100644
  						{
  							entity.PositionTicked = true;
  						}
-@@ -1196,49 +2013,153 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1196,49 +2024,153 @@ public class PhysicsManager : LoadBalancedTask
  		if (doBuildAttributes)
  		{
  			eFullUpdate = entitiesFullUpdate[0];
@@ -1598,7 +1616,7 @@ index 2c2605d..89fa55a 100644
  			SendPositionsAndAnimations(dictionary, dictionary2, 0, doBuildAttributes);
  		}
  		dictionary.Clear();
-@@ -1262,11 +2183,25 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1262,11 +2194,25 @@ public class PhysicsManager : LoadBalancedTask
  
  	public void StartWorkerThread(int threadNum)
  	{
