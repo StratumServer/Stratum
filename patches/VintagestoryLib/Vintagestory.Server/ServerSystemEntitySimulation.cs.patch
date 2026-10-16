@@ -364,9 +364,14 @@ index ea1d5c0..3791d9f 100644
 +		int stratumLookedAtBlocks = 0;
 +		int stratumTcpFallbackClients = 0; // Stratum: count clients stuck on TCP position fallback
 +		int stratumSelectionTickIndex = ++stratumSelectionTickCounter;
++		// Stratum: the raytrace only feeds OnBeingLookedAt. The skip grows with the online count
++		// so a crowded server does not trace every player every few ticks.
 +		StratumEntitySelectionConfig stratumSelection = StratumRuntime.Config.Performance.EntitySelection;
 +		bool stratumOcclusionTrace = stratumSelection.OcclusionTraceEnabled;
 +		int stratumSelectionMaxSkip = stratumSelection.SkipTicks(server.Clients.Count);
++		// A tick already over the threshold waits for the skip. Movement still traces
++		// immediately while the server is keeping up.
++		bool stratumSelectionOverloaded = dt * 1000f > stratumSelection.OverloadTickMs;
 +		foreach (ConnectedClient value in server.Clients.Values)
 +		{
 +			ConnectedClient client = value;
@@ -403,7 +408,7 @@ index ea1d5c0..3791d9f 100644
 +				bool moved = (dx * dx + dy * dy + dz * dz) > StratumSelectionPosThresholdSq;
 +				bool turned = dyaw > StratumSelectionRotThreshold || dpitch > StratumSelectionRotThreshold;
 +				bool ticksElapsed = (stratumSelectionTickIndex - selState.LastTraceTickIndex) >= stratumSelectionMaxSkip;
-+				bool shouldTrace = moved || turned || ticksElapsed;
++				bool shouldTrace = ticksElapsed || (!stratumSelectionOverloaded && (moved || turned));
 +
 +				if (shouldTrace)
 +				{
