@@ -1,0 +1,182 @@
+diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
+index 0615808..2ba773a 100644
+--- a/VSEssentials/Entities/EntityBlockFalling.cs
++++ b/VSEssentials/Entities/EntityBlockFalling.cs
+@@ -370,10 +370,17 @@ namespace Vintagestory.GameContent
+         private float soundStartDelay;
+         private bool canFallSideways;
+         private Vec3d fallMotion = new Vec3d();
+         private float pushaccum;
+ 
++        // Stratum: falling block system state.
++        internal bool StratumTracked;
++        private long StratumSpawnTimeMs;
++        private long StratumLastPlayerCheckMs;
++        private const int StratumPlayerCheckIntervalMs = 2000;
++
++
+         internal float dustIntensity;
+         internal ItemStack stackForParticleColor;
+         internal bool nowImpacted;
+ 
+ 
+@@ -499,10 +506,26 @@ namespace Vintagestory.GameContent
+             {
+                 // We have captured the BlockEntity and drops, we can now remove the initial block
+                 // (but on a server we delay neighbour updates and notifying the client, deferred until later calls to UpdateBlock(true...)
+                 World.BlockAccessor.SetBlock(0, initialPos);
+             }
++
++            // Stratum start: register with the falling block system
++            if (api.Side == EnumAppSide.Server)
++            {
++                ModSystemFallingBlocks stratumSystem = ModSystemFallingBlocks.Instance;
++                if (stratumSystem != null)
++                {
++                    AlwaysActive = true;
++                    SimulationRange = GlobalConstants.DefaultSimulationRange;
++                    State = EnumEntityState.Active; // ensure passive physics runs even though AlwaysActive bypasses UpdateTrackedEntityState
++                    StratumSpawnTimeMs = api.World.ElapsedMilliseconds;
++                    StratumTracked = true;
++                    stratumSystem.OnFallingBlockInitialized(this);
++                }
++            }
++            // Stratum end
+         }
+ 
+ 
+         /// <summary>
+         /// Delays behaviors from ticking to reduce flickering
+@@ -604,17 +627,68 @@ namespace Vintagestory.GameContent
+             {
+                 OnFallToGround(0);
+                 World.FrameProfiler.Mark("entity-tick-unsstablefalling-falltoground");
+             }
+ 
++            // Stratum: free the dedup slot once the entity has landed or fallen away, so a block
++            // placed again at initialPos can fall again. Idempotent; safe to call after despawn removed it.
++            if (Api.Side == EnumAppSide.Server && ModSystemFallingBlocks.Instance != null
++                                               && (fallHandled || initialPos.Y - Pos.Y > 1.0))
++            {
++                ModSystemFallingBlocks.Instance.OnFallingBlockLanded(this);
++            }
++
++            // Stratum: stuck and abandoned entity checks.
++            if (Api.Side == EnumAppSide.Server && !fallHandled && ModSystemFallingBlocks.Instance != null)
++            {
++                StratumServerWatchdog(ModSystemFallingBlocks.Instance);
++            }
++
++
+             World.FrameProfiler.Leave();
+         }
+ 
+         public override void OnEntityDespawn(EntityDespawnData despawn)
+         {
+             base.OnEntityDespawn(despawn);
+ 
++            // Stratum: if an entity despawns before a block is placed (due to a vanilla hard timeout,
++            // an unexpected chunk unload, or a mod conflict), we place the block anyway to ensure it doesn't vanish. 
++            // The `Initialize` method has already removed the original block at `initialPos` —
++            // without this fallback, the block would simply disappear. All standard Stratum
++            // pathways (such as `StratumSettleAt` or `OnFallToGround`) set `fallHandled = true`
++            // before calling `Die()`; therefore, this fallback is only triggered by
++            // despawn events that were not initiated by us.
++            if (StratumTracked && !fallHandled && Api?.Side == EnumAppSide.Server && World != null)
++            {
++                fallHandled = true;
++                try
++                {
++                    if (!InitialBlockRemoved)
++                    {
++                        InitialBlockRemoved = true;
++                        UpdateBlock(true, initialPos);
++                    }
++
++                    ModSystemFallingBlocks.SimulateInstantFall(
++                        World, Block, Block, removedBlockentity, blockEntityAttributes,
++                        Pos.AsBlockPos, drops, false);
++                }
++                catch (Exception e)
++                {
++                    try { Api.Logger.Warning("[Stratum] Falling entity despawn settle failed at {0}: {1}", initialPos, e.Message); }
++                    catch { /* logger may already be torn down */ }
++                }
++            }
++
++            // Stratum: unregister from the falling block system.
++            if (StratumTracked)
++            {
++                StratumTracked = false;
++                ModSystemFallingBlocks.Instance?.OnFallingBlockDespawned(this);
++            }
++
+             if (Api.World.Side == EnumAppSide.Client)
+             {
+                 if (!reusedMeshRef) meshRef?.Dispose();
+                 fallingNow.Remove(EntityId);
+                 particleSys.Unregister(this);
+@@ -810,10 +884,63 @@ namespace Vintagestory.GameContent
+             lingerTicks = 50;
+             fallHandled = true;
+             hopUpHeight = 1;
+         }
+ 
++        // Stratum start: watchdog and instant settle, ported from the FallingSpawnManager mod
++        private void StratumServerWatchdog(ModSystemFallingBlocks stratumSystem)
++        {
++            if (!Alive) return;
++
++            // Entities that do not remove their source block (coal pile TryPartialCollapse) split a block
++            // that stays in place, so they rely on the vanilla lifecycle. BlockEntityCoalPile itself is not
++            // visible from this assembly, DoRemoveBlock identifies the same case.
++            if (!DoRemoveBlock) return;
++
++            long now = World.ElapsedMilliseconds;
++
++            int timeout = stratumSystem.StuckTimeoutMs;
++            if (timeout > 0 && now - StratumSpawnTimeMs > timeout)
++            {
++                // Stuck next to a player: settle where the block hangs.
++                StratumSettleAt(Pos.AsBlockPos);
++                return;
++            }
++
++            if (now - StratumLastPlayerCheckMs < StratumPlayerCheckIntervalMs) return;
++            StratumLastPlayerCheckMs = now;
++
++            // No player nearby: resolve the fall instantly.
++            if (!stratumSystem.HasPlayerNearby(Pos.XYZ))
++            {
++                StratumSettleAt(initialPos);
++            }
++        }
++
++        private void StratumSettleAt(BlockPos atPos)
++        {
++            if (fallHandled) return;
++            fallHandled = true;
++
++            // Initialize has already removed the original block at initialPos, but it deferred the calls to MarkBlockDirty
++            // and TriggerNeighbourBlockUpdate until OnGameTick. If the watchdog has triggered before that,
++            // we perform these actions now; otherwise, the client would continue to display the block, and
++            // neighboring elements (such as a column above or chandeliers) would fail to react.
++            if (!InitialBlockRemoved)
++            {
++                InitialBlockRemoved = true;
++                UpdateBlock(true, initialPos);   // MarkBlockDirty + TriggerNeighbourBlockUpdate
++            }
++
++            ModSystemFallingBlocks.SimulateInstantFall(
++                World, Block, Block, removedBlockentity, blockEntityAttributes,
++                atPos, drops, false);
++
++            Die(EnumDespawnReason.Removed);
++        }
++        // Stratum end
++
+         /// <summary>
+         /// Simply update the snow level at the current position, no need to touch its BlockEntity (if there is one)
+         /// </summary>
+         private void UpdateSnowLayer(BlockPos finalPos, Block block)
+         {

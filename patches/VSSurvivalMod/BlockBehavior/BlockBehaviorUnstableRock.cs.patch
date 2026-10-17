@@ -1,0 +1,65 @@
+diff --git a/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs b/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
+index 3607689..572f7b4 100644
+--- a/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
++++ b/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
+@@ -248,19 +248,36 @@ namespace Vintagestory.GameContent
+             collapseLayer(world, yorderedPositions, y);
+         }
+ 
+         private void collapseLayer(IWorldAccessor world, IOrderedEnumerable<BlockPos> yorderedPositions, int y)
+         {
++            ModSystemFallingBlocks stratumSystem = ModSystemFallingBlocks.Instance; // Stratum: falling block system
++
+             foreach (var pos in yorderedPositions)
+             {
+                 if (pos.Y < y) continue;
+                 if (pos.Y > y)
+                 {
+                     world.Api.Event.RegisterCallback((dt) => collapseLayer(world, yorderedPositions, pos.Y), 200);
+                     return;
+                 }
+ 
++                // Stratum start: route through the falling block system when enabled
++                if (stratumSystem != null)
++                {
++                    Block stratumBlock = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Solid);
++                    BlockBehaviorUnstableRock stratumBh = stratumBlock.GetBehavior<BlockBehaviorUnstableRock>();
++                    if (stratumBh == null) continue;
++
++                    // Skip positions already active or pending so a queued collapse cannot double-spawn drops.
++                    if (stratumSystem.IsPositionActiveOrPending(pos)) continue;
++
++                    stratumSystem.RequestSpawn(stratumBh.collapsedBlock, world.BlockAccessor.GetBlockEntity(pos), pos, fallSound, impactDamageMul, true, dustIntensity);
++                    continue;
++                }
++                // Stratum end
++
+                 // Prevents duplication
+                 Entity entity = world.GetNearestEntity(pos.ToVec3d().Add(0.5, 0.5, 0.5), 1, 1.5f, (e) =>
+                 {
+                     return e is EntityBlockFalling ebf && ebf.initialPos.Equals(pos);
+                 });
+@@ -277,11 +294,22 @@ namespace Vintagestory.GameContent
+             }
+ 
+             var firstpos = yorderedPositions.First();
+             for (int i = 0; i < 3; i++)
+             {
+-                checkCollapsibleNeighbours(world, firstpos.AddCopy(world.Rand.Next(17) - 8, 0, world.Rand.Next(17) - 8));
++                // Stratum start: spread the checks over time so a chain collapse does not flood the callback stack
++                BlockPos npos = firstpos.AddCopy(world.Rand.Next(17) - 8, 0, world.Rand.Next(17) - 8);
++                
++                if (stratumSystem != null)
++                {
++                    world.Api.Event.RegisterCallback((dt) => checkCollapsibleNeighbours(world, npos), 300 + i * 100);
++                    continue;
++                }
++                
++                checkCollapsibleNeighbours(world, npos);
++
++                // Stratum end
+             }
+         }
+ 
+         private CollapsibleSearchResult searchCollapsible(BlockPos startPos, bool ignoreBeams)
+         {
