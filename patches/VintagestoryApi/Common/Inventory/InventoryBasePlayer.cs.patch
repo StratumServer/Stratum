@@ -1,0 +1,16 @@
+diff --git a/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs b/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs
+index dbb47de..f95ef62 100644
+--- a/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs
++++ b/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs
+@@ -59,10 +59,11 @@ namespace Vintagestory.API.Common
+                     EnumHandling handling = EnumHandling.PassThrough;
+                     slot.Itemstack.Collectible.OnHeldDropped(Api.World, Api.World.PlayerByUid(playerUID), slot, slot.Itemstack.StackSize, ref handling);
+                     if (handling != EnumHandling.PassThrough) continue;
+ 
+                     dirtySlots.Add(i);
++                    StratumAnySlotDirty = 1;
+ 
+                     if (maxStackSize > 0)
+                     {
+                         while (slot.StackSize > 0)
+                         {
