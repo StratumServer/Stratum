@@ -1,0 +1,28 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs b/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs
+index dd648f2..d098d6b 100644
+--- a/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs
++++ b/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs
+@@ -159,10 +159,11 @@ public class InventoryPlayerBackpacks : InventoryBasePlayer
+ 		for (int i = 0; i < bagSlots.Length; i++)
+ 		{
+ 			if (bagSlots[i].Itemstack != null)
+ 			{
+ 				dirtySlots.Add(i);
++				StratumAnySlotDirty = 1;
+ 			}
+ 			bagSlots[i].Itemstack = null;
+ 		}
+ 		bagInv.ReloadBagInventory(this, bagSlots);
+ 	}
+@@ -178,10 +179,11 @@ public class InventoryPlayerBackpacks : InventoryBasePlayer
+ 				EnumHandling handling = EnumHandling.PassThrough;
+ 				itemSlot.Itemstack.Collectible.OnHeldDropped(Api.World, base.Player, itemSlot, itemSlot.StackSize, ref handling);
+ 				if (handling == EnumHandling.PassThrough)
+ 				{
+ 					dirtySlots.Add(i);
++					StratumAnySlotDirty = 1;
+ 					spawnItemEntity(itemSlot.Itemstack, pos, despawnSeconds);
+ 					itemSlot.Itemstack = null;
+ 				}
+ 			}
+ 		}
