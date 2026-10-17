@@ -32,7 +32,7 @@ index 159b06c..cd5c68b 100644
 +	// Chunk load/save thread
  	private ChunkServerThread chunkthread;
  
-+	// Flag: 8+ CPU cores — enable multithreaded generation
++	// Flag: 8+ CPU cores â€” enable multithreaded generation
  	private bool is8Core = Environment.ProcessorCount >= 8;
  
 +	// Whether chunk border smoothing is required (for worlds created before version 3)
@@ -264,7 +264,7 @@ index 159b06c..cd5c68b 100644
 +	// attempts, not distinct columns, since the dispatcher retries a blocked column later.
 +	private readonly long[] stratumGateBlockedCounts = new long[StratumWorldGenStages.Done];
 +
-+	// Channel of ready-to-execute tasks (dispatcher → workers)
++	// Channel of ready-to-execute tasks (dispatcher â†’ workers)
 +	private BlockingCollection<DispatchedTask> readyTasksQueue;
 +
 +	// Protection against concurrent dispatcher invocation
@@ -286,7 +286,7 @@ index 159b06c..cd5c68b 100644
 +
 +	/// <summary>
 +	/// A (request, stage) pair passed from the dispatcher to a worker.
-+	/// The stage is pinned to the request at dispatch time — the worker does not re-read it.
++	/// The stage is pinned to the request at dispatch time â€” the worker does not re-read it.
 +	/// </summary>
 +	internal readonly struct DispatchedTask
 +	{
@@ -332,7 +332,7 @@ index 159b06c..cd5c68b 100644
  
 +	/// <summary>
 +	/// Returns the system update interval (in ms).
-+	/// When requests exist and 8+ cores are available — minimal interval for maximum throughput.
++	/// When requests exist and 8+ cores are available â€” minimal interval for maximum throughput.
 +	/// </summary>
  	public override int GetUpdateInterval()
  	{
@@ -388,7 +388,7 @@ index 159b06c..cd5c68b 100644
 +
 +		while (dispatcherRunning && !server.stopped)
 +		{
-+			// All worldgen threads paused — wait
++			// All worldgen threads paused â€” wait
 +			if (pauseAllWorldgenThreads > 0)
  			{
 -				CreateAdditionalWorldGenThread(num, num + 1, i + 1);
@@ -401,11 +401,11 @@ index 159b06c..cd5c68b 100644
 +			{
 +				if (ScheduleReadyTasks())
 +				{
-+					// Dispatched tasks — immediately retry without waiting
++					// Dispatched tasks â€” immediately retry without waiting
 +					continue;
 +				}
 +
-+				// No work found — park the thread until signaled. Every state
++				// No work found â€” park the thread until signaled. Every state
 +				// change that can create work already calls SignalDispatcher
 +				// (new requests, stage release, resume), so the timeout is a
 +				// safety net for a missed Set, not the pacing mechanism. At 2ms
@@ -415,7 +415,7 @@ index 159b06c..cd5c68b 100644
 +			}
 +			else
 +			{
-+				// Queue is empty — wait longer
++				// Queue is empty â€” wait longer
 +				dispatcherWake.WaitOne(100);
 +			}
 +		}
@@ -524,7 +524,7 @@ index 159b06c..cd5c68b 100644
 +				return false;
 +			}
 +
-+			if (stage >= req.untilPass)
++			if (stage >= Volatile.Read(ref req.untilPass))
 +			{
 +				req.FlagToRequeue();
 +				stage = -1;
@@ -813,7 +813,7 @@ index 159b06c..cd5c68b 100644
 +				}
 +
 +				request = task.Request;
-+				currentStage = task.ClaimedStage; // ← stage from the dispatcher, do NOT re-read
++				currentStage = task.ClaimedStage; // â† stage from the dispatcher, do NOT re-read
 +
 +				// Safety check: the request may have advanced while sitting in the queue
 +				if (request.CurrentIncompletePass_AsInt != currentStage)
@@ -825,7 +825,7 @@ index 159b06c..cd5c68b 100644
 +					}
 +					Volatile.Write(ref request.dispatchClaimed, 0);
 +					SignalDispatcher(); // wake the dispatcher
-+					continue; // not holding — skip finally with holdingStage
++					continue; // not holding â€” skip finally with holdingStage
 +				}
 +
 +				holdingStage = true;
@@ -935,12 +935,12 @@ index 159b06c..cd5c68b 100644
 +
 +			if (stratumTopKHeap.Count < cap)
 +			{
-+				// Heap not full — add (priority = -distSq: Peek = the farthest)
++				// Heap not full â€” add (priority = -distSq: Peek = the farthest)
 +				stratumTopKHeap.Enqueue(r, -distSq);
 +			}
 +			else if (stratumTopKHeap.TryPeek(out _, out float worstNegDist) && distSq < -worstNegDist)
 +			{
-+				// Closer than the farthest in top-K — replace
++				// Closer than the farthest in top-K â€” replace
 +				stratumTopKHeap.Dequeue();
 +				stratumTopKHeap.Enqueue(r, -distSq);
 +			}
@@ -1031,7 +1031,7 @@ index 159b06c..cd5c68b 100644
  			}
  		}
 +
-+		// Process "peek" requests — generation without saving
++		// Process "peek" requests â€” generation without saving
  		if (!server.peekChunkColumnQueue.IsEmpty && server.peekChunkColumnQueue.TryDequeue(out var result3))
  		{
 +			// Stratum: resume only a pause this path actually holds. The old
@@ -1305,7 +1305,7 @@ index 159b06c..cd5c68b 100644
 +		bool noWorkers = additionalWorldGenThreadsCount == 0;
 +
 +		// use the priority list.
-+		// If the list is null (priority disabled) or exhausted — fall back to FIFO.
++		// If the list is null (priority disabled) or exhausted â€” fall back to FIFO.
 +		List<ChunkColumnLoadRequest>? stratumPrioritized = (stratumPriorityListCache != null && stratumPriorityListCacheIdx < stratumPriorityListCache.Count)
 +			? stratumPriorityListCache
 +			: null;
@@ -1353,7 +1353,7 @@ index 159b06c..cd5c68b 100644
 +					}
 +				}
 +			}
-+			// Priority list exhausted — fall back to FIFO
++			// Priority list exhausted â€” fall back to FIFO
 +		}
 +		// Stratum end
 +
@@ -1418,7 +1418,7 @@ index 159b06c..cd5c68b 100644
  			if (chunkColumnLoadRequest == null || chunkColumnLoadRequest.disposeOrRequeueFlags == 0)
  			{
 -				break;
-+				break; // Queue head is still active — stop
++				break; // Queue head is still active â€” stop
  			}
  			if (chunkColumnLoadRequest.Disposed)
  			{
@@ -1446,7 +1446,7 @@ index 159b06c..cd5c68b 100644
  		ServerMapChunk orCreateMapChunk = GetOrCreateMapChunk(chunkRequest);
  		bool flag = orCreateMapChunk.CurrentIncompletePass >= EnumWorldGenPass.Done || orCreateMapChunk.WorldGenVersion >= 3;
 +
-+		// If the generation version is outdated — recreate the MapChunk
++		// If the generation version is outdated â€” recreate the MapChunk
  		if (!flag && orCreateMapChunk.WorldGenVersion != 0)
  		{
  			orCreateMapChunk = GetOrCreateMapChunk(chunkRequest, forceCreate: true);
@@ -1478,7 +1478,7 @@ index 159b06c..cd5c68b 100644
  				TryRestoreGeneratedStructures(regionX, regionZ, chunkRequest.chunkGenParams, mapRegion);
  			}
 +
-+			// If not loaded — generate new
++			// If not loaded â€” generate new
  			if (chunkRequest.Chunks == null)
  			{
  				GenerateNewChunkColumn(orCreateMapChunk, chunkRequest);
@@ -1522,7 +1522,7 @@ index 159b06c..cd5c68b 100644
  		}
 -		if (orCreateMapChunk.currentpass != stage && orCreateMapChunk.currentpass <= chunkthread.additionalWorldGenThreadsCount)
 +
-+		// Stratum start: if the stage doesn't match and it's a working stage (not Done) — skip
++		// Stratum start: if the stage doesn't match and it's a working stage (not Done) â€” skip
 +		if (orCreateMapChunk.currentpass != stage && orCreateMapChunk.currentpass < StratumWorldGenStages.Done)
  		{
  			return stage == 0;
@@ -1538,7 +1538,7 @@ index 159b06c..cd5c68b 100644
  			PopulateChunk(chunkRequest);
  		}
 +
-+		// If no additional threads or generation is not possible — requeue
++		// If no additional threads or generation is not possible â€” requeue
  		if (!num || chunkthread.additionalWorldGenThreadsCount == 0)
  		{
  			chunkRequest.FlagToRequeue();
@@ -1594,7 +1594,8 @@ index 159b06c..cd5c68b 100644
 +	/// </summary>
  	public bool CanGenerateChunkColumn(ChunkColumnLoadRequest chunkRequest)
  	{
- 		if (chunkRequest.CurrentIncompletePass_AsInt >= chunkRequest.untilPass || !ensurePrettyNeighbourhood(chunkRequest))
+-		if (chunkRequest.CurrentIncompletePass_AsInt >= chunkRequest.untilPass || !ensurePrettyNeighbourhood(chunkRequest))
++		if (chunkRequest.CurrentIncompletePass_AsInt >= Volatile.Read(ref chunkRequest.untilPass) || !ensurePrettyNeighbourhood(chunkRequest))
  		{
  			return false;
  		}
@@ -1634,7 +1635,7 @@ index 159b06c..cd5c68b 100644
  				if (server.loadedChunks.ContainsKey(num2))
  				{
 -					continue;
-+					continue; // Already loaded (race condition) — skip
++					continue; // Already loaded (race condition) â€” skip
  				}
  				server.loadedChunks[num2] = serverChunk;
  				serverChunk.MarkToPack();
@@ -1671,7 +1672,7 @@ index 159b06c..cd5c68b 100644
  						{
  							continue;
  						}
-+						// Entity failed to load — mark for removal
++						// Entity failed to load â€” mark for removal
  						entitiesToRemove.Add(entity.EntityId);
  						if (entity.Code.Path.StartsWith("villager"))
  						{
@@ -1703,7 +1704,7 @@ index 159b06c..cd5c68b 100644
  					ServerMain.FrameProfiler.Enter(value.Block.Code.Path);
  					value.Initialize(server.api);
 -					if (serverChunk.serverMapChunk.NewBlockEntities.Contains(value.Pos))
-+					// If the BlockEntity is new — trigger OnBlockPlaced
++					// If the BlockEntity is new â€” trigger OnBlockPlaced
 +					// Stratum: was a check-then-act (Contains then Remove) on a set worldgen
 +					// threads write concurrently, see ServerMapChunk.stratumNewBlockEntitiesLock.
 +					// HashSet.Remove already reports whether the entry was there, so one locked
@@ -1879,7 +1880,7 @@ index 159b06c..cd5c68b 100644
  			if (!updateEarlierVersion || value.worldgenVersion == 3)
  			{
 -				return value;
-+				return value; // Current version — return as is
++				return value; // Current version â€” return as is
  			}
  		}
  		else
@@ -2210,7 +2211,7 @@ index 159b06c..cd5c68b 100644
  			}
  		}
 +
-+		// If not all chunks in the column were loaded — discard the entire column
++		// If not all chunks in the column were loaded â€” discard the entire column
  		if (num != 0 && num != chunkMapSizeY)
  		{
  			ServerMain.Logger.Error("Loaded some but not all chunks of a column? Discarding whole column.");
@@ -2321,7 +2322,7 @@ index 159b06c..cd5c68b 100644
  			}
  			if (!flag)
  			{
-+				// No suitable spot found — place spawn at center on the surface
++				// No suitable spot found â€” place spawn at center on the surface
  				blockPos = new BlockPos(server.WorldMap.MapSizeX / 2, 0, server.WorldMap.MapSizeZ / 2, 0);
  				blockPos.Y = server.blockAccessor.GetRainMapHeightAt(blockPos);
  				if (!server.blockAccessor.GetBlock(blockPos).SideSolid[BlockFacing.UP.Index])
@@ -2402,7 +2403,7 @@ index 159b06c..cd5c68b 100644
 +		int num = Math.Min(StratumWorldGenStages.FromVanilla((int)untilPass), StratumWorldGenStages.PreDone); // Stratum: public pass to internal, clamped to PreDone
  		int num2 = num - i;
 +
-+		// Create requests for the area (2*num2+1)²
++		// Create requests for the area (2*num2+1)Â²
  		ChunkColumnLoadRequest[,] array = new ChunkColumnLoadRequest[num2 * 2 + 1, num2 * 2 + 1];
  		for (int j = -num2; j <= num2; j++)
  		{
@@ -2572,7 +2573,7 @@ index 159b06c..cd5c68b 100644
  				millisecondsSinceStart = server.totalUnpausedTime.ElapsedMilliseconds;
  				float num4 = 100f * ((float)server.loadedChunks.Count / (float)server.WorldMap.ChunkMapSizeY - (float)num) / (float)num2;
  				ServerMain.Logger.Event(num4.ToString("0.#") + "% ({0} in queue)", chunkthread.requestedChunkColumns.Count);
-@@ -1298,37 +2661,84 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1298,58 +2661,117 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					ServerMain.Logger.StoryEvent("...");
  				}
@@ -2649,18 +2650,26 @@ index 159b06c..cd5c68b 100644
  			{
  				if (Environment.TickCount <= num3)
  				{
-+					// No progress, but timeout hasn't expired — brief pause
++					// No progress, but timeout hasn't expired â€” brief pause
 +					Thread.Sleep(1);
  					continue;
  				}
 +
-+				// Timeout expired — generation is stuck, log and throw
++				// Timeout expired â€” generation is stuck, log and throw
  				ServerMain.Logger.Error("Attempting to force generate chunk columns from " + chunkX1 + "," + chunkZ1 + " to " + chunkX2 + "," + chunkZ2);
  				ServerMain.Logger.Error(chunkthread.additionalWorldGenThreadsCount + " additional worldgen threads active, number of 'undone' chunks is " + blockingRequestsRemaining);
  				foreach (ChunkColumnLoadRequest requestedChunkColumn3 in chunkthread.requestedChunkColumns)
  				{
  					if (requestedChunkColumn3 != null)
-@@ -1340,16 +2750,25 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					{
+ 						string text = ((requestedChunkColumn3.chunkX >= chunkX1 && requestedChunkColumn3.chunkX <= chunkX2 && requestedChunkColumn3.chunkZ >= chunkZ1 && requestedChunkColumn3.chunkZ <= chunkZ2) ? " (in original req)" : "");
+-						ServerMain.Logger.Error("Column " + requestedChunkColumn3.ChunkX + "," + requestedChunkColumn3.ChunkZ + " has reached pass " + requestedChunkColumn3.CurrentIncompletePass_AsInt + text);
++						int stratumUntil = Volatile.Read(ref requestedChunkColumn3.untilPass);
++						int stratumClaimed = Volatile.Read(ref requestedChunkColumn3.dispatchClaimed);
++						bool stratumIndexed = chunkthread.requestedChunkColumns.elementsByIndex.TryGetValue(requestedChunkColumn3.Index, out ChunkColumnLoadRequest stratumCurrent) && ReferenceEquals(stratumCurrent, requestedChunkColumn3);
++						ServerMain.Logger.Error("Column " + requestedChunkColumn3.ChunkX + "," + requestedChunkColumn3.ChunkZ + " has reached pass " + requestedChunkColumn3.CurrentIncompletePass_AsInt + " untilPass " + stratumUntil + " claimed " + stratumClaimed + " indexed " + stratumIndexed + " blocking " + requestedChunkColumn3.blockingRequest + " disposed " + requestedChunkColumn3.Disposed + text);
+ 					}
+ 				}
  				throw new Exception("Somehow worldgen has become stuck in an endless loop, please report this as a bug!  Additional data in the server-main log");
  			}
  		}
@@ -2735,7 +2744,7 @@ index 159b06c..cd5c68b 100644
  
 +	/// <summary>
 +	/// Runs all registered generators for the specified pass.
-+	/// On error at Terrain stage or below — aborts generation.
++	/// On error at Terrain stage or below â€” aborts generation.
 +	/// </summary>
  	private void runGenerators(ChunkColumnLoadRequest chunkRequest, int forPass)
  	{
@@ -2901,7 +2910,7 @@ index 159b06c..cd5c68b 100644
 +	/// <summary>
 +	/// Checks if there is space in the request queue. On overflow:
 +	/// 1) Pause all threads, 2) Unload old chunks, 3) Requeue,
-+	/// 4) If necessary — full queue clear.
++	/// 4) If necessary â€” full queue clear.
 +	/// </summary>
  	private bool EnsureQueueSpace(ChunkColumnLoadRequest curRequest)
  	{
@@ -3117,7 +3126,7 @@ index 159b06c..cd5c68b 100644
  	{
 +		RetirePauseEpoch();
  		pauseAllWorldgenThreads = 0;
-+		SignalDispatcher(); // Stratum: wake the dispatcher — time to work
++		SignalDispatcher(); // Stratum: wake the dispatcher â€” time to work
  	}
  
 +	/// <summary>
