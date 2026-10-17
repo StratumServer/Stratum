@@ -65,33 +65,14 @@ require_cmd() {
   fi
 }
 
-install_ilspycmd_if_missing() {
-  if command -v ilspycmd >/dev/null 2>&1; then
-    return
+tools_restored=0
+run_ilspycmd() {
+  if [[ "$tools_restored" == "0" ]]; then
+    dotnet tool restore --tool-manifest "$repo_root/.config/dotnet-tools.json"
+    tools_restored=1
   fi
 
-  local dotnet_tools="$HOME/.dotnet/tools"
-  if [[ -x "$dotnet_tools/ilspycmd" ]]; then
-    export PATH="$dotnet_tools:$PATH"
-    return
-  fi
-
-  # Install the pinned version from .config/dotnet-tools.json when available.
-  local manifest="$repo_root/.config/dotnet-tools.json"
-  if [[ -f "$manifest" ]]; then
-    local pinned_version
-    pinned_version=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tools']['ilspycmd']['version'])" "$manifest" 2>/dev/null)
-    if [[ -n "$pinned_version" ]]; then
-      echo "Installing ilspycmd $pinned_version (from tool manifest)"
-      dotnet tool install -g ilspycmd --version "$pinned_version" >/dev/null
-      export PATH="$dotnet_tools:$PATH"
-      return
-    fi
-  fi
-
-  echo "Installing ilspycmd (no manifest found, using latest)"
-  dotnet tool install -g ilspycmd >/dev/null
-  export PATH="$dotnet_tools:$PATH"
+  (cd "$repo_root" && dotnet tool run ilspycmd "$@")
 }
 
 extract_archive() {
@@ -408,8 +389,6 @@ if [[ -z "$client_lib_dir" ]]; then
   download_missing_client_refs "$vanilla_dir/Lib"
 fi
 
-install_ilspycmd_if_missing
-
 for entry in "${lib_projects[@]}"; do
   IFS=':' read -r project work_rel dll <<<"$entry"
   dll_path="$(find "$vanilla_dir" -type f -name "$dll" -print -quit)"
@@ -423,7 +402,7 @@ for entry in "${lib_projects[@]}"; do
     echo "Decompiling $dll into $out"
     rm -rf "$out"
     mkdir -p "$out"
-    ilspycmd "$dll_path" --project -o "$out" >/dev/null
+    run_ilspycmd "$dll_path" --project -o "$out" >/dev/null
     normalize_lang_version "$out"
   fi
 
@@ -494,7 +473,7 @@ if [[ -d "$patches_dir" ]]; then
     echo
     echo "${#failed[@]} patch(es) failed to apply:" >&2
     printf '  %s\n' "${failed[@]}" >&2
-    echo "Fix the conflicts in the working tree, then run scripts/extract-patches.sh." >&2
+    echo "If this baseline was decompiled with another ilspycmd version, save your working-tree edits and rerun scripts/bootstrap.sh --refresh. Otherwise, fix the conflicts before extracting patches." >&2
     failed_patch_count="${#failed[@]}"
   fi
 else

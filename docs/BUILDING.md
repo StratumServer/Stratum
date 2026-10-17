@@ -39,7 +39,7 @@ Bootstrap does this:
 1. Resolves the official server archive from Anego's release manifest.
 2. Verifies the archive MD5 from the manifest.
 3. Extracts the archive into `.vanilla/`.
-4. Installs `ilspycmd` if needed.
+4. Restores the repository-local `ilspycmd` version from `.config/dotnet-tools.json` when decompilation is needed.
 5. Decompiles `VintagestoryLib.dll` and `VintagestoryServer.dll`.
 6. Clones the open-source Anego forks pinned in `forks.json`.
 7. Applies Stratum patches and copies `sources/` into the working tree.

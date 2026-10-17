@@ -115,6 +115,9 @@ try {
     if ($Refresh -and (Test-Path $vanillaDir))  { Remove-Item -Recurse -Force $vanillaDir }
     if ($Refresh -and (Test-Path $baselineDir)) { Remove-Item -Recurse -Force $baselineDir }
 
+    $toolManifest = Join-Path $repoRoot '.config/dotnet-tools.json'
+    $toolsRestored = $false
+
     #
     # 1. Vanilla server archive -> decompile -> baseline -> working folders
     #
@@ -193,20 +196,6 @@ try {
         Remove-Item -Recurse -Force $tmpClientExtract
     }
 
-    if (-not (Get-Command ilspycmd -ErrorAction SilentlyContinue)) {
-        $manifest = Join-Path $PSScriptRoot "../.config/dotnet-tools.json"
-        if (Test-Path $manifest) {
-            $json = Get-Content $manifest -Raw | ConvertFrom-Json
-            $pinnedVersion = $json.tools.ilspycmd.version
-            Write-Host "Installing ilspycmd $pinnedVersion (from tool manifest)"
-            dotnet tool install -g ilspycmd --version $pinnedVersion | Out-Null
-        } else {
-            Write-Host "Installing ilspycmd (no manifest found, using latest)"
-            dotnet tool install -g ilspycmd | Out-Null
-        }
-        $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
-    }
-
     foreach ($dll in $libMap.Keys) {
         $proj = $libMap[$dll].Project
         $workRel = $libMap[$dll].Work
@@ -220,7 +209,16 @@ try {
             $prevEAP = $ErrorActionPreference
             try {
                 $ErrorActionPreference = 'Continue'
-                $decompileOutput = & ilspycmd $dllPath.FullName --project -o $out 2>&1
+                if (-not $toolsRestored) {
+                    $restoreOutput = & dotnet tool restore --tool-manifest $toolManifest 2>&1
+                    $restoreExitCode = $LASTEXITCODE
+                    if ($restoreExitCode -ne 0) {
+                        throw "dotnet tool restore failed (exit $restoreExitCode):`n$($restoreOutput -join "`n")"
+                    }
+                    $toolsRestored = $true
+                }
+
+                $decompileOutput = & dotnet tool run ilspycmd $dllPath.FullName --project -o $out 2>&1
                 $decompileExitCode = $LASTEXITCODE
             } finally {
                 $ErrorActionPreference = $prevEAP
@@ -322,7 +320,7 @@ try {
             Write-Host ""
             Write-Host "$($failed.Count) patch(es) failed to apply:" -ForegroundColor Red
             $failed | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-            Write-Host "Fix the conflicts in the working tree, then run scripts\extract-patches.ps1." -ForegroundColor Red
+            Write-Host "If this baseline was decompiled with another ilspycmd version, save your working-tree edits and rerun scripts\bootstrap.ps1 -Refresh. Otherwise, fix the conflicts before extracting patches." -ForegroundColor Red
         }
     } else {
         Write-Host "No patches/ directory, skipping patch step."
