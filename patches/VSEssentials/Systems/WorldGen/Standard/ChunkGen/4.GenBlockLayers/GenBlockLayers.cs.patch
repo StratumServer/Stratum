@@ -1,5 +1,4 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-index 55b134c..2a1e1aa 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 @@ -14,10 +14,14 @@ namespace Vintagestory.ServerMods
@@ -62,7 +61,7 @@ index 55b134c..2a1e1aa 100644
 +        {
 +            api = source.api;
 +            LoadGlobalConfig(api);
-+            BlockLayersIds = new List<int>(source.BlockLayersIds);
++            BlockLayersIds = new List<int>();
 +            rnd = new LCGRandom(api.WorldManager.Seed);
 +            mapheight = source.mapheight;
 +            grassDensity = source.grassDensity;
@@ -80,36 +79,23 @@ index 55b134c..2a1e1aa 100644
              var chunks = request.Chunks;
              int chunkX = request.ChunkX;
              int chunkZ = request.ChunkZ;
-@@ -209,11 +244,13 @@ namespace Vintagestory.ServerMods
-                     {
-                         float beachRel = GameMath.BiLerp(beachUpLeft, beachUpRight, beachBotLeft, beachBotRight, (float)x / chunksize, (float)z / chunksize) / 255f;
-                         GenBeach(x, prevY, z, chunks, rainRel, temp, beachRel, rockblockID);
-                     }
- 
--                    PlaceTallGrass(x, prevY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
-+                    // Stratum: the handler's own call uses the generator that just seeded rnd.
-+                    // The public method forwards external callers onto the worker.
-+                    StratumPlaceTallGrass(x, prevY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
- 
- 
-                     // Try again to put layers if above sealevel and we found over 10 air blocks
-                     int foundAir = 0;
-                     while (posY >= TerraGenConfig.seaLevel - 1)
-@@ -358,10 +395,22 @@ namespace Vintagestory.ServerMods
+@@ -358,10 +393,24 @@ namespace Vintagestory.ServerMods
                  }
              }
          }
  
          public void PlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
 +        {
-+            // Stratum: external callers use the same per-thread generator as the registered handler.
-+            if (stratumWorkers != null)
++            // Stratum: during the serial Terrain stage this is the generator that just
++            // seeded the column. A prefix on the handler (Watersheds) calls this public
++            // method and has to draw from that seed. Any other caller gets the worker.
++            if (stratumWorkers == null || StratumTerrainSplit.SerialTerrainStageActive)
 +            {
-+                stratumWorkers.Current.StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++                StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
 +                return;
 +            }
 +
-+            StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++            stratumWorkers.Current.StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
 +        }
 +
 +        private void StratumPlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
