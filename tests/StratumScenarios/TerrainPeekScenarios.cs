@@ -9,8 +9,11 @@ namespace StratumScenarios;
 
 /// <summary>
 /// A Terrain peek has to run both halves of the split terrain pass, and the
-/// returned area stays the centre column.
+/// returned area stays the centre column. Peeks above Terrain also use vanilla's
+/// area, one ring smaller than indev. The world has to be standard: superflat
+/// never splits the Terrain pass, so soil would appear even with the bug.
 /// </summary>
+[AtlasWorld(WorldType = "standard", Seed = 7351)]
 public class TerrainPeekScenarios : AtlasScenarioBase
 {
 	[AtlasScenario(TimeoutMs = 180_000)]
