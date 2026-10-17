@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
-index 0615808..f787e0f 100644
+index 0615808..2ba773a 100644
 --- a/VSEssentials/Entities/EntityBlockFalling.cs
 +++ b/VSEssentials/Entities/EntityBlockFalling.cs
 @@ -370,10 +370,17 @@ namespace Vintagestory.GameContent
@@ -47,16 +47,16 @@ index 0615808..f787e0f 100644
  
          /// <summary>
          /// Delays behaviors from ticking to reduce flickering
-@@ -604,17 +627,40 @@ namespace Vintagestory.GameContent
+@@ -604,17 +627,68 @@ namespace Vintagestory.GameContent
              {
                  OnFallToGround(0);
                  World.FrameProfiler.Mark("entity-tick-unsstablefalling-falltoground");
              }
  
-+            // Stratum: free the dedup slot once the entity has landed or fallen away (item 4), so a block
++            // Stratum: free the dedup slot once the entity has landed or fallen away, so a block
 +            // placed again at initialPos can fall again. Idempotent; safe to call after despawn removed it.
 +            if (Api.Side == EnumAppSide.Server && ModSystemFallingBlocks.Instance != null
-+                                               && (fallHandled || Pos.Y - initialPos.Y > 1.5))
++                                               && (fallHandled || initialPos.Y - Pos.Y > 1.0))
 +            {
 +                ModSystemFallingBlocks.Instance.OnFallingBlockLanded(this);
 +            }
@@ -75,6 +75,35 @@ index 0615808..f787e0f 100644
          {
              base.OnEntityDespawn(despawn);
  
++            // Stratum: if an entity despawns before a block is placed (due to a vanilla hard timeout,
++            // an unexpected chunk unload, or a mod conflict), we place the block anyway to ensure it doesn't vanish. 
++            // The `Initialize` method has already removed the original block at `initialPos` —
++            // without this fallback, the block would simply disappear. All standard Stratum
++            // pathways (such as `StratumSettleAt` or `OnFallToGround`) set `fallHandled = true`
++            // before calling `Die()`; therefore, this fallback is only triggered by
++            // despawn events that were not initiated by us.
++            if (StratumTracked && !fallHandled && Api?.Side == EnumAppSide.Server && World != null)
++            {
++                fallHandled = true;
++                try
++                {
++                    if (!InitialBlockRemoved)
++                    {
++                        InitialBlockRemoved = true;
++                        UpdateBlock(true, initialPos);
++                    }
++
++                    ModSystemFallingBlocks.SimulateInstantFall(
++                        World, Block, Block, removedBlockentity, blockEntityAttributes,
++                        Pos.AsBlockPos, drops, false);
++                }
++                catch (Exception e)
++                {
++                    try { Api.Logger.Warning("[Stratum] Falling entity despawn settle failed at {0}: {1}", initialPos, e.Message); }
++                    catch { /* logger may already be torn down */ }
++                }
++            }
++
 +            // Stratum: unregister from the falling block system.
 +            if (StratumTracked)
 +            {
@@ -82,13 +111,12 @@ index 0615808..f787e0f 100644
 +                ModSystemFallingBlocks.Instance?.OnFallingBlockDespawned(this);
 +            }
 +
-+
              if (Api.World.Side == EnumAppSide.Client)
              {
                  if (!reusedMeshRef) meshRef?.Dispose();
                  fallingNow.Remove(EntityId);
                  particleSys.Unregister(this);
-@@ -810,10 +856,52 @@ namespace Vintagestory.GameContent
+@@ -810,10 +884,63 @@ namespace Vintagestory.GameContent
              lingerTicks = 50;
              fallHandled = true;
              hopUpHeight = 1;
@@ -129,8 +157,19 @@ index 0615808..f787e0f 100644
 +            if (fallHandled) return;
 +            fallHandled = true;
 +
-+            // doRemoveBlock == false here, so source is only used for the (skipped) removal check; pass Block.
-+            ModSystemFallingBlocks.SimulateInstantFall(World, Block, Block, removedBlockentity, blockEntityAttributes, atPos, drops, false);
++            // Initialize has already removed the original block at initialPos, but it deferred the calls to MarkBlockDirty
++            // and TriggerNeighbourBlockUpdate until OnGameTick. If the watchdog has triggered before that,
++            // we perform these actions now; otherwise, the client would continue to display the block, and
++            // neighboring elements (such as a column above or chandeliers) would fail to react.
++            if (!InitialBlockRemoved)
++            {
++                InitialBlockRemoved = true;
++                UpdateBlock(true, initialPos);   // MarkBlockDirty + TriggerNeighbourBlockUpdate
++            }
++
++            ModSystemFallingBlocks.SimulateInstantFall(
++                World, Block, Block, removedBlockentity, blockEntityAttributes,
++                atPos, drops, false);
 +
 +            Die(EnumDespawnReason.Removed);
 +        }

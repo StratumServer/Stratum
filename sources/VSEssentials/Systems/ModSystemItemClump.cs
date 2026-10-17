@@ -24,6 +24,9 @@ namespace Vintagestory.GameContent;
 //  - Small default radius (5 horizontal, 2 vertical): items do not vanish far from where they lay
 //    and do not merge across floors.
 //  - Largest stacks receive, smallest stacks donate, which minimizes the resulting entity count.
+//  - A stack a player just dropped is still inside the pickup window of EntityItem.CanCollect
+//    (other players cannot take it yet). It takes no part in merging, neither as donor nor as
+//    receiver, until that window has passed, so merging never skips it.
 //  - Blacklist uses vanilla WildcardUtil.Match ('*', case insensitive, "@regex"). The result is cached
 //    per collectible, so Code.ToString() runs once.
 // Merging goes through ItemSlot.TryPutInto and GetMergableQuantity, so all vanilla rules
@@ -35,6 +38,9 @@ public class ModSystemItemClump : ModSystem
 
 	// An item counts as settled when its squared speed is at most this value.
 	private const double SettledMotionSq = 0.005d;
+
+	// Mirrors EntityItem.CanCollect: a stack dropped by a player cannot be picked up by others for this long.
+	private const int PickupWindowMs = 1000;
 
 	private ICoreServerAPI sapi;
 	private long tickListenerId;
@@ -217,6 +223,17 @@ public class ModSystemItemClump : ModSystem
 				continue;
 			}
 
+			// A stack a player just dropped is still in its pickup window: merging it now would
+			// make it collectible by others earlier than vanilla allows. Not a settle failure, so
+			// the attempt is not spent. now + delayMs keeps the queue monotonic.
+			if (InPickupWindow(e, now))
+			{
+				queue.Dequeue();
+				c.DueMs = now + delayMs;
+				queue.Enqueue(c);
+				continue;
+			}
+
 			// An item far from players is not simulated, it is frozen and never moves, so waiting
 			// for it to settle is pointless and it merges right away. Freeze detection, most reliable first:
 			//  1) the server marked the entity inactive (outside the simulation range);
@@ -303,6 +320,8 @@ public class ModSystemItemClump : ModSystem
 		if (coll.MaxStackSize <= 1 || rootStack.StackSize >= coll.MaxStackSize) return;
 		if (IsBlacklisted(coll)) return;
 
+		long now = sapi.World.ElapsedMilliseconds;
+
 		matchCollectible = coll;
 		Entity[] found;
 		try
@@ -332,7 +351,7 @@ public class ModSystemItemClump : ModSystem
 		for (int i = 0; i < found.Length && group.Count < maxGroupSize; i++)
 		{
 			if (found[i] is not EntityItem other || other == root) continue;
-			if (!IsValid(other) || (!frozen && !IsSettled(other))) continue;
+			if (!IsValid(other) || (!frozen && !IsSettled(other)) || InPickupWindow(other, now)) continue;
 			group.Add(other);
 		}
 
@@ -366,13 +385,23 @@ public class ModSystemItemClump : ModSystem
 				// Vanilla rules: matching attributes, freshness and so on.
 				if (rs.Collectible.GetMergableQuantity(rs, ds, EnumMergePriority.AutoMerge) <= 0) continue;
 
-				int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
-				if (moved <= 0) continue;
+                int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
+                if (moved <= 0) continue;
 
-				// Reassigning through the Itemstack property marks the watched attributes dirty,
-				// otherwise clients keep seeing the old stack size.
-				recv.Itemstack = recv.Slot.Itemstack;
-				dbgMerged++;
+                // Read the current lifetime timer values ​​from the entities' local attributes
+                float donorDeathTime = donor.Attributes.GetFloat("deathTime", 0f);
+                float recvDeathTime = recv.Attributes.GetFloat("deathTime", 0f);
+
+                // We take the maximum value so that the combined stack doesn't disappear prematurely
+                if (donorDeathTime > recvDeathTime)
+                {
+                    recv.Attributes.SetFloat("deathTime", donorDeathTime);
+                }
+
+                // Update the ItemStack and mark changes for clients
+                recv.Itemstack = recv.Slot.Itemstack;
+                recv.WatchedAttributes.MarkPathDirty("itemstack");
+                dbgMerged++;
 			}
 
 			ItemStack left = donor.Slot.Itemstack;
@@ -384,6 +413,7 @@ public class ModSystemItemClump : ModSystem
 			else
 			{
 				donor.Itemstack = left;
+				donor.WatchedAttributes.MarkPathDirty("itemstack");
 			}
 		}
 
@@ -412,6 +442,13 @@ public class ModSystemItemClump : ModSystem
 			&& e.Slot.Itemstack.StackSize > 0;
 	}
 
+	// The inverse of EntityItem.CanCollect: a player dropped it (ByPlayerUid is set) and less than
+	// the pickup delay has passed since it spawned.
+	private static bool InPickupWindow(EntityItem e, long now)
+	{
+		return e.ByPlayerUid != null && now - e.itemSpawnedMilliseconds <= PickupWindowMs;
+	}
+
 	private bool NoPlayerNear(EntityPos ep)
 	{
 		Vec3d pos = ep.XYZ;
@@ -438,7 +475,7 @@ public class ModSystemItemClump : ModSystem
 		// Support is ground or liquid (an item in water or lava floats instead of lying).
 		// An item moving through the air has not settled yet.
 		if (!e.OnGround && !e.FeetInLiquid && !e.Swimming) return false;
-		Vec3d m = e.ServerPos.Motion;
+		Vec3d m = e.Pos.Motion;
 		return m.X * m.X + m.Y * m.Y + m.Z * m.Z <= SettledMotionSq;
 	}
 
