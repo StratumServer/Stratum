@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-index ee7d12d..5baab55 100644
+index ee7d12d..44704aa 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 @@ -12,10 +12,34 @@ namespace Vintagestory.Server;
@@ -78,7 +78,7 @@ index ee7d12d..5baab55 100644
  	}
  
  	internal ServerMapChunk GetMapChunk(long index2d)
-@@ -143,19 +173,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -143,32 +173,32 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	IWorldChunk IChunkProvider.GetUnpackedChunkFast(int chunkX, int chunkY, int chunkZ, bool notRecentlyAccessed)
  	{
  		ServerChunk generatingChunk = GetGeneratingChunk(chunkX, chunkY, chunkZ);
@@ -100,7 +100,22 @@ index ee7d12d..5baab55 100644
  		});
  	}
  
-@@ -186,18 +216,142 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+ 	internal bool addChunkColumnRequest(ChunkColumnLoadRequest chunkRequest)
+ 	{
+ 		ChunkColumnLoadRequest orAdd = requestedChunkColumns.elementsByIndex.GetOrAdd(chunkRequest.mapIndex2d, chunkRequest);
+ 		if (orAdd != chunkRequest)
+ 		{
+-			if (orAdd.untilPass < chunkRequest.untilPass)
++			if (ChunkColumnLoadRequest.StratumTryRaiseUntilPass(orAdd, chunkRequest.untilPass, out int stratumReplaced) && stratumReplaced < 0)
+ 			{
+-				orAdd.untilPass = chunkRequest.untilPass;
++				requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
+ 			}
+ 			if (orAdd.CurrentIncompletePass < chunkRequest.CurrentIncompletePass)
+ 			{
+ 				orAdd.Chunks = chunkRequest.Chunks;
+ 			}
+@@ -186,34 +216,159 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  			requestedChunkColumns.EnqueueWithoutAddingToIndex(chunkRequest);
  		}
  		return !orAdd.Disposed;
@@ -241,10 +256,17 @@ index ee7d12d..5baab55 100644
 +
  		if (orAdd.CurrentIncompletePass_AsInt < minPass)
  		{
- 			if (orAdd.untilPass < minPass)
+-			if (orAdd.untilPass < minPass)
++			if (ChunkColumnLoadRequest.StratumTryRaiseUntilPass(orAdd, minPass, out int stratumReplaced))
  			{
- 				if (orAdd.untilPass < 0)
-@@ -210,10 +364,12 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+-				if (orAdd.untilPass < 0)
++				if (stratumReplaced < 0)
+ 				{
+ 					requestedChunkColumns.EnqueueWithoutAddingToIndex(orAdd);
+ 				}
+-				orAdd.untilPass = minPass;
+ 				if (orAdd.creationTime < requirorTime)
+ 				{
  					orAdd.creationTime = requirorTime;
  				}
  			}
