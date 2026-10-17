@@ -15,6 +15,7 @@ internal class ServerSystemStratum : ServerSystem
 	public ServerSystemStratum(ServerMain server)
 		: base(server)
 	{
+		StratumGroundItems.Install();
 	}
 
 	public override int GetUpdateInterval()
