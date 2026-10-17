@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-index 55b134c..28229c8 100644
+index 55b134c..2a1e1aa 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 @@ -14,10 +14,14 @@ namespace Vintagestory.ServerMods
@@ -80,21 +80,41 @@ index 55b134c..28229c8 100644
              var chunks = request.Chunks;
              int chunkX = request.ChunkX;
              int chunkZ = request.ChunkZ;
-@@ -359,10 +394,17 @@ namespace Vintagestory.ServerMods
+@@ -209,11 +244,13 @@ namespace Vintagestory.ServerMods
+                     {
+                         float beachRel = GameMath.BiLerp(beachUpLeft, beachUpRight, beachBotLeft, beachBotRight, (float)x / chunksize, (float)z / chunksize) / 255f;
+                         GenBeach(x, prevY, z, chunks, rainRel, temp, beachRel, rockblockID);
+                     }
+ 
+-                    PlaceTallGrass(x, prevY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++                    // Stratum: the handler's own call uses the generator that just seeded rnd.
++                    // The public method forwards external callers onto the worker.
++                    StratumPlaceTallGrass(x, prevY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
+ 
+ 
+                     // Try again to put layers if above sealevel and we found over 10 air blocks
+                     int foundAir = 0;
+                     while (posY >= TerraGenConfig.seaLevel - 1)
+@@ -358,10 +395,22 @@ namespace Vintagestory.ServerMods
+                 }
              }
          }
  
          public void PlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
-         {
++        {
 +            // Stratum: external callers use the same per-thread generator as the registered handler.
 +            if (stratumWorkers != null)
 +            {
-+                stratumWorkers.Current.PlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++                stratumWorkers.Current.StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
 +                return;
 +            }
 +
++            StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++        }
++
++        private void StratumPlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
+         {
              double rndVal = blockLayerConfig.Tallgrass.RndWeight * rnd.NextDouble() + blockLayerConfig.Tallgrass.PerlinWeight * grassDensity.Noise(x, z, -0.5f);
  
              double extraGrass = Math.Max(0, rainRel * tempRel - 0.25);
  
-             if (rndVal <= GameMath.Clamp(forestRel - extraGrass, 0.05, 0.99) || posY >= mapheight - 1 || posY < 1) return;
