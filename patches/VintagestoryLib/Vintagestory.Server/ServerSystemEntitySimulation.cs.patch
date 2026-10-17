@@ -614,7 +614,7 @@ index ea1d5c0..dade04f 100644
 +					long stratumEntityTickStart = stratumRecordEntityTypeTimings ? Stopwatch.GetTimestamp() : 0L;
 +					try
 +					{
-+					value.OnGameTick(tickDeltaTime);
++					Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaAlreadyClamped = tickDeltaTime > dt + 0.0001f; value.OnGameTick(tickDeltaTime);
 +					}
 +					finally
 +					{
@@ -862,7 +862,7 @@ index ea1d5c0..dade04f 100644
 +				{
 +					bool isCreature = value.IsCreature;
 +					long t0 = recordEntityTypeTimings ? Stopwatch.GetTimestamp() : 0L;
-+					try { value.OnGameTick(tickDeltaTime); }
++					try { Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaAlreadyClamped = tickDeltaTime > dt + 0.0001f; value.OnGameTick(tickDeltaTime); }
 +					catch (Exception e)
 +					{
 +						Interlocked.Increment(ref stratumParallelTickFailures);
@@ -1442,7 +1442,7 @@ index ea1d5c0..dade04f 100644
 +		}
 +
 +		state.SkippedTicks++;
-+		state.AccumulatedDeltaTime += dt;
++		state.AccumulatedDeltaTime += dt > 0.2f ? 0.2f : dt;
 +		if (state.SkippedTicks < tickInterval)
 +		{
 +			return true;
