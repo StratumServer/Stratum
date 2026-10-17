@@ -179,7 +179,7 @@ index 2c2605d..bd65936 100644
  		loadBalancer = new LoadBalancer(this, ServerMain.Logger);
  		loadBalancer.CreateDedicatedThreads(maxPhysicsThreads, "physicsManager", server.Serverthreads);
  		offthreadProcess = new PhysicsOffthreadTasks(this);
-@@ -251,28 +337,51 @@ public class PhysicsManager : LoadBalancedTask
+@@ -251,28 +337,55 @@ public class PhysicsManager : LoadBalancedTask
  		attrUpdateAccum = 0.2f;
  	}
  
@@ -209,6 +209,10 @@ index 2c2605d..bd65936 100644
  		{
  			if (result != null && result.Entity != null)
  			{
++				if (result.Entity.State == EnumEntityState.Despawned)
++				{
++					continue;
++				}
  				if (result.Entity.ServerBehaviorsThreadsafe == null)
  				{
  					ServerMain.Logger.Warning("An entity " + result.Entity.Code.ToShortString() + " failed to complete initialisation, will not be physics ticked.");
