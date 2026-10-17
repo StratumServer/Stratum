@@ -763,6 +763,70 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		dispatchMethod.Invoke(server, new[] { receivedPacket });
 	}
 
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_ReportTheBreak_When_WearThrowsAfterTheFallbackRemovesTheBlock()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-wear-after");
+		BlockPos playerPos = World.Spawn.AddCopy(18, 1, 18);
+		await player.TeleportTo(playerPos);
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		await player.GiveItem("game:pickaxe-iron", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		CollectibleObject pickaxe = activeSlot.Itemstack.Collectible;
+		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
+		int didBreakCount = 0;
+		BlockBrokenDelegate didBreakHandler = (_, _, _) => didBreakCount++;
+		World.Api.Event.DidBreakBlock += didBreakHandler;
+		try
+		{
+			pickaxe.CollectibleBehaviors = originalBehaviors
+				.Append(new FaultyBrokenWithBehavior(pickaxe, EnumHandling.PassThrough))
+				.Append(new FaultyDamageBehavior(pickaxe))
+				.ToArray();
+			DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+			await World.Ticks(5);
+			Assert.True(player.IsConnected);
+			Assert.Equal("game:air", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(1, didBreakCount);
+		}
+		finally
+		{
+			World.Api.Event.DidBreakBlock -= didBreakHandler;
+			pickaxe.CollectibleBehaviors = originalBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_StopReplaying_When_TheBlockSurvivesRepeatedFailures()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-replay-cap");
+		BlockPos playerPos = World.Spawn.AddCopy(20, 1, 20);
+		await player.TeleportTo(playerPos);
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		Block block = World.BlockAt(blockPos);
+		BlockBehavior[] originalBehaviors = block.BlockBehaviors;
+		var faultyBehavior = new FaultyBlockBehavior(block);
+		try
+		{
+			block.BlockBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
+			for (int i = 0; i < 4; i++)
+			{
+				DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+				await World.Ticks(2);
+			}
+			Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(6, faultyBehavior.InvocationCount);
+		}
+		finally
+		{
+			block.BlockBehaviors = originalBehaviors;
+		}
+	}
+
 	private sealed class FaultyAttackPowerBehavior : CollectibleBehavior
 	{
 		public FaultyAttackPowerBehavior(CollectibleObject collObj) : base(collObj)
