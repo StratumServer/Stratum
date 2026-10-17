@@ -575,8 +575,6 @@ internal class StratumPerformanceConfig
 
 	public StratumItemCleanupConfig ItemCleanup { get; set; } = new StratumItemCleanupConfig();
 
-	public StratumGroundItemsConfig GroundItems { get; set; } = new StratumGroundItemsConfig();
-
 	public StratumRestartConfig Restart { get; set; } = new StratumRestartConfig();
 
 	public StratumNetworkConfig Network { get; set; } = new StratumNetworkConfig();
@@ -606,7 +604,6 @@ internal class StratumPerformanceConfig
 		Join ??= new StratumJoinConfig();
 		AdaptiveRadius ??= new StratumAdaptiveRadiusConfig();
 		ItemCleanup ??= new StratumItemCleanupConfig();
-		GroundItems ??= new StratumGroundItemsConfig();
 		Restart ??= new StratumRestartConfig();
 		Network ??= new StratumNetworkConfig();
 		ChunkSending.EnsureSane();
@@ -632,7 +629,6 @@ internal class StratumPerformanceConfig
 		Join.EnsureSane();
 		AdaptiveRadius.EnsureSane();
 		ItemCleanup.EnsureSane();
-		GroundItems.EnsureSane();
 		Restart.EnsureSane();
 		Network.EnsureSane();
 	}
@@ -715,20 +711,6 @@ internal class StratumAdaptiveRadiusConfig
 		OverloadDropThresholdMs = Math.Max(50.0, OverloadDropThresholdMs);
 		FloorChunks = Math.Max(1, FloorChunks);
 		AdjustmentIntervalSeconds = Math.Max(1.0f, AdjustmentIntervalSeconds);
-	}
-}
-
-internal class StratumGroundItemsConfig
-{
-	// Off restores one entity per drop. On, a resting pile absorbs an identical
-	// stack that lands within RadiusBlocks. The older pile keeps its despawn clock.
-	public bool Enabled { get; set; } = true;
-
-	public int RadiusBlocks { get; set; } = 3;
-
-	public void EnsureSane()
-	{
-		RadiusBlocks = Math.Clamp(RadiusBlocks, 1, 8);
 	}
 }
 
