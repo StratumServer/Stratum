@@ -1,5 +1,4 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
-index 19f5199..73907c9 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -11,7 +10,7 @@ index 19f5199..73907c9 100644
  using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
  using Vintagestory.Common;
-@@ -10,18 +11,22 @@ namespace Vintagestory.Server;
+@@ -10,18 +11,37 @@ namespace Vintagestory.Server;
  
  internal class ServerSystemInventory : ServerSystem
  {
@@ -22,6 +21,21 @@ index 19f5199..73907c9 100644
 +
  	private List<InventoryBase> dirtySlots2Clear = new List<InventoryBase>();
  
++	// Playing clients for one flush, reused so the 30 ms pass does not allocate.
++	private readonly List<ConnectedClient> stratumFlushClients = new List<ConnectedClient>();
++
++	// Character inventories that still need BroadcastPlayerData. Slot packets do not wait on this.
++	private readonly Queue<ServerPlayer> stratumPendingPlayerData = new Queue<ServerPlayer>();
++
++	private readonly HashSet<string> stratumPendingPlayerDataIds = new HashSet<string>();
++
++	private int stratumPlayerDataCursor;
++
++	// The players whose data was broadcast on the last pass. Scenarios read this.
++	internal readonly List<string> stratumPlayerDataBroadcastsThisPass = new List<string>();
++
++	internal int stratumSlotPacketsThisPass;
++
  	public ServerSystemInventory(ServerMain server)
  		: base(server)
  	{
@@ -34,7 +48,7 @@ index 19f5199..73907c9 100644
  		server.PacketHandlers[10] = HandleCreateItemstack;
  		server.PacketHandlers[8] = HandleMoveItemstack;
  		server.PacketHandlers[9] = HandleFlipItemStacks;
-@@ -37,10 +42,11 @@ internal class ServerSystemInventory : ServerSystem
+@@ -37,10 +57,11 @@ internal class ServerSystemInventory : ServerSystem
  	}
  
  	public override void OnPlayerDisconnect(ServerPlayer player)
@@ -46,7 +60,7 @@ index 19f5199..73907c9 100644
  	}
  
  	private void secureMouseSlotContents(ServerPlayer player)
-@@ -103,11 +109,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -103,11 +124,12 @@ internal class ServerSystemInventory : ServerSystem
  		string inventoryId = packet.InvOpenedClosed.InventoryId;
  		if (player.InventoryManager.GetInventory(inventoryId, out var invFound))
  		{
@@ -60,7 +74,7 @@ index 19f5199..73907c9 100644
  			{
  				player.InventoryManager.CloseInventory(invFound);
  			}
-@@ -132,16 +139,18 @@ internal class ServerSystemInventory : ServerSystem
+@@ -132,16 +154,18 @@ internal class ServerSystemInventory : ServerSystem
  		}
  	}
  
@@ -79,7 +93,7 @@ index 19f5199..73907c9 100644
  			{
  				activeHotbarSlot.Itemstack.Collectible.OnBlockBreaking(value, value.CurrentBlockSelection, activeHotbarSlot, 99f, dt, value.blockBreakingCounter);
  				value.blockBreakingCounter++;
-@@ -178,14 +187,53 @@ internal class ServerSystemInventory : ServerSystem
+@@ -178,14 +202,53 @@ internal class ServerSystemInventory : ServerSystem
  			else
  			{
  				value.Entity.Controls.HandUse = EnumHandInteract.None;
@@ -133,7 +147,7 @@ index 19f5199..73907c9 100644
  		{
  			if (!value.IsPlayingClient)
  			{
-@@ -201,30 +249,54 @@ internal class ServerSystemInventory : ServerSystem
+@@ -201,51 +264,116 @@ internal class ServerSystemInventory : ServerSystem
  				{
  					item.Itemstack?.Collectible?.UpdateAndGetTransitionStates(server, item);
  				}
@@ -144,23 +158,38 @@ index 19f5199..73907c9 100644
  
  	private void SendDirtySlots(float dt)
  	{
+-		foreach (ConnectedClient value in server.Clients.Values)
 +		long stratumStarted = StratumRuntime.Timings.GetTimestamp();
-+		if (Volatile.Read(ref InventoryBase.StratumAnySlotDirty) == 0)
-+		{
++		stratumPlayerDataBroadcastsThisPass.Clear();
++		stratumSlotPacketsThisPass = 0;
++		if (Volatile.Read(ref InventoryBase.StratumAnySlotDirty) == 0 && stratumPendingPlayerData.Count == 0)
+ 		{
+-			if (!value.IsPlayingClient)
 +			StratumRuntime.Timings.RecordElapsed("inventory.dirtySlots", stratumStarted);
 +			return;
 +		}
 +		Volatile.Write(ref InventoryBase.StratumAnySlotDirty, 0);
 +
 +		int stratumBroadcastBudget = StratumRuntime.Config.Performance.InventoryFlush.MaxPlayerDataBroadcastsPerPass;
-+		int stratumBroadcasts = 0;
-+		bool stratumDeferred = false;
- 		foreach (ConnectedClient value in server.Clients.Values)
- 		{
- 			if (!value.IsPlayingClient)
++		bool stratumUnlimited = stratumBroadcastBudget <= 0;
++
++		stratumFlushClients.Clear();
++		foreach (ConnectedClient client in server.Clients.Values)
++		{
++			if (client.IsPlayingClient)
  			{
- 				continue;
+-				continue;
++				stratumFlushClients.Add(client);
  			}
++		}
++		int stratumClientCount = stratumFlushClients.Count;
++		if (stratumPlayerDataCursor >= stratumClientCount)
++		{
++			stratumPlayerDataCursor = 0;
++		}
++		for (int i = 0; i < stratumClientCount; i++)
++		{
++			ConnectedClient value = stratumFlushClients[(stratumPlayerDataCursor + i) % stratumClientCount];
  			foreach (InventoryBase value2 in value.Player.inventoryMgr.Inventories.Values)
  			{
 -				if (!value2.IsDirty)
@@ -171,17 +200,8 @@ index 19f5199..73907c9 100644
  				}
  				if (value2 is InventoryCharacter)
  				{
-+					// A character flush also broadcasts player data to every client. Past the
-+					// budget, leave that inventory dirty for the next 30 ms pass.
-+					if (stratumBroadcasts >= stratumBroadcastBudget)
-+					{
-+						stratumDeferred = true;
-+						continue;
-+					}
-+					stratumBroadcasts++;
-+					long stratumBroadcastStarted = StratumRuntime.Timings.GetTimestamp();
- 					value.Player.BroadcastPlayerData();
-+					StratumRuntime.Timings.RecordElapsed("inventory.playerData", stratumBroadcastStarted);
+-					value.Player.BroadcastPlayerData();
++					StratumEnqueuePlayerData(value.Player);
  				}
 +				long stratumSlotsStarted = StratumRuntime.Timings.GetTimestamp();
  				foreach (int dirtySlot in value2.dirtySlots)
@@ -189,7 +209,10 @@ index 19f5199..73907c9 100644
  					Packet_Server slotUpdatePacket = (value2.InvNetworkUtil as InventoryNetworkUtil).getSlotUpdatePacket(value.Player, dirtySlot);
  					if (slotUpdatePacket != null)
  					{
-@@ -234,18 +306,24 @@ internal class ServerSystemInventory : ServerSystem
+ 						server.SendPacket(value.Id, slotUpdatePacket);
++						stratumSlotPacketsThisPass++;
+ 						ItemSlot itemSlot = value2[dirtySlot];
+ 						if (itemSlot != null && itemSlot == value.Player.inventoryMgr.ActiveHotbarSlot)
  						{
  							value.Player.inventoryMgr.BroadcastHotbarSlot();
  						}
@@ -204,17 +227,49 @@ index 19f5199..73907c9 100644
  			item.dirtySlots.Clear();
  		}
  		dirtySlots2Clear.Clear();
-+		if (stratumDeferred)
++
++		int stratumServed = 0;
++		while (stratumPendingPlayerData.Count > 0 && (stratumUnlimited || stratumServed < stratumBroadcastBudget))
++		{
++			ServerPlayer player = stratumPendingPlayerData.Dequeue();
++			stratumPendingPlayerDataIds.Remove(player.PlayerUID);
++			if (player.client == null || !player.client.IsPlayingClient)
++			{
++				continue;
++			}
++			stratumServed++;
++			long stratumBroadcastStarted = StratumRuntime.Timings.GetTimestamp();
++			player.BroadcastPlayerData();
++			StratumRuntime.Timings.RecordElapsed("inventory.playerData", stratumBroadcastStarted);
++			stratumPlayerDataBroadcastsThisPass.Add(player.PlayerUID);
++		}
++		if (stratumPendingPlayerData.Count > 0)
 +		{
 +			Volatile.Write(ref InventoryBase.StratumAnySlotDirty, 1);
 +		}
++		if (stratumClientCount > 0 && stratumServed > 0)
++		{
++			stratumPlayerDataCursor = (stratumPlayerDataCursor + stratumServed) % stratumClientCount;
++		}
 +		StratumRuntime.Timings.RecordElapsed("inventory.dirtySlots", stratumStarted);
++	}
++
++	private void StratumEnqueuePlayerData(ServerPlayer player)
++	{
++		if (player == null || string.IsNullOrEmpty(player.PlayerUID))
++		{
++			return;
++		}
++		if (stratumPendingPlayerDataIds.Add(player.PlayerUID))
++		{
++			stratumPendingPlayerData.Enqueue(player);
++		}
  	}
  
  	public override void OnPlayerJoin(ServerPlayer player)
  	{
  		foreach (InventoryBase value in player.inventoryMgr.Inventories.Values)
-@@ -369,11 +447,13 @@ internal class ServerSystemInventory : ServerSystem
+@@ -369,11 +497,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ
@@ -229,7 +284,7 @@ index 19f5199..73907c9 100644
  			if (blockSelection != null)
  			{
  				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();
-@@ -494,10 +574,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -494,10 +624,12 @@ internal class ServerSystemInventory : ServerSystem
  		player.InventoryManager.GetInventory(createItemstack.TargetInventoryId, out var invFound);
  		ItemSlot itemSlot = invFound?[createItemstack.TargetSlot];
  		if (player.WorldData.CurrentGameMode == EnumGameMode.Creative && itemSlot != null)
