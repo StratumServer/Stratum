@@ -1766,7 +1766,7 @@ index 6f69cd3..31b2632 100644
  		{
  			UdpSockets[0].SendToClient(client.Id, packet);
  		}
-@@ -4409,15 +5171,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4409,15 +5171,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			DisconnectPlayer(client, "Lost connection");
  			return;
  		}
@@ -1777,13 +1777,14 @@ index 6f69cd3..31b2632 100644
 -				DisconnectPlayer(client, "Lost connection/disconnected");
 -				FrameProfiler.Mark("disconnectplayer");
 -			});
++			// Stratum: the send result is already known here. Disconnect on the main thread.
 +			StratumDisconnectLostClient(client);
  		}
  	}
  
  	private void SendPacket(int clientId, BoxedPacket box)
  	{
-@@ -4448,19 +5206,26 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4448,19 +5207,27 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		}
  		case EnumSendResult.Error:
  			DisconnectPlayer(client, "Lost connection");
@@ -1794,6 +1795,7 @@ index 6f69cd3..31b2632 100644
 -				DisconnectPlayer(client, "Lost connection/disconnected");
 -				FrameProfiler.Mark("disconnectplayer");
 -			});
++			// Stratum: the send result is already known here. Disconnect on the main thread.
 +			StratumDisconnectLostClient(client);
  			break;
  		}
