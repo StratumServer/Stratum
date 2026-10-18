@@ -744,7 +744,7 @@ index 159b06c..22418e7 100644
 +					// can dispatch, stop iterating the remainder of the queue
 +					if (!AnyWorkerStageFree()) break;
 +				}
-+			}
+ 			}
 +			catch (InvalidOperationException) when (!readyTasksQueue.IsAddingCompleted)
 +			{
 +				// Collection was modified during iteration - normal, will retry next tick
@@ -858,13 +858,13 @@ index 159b06c..22418e7 100644
 +					Volatile.Write(ref request.dispatchClaimed, 0);
 +					SignalDispatcher(); // wake the dispatcher
 +				}
- 			}
- 		}
++			}
++		}
 +
 +		// Release thread-local generation resources
 +		BlockAccessorWorldGen.ThreadDispose();
- 	}
- 
++	}
++
 +
 +	/// <summary>
 +	/// Stratum: Builds a priority list of chunks sorted by proximity to players.
@@ -950,12 +950,12 @@ index 159b06c..22418e7 100644
 +		while (stratumTopKHeap.Count > 0)
 +		{
 +			target.Add(stratumTopKHeap.Dequeue());
-+		}
+ 		}
 +		target.Reverse(); // Now nearest to farthest
 +
 +		return PublishPriorityList(target);
-+	}
-+
+ 	}
+ 
 +
 +	/// <summary>
 +	/// Publishes the freshly built priority list for the dispatcher and
@@ -2459,7 +2459,7 @@ index 159b06c..22418e7 100644
  		{
  			for (int n = -num2; n <= num2; n++)
  			{
-@@ -1232,61 +2545,111 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1232,61 +2545,112 @@ internal class ServerSystemSupplyChunks : ServerSystem
  						dictionary2[key] = chunks;
  					}
  				}
@@ -2552,6 +2552,7 @@ index 159b06c..22418e7 100644
 +		// the 12s hard-stuck timeout above. See TryRunOneReadyRequestInline's
 +		// own comment for why this exists and what it protects against.
 +		long stratumHelpThreshold = Environment.TickCount + 2000;
++		int stratumLastRectangleProgress = StratumRectangleStageProgress(chunkthread.requestedChunkColumns, chunkX1, chunkZ1, chunkX2, chunkZ2);
  		ServerMain.Logger.VerboseDebug("Starting area loading/generation: columns " + blockingRequestsRemaining + ", total queue length " + chunkthread.requestedChunkColumns.Count);
 +
 +		// Wait loop for all requests to complete
@@ -2573,7 +2574,7 @@ index 159b06c..22418e7 100644
  				millisecondsSinceStart = server.totalUnpausedTime.ElapsedMilliseconds;
  				float num4 = 100f * ((float)server.loadedChunks.Count / (float)server.WorldMap.ChunkMapSizeY - (float)num) / (float)num2;
  				ServerMain.Logger.Event(num4.ToString("0.#") + "% ({0} in queue)", chunkthread.requestedChunkColumns.Count);
-@@ -1298,58 +2661,117 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1298,58 +2662,146 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					ServerMain.Logger.StoryEvent("...");
  				}
@@ -2641,6 +2642,13 @@ index 159b06c..22418e7 100644
 +				stratumHelpThreshold = Environment.TickCount + 2000;
 +			}
 +
++			int stratumRectangleProgress = StratumRectangleStageProgress(chunkthread.requestedChunkColumns, chunkX1, chunkZ1, chunkX2, chunkZ2);
++			if (stratumRectangleProgress != stratumLastRectangleProgress)
++			{
++				flag = true;
++				stratumLastRectangleProgress = stratumRectangleProgress;
++			}
++
  			if (flag)
  			{
 -				num3 = Environment.TickCount + 12000;
@@ -2675,6 +2683,28 @@ index 159b06c..22418e7 100644
  		}
  	}
  
++	// Stratum: sum of stages finished inside the blocking rectangle plus the neighbour ring
++	// (PreDone - TerrainLate). A change resets the 12 second watchdog. A 1x1 load's own
++	// column does not advance while ensurePrettyNeighbourhood is waiting on that ring.
++	private static int StratumRectangleStageProgress(System.Collections.Generic.IEnumerable<ChunkColumnLoadRequest> requests, int chunkX1, int chunkZ1, int chunkX2, int chunkZ2)
++	{
++		int ring = StratumWorldGenStages.PreDone - StratumWorldGenStages.TerrainLate;
++		int sum = 0;
++		foreach (ChunkColumnLoadRequest request in requests)
++		{
++			if (request == null)
++			{
++				continue;
++			}
++			if (request.chunkX < chunkX1 - ring || request.chunkX > chunkX2 + ring || request.chunkZ < chunkZ1 - ring || request.chunkZ > chunkZ2 + ring)
++			{
++				continue;
++			}
++			sum += Volatile.Read(ref request.stratumStagesFinished);
++		}
++		return sum;
++	}
++
 +	/// <summary>
 +	/// Executes one generation stage for a chunk (PopulateChunk).
 +	/// Invokes generators for the current pass, marks chunks as modified,
@@ -2695,7 +2725,7 @@ index 159b06c..22418e7 100644
  				if (chunkRequest.CurrentIncompletePass == EnumWorldGenPass.Terrain)
  				{
  					ushort sunLight = (ushort)server.sunBrightness;
-@@ -1359,32 +2781,66 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1359,32 +2811,67 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					}
  				}
  			}
@@ -2734,6 +2764,7 @@ index 159b06c..22418e7 100644
 +
 +			// Advance to the next stage
  			chunkRequest.MapChunk.currentpass++;
++			Interlocked.Increment(ref chunkRequest.stratumStagesFinished);
  			chunkRequest.MapChunk.DirtyForSaving = true;
  		}
  		finally
@@ -2764,7 +2795,7 @@ index 159b06c..22418e7 100644
  			return;
  		}
  		for (int i = 0; i < list.Count; i++)
-@@ -1396,89 +2852,139 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1396,89 +2883,139 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			catch (Exception ex)
  			{
  				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
@@ -2921,7 +2952,7 @@ index 159b06c..22418e7 100644
  			chunkthread.requestedChunkColumns.Enqueue(curRequest);
  			return true;
  		}
-@@ -1490,13 +2996,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1490,13 +3027,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				ServerMain.Logger.VerboseDebug("Un-pausing all worldgen threads.");
  			}
  		}
@@ -2941,7 +2972,7 @@ index 159b06c..22418e7 100644
  			if (requestedChunkColumn != null && !requestedChunkColumn.Disposed)
  			{
  				server.loadedMapChunks.Remove(requestedChunkColumn.mapIndex2d);
-@@ -1505,104 +3017,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1505,104 +3048,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		}
  		chunkthread.requestedChunkColumns.Clear();
  		ServerMain.Logger.VerboseDebug("Incomplete chunks stored and wiped.");
