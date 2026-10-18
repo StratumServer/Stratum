@@ -10,7 +10,9 @@ namespace StratumScenarios;
 
 /// <summary>
 /// untilPass only moves upward. A request that is already in the index at -1
-/// is queued by exactly one call to addChunkColumnRequest.
+/// is queued by exactly one raiser. One of those raisers is
+/// EnsureMinimumWorldgenPassAt. A raiser that misses the barrier does not
+/// touch the queue after the test has moved on.
 /// </summary>
 public class UntilPassRaceScenarios : AtlasScenarioBase
 {
@@ -24,6 +26,7 @@ public class UntilPassRaceScenarios : AtlasScenarioBase
 		MethodInfo pause = supply.GetType().GetMethod("PauseAllWorldgenThreads")!;
 		MethodInfo resume = supply.GetType().GetMethod("ResumeAllWorldgenThreads")!;
 		Assert.True((bool)pause.Invoke(supply, new object[] { 5000 })!, "worldgen did not pause");
+		Task[] tasks = null;
 		try
 		{
 			Type requestType = Type.GetType("Vintagestory.Server.ChunkColumnLoadRequest, VintagestoryLib")!;
@@ -36,13 +39,30 @@ public class UntilPassRaceScenarios : AtlasScenarioBase
 			Assert.True((bool)index.GetType().GetMethod("TryAdd")!.Invoke(index, new[] { column, parked })!);
 
 			var start = new Barrier(8);
-			Task[] tasks = new Task[8];
+			tasks = new Task[8];
 			for (int i = 0; i < tasks.Length; i++)
 			{
 				int pass = i == 0 ? 7 : 4;
+				bool throughGate = i == 0;
 				tasks[i] = Task.Run(() =>
 				{
-					start.SignalAndWait();
+					try
+					{
+						if (!start.SignalAndWait(TimeSpan.FromSeconds(10)))
+						{
+							return;
+						}
+					}
+					catch (BarrierPostPhaseException)
+					{
+						return;
+					}
+					if (throughGate)
+					{
+						MethodInfo ensure = chunkThread.GetType().GetMethod("EnsureMinimumWorldgenPassAt", BindingFlags.Instance | BindingFlags.NonPublic)!;
+						ensure.Invoke(chunkThread, new object[] { column, 4, 4, pass, 0L });
+						return;
+					}
 					object challenger = Activator.CreateInstance(requestType, column, 4, 4, 0, pass, server)!;
 					add.Invoke(chunkThread, new[] { challenger });
 				});
@@ -54,6 +74,10 @@ public class UntilPassRaceScenarios : AtlasScenarioBase
 		}
 		finally
 		{
+			if (tasks != null)
+			{
+				Task.WaitAll(tasks, TimeSpan.FromSeconds(10));
+			}
 			object queue = chunkThread.GetType().GetField("requestedChunkColumns", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(chunkThread)!;
 			queue.GetType().GetMethod("Remove")!.Invoke(queue, new object[] { long.MaxValue - 17 });
 			resume.Invoke(supply, null);
