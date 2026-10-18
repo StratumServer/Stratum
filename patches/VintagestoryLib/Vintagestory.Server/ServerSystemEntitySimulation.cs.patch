@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..2699e39 100644
+index ea1d5c0..f34ec36 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -173,7 +173,7 @@ index ea1d5c0..2699e39 100644
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
  		server.PacketHandlers[17] = HandleEntityInteraction;
-@@ -41,208 +188,1451 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -41,208 +188,1452 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		player.Player.ImmersiveFpMode = packet.RuntimeSetting.ImmersiveFpMode > 0;
  		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
@@ -364,8 +364,9 @@ index ea1d5c0..2699e39 100644
 +		int stratumLookedAtBlocks = 0;
 +		int stratumTcpFallbackClients = 0; // Stratum: count clients stuck on TCP position fallback
 +		int stratumSelectionTickIndex = ++stratumSelectionTickCounter;
-+		// Stratum: the raytrace only feeds OnBeingLookedAt. The skip grows with the online count
-+		// so a crowded server does not trace every player every few ticks.
++		// Stratum: the raytrace updates the player's selection. OnBeingLookedAt and the
++		// break guard both read it. The skip grows with the online count so a crowded
++		// server does not trace every player every few ticks.
 +		StratumEntitySelectionConfig stratumSelection = StratumRuntime.Config.Performance.EntitySelection;
 +		// Playing clients from the previous tick. Clients also holds the queue.
 +		int stratumSelectionMaxSkip = stratumSelection.SkipTicks(stratumSelectionPlayingClients);
@@ -383,7 +384,7 @@ index ea1d5c0..2699e39 100644
 +				// Stratum: throttle the per-client raytrace. At 350 players the per-tick
 +				// fanout of RayTraceForSelection dominated entity.selection. Skip the trace
 +				// when the player has not moved or rotated meaningfully AND we re-traced
-+				// recently; OnBeingLookedAt still fires every tick on the cached selection.
++				// recently. OnBeingLookedAt and a held break both use that cached selection.
 +				if (!stratumSelectionState.TryGetValue(client.Id, out StratumSelectionState selState))
 +				{
 +					selState = new StratumSelectionState
@@ -1748,7 +1749,7 @@ index ea1d5c0..2699e39 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -251,16 +1641,31 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -251,16 +1642,31 @@ public class ServerSystemEntitySimulation : ServerSystem
  		bool flag = p.MouseButton == 0;
  		if ((cuboidd.ShortestDistanceFrom(x, y, z) > (double)(num * 2f) && flag) || (flag && (((!server.Config.AllowPvP || !player.HasPrivilege("attackplayers")) && entity is EntityPlayer) || (!player.HasPrivilege("attackcreatures") && entity is EntityAgent))) || (entity is EntityPlayer entityPlayer && !(entityPlayer.Player is IServerPlayer { ConnectionState: EnumClientState.Playing })))
  		{
@@ -1781,7 +1782,7 @@ index ea1d5c0..2699e39 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1684,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1685,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1830,7 +1831,7 @@ index ea1d5c0..2699e39 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,37 +1821,66 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1822,66 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1903,7 +1904,7 @@ index ea1d5c0..2699e39 100644
  			{
  				string playerName = server.PlayerByUid(entityPlayer.PlayerUID).PlayerName;
  				ServerMain.Logger.Audit(Lang.Get("{0} killed {1}, with item (if any): {2}", playerName, item.PlayerName, entityPlayer.RightHandItemSlot?.Itemstack?.Collectible.Code));
-@@ -422,10 +1888,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1889,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

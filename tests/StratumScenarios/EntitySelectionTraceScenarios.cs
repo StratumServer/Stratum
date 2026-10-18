@@ -23,7 +23,7 @@ public class EntitySelectionTraceScenarios : AtlasScenarioBase
 	}
 
 	[AtlasScenario(TimeoutMs = 120_000)]
-	public async Task Mining_Should_Trace_And_BothBreaksStick_When_TheSkipIsHigh()
+	public async Task HeldBreak_Should_AdvanceToTheBlockBehind_WithoutTurning()
 	{
 		ITestPlayer player = await World.JoinPlayer("select-mine");
 		player.Player.WorldData.CurrentGameMode = EnumGameMode.Survival;
@@ -40,25 +40,34 @@ public class EntitySelectionTraceScenarios : AtlasScenarioBase
 			await player.GiveItem("game:shovel-iron", 1);
 			player.Player.WorldData.PickingRange = 8f;
 			await World.Ticks(1);
-			object stand = player.Player.Entity.Pos;
-			PropertyInfo standX = stand.GetType().GetProperty("X")!;
-			PropertyInfo standY = stand.GetType().GetProperty("Y")!;
-			PropertyInfo standZ = stand.GetType().GetProperty("Z")!;
-			double lifted = (double)standY.GetValue(stand)! + 4;
-			standY.SetValue(stand, lifted);
+			object entity = player.Player.Entity;
+			object pos = entity.GetType().GetProperty("Pos")!.GetValue(entity)!;
+			object serverPos = entity.GetType().GetProperty("ServerPos")!.GetValue(entity)!;
+			PropertyInfo standX = pos.GetType().GetProperty("X")!;
+			PropertyInfo standY = pos.GetType().GetProperty("Y")!;
+			PropertyInfo standZ = pos.GetType().GetProperty("Z")!;
+			double lifted = (double)standY.GetValue(pos)! + 4;
+			standY.SetValue(pos, lifted);
 			player.Player.Entity.ServerPos.Y = lifted;
-			int fx = (int)Math.Floor((double)standX.GetValue(stand)!);
+			int fx = (int)Math.Floor((double)standX.GetValue(pos)!);
 			int fy = (int)Math.Floor(lifted);
-			int fz = (int)Math.Floor((double)standZ.GetValue(stand)!);
+			int fz = (int)Math.Floor((double)standZ.GetValue(pos)!);
 			BlockPos first = new BlockPos(fx + 2, fy, fz);
 			BlockPos second = new BlockPos(fx + 3, fy, fz);
 			World.SetBlock("game:soil-medium-normal", first);
 			World.SetBlock("game:soil-medium-normal", second);
-			await World.Ticks(2);
+			AimOnce(pos, serverPos, -MathF.PI / 2f, -0.4f);
 			HoldMouse(player, true);
-			await BreakAimed(player, first);
-			await BreakAimed(player, second);
+			await World.Ticks(1);
+			Assert.Equal(Format(first), Format(SelectedBlock(entity)));
+
+			Break(player, first);
+			await World.Ticks(1);
 			Assert.Equal("game:air", World.BlockAt(first).Code.ToString());
+			Assert.Equal(Format(second), Format(SelectedBlock(entity)));
+
+			Break(player, second);
+			await World.Ticks(1);
 			Assert.Equal("game:air", World.BlockAt(second).Code.ToString());
 		}
 		finally
@@ -69,56 +78,31 @@ public class EntitySelectionTraceScenarios : AtlasScenarioBase
 		}
 	}
 
-	private async Task BreakAimed(ITestPlayer player, BlockPos block)
+	private static void AimOnce(object pos, object serverPos, float yaw, float pitch)
 	{
-		object entity = player.Player.Entity;
-		object pos = entity.GetType().GetProperty("Pos")!.GetValue(entity)!;
-		object serverPos = entity.GetType().GetProperty("ServerPos")!.GetValue(entity)!;
-		PropertyInfo x = pos.GetType().GetProperty("X")!;
-		PropertyInfo y = pos.GetType().GetProperty("Y")!;
-		PropertyInfo z = pos.GetType().GetProperty("Z")!;
-		PropertyInfo yaw = pos.GetType().GetProperty("Yaw")!;
-		PropertyInfo pitch = pos.GetType().GetProperty("Pitch")!;
-		(float yawValue, double ox, double oz)[] stands =
-		{
-			(0f, 0, -1.4),
-			(MathF.PI, 0, 1.4),
-			(MathF.PI / 2f, -1.4, 0),
-			(-MathF.PI / 2f, 1.4, 0)
-		};
-		bool aimed = false;
-		string last = "none";
-		long tracesBefore = SelectionTraces(World.Api.World);
-		foreach ((float yawValue, double ox, double oz) in stands)
-		{
-			foreach (float pitchValue in new[] { -0.9f, -0.4f, 0f, 0.4f, 0.9f })
-			{
-				yaw.SetValue(pos, yawValue);
-				pitch.SetValue(pos, pitchValue);
-				yaw.SetValue(serverPos, yawValue);
-				pitch.SetValue(serverPos, pitchValue);
-				await World.Ticks(1);
-				last = "pos " + x.GetValue(pos) + "," + y.GetValue(pos) + "," + z.GetValue(pos);
-				object selection = entity.GetType().GetField("BlockSelection")!.GetValue(entity);
-				if (selection == null)
-				{
-					last += " sel null";
-					continue;
-				}
-				object selected = selection.GetType().GetField("Position")!.GetValue(selection)!;
-				int sx = (int)selected.GetType().GetField("X")!.GetValue(selected)!;
-				int sy = (int)selected.GetType().GetField("Y")!.GetValue(selected)!;
-				int sz = (int)selected.GetType().GetField("Z")!.GetValue(selected)!;
-				last = sx + "," + sy + "," + sz;
-				if (sx == block.X && sy == block.Y && sz == block.Z)
-				{
-					aimed = true;
-					break;
-				}
-			}
-			if (aimed) break;
-		}
-		Assert.True(aimed, "the mouse-down trace did not select " + block + " last " + last + " traces " + (SelectionTraces(World.Api.World) - tracesBefore));
+		PropertyInfo yawProperty = pos.GetType().GetProperty("Yaw")!;
+		PropertyInfo pitchProperty = pos.GetType().GetProperty("Pitch")!;
+		yawProperty.SetValue(pos, yaw);
+		pitchProperty.SetValue(pos, pitch);
+		yawProperty.SetValue(serverPos, yaw);
+		pitchProperty.SetValue(serverPos, pitch);
+	}
+
+	private static BlockPos SelectedBlock(object entity)
+	{
+		object selection = entity.GetType().GetField("BlockSelection")!.GetValue(entity)
+			?? throw new InvalidOperationException("the player has no block selection");
+		object selected = selection.GetType().GetField("Position")!.GetValue(selection)!;
+		int x = (int)selected.GetType().GetField("X")!.GetValue(selected)!;
+		int y = (int)selected.GetType().GetField("Y")!.GetValue(selected)!;
+		int z = (int)selected.GetType().GetField("Z")!.GetValue(selected)!;
+		return new BlockPos(x, y, z);
+	}
+
+	private static string Format(BlockPos pos) => pos.X + "," + pos.Y + "," + pos.Z;
+
+	private void Break(ITestPlayer player, BlockPos block)
+	{
 		object packet = CreateBlockBreakPacket(block);
 		object server = World.Api.World;
 		server.GetType().GetField("<IsDedicatedServer>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(server, true);
@@ -127,7 +111,6 @@ public class EntitySelectionTraceScenarios : AtlasScenarioBase
 		Type rcpType = Type.GetType("Vintagestory.Server.ReceivedClientPacket, VintagestoryLib")!;
 		object received = Activator.CreateInstance(rcpType, client, packet, 1)!;
 		server.GetType().GetMethod("DispatchClientPacket_mainthread", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(server, new[] { received });
-		await World.Ticks(3);
 	}
 
 	private static void HoldMouse(ITestPlayer player, bool down)
