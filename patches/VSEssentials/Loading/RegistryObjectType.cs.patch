@@ -1,5 +1,4 @@
 diff --git a/VSEssentials/Loading/RegistryObjectType.cs b/VSEssentials/Loading/RegistryObjectType.cs
-index 7c78fc7..8d89e1e 100644
 --- a/VSEssentials/Loading/RegistryObjectType.cs
 +++ b/VSEssentials/Loading/RegistryObjectType.cs
 @@ -1,9 +1,10 @@
@@ -34,7 +33,7 @@ index 7c78fc7..8d89e1e 100644
              {
                  JsonUtil.PopulateObject(resolvedType, jobject, deserializer);
              }
-@@ -301,86 +294,178 @@ namespace Vintagestory.ServerMods.NoObf
+@@ -301,86 +294,175 @@ namespace Vintagestory.ServerMods.NoObf
              resolvedType.Code = fullcode;
              resolvedType.jsonObject = null;
              return resolvedType;
@@ -48,12 +47,15 @@ index 7c78fc7..8d89e1e 100644
 +        /// This is a static check, independent of codePath and variant.
 +        /// </summary>
 +        private static bool NeedsResolve(JToken token)
-+        {
+         {
+-            if (json is JObject jsonObj)
 +            if (token == null) return false;
 +
 +            // Check if the object has properties ending with "byType"
 +            if (token is JObject obj)
-+            {
+             {
+-                List<string> propertiesToRemove = null;
+-                Dictionary<string, JToken> propertiesToAdd = null;
 +                foreach (var prop in obj.Properties())
 +                {
 +                    if (prop.Name.EndsWith("byType", StringComparison.OrdinalIgnoreCase)) return true;
@@ -85,46 +87,21 @@ index 7c78fc7..8d89e1e 100644
 +        /// Unchanged subtrees are shared 
 +        /// </summary>
 +        public static JToken Resolve(JToken token, string codePath, API.Datastructures.OrderedDictionary<string, string> searchReplace)
-         {
--            if (json is JObject jsonObj)
++        {
 +            if (token == null)
 +                return null;
-+
+ 
+-                foreach (var entry in jsonObj)
 +            // Check if the token needs resolution
 +            if (token is JObject obj)
-             {
--                List<string> propertiesToRemove = null;
++            {
 +                // Check if this object needs resolution at all
 +                bool hasByType = false;
 +                bool needsChildResolve = false;
 +                foreach (var prop in obj.Properties())
-+                {
-+                    if (prop.Name.EndsWith("byType", StringComparison.OrdinalIgnoreCase))
-+                    {
-+                        hasByType = true;
-+                    }
-+                    if (NeedsResolve(prop.Value))
-+                    {
-+                        needsChildResolve = true;
-+                    }
-+                }
-+
-+                if (!hasByType && !needsChildResolve)
-+                {
-+                    return token; // Share the original object since nothing changes
-+                }
-+
-+                // Vanilla merges the selected byType values before it resolves children.
-+                // Resolving first lets an outer plain value overwrite a nested byType result.
-+                var newObj = new JObject();
-                 Dictionary<string, JToken> propertiesToAdd = null;
- 
--                foreach (var entry in jsonObj)
-+                foreach (var prop in obj.Properties())
                  {
 -                    if (entry.Key.EndsWith("byType", StringComparison.OrdinalIgnoreCase))
-+                    var key = prop.Name;
-+                    if (key.EndsWith("byType", StringComparison.OrdinalIgnoreCase))
++                    if (prop.Name.EndsWith("byType", StringComparison.OrdinalIgnoreCase))
                      {
 -                        string trueKey = entry.Key.Substring(0, entry.Key.Length - "byType".Length);
 -                        var jobj = entry.Value as JObject;
@@ -133,33 +110,67 @@ index 7c78fc7..8d89e1e 100644
 -                            throw new FormatException("Invalid value at key: " + entry.Key);
 -                        }
 -                        foreach (var byTypeProperty in jobj)
-+                        string trueKey = key.Substring(0, key.Length - "byType".Length);
-+                        var byTypeObj = prop.Value as JObject;
-+                        if (byTypeObj == null) continue;
-+
-+                        JToken selected = null;
-+                        foreach (var byTypeProp in byTypeObj.Properties())
-                         {
+-                        {
 -                            if (WildcardUtil.Match(byTypeProperty.Key, codePath))
-+                            if (WildcardUtil.Match(byTypeProp.Name, codePath))
-                             {
+-                            {
 -                                JToken typedToken = byTypeProperty.Value;    // Unnecessary to solveByType specifically on this new token's contents as we will be doing a solveByType on all the tokens in the jsonObj anyhow, after adding the propertiesToAdd
 -                                if (propertiesToAdd == null) propertiesToAdd = new Dictionary<string, JToken>();
 -                                propertiesToAdd.Add(trueKey, typedToken);
 -                                break;   // Replaces for first matched key only
+-                            }
+-                        }
+-                        if (propertiesToRemove == null) propertiesToRemove = new List<string>();
+-                        propertiesToRemove.Add(entry.Key);
++                        hasByType = true;
++                    }
++                    if (NeedsResolve(prop.Value))
++                    {
++                        needsChildResolve = true;
+                     }
+                 }
+ 
++                if (!hasByType && !needsChildResolve)
++                {
++                    return token; // Share the original object since nothing changes
++                }
++
++                // An object byType merges into a clone of the object sibling, then that merge is resolved.
++                // A number, string, array, or null does not replace an object sibling.
++                var newObj = new JObject();
++                Dictionary<string, JToken> propertiesToAdd = null;
+ 
+-                if (propertiesToRemove != null)
++                foreach (var prop in obj.Properties())
+                 {
+-                    foreach (var property in propertiesToRemove)
++                    var key = prop.Name;
++                    if (key.EndsWith("byType", StringComparison.OrdinalIgnoreCase))
+                     {
+-                        jsonObj.Remove(property);
+-                    }
++                        string trueKey = key.Substring(0, key.Length - "byType".Length);
++                        var byTypeObj = prop.Value as JObject;
++                        if (byTypeObj == null) continue;
+ 
+-                    if (propertiesToAdd != null)
+-                    {
+-                        foreach (var property in propertiesToAdd)
++                        JToken selected = null;
++                        foreach (var byTypeProp in byTypeObj.Properties())
+                         {
+-                            if (jsonObj[property.Key] is JObject jobject)
+-                            {
+-                                jobject.Merge(property.Value);
+-                            }
+-                            else
++                            if (WildcardUtil.Match(byTypeProp.Name, codePath))
+                             {
+-                                jsonObj[property.Key] = property.Value;
 +                                selected = byTypeProp.Value;
 +                                break; // First matched
                              }
                          }
--                        if (propertiesToRemove == null) propertiesToRemove = new List<string>();
--                        propertiesToRemove.Add(entry.Key);
--                    }
--                }
--
- 
--                if (propertiesToRemove != null)
--                {
--                    foreach (var property in propertiesToRemove)
++
 +                        if (selected != null)
 +                        {
 +                            if (propertiesToAdd == null) propertiesToAdd = new Dictionary<string, JToken>();
@@ -167,44 +178,30 @@ index 7c78fc7..8d89e1e 100644
 +                        }
 +                    }
 +                    else
-                     {
--                        jsonObj.Remove(property);
-+                        newObj[key] = prop.Value.DeepClone();
-                     }
-+                }
- 
--                    if (propertiesToAdd != null)
-+                if (propertiesToAdd != null)
-+                {
-+                    foreach (var add in propertiesToAdd)
-                     {
--                        foreach (var property in propertiesToAdd)
-+                        string trueKey = add.Key;
-+                        JToken selected = add.Value.DeepClone();
-+                        if (newObj[trueKey] is JObject existing && selected is JObject)
-                         {
--                            if (jsonObj[property.Key] is JObject jobject)
--                            {
--                                jobject.Merge(property.Value);
--                            }
--                            else
--                            {
--                                jsonObj[property.Key] = property.Value;
--                            }
-+                            existing.Merge(selected);
-+                        }
-+                        else
-+                        {
-+                            newObj[trueKey] = selected;
-                         }
++                    {
++                        newObj[key] = Resolve(prop.Value, codePath, searchReplace);
                      }
                  }
  
 -                foreach (var entry in jsonObj)
-+                foreach (var prop in newObj.Properties().ToList())
++                if (propertiesToAdd != null)
                  {
 -                    solveByType(entry.Value, codePath, searchReplace);
-+                    newObj[prop.Name] = Resolve(prop.Value, codePath, searchReplace);
++                    foreach (var add in propertiesToAdd)
++                    {
++                        string trueKey = add.Key;
++                        JToken selected = add.Value;
++                        if (obj[trueKey] is JObject sibling && selected is JObject)
++                        {
++                            var merged = (JObject)sibling.DeepClone();
++                            merged.Merge(selected);
++                            newObj[trueKey] = Resolve(merged, codePath, searchReplace);
++                        }
++                        else if (!(newObj[trueKey] is JObject))
++                        {
++                            newObj[trueKey] = Resolve(selected, codePath, searchReplace);
++                        }
++                    }
                  }
 +
 +                return newObj;
