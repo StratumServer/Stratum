@@ -1,5 +1,4 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
-index 6b3cdd0..0eb1693 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 @@ -3,10 +3,11 @@ using System.Collections.Concurrent;
@@ -167,8 +166,8 @@ index 6b3cdd0..0eb1693 100644
 +		return string.Equals(assemblyName, "VSSurvivalMod", StringComparison.Ordinal)
 +			|| string.Equals(assemblyName, "VSEssentials", StringComparison.Ordinal)
 +			|| string.Equals(assemblyName, "VintagestoryLib", StringComparison.Ordinal);
-+	}
-+
+ 	}
+ 
 +	private static bool IsBlockEntityPacketInRange(ServerPlayer player, BlockPos pos)
 +	{
 +		double maxRange = player.WorldData.PickingRange + StratumBlockEntityPacketRangeSlack;
@@ -260,8 +259,8 @@ index 6b3cdd0..0eb1693 100644
 +				SelectionBoxIndex = 0
 +			});
 +		}
- 	}
- 
++	}
++
 +	private static bool IsDevCommandBlockTarget(BlockEntity be)
 +	{
 +		Type type = be.GetType();
@@ -436,24 +435,43 @@ index 6b3cdd0..0eb1693 100644
  			if (itemstack != null)
  			{
  				num = itemstack.Collectible.GetToolTier(activeHotbarSlot);
-@@ -595,18 +876,61 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -595,18 +876,86 @@ public class ServerSystemBlockSimulation : ServerSystem
  			float dropQuantityMultiplier = 1f;
  			EnumHandling handling = EnumHandling.PassThrough;
  			server.EventManager.TriggerBreakBlock(player, blockSelection, ref dropQuantityMultiplier, ref handling);
  			if (handling == EnumHandling.PassThrough)
  			{
 -				if (itemstack != null)
-+				StratumBreakFailureKey stratumFailKey = new StratumBreakFailureKey(blockPos.X, blockPos.Y, blockPos.Z, block4.BlockId);
-+				if (stratumFailedBreakAttempts.TryGetValue(stratumFailKey, out int stratumFailedAttempts) && stratumFailedAttempts >= 3)
++				StratumBreakFailureKey stratumFailKey = new StratumBreakFailureKey(blockPos.X, blockPos.Y, blockPos.Z, blockPos.dimension, block4.BlockId);
++				long stratumFailNow = Environment.TickCount64;
++				int stratumFailedAttempts = 0;
++				if (stratumFailedBreakAttempts.TryGetValue(stratumFailKey, out StratumBreakFailure stratumFailure))
  				{
 -					itemstack.Collectible.OnBlockBrokenWith(server, player.Entity, activeHotbarSlot, blockSelection, dropQuantityMultiplier);
-+					return false;
++					bool stratumExpired = stratumFailNow - stratumFailure.LastMs > 5000;
++					bool stratumModeChanged = stratumFailure.Mode != player.WorldData.CurrentGameMode;
++					if (!stratumExpired && !stratumModeChanged)
++					{
++						stratumFailedAttempts = stratumFailure.Count;
++					}
++					else
++					{
++						stratumLoggedBreakRefusals.Remove(stratumFailKey);
++					}
  				}
 -				else
-+				// Stratum: Protect against unhandled exceptions in item/block break callbacks (#282).
-+				try
++				if (stratumFailedAttempts >= 3)
  				{
 -					block4.OnBlockBroken(server, blockPos, player, dropQuantityMultiplier);
++					if (stratumLoggedBreakRefusals.Add(stratumFailKey))
++					{
++						ServerMain.Logger.Warning("Stratum refused to replay a failed break of {0} at {1} for {2}", block4.Code, blockPos, player.PlayerName);
++					}
++					return false;
++				}
++				// Stratum: Protect against unhandled exceptions in item/block break callbacks (#282).
++				try
++				{
 +					if (itemstack != null)
 +					{
 +						// Stratum: Return through the existing client-resync path when a collectible behavior vetoes the break.
@@ -491,18 +509,24 @@ index 6b3cdd0..0eb1693 100644
 +						StratumLogBlockBreakException(itemstack, block4, fallbackEx, true, blockSelection, player);
 +						if (StratumGetSelectedBreakBlock(blockPos).BlockId == block4.BlockId)
 +						{
-+							stratumFailedBreakAttempts[stratumFailKey] = stratumFailedAttempts + 1;
++							stratumFailedBreakAttempts[stratumFailKey] = new StratumBreakFailure
++							{
++								Count = stratumFailedAttempts + 1,
++								LastMs = stratumFailNow,
++								Mode = player.WorldData.CurrentGameMode
++							};
 +							return false;
 +						}
 +					}
  				}
 +				stratumFailedBreakAttempts.Remove(stratumFailKey);
++				stratumLoggedBreakRefusals.Remove(stratumFailKey);
  				if (server.WorldMap.GetChunk(blockSelection.Position) is ServerChunk serverChunk2)
  				{
  					serverChunk2.BlocksRemoved++;
  					serverChunk2.DirtyForSaving = true;
  				}
-@@ -619,14 +943,80 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -619,14 +968,92 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (activeHotbarSlot.Itemstack == null && itemstack != null)
  			{
  				server.BroadcastHotbarSlot(player);
@@ -517,27 +541,39 @@ index 6b3cdd0..0eb1693 100644
  	}
  
 +	// A break that keeps failing while the block is still there must not replay
-+	// OnBlockBroken and GetDrops on every client packet.
-+	private readonly Dictionary<StratumBreakFailureKey, int> stratumFailedBreakAttempts = new Dictionary<StratumBreakFailureKey, int>();
++	// OnBlockBroken and GetDrops on every client packet. The entry expires after
++	// a few seconds and when the game mode changes, and the key includes dimension.
++	private readonly Dictionary<StratumBreakFailureKey, StratumBreakFailure> stratumFailedBreakAttempts = new Dictionary<StratumBreakFailureKey, StratumBreakFailure>();
++
++	private readonly HashSet<StratumBreakFailureKey> stratumLoggedBreakRefusals = new HashSet<StratumBreakFailureKey>();
++
++	private struct StratumBreakFailure
++	{
++		public int Count;
++		public long LastMs;
++		public EnumGameMode Mode;
++	}
 +
 +	private readonly struct StratumBreakFailureKey : IEquatable<StratumBreakFailureKey>
 +	{
 +		public readonly int X;
 +		public readonly int Y;
 +		public readonly int Z;
++		public readonly int Dimension;
 +		public readonly int BlockId;
 +
-+		public StratumBreakFailureKey(int x, int y, int z, int blockId)
++		public StratumBreakFailureKey(int x, int y, int z, int dimension, int blockId)
 +		{
 +			X = x;
 +			Y = y;
 +			Z = z;
++			Dimension = dimension;
 +			BlockId = blockId;
 +		}
 +
 +		public bool Equals(StratumBreakFailureKey other)
 +		{
-+			return X == other.X && Y == other.Y && Z == other.Z && BlockId == other.BlockId;
++			return X == other.X && Y == other.Y && Z == other.Z && Dimension == other.Dimension && BlockId == other.BlockId;
 +		}
 +
 +		public override bool Equals(object obj)
@@ -547,7 +583,7 @@ index 6b3cdd0..0eb1693 100644
 +
 +		public override int GetHashCode()
 +		{
-+			return HashCode.Combine(X, Y, Z, BlockId);
++			return HashCode.Combine(X, Y, Z, Dimension, BlockId);
 +		}
 +	}
 +
@@ -583,7 +619,7 @@ index 6b3cdd0..0eb1693 100644
  		Cuboidf[] collisionBoxes = block.GetCollisionBoxes(server.BlockAccessor, pos);
  		if (collisionBoxes == null)
  		{
-@@ -650,11 +1040,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -650,11 +1077,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  		return false;
  	}
  
@@ -599,7 +635,7 @@ index 6b3cdd0..0eb1693 100644
  	private void UpdateEvery100ms(float t1)
  	{
  		HandleDirtyAndUpdatedBlocks();
-@@ -667,15 +1060,22 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -667,15 +1097,22 @@ public class ServerSystemBlockSimulation : ServerSystem
  		while (server.UpdatedBlocks.Count > 0 && num++ < 500)
  		{
  			BlockPos pos = server.UpdatedBlocks.Dequeue();
@@ -625,7 +661,7 @@ index 6b3cdd0..0eb1693 100644
  			List<BlockPos> list = new List<BlockPos>();
  			BlockPos result2;
  			while (!server.ModifiedBlocks.IsEmpty && server.ModifiedBlocks.TryDequeue(out result2))
-@@ -704,10 +1104,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -704,10 +1141,12 @@ public class ServerSystemBlockSimulation : ServerSystem
  		if (server.ModifiedBlocksMinimal.Count > 0)
  		{
  			server.SendSetBlocksPacket(server.ModifiedBlocksMinimal, 70);
@@ -638,7 +674,7 @@ index 6b3cdd0..0eb1693 100644
  			List<BlockPos> list3 = new List<BlockPos>();
  			BlockPos result4;
  			while (!server.ModifiedDecors.IsEmpty && server.ModifiedDecors.TryDequeue(out result4))
-@@ -716,17 +1118,107 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -716,17 +1155,107 @@ public class ServerSystemBlockSimulation : ServerSystem
  			}
  			server.SendSetDecorsPackets(list3);
  		}
@@ -746,7 +782,7 @@ index 6b3cdd0..0eb1693 100644
  		ConcurrentQueue<BlockPos> dirtyBlockEntities = server.DirtyBlockEntities;
  		if (!dirtyBlockEntities.IsEmpty)
  		{
-@@ -737,11 +1229,16 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -737,11 +1266,16 @@ public class ServerSystemBlockSimulation : ServerSystem
  				if (positionsDone.Add(result))
  				{
  					BlockEntity blockEntity = server.WorldMap.GetBlockEntity(result);
@@ -764,7 +800,7 @@ index 6b3cdd0..0eb1693 100644
  					{
  						noblockEntities.Add(result);
  					}
-@@ -762,28 +1259,54 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -762,28 +1296,54 @@ public class ServerSystemBlockSimulation : ServerSystem
  			foreach (Packet_BlockEntity item in blockEntitiesPacked)
  			{
  				long index3d = server.WorldMap.ChunkIndex3D(new ChunkPos(item.PosX / 32, item.PosY / 32, item.PosZ / 32));
@@ -822,7 +858,7 @@ index 6b3cdd0..0eb1693 100644
  			{
  				continue;
  			}
-@@ -812,22 +1335,32 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -812,22 +1372,32 @@ public class ServerSystemBlockSimulation : ServerSystem
  			catch (Exception e)
  			{
  				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
@@ -856,7 +892,7 @@ index 6b3cdd0..0eb1693 100644
  			foreach (int clientId in clientIds)
  			{
  				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
-@@ -862,34 +1395,116 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -862,34 +1432,116 @@ public class ServerSystemBlockSimulation : ServerSystem
  						}
  					}
  				}
@@ -976,7 +1012,7 @@ index 6b3cdd0..0eb1693 100644
  		{
  			int num6 = rand.Next(32);
  			int num7 = rand.Next(32);
-@@ -905,10 +1520,11 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -905,10 +1557,11 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (fluid != 0)
  			{
  				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));
@@ -988,7 +1024,7 @@ index 6b3cdd0..0eb1693 100644
  	private bool tryTickBlock(Block block, BlockPos atPos)
  	{
  		if (!block.ShouldReceiveServerGameTicks(server.api.World, atPos, rand, out var extra))
-@@ -928,12 +1544,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -928,12 +1581,12 @@ public class ServerSystemBlockSimulation : ServerSystem
  
  	private Packet_BlockEntity BlockEntityToPacket(BlockEntity blockEntity, FastMemoryStream ms)
  	{
