@@ -1,8 +1,24 @@
 diff --git a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
-index 2f84679..42b944a 100644
 --- a/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
 +++ b/VintagestoryLib/Vintagestory.Server.Systems/ServerUdpQueue.cs
-@@ -26,5 +26,11 @@ public class ServerUdpQueue
+@@ -12,10 +12,13 @@ public class ServerUdpQueue
+ 
+ 	private readonly ServerUdpNetwork network;
+ 
+ 	private ConcurrentQueue<QueuedUDPPacket> queue = new ConcurrentQueue<QueuedUDPPacket>();
+ 
++	// One unsent Id 5 position per client and entity. A newer update replaces it.
++	private readonly ConcurrentDictionary<(int clientId, long entityId), QueuedUDPPacket> stratumLatestPosition = new ConcurrentDictionary<(int clientId, long entityId), QueuedUDPPacket>();
++
+ 	private bool idle;
+ 
+ 	public ServerUdpQueue(ServerMain server, ServerUdpNetwork network)
+ 	{
+ 		this.server = server;
+@@ -23,11 +26,50 @@ public class ServerUdpQueue
+ 		network.ImmediateUdpQueue = this;
+ 	}
+ 
  	internal void QueuePacket(ConnectedClient client, Packet_UdpPacket packet)
  	{
 +		// Stratum: disconnects can hand this queue a packet with no client. Enqueueing
@@ -11,48 +27,118 @@ index 2f84679..42b944a 100644
 +		{
 +			return;
 +		}
++		if (packet.Id == 5 && packet.EntityPosition != null)
++		{
++			var key = (client.Id, packet.EntityPosition.EntityId);
++			while (true)
++			{
++				if (stratumLatestPosition.TryGetValue(key, out QueuedUDPPacket existing))
++				{
++					lock (existing)
++					{
++						if (existing.stratumSending == 0
++							&& stratumLatestPosition.TryGetValue(key, out QueuedUDPPacket current)
++							&& ReferenceEquals(current, existing))
++						{
++							existing.packet = packet;
++							existing.creationTime = Environment.TickCount;
++							return;
++						}
++					}
++				}
++				QueuedUDPPacket fresh = new QueuedUDPPacket(client, packet);
++				if (stratumLatestPosition.TryAdd(key, fresh))
++				{
++					queue.Enqueue(fresh);
++					StratumWake();
++					return;
++				}
++			}
++		}
  		queue.Enqueue(new QueuedUDPPacket(client, packet));
++		StratumWake();
++	}
++
++	private void StratumWake()
++	{
  		if (idle)
  		{
-@@ -57,17 +63,40 @@ public class ServerUdpQueue
+ 			lock (this)
+ 			{
+ 				Monitor.Pulse(this);
+@@ -56,20 +98,66 @@ public class ServerUdpQueue
+ 			}
  			long num = Environment.TickCount - 750;
  			QueuedUDPPacket result;
  			while (queue.TryDequeue(out result))
  			{
 -				if (result.creationTime > num)
-+				// Stratum: a null client here is what took the process down under an 800-bot join.
-+				if (result?.client == null || result.packet == null)
-+				{
-+					network.physicsManager.StratumReturnBulkPositionPacket(result?.packet, false);
-+					continue;
-+				}
-+				if (result.creationTime > num)
++				try
  				{
- 					try
- 					{
- 						server.SendPacketBlocking(result.client, result.packet);
- 					}
- 					catch (Exception e)
- 					{
- 						ServerMain.Logger.Error(e);
- 					}
-+					finally
-+					{
-+						// Stratum: for the real UDP/TCP-fallback paths, SendPacketBlocking
-+						// always finishes reading the packet before returning (serializes
-+						// synchronously, no further async handoff), so it's safe to hand it
-+						// back to the pool here even if the send itself threw. The
-+						// single-player/dummy-network path is different -- see
-+						// StratumReturnBulkPositionPacket.
-+						network.physicsManager.StratumReturnBulkPositionPacket(result.packet, result.client.IsSinglePlayerClient);
-+					}
+-					try
+-					{
+-						server.SendPacketBlocking(result.client, result.packet);
+-					}
+-					catch (Exception e)
+-					{
+-						ServerMain.Logger.Error(e);
+-					}
++					StratumDispatchQueued(result, num);
 +				}
-+				else
++				catch (Exception e)
 +				{
-+					// Stratum: TTL-dropped packet never reaches SendPacketBlocking, but it's
-+					// still safe to recycle (subject to the same single-player exception)
-+					// since nothing else holds a reference to it.
-+					network.physicsManager.StratumReturnBulkPositionPacket(result.packet, result.client.IsSinglePlayerClient);
++					// A throw from the pool return must not kill the UDP thread.
++					ServerMain.Logger.Error(e);
  				}
  			}
  		}
+ 	}
++
++	private void StratumDispatchQueued(QueuedUDPPacket result, long oldestAllowed)
++	{
++		// Stratum: a null client here is what took the process down under an 800-bot join.
++		if (result?.client == null || result.packet == null)
++		{
++			network.physicsManager.StratumReturnBulkPositionPacket(result?.packet, false);
++			return;
++		}
++		Packet_UdpPacket sending;
++		lock (result)
++		{
++			result.stratumSending = 1;
++			sending = result.packet;
++		}
++		if (sending != null && sending.Id == 5 && sending.EntityPosition != null)
++		{
++			stratumLatestPosition.TryRemove(new System.Collections.Generic.KeyValuePair<(int clientId, long entityId), QueuedUDPPacket>((result.client.Id, sending.EntityPosition.EntityId), result));
++		}
++		if (result.creationTime > oldestAllowed)
++		{
++			try
++			{
++				server.SendPacketBlocking(result.client, sending);
++			}
++			catch (Exception e)
++			{
++				ServerMain.Logger.Error(e);
++			}
++			finally
++			{
++				// Stratum: for the real UDP/TCP-fallback paths, SendPacketBlocking
++				// always finishes reading the packet before returning (serializes
++				// synchronously, no further async handoff), so it's safe to hand it
++				// back to the pool here even if the send itself threw. The
++				// single-player/dummy-network path is different -- see
++				// StratumReturnBulkPositionPacket.
++				network.physicsManager.StratumReturnBulkPositionPacket(sending, result.client.IsSinglePlayerClient);
++			}
++		}
++		else
++		{
++			// Stratum: TTL-dropped packet never reaches SendPacketBlocking, but it's
++			// still safe to recycle (subject to the same single-player exception)
++			// since nothing else holds a reference to it.
++			network.physicsManager.StratumReturnBulkPositionPacket(sending, result.client.IsSinglePlayerClient);
++		}
++	}
+ }
