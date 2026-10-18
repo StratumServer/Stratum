@@ -10,7 +10,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  using Vintagestory.API.MathTools;
  using Vintagestory.API.Server;
  using Vintagestory.Common;
-@@ -10,18 +11,37 @@ namespace Vintagestory.Server;
+@@ -10,18 +11,38 @@ namespace Vintagestory.Server;
  
  internal class ServerSystemInventory : ServerSystem
  {
@@ -24,8 +24,9 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
 +	// Playing clients for one flush, reused so the 30 ms pass does not allocate.
 +	private readonly List<ConnectedClient> stratumFlushClients = new List<ConnectedClient>();
 +
-+	// Character inventories that still need BroadcastPlayerData. Slot packets do not wait on this.
-+	private readonly Queue<ServerPlayer> stratumPendingPlayerData = new Queue<ServerPlayer>();
++	// Character inventories that still need BroadcastPlayerData. The uid is resolved
++	// when the entry is sent, so a reconnect during the backlog gets the new session.
++	private readonly Queue<string> stratumPendingPlayerData = new Queue<string>();
 +
 +	private readonly HashSet<string> stratumPendingPlayerDataIds = new HashSet<string>();
 +
@@ -48,7 +49,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  		server.PacketHandlers[10] = HandleCreateItemstack;
  		server.PacketHandlers[8] = HandleMoveItemstack;
  		server.PacketHandlers[9] = HandleFlipItemStacks;
-@@ -37,10 +57,11 @@ internal class ServerSystemInventory : ServerSystem
+@@ -37,10 +58,11 @@ internal class ServerSystemInventory : ServerSystem
  	}
  
  	public override void OnPlayerDisconnect(ServerPlayer player)
@@ -60,7 +61,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  	}
  
  	private void secureMouseSlotContents(ServerPlayer player)
-@@ -103,11 +124,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -103,11 +125,12 @@ internal class ServerSystemInventory : ServerSystem
  		string inventoryId = packet.InvOpenedClosed.InventoryId;
  		if (player.InventoryManager.GetInventory(inventoryId, out var invFound))
  		{
@@ -74,7 +75,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  			{
  				player.InventoryManager.CloseInventory(invFound);
  			}
-@@ -132,16 +154,18 @@ internal class ServerSystemInventory : ServerSystem
+@@ -132,16 +155,18 @@ internal class ServerSystemInventory : ServerSystem
  		}
  	}
  
@@ -93,7 +94,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  			{
  				activeHotbarSlot.Itemstack.Collectible.OnBlockBreaking(value, value.CurrentBlockSelection, activeHotbarSlot, 99f, dt, value.blockBreakingCounter);
  				value.blockBreakingCounter++;
-@@ -178,14 +202,53 @@ internal class ServerSystemInventory : ServerSystem
+@@ -178,14 +203,53 @@ internal class ServerSystemInventory : ServerSystem
  			else
  			{
  				value.Entity.Controls.HandUse = EnumHandInteract.None;
@@ -147,7 +148,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  		{
  			if (!value.IsPlayingClient)
  			{
-@@ -201,51 +264,116 @@ internal class ServerSystemInventory : ServerSystem
+@@ -201,51 +265,116 @@ internal class ServerSystemInventory : ServerSystem
  				{
  					item.Itemstack?.Collectible?.UpdateAndGetTransitionStates(server, item);
  				}
@@ -231,9 +232,9 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
 +		int stratumServed = 0;
 +		while (stratumPendingPlayerData.Count > 0 && (stratumUnlimited || stratumServed < stratumBroadcastBudget))
 +		{
-+			ServerPlayer player = stratumPendingPlayerData.Dequeue();
-+			stratumPendingPlayerDataIds.Remove(player.PlayerUID);
-+			if (player.client == null || !player.client.IsPlayingClient)
++			string uid = stratumPendingPlayerData.Dequeue();
++			stratumPendingPlayerDataIds.Remove(uid);
++			if (!server.PlayersByUid.TryGetValue(uid, out ServerPlayer player) || player.client == null || !player.client.IsPlayingClient)
 +			{
 +				continue;
 +			}
@@ -262,14 +263,14 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
 +		}
 +		if (stratumPendingPlayerDataIds.Add(player.PlayerUID))
 +		{
-+			stratumPendingPlayerData.Enqueue(player);
++			stratumPendingPlayerData.Enqueue(player.PlayerUID);
 +		}
  	}
  
  	public override void OnPlayerJoin(ServerPlayer player)
  	{
  		foreach (InventoryBase value in player.inventoryMgr.Inventories.Values)
-@@ -369,11 +497,13 @@ internal class ServerSystemInventory : ServerSystem
+@@ -369,11 +498,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ
@@ -284,7 +285,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  			if (blockSelection != null)
  			{
  				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();
-@@ -494,10 +624,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -494,10 +625,12 @@ internal class ServerSystemInventory : ServerSystem
  		player.InventoryManager.GetInventory(createItemstack.TargetInventoryId, out var invFound);
  		ItemSlot itemSlot = invFound?[createItemstack.TargetSlot];
  		if (player.WorldData.CurrentGameMode == EnumGameMode.Creative && itemSlot != null)

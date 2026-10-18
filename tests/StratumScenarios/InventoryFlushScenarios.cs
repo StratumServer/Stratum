@@ -42,6 +42,7 @@ public class InventoryFlushScenarios : AtlasScenarioBase
 			}
 			FlushDirtySlots(World.Api.World);
 			Assert.All(characters, inventory => Assert.False(inventory.IsDirty));
+			Assert.Equal(3, SlotPackets(World.Api.World));
 			string[] served = Broadcasts(World.Api.World);
 			Assert.Single(served);
 
@@ -133,6 +134,7 @@ public class InventoryFlushScenarios : AtlasScenarioBase
 			character.MarkSlotDirty(0);
 			FlushDirtySlots(World.Api.World);
 			Assert.False(character.IsDirty);
+			Assert.Equal(2, SlotPackets(World.Api.World));
 			string[] first = Broadcasts(World.Api.World);
 			Assert.Single(first);
 			FlushDirtySlots(World.Api.World);
@@ -218,6 +220,14 @@ public class InventoryFlushScenarios : AtlasScenarioBase
 		MethodInfo flush = inventory.GetType().GetMethod("SendDirtySlots", BindingFlags.Instance | BindingFlags.NonPublic)
 			?? throw new InvalidOperationException("SendDirtySlots was not on the inventory system");
 		flush.Invoke(inventory, new object[] { 0.03f });
+	}
+
+	private static int SlotPackets(object server)
+	{
+		object inventory = InventorySystem(server);
+		return (int)inventory.GetType()
+			.GetField("stratumSlotPacketsThisPass", BindingFlags.Instance | BindingFlags.NonPublic)!
+			.GetValue(inventory)!;
 	}
 
 	private static string[] Broadcasts(object server)

@@ -1579,9 +1579,8 @@ internal class StratumInventoryFlushConfig
 {
 	// One dirty-slot flush broadcasts player data for at most this many character
 	// inventories. Slot packets still go out. Whoever did not get a broadcast is
-	// first in line on the next pass. The listener runs every 30 ms. On the
-	// 1,000-bot join, 32 in one pass was still about 2 seconds, so the default
-	// is 4. Zero or less means no limit.
+	// first in line on the next pass. The listener runs every 30 ms. Zero or less
+	// means no limit.
 	public int MaxPlayerDataBroadcastsPerPass { get; set; } = 4;
 
 	public void EnsureSane()
