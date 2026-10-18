@@ -367,25 +367,19 @@ index ea1d5c0..3791d9f 100644
 +		// Stratum: the raytrace only feeds OnBeingLookedAt. The skip grows with the online count
 +		// so a crowded server does not trace every player every few ticks.
 +		StratumEntitySelectionConfig stratumSelection = StratumRuntime.Config.Performance.EntitySelection;
-+		bool stratumOcclusionTrace = stratumSelection.OcclusionTraceEnabled;
-+		int stratumSelectionMaxSkip = stratumSelection.SkipTicks(server.Clients.Count);
-+		// A tick already over the threshold waits for the skip. Movement still traces
-+		// immediately while the server is keeping up.
-+		bool stratumSelectionOverloaded = dt * 1000f > stratumSelection.OverloadTickMs;
++		// Playing clients from the previous tick. Clients also holds the queue.
++		int stratumSelectionMaxSkip = stratumSelection.SkipTicks(stratumSelectionPlayingClients);
++		int stratumPlayingNow = 0;
 +		foreach (ConnectedClient value in server.Clients.Values)
 +		{
 +			ConnectedClient client = value;
 +			if (client.IsPlayingClient)
 +			{
++				stratumPlayingNow++;
 +				if (client.FallBackToTcp) stratumTcpFallbackClients++; // Stratum: TCP fallback counter
 +				ServerPlayer player = client.Player;
 +				EntityPlayer entityPlayer = player.Entity;
 +				UpdateStratumPreviousBlockSelection(entityPlayer);
-+				if (!stratumOcclusionTrace)
-+				{
-+					continue;
-+				}
-+
 +				// Stratum: throttle the per-client raytrace. At 350 players the per-tick
 +				// fanout of RayTraceForSelection dominated entity.selection. Skip the trace
 +				// when the player has not moved or rotated meaningfully AND we re-traced
@@ -408,7 +402,9 @@ index ea1d5c0..3791d9f 100644
 +				bool moved = (dx * dx + dy * dy + dz * dz) > StratumSelectionPosThresholdSq;
 +				bool turned = dyaw > StratumSelectionRotThreshold || dpitch > StratumSelectionRotThreshold;
 +				bool ticksElapsed = (stratumSelectionTickIndex - selState.LastTraceTickIndex) >= stratumSelectionMaxSkip;
-+				bool shouldTrace = ticksElapsed || (!stratumSelectionOverloaded && (moved || turned));
++				EntityControls stratumControls = entityPlayer.ServerControls;
++				bool mining = stratumControls.LeftMouseDown || stratumControls.RightMouseDown;
++				bool shouldTrace = ticksElapsed || mining || moved || turned;
 +
 +				if (shouldTrace)
 +				{
@@ -440,6 +436,7 @@ index ea1d5c0..3791d9f 100644
 +				}
 +			}
 +		}
++		stratumSelectionPlayingClients = stratumPlayingNow;
 +		StratumRuntime.PerformanceStats.RecordEntitySelectionTick(stratumSelectionTraces, stratumLookedAtBlocks);
 +		StratumRuntime.PerformanceStats.RecordNetworkStats(stratumTcpFallbackClients);
 +		StratumRuntime.Timings.RecordElapsed("entity.selection", stratumSelectionTimingStart);
@@ -460,6 +457,7 @@ index ea1d5c0..3791d9f 100644
 +
 +	private readonly Dictionary<int, StratumSelectionState> stratumSelectionState = new Dictionary<int, StratumSelectionState>();
 +	private int stratumSelectionTickCounter;
++	private int stratumSelectionPlayingClients;
 +	private const double StratumSelectionPosThresholdSq = 0.0025;   // 5cm
 +	private const float StratumSelectionRotThreshold = 0.015f;      // ~0.86 degrees
 +
