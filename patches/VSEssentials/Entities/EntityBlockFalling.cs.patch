@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
-index 0615808..2ba773a 100644
+index 0615808..56da737 100644
 --- a/VSEssentials/Entities/EntityBlockFalling.cs
 +++ b/VSEssentials/Entities/EntityBlockFalling.cs
 @@ -370,10 +370,17 @@ namespace Vintagestory.GameContent
@@ -47,7 +47,7 @@ index 0615808..2ba773a 100644
  
          /// <summary>
          /// Delays behaviors from ticking to reduce flickering
-@@ -604,17 +627,68 @@ namespace Vintagestory.GameContent
+@@ -604,17 +627,69 @@ namespace Vintagestory.GameContent
              {
                  OnFallToGround(0);
                  World.FrameProfiler.Mark("entity-tick-unsstablefalling-falltoground");
@@ -82,7 +82,8 @@ index 0615808..2ba773a 100644
 +            // pathways (such as `StratumSettleAt` or `OnFallToGround`) set `fallHandled = true`
 +            // before calling `Die()`; therefore, this fallback is only triggered by
 +            // despawn events that were not initiated by us.
-+            if (StratumTracked && !fallHandled && Api?.Side == EnumAppSide.Server && World != null)
++            if (StratumTracked && !fallHandled && Api?.Side == EnumAppSide.Server && World != null
++                && despawn?.Reason != EnumDespawnReason.Unload)
 +            {
 +                fallHandled = true;
 +                try
@@ -116,7 +117,7 @@ index 0615808..2ba773a 100644
                  if (!reusedMeshRef) meshRef?.Dispose();
                  fallingNow.Remove(EntityId);
                  particleSys.Unregister(this);
-@@ -810,10 +884,63 @@ namespace Vintagestory.GameContent
+@@ -810,10 +885,70 @@ namespace Vintagestory.GameContent
              lingerTicks = 50;
              fallHandled = true;
              hopUpHeight = 1;
@@ -152,26 +153,33 @@ index 0615808..2ba773a 100644
 +            }
 +        }
 +
++        private bool stratumSettleQueued;
++
 +        private void StratumSettleAt(BlockPos atPos)
 +        {
-+            if (fallHandled) return;
-+            fallHandled = true;
++            if (fallHandled || stratumSettleQueued) return;
++            stratumSettleQueued = true;
++            BlockPos at = atPos.Copy();
 +
-+            // Initialize has already removed the original block at initialPos, but it deferred the calls to MarkBlockDirty
-+            // and TriggerNeighbourBlockUpdate until OnGameTick. If the watchdog has triggered before that,
-+            // we perform these actions now; otherwise, the client would continue to display the block, and
-+            // neighboring elements (such as a column above or chandeliers) would fail to react.
-+            if (!InitialBlockRemoved)
++            Api.Event.EnqueueMainThreadTask(() =>
 +            {
-+                InitialBlockRemoved = true;
-+                UpdateBlock(true, initialPos);   // MarkBlockDirty + TriggerNeighbourBlockUpdate
-+            }
++                stratumSettleQueued = false;
++                // The entity may have landed meanwhile, or despawned (then OnEntityDespawn settles it).
++                if (fallHandled || !Alive) return;
++                fallHandled = true;
 +
-+            ModSystemFallingBlocks.SimulateInstantFall(
-+                World, Block, Block, removedBlockentity, blockEntityAttributes,
-+                atPos, drops, false);
++                if (!InitialBlockRemoved)
++                {
++                    InitialBlockRemoved = true;
++                    UpdateBlock(true, initialPos);
++                }
 +
-+            Die(EnumDespawnReason.Removed);
++                ModSystemFallingBlocks.SimulateInstantFall(
++                    World, Block, Block, removedBlockentity, blockEntityAttributes,
++                    at, drops, false);
++
++                Die(EnumDespawnReason.Removed);
++            }, "StratumFallingSettle");
 +        }
 +        // Stratum end
 +

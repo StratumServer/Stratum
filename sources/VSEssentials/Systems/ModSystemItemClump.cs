@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using Vintagestory.API.Common;
@@ -21,12 +22,22 @@ namespace Vintagestory.GameContent;
 //  - Attempts per tick are budgeted, so thousands of items loaded with the world do not hit a single tick.
 //  - Only a newcomer (spawned or loaded) becomes a candidate. It searches for neighbours and pours
 //    itself into them. Items that have been lying around are not rescanned.
-//  - Small default radius (5 horizontal, 2 vertical): items do not vanish far from where they lay
-//    and do not merge across floors.
+//  - Small default radius (5 horizontal, 2 vertical): items do not vanish far from where they lay.
+//    The vertical radius reaches through a one block floor or wall, so stacks on both sides of a thin
+//    floor can merge.
 //  - Largest stacks receive, smallest stacks donate, which minimizes the resulting entity count.
 //  - A stack a player just dropped is still inside the pickup window of EntityItem.CanCollect
 //    (other players cannot take it yet). It takes no part in merging, neither as donor nor as
 //    receiver, until that window has passed, so merging never skips it.
+//  - The merged stack gets the despawn clock of whichever side has more life left. deathTime is elapsed
+//    time (EntityBehaviorDespawn adds to it and kills the item once it passes minSeconds), so the
+//    receiver takes the smaller of the two values. Stacks with different minsecondsToDespawn (for
+//    example a death drop kept for an hour) never merge, otherwise one side would get the wrong lifetime.
+//  - A merge moves items between entities that may sit in different chunks. Only the chunk of a donor that
+//    dies is dirtied by the removal, so the receiver and a surviving donor chunk are marked modified
+//    explicitly, otherwise the next save writes the old counts.
+//  - Spawn and despawn events can come from worker threads (RegionTicking), so they only append to a
+//    concurrent queue; the queue and the index are touched from the tick listener alone.
 //  - Blacklist uses vanilla WildcardUtil.Match ('*', case insensitive, "@regex"). The result is cached
 //    per collectible, so Code.ToString() runs once.
 // Merging goes through ItemSlot.TryPutInto and GetMergableQuantity, so all vanilla rules
@@ -49,6 +60,9 @@ public class ModSystemItemClump : ModSystem
 	// Queue ordered by due time, plus an index by EntityId for O(1) dedup and cancel.
 	private readonly Queue<ItemClumpCandidate> queue = new Queue<ItemClumpCandidate>();
 	private readonly Dictionary<long, ItemClumpCandidate> byId = new Dictionary<long, ItemClumpCandidate>();
+
+	// Spawn/load/despawn events, drained on the main thread by OnTick (events may arrive from workers).
+	private readonly ConcurrentQueue<(EntityItem Item, bool Spawned)> intake = new ConcurrentQueue<(EntityItem Item, bool Spawned)>();
 
 	// Reused buffer (the server tick is single threaded).
 	private readonly List<EntityItem> group = new List<EntityItem>();
@@ -151,6 +165,7 @@ public class ModSystemItemClump : ModSystem
 
 		queue.Clear();
 		byId.Clear();
+		while (intake.TryDequeue(out _)) { }
 		group.Clear();
 		blacklistCache.Clear();
 		matchCollectible = null;
@@ -161,19 +176,33 @@ public class ModSystemItemClump : ModSystem
 	private void OnEntitySpawn(Entity entity)
 	{
 		if (entity is not EntityItem item) return;
-		Enqueue(item);
+		intake.Enqueue((item, true));
 	}
 
 	private void OnEntityDespawn(Entity entity, EntityDespawnData despawn)
 	{
 		if (entity is not EntityItem item) return;
-		if (byId.Remove(item.EntityId, out ItemClumpCandidate c))
+		intake.Enqueue((item, false));
+	}
+
+	// Applies the events in the order they arrived (a despawn followed by a reload of the same
+	// entity must end up tracked).
+	private void DrainIntake(long now)
+	{
+		while (intake.TryDequeue(out (EntityItem Item, bool Spawned) ev))
 		{
-			c.Cancelled = true; // the queue entry is skipped when it reaches the head
+			if (ev.Spawned)
+			{
+				Enqueue(ev.Item, now);
+			}
+			else if (byId.Remove(ev.Item.EntityId, out ItemClumpCandidate c))
+			{
+				c.Cancelled = true; // the queue entry is skipped when it reaches the head
+			}
 		}
 	}
 
-	private void Enqueue(EntityItem item)
+	private void Enqueue(EntityItem item, long now)
 	{
 		if (byId.ContainsKey(item.EntityId)) return;
 
@@ -181,7 +210,7 @@ public class ModSystemItemClump : ModSystem
 		{
 			Entity = item,
 			EntityId = item.EntityId,
-			DueMs = sapi.World.ElapsedMilliseconds + delayMs
+			DueMs = now + delayMs
 		};
 		byId[c.EntityId] = c;
 		queue.Enqueue(c);
@@ -191,6 +220,7 @@ public class ModSystemItemClump : ModSystem
 	private void OnTick(float dt)
 	{
 		long now = sapi.World.ElapsedMilliseconds;
+		DrainIntake(now);
 
 		// Two independent budgets:
 		//  clumpBudget: expensive merge attempts (GetEntitiesAround + TryPutInto);
@@ -382,26 +412,24 @@ public class ModSystemItemClump : ModSystem
 				int space = rs.Collectible.MaxStackSize - rs.StackSize;
 				if (space <= 0) continue;
 
+				// Stacks that expire on different clocks (a death drop kept for an hour next to ordinary
+				// stacks) must not mix: the merged stack would get the wrong lifetime.
+				if (DespawnOverride(donor) != DespawnOverride(recv)) continue;
+
 				// Vanilla rules: matching attributes, freshness and so on.
 				if (rs.Collectible.GetMergableQuantity(rs, ds, EnumMergePriority.AutoMerge) <= 0) continue;
 
-                int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
-                if (moved <= 0) continue;
+				int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
+				if (moved <= 0) continue;
 
-                // Read the current lifetime timer values ​​from the entities' local attributes
-                float donorDeathTime = donor.Attributes.GetFloat("deathTime", 0f);
-                float recvDeathTime = recv.Attributes.GetFloat("deathTime", 0f);
+				MergeDespawnClock(donor, recv);
 
-                // We take the maximum value so that the combined stack doesn't disappear prematurely
-                if (donorDeathTime > recvDeathTime)
-                {
-                    recv.Attributes.SetFloat("deathTime", donorDeathTime);
-                }
-
-                // Update the ItemStack and mark changes for clients
-                recv.Itemstack = recv.Slot.Itemstack;
-                recv.WatchedAttributes.MarkPathDirty("itemstack");
-                dbgMerged++;
+				// The Itemstack setter does not mark the path dirty, so do it explicitly (as vanilla BlockMeal does),
+				// otherwise clients that already track the item keep the old stack size.
+				recv.Itemstack = recv.Slot.Itemstack;
+				recv.WatchedAttributes.MarkPathDirty("itemstack");
+				MarkChunkModified(recv);
+				dbgMerged++;
 			}
 
 			ItemStack left = donor.Slot.Itemstack;
@@ -414,6 +442,7 @@ public class ModSystemItemClump : ModSystem
 			{
 				donor.Itemstack = left;
 				donor.WatchedAttributes.MarkPathDirty("itemstack");
+				MarkChunkModified(donor);
 			}
 		}
 
@@ -440,6 +469,35 @@ public class ModSystemItemClump : ModSystem
 			&& e.World != null
 			&& e.Slot?.Itemstack != null
 			&& e.Slot.Itemstack.StackSize > 0;
+	}
+
+	// Per entity override of the despawn time (a death drop is kept for an hour); 0 means the default.
+	private static int DespawnOverride(EntityItem e)
+	{
+		return e.Attributes.GetInt("minsecondsToDespawn");
+	}
+
+	// deathTime is elapsed time, not remaining time: EntityBehaviorDespawn adds to it and kills the item
+	// once it passes minSeconds. The receiver keeps the smaller value, which is the clock with more life left.
+	private static void MergeDespawnClock(EntityItem donor, EntityItem recv)
+	{
+		EntityBehaviorDespawn donorClock = donor.GetBehavior<EntityBehaviorDespawn>();
+		EntityBehaviorDespawn recvClock = recv.GetBehavior<EntityBehaviorDespawn>();
+		if (donorClock == null || recvClock == null) return;
+
+		float donorTime = donorClock.DeathTime;
+		if (donorTime < recvClock.DeathTime)
+		{
+			recvClock.DeathTime = donorTime;
+		}
+	}
+
+	// Entity merges change an entity of a chunk that nothing else has dirtied. Autosave, unload and
+	// shutdown write only chunks marked for saving. InChunkIndex3d is the chunk the entity is listed
+	// in (it follows the entity once a second), which is the chunk that gets written.
+	private void MarkChunkModified(EntityItem e)
+	{
+		sapi.WorldManager.GetChunk(e.InChunkIndex3d)?.MarkModified();
 	}
 
 	// The inverse of EntityItem.CanCollect: a player dropped it (ByPlayerUid is set) and less than

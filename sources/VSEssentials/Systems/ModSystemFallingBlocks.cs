@@ -18,12 +18,22 @@ namespace Vintagestory.GameContent;
 // a fall resolved without an entity does NOT notify neighbours (plain SetBlock, no
 // TriggerNeighbourBlockUpdate). The goal is to stop collapses from loading the server outside the
 // range of players, so a chain of collapses must not continue there. Consequences, by design:
-//  - a sand/gravel column with no player in range only loses its bottom block, the rest stays up
-//    until something next to it changes;
+//  - a sand/gravel column with no player in range loses its bottom block and the rest stays up until
+//    something next to it changes. On the queued path the block above falls too: a settling entity
+//    notifies its start cell, so that column loses two blocks;
 //  - a block that was only asked to fall sideways and has solid support below stays where it is;
+//  - the watchdog puts a block that has already stepped sideways back on its start cell (it settles
+//    from initialPos when nobody is near);
 //  - requests still waiting in the entity queue when the server stops are resolved in Dispose, but
-//    requests whose column is unloaded earlier stay at their start cell.
+//    requests whose column is unloaded earlier stay at their start cell. Entities in flight when a
+//    column unloads are left to vanilla: they are saved with the chunk and land after the reload.
+// Known differences from the entity path for snow (small): snow that lands on a snow block adds a layer
+// above it instead of being absorbed into it.
 // With a player nearby everything goes through the entity path and behaves like vanilla.
+//
+// Threading: with RegionTicking on, falling entities tick on worker threads, so the live-entity
+// bookkeeping (activeFallingPositions, totalFallingBlocks) is guarded by a lock. Placing blocks and
+// spawning items stays on the main thread: the watchdog defers its settle with EnqueueMainThreadTask.
 public class ModSystemFallingBlocks : ModSystem
 {
 	// One retry per tick, so this is roughly 10 seconds at the 32 ms queue tick.
@@ -36,6 +46,9 @@ public class ModSystemFallingBlocks : ModSystem
 
 	// Live EntityBlockFalling count. Maintained by EntityBlockFalling through the hooks below.
 	private int totalFallingBlocks;
+
+	// Guards totalFallingBlocks and activeFallingPositions (see Threading in the header).
+	private readonly object activeLock = new object();
 
 	// initialPos of every live falling entity. O(1) replacement for the GetNearestEntity duplicate check.
 	private readonly HashSet<BlockPos> activeFallingPositions = new HashSet<BlockPos>();
@@ -115,8 +128,11 @@ public class ModSystemFallingBlocks : ModSystem
 		instantQueue.Clear();
 		blockedThisTick.Clear();
 		pendingPositions.Clear();
-		activeFallingPositions.Clear();
-		totalFallingBlocks = 0;
+		lock (activeLock)
+		{
+			activeFallingPositions.Clear();
+			totalFallingBlocks = 0;
+		}
 
 		if (Instance == this) Instance = null;
 	}
@@ -149,15 +165,21 @@ public class ModSystemFallingBlocks : ModSystem
 	// Called at the end of EntityBlockFalling.Initialize (runs for both new and chunk loaded entities).
 	public void OnFallingBlockInitialized(EntityBlockFalling entity)
 	{
-		totalFallingBlocks++;
-		activeFallingPositions.Add(entity.initialPos);
+		lock (activeLock)
+		{
+			totalFallingBlocks++;
+			activeFallingPositions.Add(entity.initialPos);
+		}
 	}
 
 	// Called from EntityBlockFalling.OnEntityDespawn, only for entities that were registered.
 	public void OnFallingBlockDespawned(EntityBlockFalling entity)
 	{
-		totalFallingBlocks = Math.Max(0, totalFallingBlocks - 1);
-		activeFallingPositions.Remove(entity.initialPos);
+		lock (activeLock)
+		{
+			totalFallingBlocks = Math.Max(0, totalFallingBlocks - 1);
+			activeFallingPositions.Remove(entity.initialPos);
+		}
 	}
 
 	// Free the dedup slot once an entity has landed or fallen away, so a block placed again at
@@ -165,12 +187,34 @@ public class ModSystemFallingBlocks : ModSystem
 	// is intentionally left untouched. Idempotent: safe to call after despawn already removed it.
 	public void OnFallingBlockLanded(EntityBlockFalling entity)
 	{
-		activeFallingPositions.Remove(entity.initialPos);
+		lock (activeLock)
+		{
+			activeFallingPositions.Remove(entity.initialPos);
+		}
+	}
+
+	private bool IsActivePosition(BlockPos pos)
+	{
+		lock (activeLock)
+		{
+			return activeFallingPositions.Contains(pos);
+		}
+	}
+
+	private int LiveFallingCount
+	{
+		get
+		{
+			lock (activeLock)
+			{
+				return totalFallingBlocks;
+			}
+		}
 	}
 
 	public bool IsPositionActiveOrPending(BlockPos pos)
 	{
-		return pendingPositions.Contains(pos) || activeFallingPositions.Contains(pos);
+		return pendingPositions.Contains(pos) || IsActivePosition(pos);
 	}
 
 	public bool HasPlayerNearby(Vec3d pos)
@@ -208,7 +252,7 @@ public class ModSystemFallingBlocks : ModSystem
 	{
 		IWorldAccessor world = sapi.World;
 
-		while (totalFallingBlocks < maxFallingLimit && requestQueue.Count > 0)
+		while (LiveFallingCount < maxFallingLimit && requestQueue.Count > 0)
 		{
 			SpawnRequest request = PopRandom(requestQueue);
 
@@ -220,7 +264,7 @@ public class ModSystemFallingBlocks : ModSystem
 				continue;
 			}
 
-			if (activeFallingPositions.Contains(request.InitialPos))
+			if (IsActivePosition(request.InitialPos))
 			{
 				// Position still occupied: defer to next tick instead of spinning in this one.
 				request.RetryCount++;
@@ -460,6 +504,13 @@ public class ModSystemFallingBlocks : ModSystem
 				}
 				return;
 			}
+		}
+
+		// Vanilla (EntityBlockFalling.UpdateBlock) does not place snow into a fluid cell.
+		if (supported && block.BlockMaterial == EnumBlockMaterial.Snow
+			&& accessor.GetBlock(finalPos, BlockLayersAccess.Fluid).Id != 0)
+		{
+			return;
 		}
 
 		bool canPlace = supported && (targetBlock.IsLiquid() || targetBlock.Replaceable >= 6000);

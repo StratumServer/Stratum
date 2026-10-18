@@ -5,13 +5,20 @@ namespace Vintagestory.API.Common;
 
 // Lives in the API assembly so that both Lib (StratumPerformanceConfig owns the instance)
 // and GameContent (ModSystemItemClump reads it) can see it.
+//
+// Merging rules worth knowing (all of it only applies while Enabled is true):
+//  - A stack a player just dropped takes no part in merging until the vanilla pickup window (1 s) has passed.
+//  - The merged stack gets the despawn clock of the side with more life left. Stacks with different
+//    minsecondsToDespawn (for example a death drop kept for an hour) never merge.
+//  - The search is a sphere-like box (Radius horizontally, VerticalRadius vertically). A vertical radius of 2
+//    reaches through a one block floor or wall, so stacks on both sides of a thin floor or wall can merge.
 public class StratumItemClumpConfig
 {
     // Set by StratumPerformanceConfig.EnsurePopulated after the config is loaded.
     // Null until then, readers must fall back to defaults.
     public static StratumItemClumpConfig Active { get; set; }
 
-    // Merges resting item stacks of the same type.
+    // Merges resting item stacks of the same type. Read once when the server starts, changing it needs a restart.
     public bool Enabled { get; set; } = true;
 
     // Search radius for neighbouring items in blocks, horizontal and vertical.
