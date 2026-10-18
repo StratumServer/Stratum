@@ -913,7 +913,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  		EntityTagPacket result = null;
  		SyncedTreeAttribute watchedAttributes = entity.WatchedAttributes;
  		if (watchedAttributes.AllDirty)
-@@ -779,82 +1296,246 @@ public class PhysicsManager : LoadBalancedTask
+@@ -779,82 +1296,252 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		watchedAttributes.MarkClean();
  		return result;
@@ -951,7 +951,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
 +		}
 +		// Stratum: a packet we did not rent belongs to the caller. Clearing it here
 +		// drops the positions for every later client that packet is still queued for.
-+		if (isSinglePlayerClient || bulk is not StratumRentedBulkPositionPacket)
++		if (isSinglePlayerClient || bulk is not StratumRentedBulkPositionPacket rented)
 +		{
 +			return;
 +		}
@@ -959,14 +959,18 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
 +		bulk.EntityPositions = null;
 +		bulk.EntityPositionsCount = 0;
 +		bulk.EntityPositionsLength = 0;
-+		if (array != null)
++		// A prefix can swap in an array this pool never rented. Returning that throws
++		// on the UDP thread, so only the array this packet rented goes back.
++		if (array != null && ReferenceEquals(array, rented.Rented))
 +		{
 +			ArrayPool<Packet_EntityPosition>.Shared.Return(array, clearArray: true);
 +		}
++		rented.Rented = null;
 +	}
 +
 +	private sealed class StratumRentedBulkPositionPacket : Packet_BulkEntityPosition
 +	{
++		internal Packet_EntityPosition[] Rented;
 +	}
 +
 +	private Packet_EntityPosition[] StratumRentPositionArray(int minimumLength)
@@ -1143,7 +1147,8 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
 -					packet_BulkEntityPosition.SetEntityPositions(array);
 +					Packet_EntityPosition[] snapshot = StratumRentPositionArray(batchSize);
 +					Array.Copy(stratumBatchArray, snapshot, batchSize);
-+					Packet_BulkEntityPosition packet_BulkEntityPosition = new StratumRentedBulkPositionPacket();
++					StratumRentedBulkPositionPacket packet_BulkEntityPosition = new StratumRentedBulkPositionPacket();
++					packet_BulkEntityPosition.Rented = snapshot;
 +					packet_BulkEntityPosition.SetEntityPositions(snapshot, batchSize, snapshot.Length);
  					udpNetwork.SendPacket_Threadsafe(client, packet_BulkEntityPosition);
  				}
@@ -1176,14 +1181,15 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
 +				{
 +					snapshot[k] = list[k];
 +				}
-+				Packet_BulkEntityPosition packet_BulkEntityPosition2 = new StratumRentedBulkPositionPacket();
++				StratumRentedBulkPositionPacket packet_BulkEntityPosition2 = new StratumRentedBulkPositionPacket();
++				packet_BulkEntityPosition2.Rented = snapshot;
 +				packet_BulkEntityPosition2.SetEntityPositions(snapshot, count, snapshot.Length);
  				udpNetwork.SendPacket_Threadsafe(client, packet_BulkEntityPosition2);
  			}
  			if (list2.Count > 0)
  			{
  				BulkAnimationPacket message = new BulkAnimationPacket
-@@ -872,35 +1553,66 @@ public class PhysicsManager : LoadBalancedTask
+@@ -872,35 +1559,66 @@ public class PhysicsManager : LoadBalancedTask
  				AnimationsAndTagsChannel.SendPacket(item2, client.Player);
  			}
  		}
@@ -1252,7 +1258,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  					flag = true;
  				}
  			}
-@@ -990,11 +1702,14 @@ public class PhysicsManager : LoadBalancedTask
+@@ -990,11 +1708,14 @@ public class PhysicsManager : LoadBalancedTask
  		return ServerPackets.getEntityPositionPacket(entity.Pos, entity, 1);
  	}
  
@@ -1268,7 +1274,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  		{
  			Id = 80,
  			EntityPosition = entityPosition
-@@ -1007,10 +1722,16 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1007,10 +1728,16 @@ public class PhysicsManager : LoadBalancedTask
  			if (client.State.ConnectedOrPlaying() && client.Entityplayer != null)
  			{
  				EntityPos pos2 = client.Entityplayer.Pos;
@@ -1285,7 +1291,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  					server.SendPacket(client.Id, packet);
  				}
  			}
-@@ -1026,16 +1747,29 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1026,16 +1753,29 @@ public class PhysicsManager : LoadBalancedTask
  		if (threadNumber == 0)
  		{
  			threadNumber = 1;
@@ -1320,7 +1326,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  		Dictionary<long, AnimationPacket> dictionary2 = entitiesAnimPackets[threadNumber - 1];
  		dictionary.Clear();
  		dictionary2.Clear();
-@@ -1097,10 +1831,19 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1097,10 +1837,19 @@ public class PhysicsManager : LoadBalancedTask
  		try
  		{
  			int num5 = -1;
@@ -1340,7 +1346,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  				int num6 = (ticksToDo - num5 + 1) % 2;
  				num5 += num6;
  				bool flag2 = num5 == ticksToDo - 1;
-@@ -1108,20 +1851,113 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1108,20 +1857,113 @@ public class PhysicsManager : LoadBalancedTask
  				bool forceUpdate = (num5 + currentTick) % 30 <= num6;
  				for (int j = num3; j < num4; j++)
  				{
@@ -1457,7 +1463,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  						{
  							entity.PositionTicked = true;
  						}
-@@ -1196,49 +2032,153 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1196,49 +2038,153 @@ public class PhysicsManager : LoadBalancedTask
  		if (doBuildAttributes)
  		{
  			eFullUpdate = entitiesFullUpdate[0];
@@ -1618,7 +1624,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/Vintagestor
  			SendPositionsAndAnimations(dictionary, dictionary2, 0, doBuildAttributes);
  		}
  		dictionary.Clear();
-@@ -1262,11 +2202,25 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1262,11 +2208,25 @@ public class PhysicsManager : LoadBalancedTask
  
  	public void StartWorkerThread(int threadNum)
  	{

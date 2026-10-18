@@ -35,12 +35,20 @@ public class BulkPositionPacketScenarios : AtlasScenarioBase
 		Array rentedArray = (Array)rent.Invoke(physics, new object[] { 1 })!;
 		Type rentedType = physics.GetType().GetNestedType("StratumRentedBulkPositionPacket", BindingFlags.NonPublic)!;
 		object rented = Activator.CreateInstance(rentedType)!;
+		rentedType.GetField("Rented", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(rented, rentedArray);
+		Array swapped = Array.CreateInstance(positionType, 3);
+		bulkType.GetMethod("SetEntityPositions", new[] { positionType.MakeArrayType(), typeof(int), typeof(int) })!
+			.Invoke(rented, new object[] { swapped, 1, swapped.Length });
+		ret.Invoke(physics, new[] { Packet(udpType, rented), false });
+		Assert.Null(bulkType.GetField("EntityPositions")!.GetValue(rented));
+
 		bulkType.GetMethod("SetEntityPositions", new[] { positionType.MakeArrayType(), typeof(int), typeof(int) })!
 			.Invoke(rented, new object[] { rentedArray, 1, rentedArray.Length });
-		object rentedUdp = Packet(udpType, rented);
-		ret.Invoke(physics, new[] { rentedUdp, false });
+		rentedType.GetField("Rented", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(rented, rentedArray);
+		ret.Invoke(physics, new[] { Packet(udpType, rented), false });
 		Assert.Null(bulkType.GetField("EntityPositions")!.GetValue(rented));
 		Assert.Equal(0, bulkType.GetField("EntityPositionsCount")!.GetValue(rented));
+		Assert.Same(rentedArray, rent.Invoke(physics, new object[] { 1 }));
 	}
 
 	private static object Packet(Type udpType, object bulk)
