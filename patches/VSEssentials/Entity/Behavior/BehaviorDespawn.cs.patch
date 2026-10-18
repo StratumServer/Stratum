@@ -1,5 +1,4 @@
 diff --git a/VSEssentials/Entity/Behavior/BehaviorDespawn.cs b/VSEssentials/Entity/Behavior/BehaviorDespawn.cs
-index 9ee9c19..9d9fdfe 100644
 --- a/VSEssentials/Entity/Behavior/BehaviorDespawn.cs
 +++ b/VSEssentials/Entity/Behavior/BehaviorDespawn.cs
 @@ -103,25 +103,48 @@ namespace Vintagestory.GameContent
@@ -24,10 +23,10 @@ index 9ee9c19..9d9fdfe 100644
              if (!entity.Alive || entity.World.Side == EnumAppSide.Client) return;
  
 -            deltaTime = (float)System.Math.Min(deltaTime, 0.2);
-+            if (!Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaAlreadyClamped)
-+            {
-+                deltaTime = (float)System.Math.Min(deltaTime, 0.2);
-+            }
++            // Stratum: a throttle payout hands every behavior the raw sum and despawn this clamped sum.
++            // NaN means this tick was not a payout, so vanilla's 0.2 second clamp still applies.
++            float stratumDespawnDelta = Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaTime;
++            deltaTime = float.IsNaN(stratumDespawnDelta) ? (float)System.Math.Min(deltaTime, 0.2) : stratumDespawnDelta;
  
              if ((accumSeconds += deltaTime) > accumOffset)
              {

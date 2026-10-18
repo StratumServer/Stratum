@@ -15,10 +15,10 @@ namespace Vintagestory.API.Common.Entities
     /// </summary>
     public static class StratumEntityBehaviorTimings
     {
-        // Set by the entity throttle while it pays out a delta that was already clamped
-        // once per skipped tick. The despawn behavior must not clamp that payout again.
+        // Clamped time for the despawn behavior on a throttle payout. NaN on a normal tick,
+        // which tells despawn to keep vanilla's 0.2 second clamp. Other behaviors get the raw sum.
         [ThreadStatic]
-        public static bool DespawnDeltaAlreadyClamped;
+        public static float DespawnDeltaTime = float.NaN;
         /// <summary>
         /// Version of the reading contract (ContractVersion, RequestRecording, Snapshot, and the key forms below).
         /// Bumped only when one of them changes shape or meaning, never when something is added.
