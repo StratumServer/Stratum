@@ -1169,9 +1169,9 @@ internal class StratumPhysicsConfig
 	public bool ClientListReuseEnabled { get; set; } = true;
 
 	// Stratum: Paper-style Entity Activation Range for PhysicsManager.
-	// Far-tracked entities (IsTracked == 1, >50 blocks from any player) tick threadsafe
-	// behaviors and OnPhysicsTick at reduced frequency, interleaved deterministically by
-	// EntityId so the cost spreads evenly across physics steps.
+	// Far entities still integrate physics every step so motion and collision stay smooth.
+	// Threadsafe behaviors run on the distance stride, and the skipped time is handed
+	// to the stride that runs them.
 	public bool ActivationRangeEnabled { get; set; } = true;
 
 	// Frame stride for entities in the MID band (NearActivationRadiusBlocks .. MidActivationRadiusBlocks).
