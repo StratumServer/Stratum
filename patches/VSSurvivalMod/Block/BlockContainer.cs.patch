@@ -1,0 +1,23 @@
+diff --git a/VSSurvivalMod/Block/BlockContainer.cs b/VSSurvivalMod/Block/BlockContainer.cs
+--- a/VSSurvivalMod/Block/BlockContainer.cs
++++ b/VSSurvivalMod/Block/BlockContainer.cs
+@@ -19,10 +19,19 @@ namespace Vintagestory.GameContent
+         public virtual float GetContainingTransitionModifierPlaced(IWorldAccessor world, BlockPos pos, EnumTransitionType transType)
+         {
+             return 1;
+         }
+ 
++        public override void OnNeighbourBlockChange(IWorldAccessor world, BlockPos pos, BlockPos neibpos)
++        {
++            base.OnNeighbourBlockChange(world, pos, neibpos);
++            if (world.BlockAccessor.GetBlockEntity(pos) is BlockEntityContainer container)
++            {
++                container.StratumNoteNeighbour();
++            }
++        }
++
+ 
+         public virtual void SetContents(ItemStack containerStack, ItemStack[] stacks)
+         {
+             if (stacks == null || stacks.Length == 0 || stacks.All(x => x == null))
+             {
