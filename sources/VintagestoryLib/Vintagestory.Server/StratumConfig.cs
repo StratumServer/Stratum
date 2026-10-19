@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 
 namespace Vintagestory.Server;
@@ -27,6 +28,8 @@ internal class StratumConfig
 	public StratumClientModPolicyConfig ClientModPolicy { get; set; } = new StratumClientModPolicyConfig();
 
 	public StratumPerformanceConfig Performance { get; set; } = new StratumPerformanceConfig();
+
+	public StratumShardConfig Shard { get; set; } = new StratumShardConfig();
 
 	public StratumWorldgenConfig Worldgen { get; set; } = new StratumWorldgenConfig();
 
@@ -73,6 +76,7 @@ internal class StratumConfig
 		Anticheat ??= new StratumAnticheatConfig();
 		ClientModPolicy ??= new StratumClientModPolicyConfig();
 		Performance ??= new StratumPerformanceConfig();
+		Shard ??= new StratumShardConfig();
 		Worldgen ??= new StratumWorldgenConfig();
 		MobSpawning ??= new StratumMobSpawningConfig();
 		Commands ??= new StratumCommandsConfig();
@@ -96,6 +100,7 @@ internal class StratumConfig
 		Anticheat.EnsureSane();
 		ClientModPolicy.EnsurePopulated();
 		Performance.EnsurePopulated();
+		Shard.EnsureSane();
 		MobSpawning.EnsureSane();
 		Commands.EnsurePopulated();
 		Chat.EnsurePopulated();
@@ -2072,5 +2077,54 @@ internal class StratumAnnouncementsConfig
 		Messages ??= Array.Empty<string>();
 		Prefix ??= "";
 		Suffix ??= "";
+	}
+}
+
+internal class StratumShardConfig
+{
+	public bool Enabled { get; set; }
+
+	// Minimum world block coordinate (inclusive).
+	public int MinX { get; set; }
+
+	// Maximum world block coordinate (inclusive, so X < MaxX + 1 belongs to this shard).
+	public int MaxX { get; set; } = int.MaxValue;
+
+	// Minimum world block coordinate (inclusive).
+	public int MinZ { get; set; }
+
+	// Maximum world block coordinate (inclusive, so Z < MaxZ + 1 belongs to this shard).
+	public int MaxZ { get; set; } = int.MaxValue;
+
+	public void EnsureSane()
+	{
+		if (MaxX < MinX) MaxX = MinX;
+		if (MaxZ < MinZ) MaxZ = MinZ;
+	}
+}
+
+internal static class StratumShard
+{
+	public static bool AllowsEntity(Entity entity)
+	{
+		StratumShardConfig shard = StratumRuntime.Config.Shard;
+		if (shard == null || !shard.Enabled) return true;
+		double x = entity.Pos.X;
+		double z = entity.Pos.Z;
+		return x >= shard.MinX && x < (double)shard.MaxX + 1.0 && z >= shard.MinZ && z < (double)shard.MaxZ + 1.0;
+	}
+
+	public static bool AllowsColumn(int chunkX, int chunkZ)
+	{
+		StratumShardConfig shard = StratumRuntime.Config.Shard;
+		if (shard == null || !shard.Enabled) return true;
+		long minBlockX = (long)chunkX * 32L;
+		long minBlockZ = (long)chunkZ * 32L;
+		// A column is allowed if it overlaps the shard rectangle or the 1-chunk border buffer around it.
+		// Shard covers [MinX, MaxX + 1). With 32-block buffer: [MinX - 32, MaxX + 1 + 32).
+		// Chunk covers [minBlockX, minBlockX + 32).
+		bool xOverlap = (minBlockX + 32L > (long)shard.MinX - 32L) && (minBlockX < (long)shard.MaxX + 1L + 32L);
+		bool zOverlap = (minBlockZ + 32L > (long)shard.MinZ - 32L) && (minBlockZ < (long)shard.MaxZ + 1L + 32L);
+		return xOverlap && zOverlap;
 	}
 }
