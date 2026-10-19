@@ -172,7 +172,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
  		server.PacketHandlers[17] = HandleEntityInteraction;
-@@ -41,208 +188,1442 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -41,208 +188,1466 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		player.Player.ImmersiveFpMode = packet.RuntimeSetting.ImmersiveFpMode > 0;
  		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
@@ -590,6 +590,16 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +				continue;
 +			}
 +
++			if (!StratumShard.AllowsEntity(value))
++			{
++				if (value is EntityPlayer stratumLeaving)
++				{
++					StratumShard.TryHandoff(server, stratumLeaving);
++				}
++				stratumEntitiesThrottled++;
++				continue;
++			}
++
 +			bool shouldTickDimension = !Dimensions.ShouldNotTick(value.Pos, value.Api);
 +			if (shouldTickDimension)
 +			{
@@ -835,6 +845,15 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +		foreach (Entity p in players)
 +		{
 +			seen++;
++			if (!StratumShard.AllowsEntity(p))
++			{
++				if (p is EntityPlayer stratumLeaving)
++				{
++					StratumShard.TryHandoff(server, stratumLeaving);
++				}
++				throttled++;
++				continue;
++			}
 +			if (Dimensions.ShouldNotTick(p.Pos, p.Api))
 +			{
 +				dimSkipped++;
@@ -882,6 +901,11 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +			{
 +				stratumEntityTickStates.TryRemove(value.EntityId, out _);
 +				lock (despawnList) despawnList.Add(new KeyValuePair<Entity, EntityDespawnData>(value, hardReasonP));
++				Interlocked.Increment(ref throttledP);
++				return;
++			}
++			if (!StratumShard.AllowsEntity(value))
++			{
 +				Interlocked.Increment(ref throttledP);
 +				return;
 +			}
@@ -1738,7 +1762,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -251,16 +1632,31 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -251,16 +1656,31 @@ public class ServerSystemEntitySimulation : ServerSystem
  		bool flag = p.MouseButton == 0;
  		if ((cuboidd.ShortestDistanceFrom(x, y, z) > (double)(num * 2f) && flag) || (flag && (((!server.Config.AllowPvP || !player.HasPrivilege("attackplayers")) && entity is EntityPlayer) || (!player.HasPrivilege("attackcreatures") && entity is EntityAgent))) || (entity is EntityPlayer entityPlayer && !(entityPlayer.Player is IServerPlayer { ConnectionState: EnumClientState.Playing })))
  		{
@@ -1771,7 +1795,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1675,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1699,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1820,7 +1844,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,37 +1812,66 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1836,66 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1893,7 +1917,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
  			{
  				string playerName = server.PlayerByUid(entityPlayer.PlayerUID).PlayerName;
  				ServerMain.Logger.Audit(Lang.Get("{0} killed {1}, with item (if any): {2}", playerName, item.PlayerName, entityPlayer.RightHandItemSlot?.Itemstack?.Collectible.Code));
-@@ -422,10 +1879,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -422,10 +1903,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

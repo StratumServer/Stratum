@@ -1,5 +1,4 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
-index ee7d12d..5baab55 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkServerThread.cs
 @@ -12,10 +12,34 @@ namespace Vintagestory.Server;
@@ -78,7 +77,7 @@ index ee7d12d..5baab55 100644
  	}
  
  	internal ServerMapChunk GetMapChunk(long index2d)
-@@ -143,19 +173,19 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -143,19 +173,20 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  	IWorldChunk IChunkProvider.GetUnpackedChunkFast(int chunkX, int chunkY, int chunkZ, bool notRecentlyAccessed)
  	{
  		ServerChunk generatingChunk = GetGeneratingChunk(chunkX, chunkY, chunkZ);
@@ -94,13 +93,14 @@ index ee7d12d..5baab55 100644
  	internal bool addChunkColumnRequest(long index2d, int chunkX, int chunkZ, int clientid, EnumWorldGenPass untilPass = EnumWorldGenPass.Done, ITreeAttribute chunkLoadParams = null)
  	{
 -		return addChunkColumnRequest(new ChunkColumnLoadRequest(index2d, chunkX, chunkZ, clientid, (int)untilPass, server)
++		if (!StratumShard.AllowsColumn(chunkX, chunkZ)) return false;
 +		return addChunkColumnRequest(new ChunkColumnLoadRequest(index2d, chunkX, chunkZ, clientid, StratumWorldGenStages.FromVanilla((int)untilPass), server) // Stratum: public pass to internal
  		{
  			chunkGenParams = chunkLoadParams
  		});
  	}
  
-@@ -186,18 +216,142 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -186,18 +217,142 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  			requestedChunkColumns.EnqueueWithoutAddingToIndex(chunkRequest);
  		}
  		return !orAdd.Disposed;
@@ -244,7 +244,7 @@ index ee7d12d..5baab55 100644
  			if (orAdd.untilPass < minPass)
  			{
  				if (orAdd.untilPass < 0)
-@@ -210,10 +364,12 @@ public class ChunkServerThread : ServerThread, IChunkProvider
+@@ -210,10 +365,12 @@ public class ChunkServerThread : ServerThread, IChunkProvider
  					orAdd.creationTime = requirorTime;
  				}
  			}
