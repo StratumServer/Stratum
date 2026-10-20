@@ -1,0 +1,113 @@
+diff --git a/VintagestoryLib/Packet_UdpPacketSerializer.cs b/VintagestoryLib/Packet_UdpPacketSerializer.cs
+--- a/VintagestoryLib/Packet_UdpPacketSerializer.cs
++++ b/VintagestoryLib/Packet_UdpPacketSerializer.cs
+@@ -185,10 +185,109 @@ public class Packet_UdpPacketSerializer
+ 		{
+ 			throw new Exception("Sizing mismatch: " + instance.size + " != " + num2);
+ 		}
+ 	}
+ 
++	// One length prefix for the UDP body. The body is written once into a thread-local
++	// buffer, then the varint is patched in front of it. Viewers on the same thread reuse
++	// that buffer. StratumVerifyUdpLength turns the old size check back on.
++	internal static bool StratumVerifyUdpLength;
++
++	[ThreadStatic]
++	private static CitoMemoryStream stratumUdpScratch;
++
++	public static void StratumSerializeWithSizeSinglePass(CitoStream stream, Packet_UdpPacket instance)
++	{
++		CitoMemoryStream scratch = StratumUdpScratch();
++		for (int i = 0; i < 5; i++)
++		{
++			scratch.WriteByte(0);
++		}
++		int bodyAt = scratch.Position();
++		Serialize(scratch, instance);
++		int bodyLen = scratch.Position() - bodyAt;
++		if (StratumVerifyUdpLength)
++		{
++			int expected = GetSize(instance);
++			if (expected != bodyLen)
++			{
++				throw new Exception("Sizing mismatch: " + expected + " != " + bodyLen);
++			}
++		}
++		instance.size = bodyLen;
++		int prefix = StratumVarintLength(bodyLen);
++		byte[] buf = scratch.GetBuffer();
++		int shift = 5 - prefix;
++		if (shift != 0)
++		{
++			Buffer.BlockCopy(buf, bodyAt, buf, prefix, bodyLen);
++		}
++		StratumWriteVarint(buf, bodyLen);
++		stream.Write(buf, 0, prefix + bodyLen);
++	}
++
++	private static CitoMemoryStream StratumUdpScratch()
++	{
++		CitoMemoryStream scratch = stratumUdpScratch;
++		if (scratch == null)
++		{
++			stratumUdpScratch = scratch = new CitoMemoryStream();
++			return scratch;
++		}
++		int pos = scratch.Position();
++		if (pos != 0)
++		{
++			scratch.Seek(-pos, CitoSeekOrigin.Current);
++		}
++		return scratch;
++	}
++
++	private static int StratumVarintLength(int val)
++	{
++		if (val < 128)
++		{
++			return 1;
++		}
++		if (val <= 16383)
++		{
++			return 2;
++		}
++		int n = 1;
++		while ((val >>= 7) != 0)
++		{
++			n++;
++		}
++		return n;
++	}
++
++	private static void StratumWriteVarint(byte[] buf, int val)
++	{
++		if (val <= 16383)
++		{
++			if (val < 128)
++			{
++				buf[0] = (byte)val;
++				return;
++			}
++			buf[0] = (byte)(val | 0x80);
++			buf[1] = (byte)(val >> 7);
++			return;
++		}
++		int n = 0;
++		while (true)
++		{
++			byte b = (byte)(val & 0x7F);
++			val >>= 7;
++			if (val == 0)
++			{
++				buf[n] = b;
++				return;
++			}
++			buf[n++] = (byte)(b + 128);
++		}
++	}
++
+ 	public static byte[] SerializeToBytes(Packet_UdpPacket instance)
+ 	{
+ 		CitoMemoryStream citoMemoryStream = new CitoMemoryStream();
+ 		Serialize(citoMemoryStream, instance);
+ 		return citoMemoryStream.ToArray();

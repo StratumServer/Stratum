@@ -1,0 +1,17 @@
+diff --git a/VintagestoryLib/Packet_ServerSerializer.cs b/VintagestoryLib/Packet_ServerSerializer.cs
+--- a/VintagestoryLib/Packet_ServerSerializer.cs
++++ b/VintagestoryLib/Packet_ServerSerializer.cs
+@@ -1137,12 +1137,11 @@ public class Packet_ServerSerializer
+ 		}
+ 		if (instance.UdpPacket != null)
+ 		{
+ 			stream.WriteKey(78, 2);
+ 			Packet_UdpPacket udpPacket = instance.UdpPacket;
+-			Packet_UdpPacketSerializer.GetSize(udpPacket);
+-			Packet_UdpPacketSerializer.SerializeWithSize(stream, udpPacket);
++			Packet_UdpPacketSerializer.StratumSerializeWithSizeSinglePass(stream, udpPacket);
+ 		}
+ 		if (instance.QueuePacket != null)
+ 		{
+ 			stream.WriteKey(79, 2);
+ 			Packet_QueuePacket queuePacket = instance.QueuePacket;
