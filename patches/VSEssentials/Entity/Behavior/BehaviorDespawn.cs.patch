@@ -1,8 +1,7 @@
 diff --git a/VSEssentials/Entity/Behavior/BehaviorDespawn.cs b/VSEssentials/Entity/Behavior/BehaviorDespawn.cs
-index 9ee9c19..31d28c2 100644
 --- a/VSEssentials/Entity/Behavior/BehaviorDespawn.cs
 +++ b/VSEssentials/Entity/Behavior/BehaviorDespawn.cs
-@@ -103,12 +103,14 @@ namespace Vintagestory.GameContent
+@@ -103,25 +103,48 @@ namespace Vintagestory.GameContent
              {
                  despawnMode = EnumDespawnMode.AfterSecondsOrAfterDays;
                  entity.WatchedAttributes.SetDouble("despawnTotalDays", entity.World.Calendar.TotalDays + obj.AsFloat(14));
@@ -19,9 +18,15 @@ index 9ee9c19..31d28c2 100644
          }
  
  
-@@ -118,10 +120,28 @@ namespace Vintagestory.GameContent
+         public override void OnGameTick(float deltaTime)
+         {
+             if (!entity.Alive || entity.World.Side == EnumAppSide.Client) return;
  
-             deltaTime = (float)System.Math.Min(deltaTime, 0.2);
+-            deltaTime = (float)System.Math.Min(deltaTime, 0.2);
++            // Stratum: a throttle payout hands every behavior the raw sum and despawn this clamped sum.
++            // NaN means this tick was not a payout, so vanilla's 0.2 second clamp still applies.
++            float stratumDespawnDelta = Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaTime;
++            deltaTime = float.IsNaN(stratumDespawnDelta) ? (float)System.Math.Min(deltaTime, 0.2) : stratumDespawnDelta;
  
              if ((accumSeconds += deltaTime) > accumOffset)
              {
@@ -48,7 +53,7 @@ index 9ee9c19..31d28c2 100644
                      if (entity.World.Calendar.TotalDays > entity.WatchedAttributes.GetDouble("despawnTotalDays"))
                      {
                          entity.Die(EnumDespawnReason.Expire, null);
-@@ -177,10 +197,16 @@ namespace Vintagestory.GameContent
+@@ -177,10 +200,16 @@ namespace Vintagestory.GameContent
              return level >= belowLightLevel;
          }
  
