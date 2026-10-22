@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 
 namespace Vintagestory.Server;
@@ -537,6 +538,8 @@ internal class StratumPerformanceConfig
 
 	public StratumPregenConfig Pregen { get; set; } = new StratumPregenConfig();
 
+	public StratumFallingBlocksConfig FallingBlocks { get; set; } = new StratumFallingBlocksConfig();
+
 	public StratumSimulationDistanceConfig SimulationDistance { get; set; } = new StratumSimulationDistanceConfig();
 
 	public StratumPhysicsConfig Physics { get; set; } = new StratumPhysicsConfig();
@@ -585,6 +588,7 @@ internal class StratumPerformanceConfig
 		ChunkGeneration ??= new StratumChunkGenerationConfig();
 		ChunkRequestManagement ??= new StratumChunkRequestManagementConfig();
 		Pregen ??= new StratumPregenConfig();
+		FallingBlocks ??= new StratumFallingBlocksConfig();
 		SimulationDistance ??= new StratumSimulationDistanceConfig();
 		Physics ??= new StratumPhysicsConfig();
 		EntityTicking ??= new StratumEntityTickingConfig();
@@ -610,6 +614,8 @@ internal class StratumPerformanceConfig
 		ChunkGeneration.EnsureSane();
 		ChunkRequestManagement.EnsureSane();
 		Pregen.EnsureSane();
+		FallingBlocks.EnsureSane();
+		StratumFallingBlocksConfig.Active = FallingBlocks; // read by ModSystemFallingBlocks
 		SimulationDistance.EnsureSane();
 		Physics.EnsureSane();
 		EntityTicking.EnsureSane();
