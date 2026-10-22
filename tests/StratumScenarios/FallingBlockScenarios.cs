@@ -259,6 +259,59 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// MaxFallingLimit: requests that wait are served in the order they were asked. With a limit of 1 the entities
+	// appear one at a time, so the cells empty in request order (the pad places its sand cell by cell, and a
+	// random pick of 6 requests would match that order once in 720 runs).
+	// ---------------------------------------------------------------------------------------
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task WaitingRequests_Should_BeServed_InTheOrderTheyWereAsked()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-order");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		FieldInfo limitField = PrivateField(system, "maxFallingLimit");
+		int originalLimit = (int)limitField.GetValue(system)!;
+		const int cols = 3, rows = 2;
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 56);
+		try
+		{
+			limitField.SetValue(system, 1);
+			BuildPad(s, cols, rows);
+
+			var expected = new List<(int, int)>();
+			for (int cx = 0; cx < cols; cx++)
+				for (int cz = 0; cz < rows; cz++)
+					expected.Add((cx, cz));
+
+			var order = new List<(int, int)>();
+			var seen = new HashSet<(int, int)>();
+			await World.Until(() =>
+			{
+				foreach ((int cx, int cz) in expected)
+				{
+					if (!seen.Contains((cx, cz)) && CodeAt(PadPos(s, cx, cz, 4)) == "air")
+					{
+						seen.Add((cx, cz));
+						order.Add((cx, cz));
+					}
+				}
+				return seen.Count == expected.Count;
+			}, timeoutTicks: 900);
+
+			Assert.True(
+				order.SequenceEqual(expected),
+				"the waiting requests were not served in the order they were asked."
+				+ $"{Environment.NewLine}  expected: {string.Join(" ", expected)}{Environment.NewLine}  actual:   {string.Join(" ", order)}");
+		}
+		finally
+		{
+			limitField.SetValue(system, originalLimit);
+		}
+	}
+
+	// ---------------------------------------------------------------------------------------
 	// Dedup window: a block placed again at the source cell while the first one is still falling.
 	// ---------------------------------------------------------------------------------------
 	[AtlasScenario(TimeoutMs = 180_000)]
