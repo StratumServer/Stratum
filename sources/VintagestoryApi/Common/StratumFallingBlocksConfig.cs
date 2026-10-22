@@ -8,11 +8,9 @@ namespace Vintagestory.API.Common;
 // Behavior worth knowing before changing these values (all of it only applies while Enabled is true):
 //  - With a player nearby (the entity tracking range, 128 blocks by default) falls go through the entity
 //    path and behave like vanilla.
-//  - With no player in range a fall is resolved instantly, without an entity and WITHOUT notifying
-//    neighbours. This is deliberate: it stops collapses from continuing, and loading the server, outside
-//    the range of players. A sand or gravel column there only loses its bottom block, the rest stays up
-//    until something next to it changes. A block that was only asked to fall sideways and has solid
-//    support below stays where it is.
+//  - With no player in range a fall is resolved instantly, without an entity. The neighbours are notified
+//    like on the entity path, so a column or a heap keeps coming down, at most MaxInstantPerTick blocks per tick.
+//    A block that was only asked to fall sideways and has solid support below stays where it is.
 //  - Requests still waiting when the server stops are resolved on shutdown.
 public class StratumFallingBlocksConfig
 {
@@ -24,7 +22,8 @@ public class StratumFallingBlocksConfig
 	// When false the system never starts and falling blocks behave like vanilla.
 	public bool Enabled { get; set; } = true;
 
-	// Instant fall simulations (blocks with no player nearby) allowed per system tick.
+	// Instant fall simulations (blocks with no player nearby) allowed per system tick. Each one notifies its
+	// neighbours, which can ask more blocks to fall, so a bigger heap lasts longer instead of costing more per tick.
 	public int MaxInstantPerTick { get; set; } = 100;
 
 	public void EnsureSane()
