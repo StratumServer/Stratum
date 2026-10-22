@@ -19,7 +19,8 @@ namespace StratumScenarios;
 /// poured into an older pile. Items without a dropper have no window and merge as usual.
 ///
 /// Despawn clock: deathTime is ELAPSED time (EntityBehaviorDespawn adds to it and kills the item once
-/// it passes minSeconds), so the merged stack takes the smaller value, the clock with more life left.
+/// it passes minSeconds), so the merged stack takes the average of both clocks weighted by quantity: it
+/// ages like the items it holds, and fresh drops cannot keep an old pile alive for ever.
 /// Stacks with different minsecondsToDespawn never merge.
 ///
 /// Chunk save: a merge marks the chunk of the receiver (and of a surviving donor) as modified,
@@ -127,9 +128,9 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	// deathTime is elapsed time. The large pile is the receiver (largest stacks receive).
 
 	/// <summary>
-	/// A pile that is far from expiry (deathTime 100 of 600) receives a stack that is close to it (500).
-	/// The old behavior (keep the larger value) would give all six the clock of the stack about to
-	/// expire, and the whole pile would vanish 100 s later instead of lasting about 500 s more.
+	/// A pile of 5 that is far from expiry (deathTime 100 of 600) receives one item that is close to it (500).
+	/// Keeping the larger value would give all six the clock of the item about to expire, and the whole pile
+	/// would vanish 100 s later. The weighted average is (5 * 100 + 500) / 6, about 167.
 	/// </summary>
 	[AtlasScenario(TimeoutMs = 120_000)]
 	public async Task Merge_Should_KeepTheClockWithMoreLifeLeft_WhenTheDonorIsCloserToExpiry()
@@ -138,8 +139,9 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	}
 
 	/// <summary>
-	/// A fresh large stack (0) receives a small stack aged 540. With the old behavior all of them would
-	/// be gone about 60 s later, where vanilla keeps the large stack for about 600 s.
+	/// A fresh pile of 5 (0) receives one item aged 540. Keeping the larger value would make all of them
+	/// vanish about 60 s later, where vanilla keeps the five for about 600 s. The weighted average is
+	/// (5 * 0 + 540) / 6 = 90.
 	/// </summary>
 	[AtlasScenario(TimeoutMs = 120_000)]
 	public async Task Merge_Should_NotShortenAFreshStack_WhenTheDonorIsNearlyExpired()
@@ -167,12 +169,12 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 			$"setup failed: expected one pile of 6, got alive={receiver.Alive} size={receiver.Slot.Itemstack?.StackSize}");
 
 		// The clock keeps ticking by a few seconds at most while the scenario runs.
-		float expected = Math.Min(receiverTime, donorTime);
+		float expected = (5 * receiverTime + 1 * donorTime) / 6f;
 		float actual = receiver.Attributes.GetFloat("deathTime", -1f);
 		Assert.True(
-			Math.Abs(actual - expected) < 60f,
-			$"merged pile deathTime is {actual}, expected about {expected} (the smaller of {receiverTime} and {donorTime}: "
-			+ "deathTime is elapsed time, so the smaller value is the one with more life left)");
+			Math.Abs(actual - expected) < 25f,
+			$"merged pile deathTime is {actual}, expected about {expected} (5 items at {receiverTime} and 1 at {donorTime}, "
+			+ "averaged by quantity)");
 	}
 
 	[AtlasScenario(TimeoutMs = 120_000)]

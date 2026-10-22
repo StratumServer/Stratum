@@ -27,9 +27,10 @@ namespace Vintagestory.GameContent;
 //  - A stack a player just dropped is still inside the pickup window of EntityItem.CanCollect
 //    (other players cannot take it yet). It takes no part in merging, neither as donor nor as
 //    receiver, until that window has passed, so merging never skips it.
-//  - The merged stack gets the despawn clock of whichever side has more life left. deathTime is elapsed
-//    time (EntityBehaviorDespawn adds to it and kills the item once it passes minSeconds), so the
-//    receiver takes the smaller of the two values. Stacks with different minsecondsToDespawn (for
+//  - The merged stack gets the average despawn clock of the items it holds, weighted by quantity.
+//    deathTime is elapsed time (EntityBehaviorDespawn adds to it and kills the item once it passes
+//    minSeconds). Taking the smaller value of the pair would let a trickle of fresh drops keep an old pile
+//    alive for ever, and the larger one would cut a fresh pile short. Stacks with different minsecondsToDespawn (for
 //    example a death drop kept for an hour) never merge, otherwise one side would get the wrong lifetime.
 //  - A merge moves items between entities that may sit in different chunks. Only the chunk of a donor that
 //    dies is dirtied by the removal, so the receiver and a surviving donor chunk are marked modified
@@ -378,6 +379,7 @@ public class ModSystemItemClump : ModSystem
 				// Vanilla rules: matching attributes, freshness and so on.
 				if (rs.Collectible.GetMergableQuantity(rs, ds, EnumMergePriority.AutoMerge) <= 0) continue;
 
+				int receiverBefore = rs.StackSize;
 				int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
 				if (moved <= 0)
 				{
@@ -388,7 +390,7 @@ public class ModSystemItemClump : ModSystem
 					continue;
 				}
 
-				MergeDespawnClock(donor, recv);
+				MergeDespawnClock(donor, recv, receiverBefore, moved);
 
 				// The Itemstack setter does not mark the path dirty, so do it explicitly (as vanilla BlockMeal does),
 				// otherwise clients that already track the item keep the old stack size.
@@ -487,18 +489,19 @@ public class ModSystemItemClump : ModSystem
 	}
 
 	// deathTime is elapsed time, not remaining time: EntityBehaviorDespawn adds to it and kills the item
-	// once it passes minSeconds. The receiver keeps the smaller value, which is the clock with more life left.
-	private static void MergeDespawnClock(EntityItem donor, EntityItem recv)
+	// once it passes minSeconds. The receiver keeps the average of both clocks weighted by the quantity each
+	// side contributes, so the pile ages like the items it holds and a trickle of fresh drops cannot keep
+	// it alive for ever.
+	private static void MergeDespawnClock(EntityItem donor, EntityItem recv, int receiverBefore, int moved)
 	{
 		EntityBehaviorDespawn donorClock = donor.GetBehavior<EntityBehaviorDespawn>();
 		EntityBehaviorDespawn recvClock = recv.GetBehavior<EntityBehaviorDespawn>();
 		if (donorClock == null || recvClock == null) return;
 
-		float donorTime = donorClock.DeathTime;
-		if (donorTime < recvClock.DeathTime)
-		{
-			recvClock.DeathTime = donorTime;
-		}
+		double total = (double)receiverBefore + moved;
+		if (total <= 0) return;
+
+		recvClock.DeathTime = (float)((recvClock.DeathTime * (double)receiverBefore + donorClock.DeathTime * (double)moved) / total);
 	}
 
 	// Entity merges change an entity of a chunk that nothing else has dirtied. Autosave, unload and
