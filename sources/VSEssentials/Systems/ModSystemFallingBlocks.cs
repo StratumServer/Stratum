@@ -134,7 +134,6 @@ public class ModSystemFallingBlocks : ModSystem
 			activeFallingPositions.Clear();
 			totalFallingBlocks = 0;
 		}
-
 	}
 
 	private void FlushQueue(IWorldAccessor world, IEnumerable<SpawnRequest> queue)
