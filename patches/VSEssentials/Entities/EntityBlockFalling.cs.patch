@@ -1,0 +1,77 @@
+diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
+index 0615808..dda7c08 100644
+--- a/VSEssentials/Entities/EntityBlockFalling.cs
++++ b/VSEssentials/Entities/EntityBlockFalling.cs
+@@ -370,10 +370,13 @@ namespace Vintagestory.GameContent
+         private float soundStartDelay;
+         private bool canFallSideways;
+         private Vec3d fallMotion = new Vec3d();
+         private float pushaccum;
+ 
++        // Stratum: falling block system state.
++        internal bool StratumTracked;
++
+         internal float dustIntensity;
+         internal ItemStack stackForParticleColor;
+         internal bool nowImpacted;
+ 
+ 
+@@ -499,10 +502,25 @@ namespace Vintagestory.GameContent
+             {
+                 // We have captured the BlockEntity and drops, we can now remove the initial block
+                 // (but on a server we delay neighbour updates and notifying the client, deferred until later calls to UpdateBlock(true...)
+                 World.BlockAccessor.SetBlock(0, initialPos);
+             }
++
++            // Stratum start: register with the falling block system
++            if (api.Side == EnumAppSide.Server)
++            {
++                ModSystemFallingBlocks stratumSystem = ModSystemFallingBlocks.Instance;
++                if (stratumSystem != null)
++                {
++                    AlwaysActive = true;
++                    SimulationRange = GlobalConstants.DefaultSimulationRange;
++                    State = EnumEntityState.Active; // ensure passive physics runs even though AlwaysActive bypasses UpdateTrackedEntityState
++                    StratumTracked = true;
++                    stratumSystem.OnFallingBlockInitialized(this);
++                }
++            }
++            // Stratum end
+         }
+ 
+ 
+         /// <summary>
+         /// Delays behaviors from ticking to reduce flickering
+@@ -604,17 +622,32 @@ namespace Vintagestory.GameContent
+             {
+                 OnFallToGround(0);
+                 World.FrameProfiler.Mark("entity-tick-unsstablefalling-falltoground");
+             }
+ 
++            // Stratum: free the dedup slot once the entity has landed or fallen away, so a block
++            // placed again at initialPos can fall again. Idempotent; safe to call after despawn removed it.
++            if (Api.Side == EnumAppSide.Server && ModSystemFallingBlocks.Instance != null
++                                               && (fallHandled || initialPos.Y - Pos.Y > 1.0))
++            {
++                ModSystemFallingBlocks.Instance.OnFallingBlockLanded(this);
++            }
++
+             World.FrameProfiler.Leave();
+         }
+ 
+         public override void OnEntityDespawn(EntityDespawnData despawn)
+         {
+             base.OnEntityDespawn(despawn);
+ 
++            // Stratum: unregister from the falling block system.
++            if (StratumTracked)
++            {
++                StratumTracked = false;
++                ModSystemFallingBlocks.Instance?.OnFallingBlockDespawned(this);
++            }
++
+             if (Api.World.Side == EnumAppSide.Client)
+             {
+                 if (!reusedMeshRef) meshRef?.Dispose();
+                 fallingNow.Remove(EntityId);
+                 particleSys.Unregister(this);
