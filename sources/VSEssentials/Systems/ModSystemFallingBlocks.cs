@@ -10,44 +10,66 @@ using Vintagestory.API.Server;
 namespace Vintagestory.GameContent;
 
 // Server side manager for falling blocks (ported from the FallingSpawnManager mod).
-// Resolves falls instantly, without an EntityBlockFalling, for blocks that no player is near.
-// Instance is null while the system is disabled in the config, and every caller falls back to
-// vanilla behavior in that case. With a player nearby everything goes through the entity path
-// and behaves like vanilla.
+// Caps the number of live EntityBlockFalling, queues requests over the cap, and resolves falls
+// instantly for blocks that no player is near. Instance is null while the system is disabled
+// in the config, and every caller falls back to vanilla behavior in that case.
 //
-// The instant path (SimulateInstantFall) notifies neighbours after it removes the block and after it
-// places it, like the entity path does, so a column or a heap keeps coming down. The notifications are
-// queued by the server (at most 500 per tick) and do not load chunks, and the requests they create go
-// back into the same queue, which resolves at most MaxInstantPerTick per tick. A large heap far from
-// players therefore takes longer to land, at a bounded cost per tick.
+// With a player nearby a request goes to the entity queue, which spawns an EntityBlockFalling as soon as
+// fewer than MaxFallingLimit are alive. With no player in range it goes to the instant queue, which
+// resolves the fall without an entity (SimulateInstantFall), at most MaxInstantPerTick per tick.
+//
+// The instant path notifies neighbours after it removes the block and after it places it, like the entity
+// path does, so a column or a heap keeps coming down. The notifications are queued by the server (at most
+// 500 per tick) and do not load chunks, and the requests they create go back into the same queue.
 //
 // Differences from the entity path, by design:
 //  - a block that was only asked to fall sideways and has solid support below stays where it is;
-//  - an instant fall only walks straight down and does not step sideways into adjacent free cells before landing;
-//  - a snow block falling on a partial snow layer merges into it, leaving a snow block and the remaining layer on top;
-//  - requests still waiting when the server stops are resolved in Dispose (only requests currently in the queue are
-//    flushed; higher blocks in a column waiting for neighbour updates remain at their start cells);
-//  - a request whose chunk unloads while it waits is dropped: the rock or block stays where it is and nothing asks
-//    it to fall again after the reload (on the entity path the falling entity is saved with its chunk).
+//  - snow that lands on a snow block adds a layer above it instead of being absorbed into it;
+//  - requests still waiting in a queue when the server stops are resolved in Dispose, but requests whose
+//    column is unloaded earlier stay at their start cell. Entities in flight when a column unloads are left
+//    to vanilla: they are saved with the chunk and land after the reload.
+//
+// Threading: with RegionTicking on, falling entities tick on worker threads, so the live-entity
+// bookkeeping (activeFallingPositions, totalFallingBlocks) is guarded by a lock. Queues and block
+// changes stay on the main thread.
 public class ModSystemFallingBlocks : ModSystem
 {
+	// One retry per tick, so this is roughly 10 seconds at the 32 ms queue tick.
+	private const int MaxRetries = 300;
+
 	public static ModSystemFallingBlocks Instance { get; private set; }
 
 	private ICoreServerAPI sapi;
 	private long tickListenerId;
 
+	// Live EntityBlockFalling count. Maintained by EntityBlockFalling through the hooks below.
+	private int totalFallingBlocks;
+
+	// Guards totalFallingBlocks and activeFallingPositions (see Threading in the header).
+	private readonly object activeLock = new object();
+
+	// initialPos of every live falling entity. O(1) replacement for the GetNearestEntity duplicate check.
+	private readonly HashSet<BlockPos> activeFallingPositions = new HashSet<BlockPos>();
+
+	// Entity requests are popped in random order, which looks more natural than FIFO for a collapse.
+	private readonly List<SpawnRequest> requestQueue = new List<SpawnRequest>();
+
 	// First in, first out: requests created by a neighbour update arrive bottom up, and resolving them in
 	// that order keeps a block from being asked again because the block under it was still in place.
 	private readonly Queue<SpawnRequest> instantQueue = new Queue<SpawnRequest>();
 
-	// Positions that have a request in the queue. Guards against duplicate requests.
+	// Requests that found their position occupied this tick. Put back after the loop so each
+	// request is retried once per tick instead of spinning inside one tick.
+	private readonly List<SpawnRequest> blockedThisTick = new List<SpawnRequest>();
+
+	// Positions that have a request in either queue. Guards against duplicate requests.
 	// Always holds private copies, never a caller's BlockPos (callers may mutate theirs).
 	private readonly HashSet<BlockPos> pendingPositions = new HashSet<BlockPos>();
 
-	// Upper bound for the flush in Dispose, so a request chain cannot keep the shutdown busy for ever.
-	private const int MaxFlushOnDispose = 100000;
+	private readonly Random rng = new Random();
 
 	private int activeRange = 128;
+	private int maxFallingLimit = 1000;
 	private int maxInstantPerTick = 100;
 
 	public override bool ShouldLoad(EnumAppSide forSide)
@@ -69,6 +91,7 @@ public class ModSystemFallingBlocks : ModSystem
 
 		if (!cfg.Enabled) return;
 
+		maxFallingLimit = cfg.MaxFallingLimit;
 		maxInstantPerTick = cfg.MaxInstantPerTick;
 
 		activeRange = api.World.DefaultEntityTrackingRange * GlobalConstants.ChunkSize;
@@ -88,42 +111,114 @@ public class ModSystemFallingBlocks : ModSystem
 
 		// Best effort: the world is still live here (players are disconnected, the save happens
 		// after the mod handlers are disposed). Resolve everything that is still queued so scattered
-		// blocks are not saved at their start cells.
-		// Instance goes first: a block hook that runs during the flush (SetBlock calls OnBlockRemoved and
-		// OnBlockPlaced) then takes the vanilla path instead of adding to the queue that is being drained.
+		// blocks are not saved at their start cells. Entity queue requests resolve the same way as
+		// instant ones.
+		// Clear first so hooks triggered by SetBlock during the flush take the vanilla path instead
+		// of adding to a queue that is being drained.
 		if (Instance == this) Instance = null;
 
 		IWorldAccessor world = sapi?.World;
 		if (world != null)
 		{
-			int flushed = 0;
-			while (instantQueue.Count > 0 && flushed++ < MaxFlushOnDispose)
-			{
-				SpawnRequest request = instantQueue.Dequeue();
-				// try/catch per request: one throwing block (GetDrops, a mod's CanAcceptFallOnto)
-				// must not skip every request after it.
-				try
-				{
-					Block current = world.BlockAccessor.GetBlock(request.InitialPos);
-					if (current == null || current.Id == 0 || current != request.SourceBlock) continue;
-					RefreshContainerSnapshot(world, ref request);
-
-					ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
-					SimulateInstantFall(
-						world, request.Block, request.SourceBlock,
-						request.BlockEntity, request.BlockEntityTree,
-						request.InitialPos, drops, request.DoRemoveBlock);
-				}
-				catch (Exception e)
-				{
-					try { sapi?.Logger.Warning("[Stratum] Falling block flush failed at {0}: {1}", request.InitialPos, e.Message); }
-					catch (Exception) { /* logger may already be tearing down */ }
-				}
-			}
+			FlushQueue(world, instantQueue);
+			FlushQueue(world, requestQueue);
+			FlushQueue(world, blockedThisTick);
 		}
 
+		requestQueue.Clear();
 		instantQueue.Clear();
+		blockedThisTick.Clear();
 		pendingPositions.Clear();
+		lock (activeLock)
+		{
+			activeFallingPositions.Clear();
+			totalFallingBlocks = 0;
+		}
+
+	}
+
+	private void FlushQueue(IWorldAccessor world, IEnumerable<SpawnRequest> queue)
+	{
+		int flushed = 0;
+		foreach (SpawnRequest queuedRequest in new List<SpawnRequest>(queue))
+		{
+			if (flushed++ >= MaxFlushOnDispose) break;
+			SpawnRequest request = queuedRequest;
+			// try/catch per request: one throwing block (GetDrops, a mod's CanAcceptFallOnto)
+			// must not skip every request after it.
+			try
+			{
+				Block current = world.BlockAccessor.GetBlock(request.InitialPos);
+				if (current == null || current.Id == 0 || current != request.SourceBlock) continue;
+				RefreshContainerSnapshot(world, ref request);
+
+				ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
+				SimulateInstantFall(
+					world, request.Block, request.SourceBlock,
+					request.BlockEntity, request.BlockEntityTree,
+					request.InitialPos, drops, request.DoRemoveBlock);
+			}
+			catch (Exception e)
+			{
+				try { sapi?.Logger.Warning("[Stratum] Falling block flush failed at {0}: {1}", request.InitialPos, e.Message); }
+				catch (Exception) { /* logger may already be tearing down */ }
+			}
+		}
+	}
+
+	// Called at the end of EntityBlockFalling.Initialize (runs for both new and chunk loaded entities).
+	public void OnFallingBlockInitialized(EntityBlockFalling entity)
+	{
+		lock (activeLock)
+		{
+			totalFallingBlocks++;
+			activeFallingPositions.Add(entity.initialPos);
+		}
+	}
+
+	// Called from EntityBlockFalling.OnEntityDespawn, only for entities that were registered.
+	public void OnFallingBlockDespawned(EntityBlockFalling entity)
+	{
+		lock (activeLock)
+		{
+			totalFallingBlocks = Math.Max(0, totalFallingBlocks - 1);
+			activeFallingPositions.Remove(entity.initialPos);
+		}
+	}
+
+	// Free the dedup slot once an entity has landed or fallen away, so a block placed again at
+	// initialPos is allowed to fall again (matches vanilla's short duplicate window). The live count
+	// is intentionally left untouched. Idempotent: safe to call after despawn already removed it.
+	public void OnFallingBlockLanded(EntityBlockFalling entity)
+	{
+		lock (activeLock)
+		{
+			activeFallingPositions.Remove(entity.initialPos);
+		}
+	}
+
+	private bool IsActivePosition(BlockPos pos)
+	{
+		lock (activeLock)
+		{
+			return activeFallingPositions.Contains(pos);
+		}
+	}
+
+	private int LiveFallingCount
+	{
+		get
+		{
+			lock (activeLock)
+			{
+				return totalFallingBlocks;
+			}
+		}
+	}
+
+	public bool IsPositionActiveOrPending(BlockPos pos)
+	{
+		return pendingPositions.Contains(pos) || IsActivePosition(pos);
 	}
 
 	public bool HasPlayerNearby(Vec3d pos)
@@ -141,6 +236,118 @@ public class ModSystemFallingBlocks : ModSystem
 	}
 
 	private void OnQueueTick(float dt)
+	{
+		ProcessEntityQueue();
+		ProcessInstantQueue();
+	}
+
+	// Swap with the last element and remove it, so a random pick stays O(1).
+	private SpawnRequest PopRandom(List<SpawnRequest> list)
+	{
+		int index = rng.Next(list.Count);
+		SpawnRequest picked = list[index];
+		int last = list.Count - 1;
+		list[index] = list[last];
+		list.RemoveAt(last);
+		return picked;
+	}
+
+	private void ProcessEntityQueue()
+	{
+		IWorldAccessor world = sapi.World;
+
+		while (LiveFallingCount < maxFallingLimit && requestQueue.Count > 0)
+		{
+			SpawnRequest request = PopRandom(requestQueue);
+
+			Block current = world.BlockAccessor.GetBlock(request.InitialPos);
+			if (current == null || current.Id == 0 || current != request.SourceBlock)
+			{
+				pendingPositions.Remove(request.InitialPos);
+				RecheckReplacedBlock(world, request, current);
+				continue;
+			}
+
+			if (IsActivePosition(request.InitialPos))
+			{
+				// Position still occupied: defer to next tick instead of spinning in this one.
+				request.RetryCount++;
+				if (request.RetryCount >= MaxRetries)
+				{
+					pendingPositions.Remove(request.InitialPos);
+					GiveUp(world, request);
+					continue;
+				}
+				blockedThisTick.Add(request);
+				continue;
+			}
+
+			EntityBlockFalling entityBf = new EntityBlockFalling(
+				request.Block, request.BlockEntity, request.InitialPos,
+				request.FallSound, request.ImpactDamageMul,
+				request.CanFallSideways, request.DustIntensity);
+			entityBf.DoRemoveBlock = request.DoRemoveBlock;
+
+			world.SpawnEntity(entityBf);
+
+			if (request.PositionOffset != null && request.PositionOffset != Vec3d.Zero)
+			{
+				entityBf.Pos.X += request.PositionOffset.X;
+				entityBf.Pos.Y += request.PositionOffset.Y;
+				entityBf.Pos.Z += request.PositionOffset.Z;
+			}
+
+			// Initialize has already run and added the position to activeFallingPositions.
+			pendingPositions.Remove(request.InitialPos);
+		}
+
+		// Put back requests blocked this tick so they retry next tick (one retry per tick).
+		if (blockedThisTick.Count > 0)
+		{
+			requestQueue.AddRange(blockedThisTick);
+			blockedThisTick.Clear();
+		}
+	}
+
+	// A request that could not get its position for MaxRetries ticks. The block is still at the
+	// position (the caller just validated it), so it must be removed before its items are dropped,
+	// otherwise the items are duplicated. A request that does not own its block (DoRemoveBlock is
+	// false, e.g. a coal pile split) just ends: the block stays and nothing is dropped.
+	private static void GiveUp(IWorldAccessor world, SpawnRequest request)
+	{
+		if (!request.DoRemoveBlock) return;
+
+		ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
+		world.BlockAccessor.SetBlock(0, request.InitialPos);
+		world.BlockAccessor.TriggerNeighbourBlockUpdate(request.InitialPos);
+		SpawnDrops(world, request.InitialPos, drops, request.BlockEntity);
+	}
+
+	// While a request waited, the cell got a different block (for example the player mined the sand
+	// and placed gravel there). That block's own createFallingBlock was skipped by the pending guard
+	// and nothing asks it again, so let it re-check itself.
+	private static void RecheckReplacedBlock(IWorldAccessor world, SpawnRequest request, Block current)
+	{
+		if (current == null || current.Id == 0) return;
+		BlockPos pos = request.InitialPos;
+		current.OnNeighbourBlockChange(world, pos, pos.DownCopy());
+	}
+
+	// Containers can still receive items while a fall waits in a queue. Preserve their live contents
+	// when they land or are accepted by a block below. Other block entities keep the request-time
+	// snapshot, including when the source entity is gone by the time the queue is processed.
+	private static void RefreshContainerSnapshot(IWorldAccessor world, ref SpawnRequest request)
+	{
+		BlockEntity liveBe = world.BlockAccessor.GetBlockEntity(request.InitialPos);
+		if (liveBe is not IBlockEntityContainer) return;
+
+		TreeAttribute freshTree = new TreeAttribute();
+		liveBe.ToTreeAttributes(freshTree);
+		request.BlockEntity = liveBe;
+		request.BlockEntityTree = freshTree;
+	}
+
+	private void ProcessInstantQueue()
 	{
 		IWorldAccessor world = sapi.World;
 		int processed = 0;
@@ -180,48 +387,20 @@ public class ModSystemFallingBlocks : ModSystem
 		}
 	}
 
-	// While a request waited, the cell got a different block (for example the player mined the sand
-	// and placed gravel there). That block's own createFallingBlock was skipped by the pending guard
-	// and nothing asks it again, so let it re-check itself.
-	private static void RecheckReplacedBlock(IWorldAccessor world, SpawnRequest request, Block current)
+	// Asks a block to fall. With a player nearby the request goes to the entity queue,
+	// otherwise to the instant queue.
+	public void RequestSpawn(Block block, BlockEntity be, BlockPos initialPos,
+		AssetLocation fallSound, float impactDamageMul,
+		bool canFallSideways, float dustIntensity,
+		bool doRemoveBlock = true, Vec3d positionOffset = null)
 	{
-		if (current == null || current.Id == 0) return;
-		BlockPos pos = request.InitialPos;
-		current.OnNeighbourBlockChange(world, pos, pos.DownCopy());
-	}
-
-	// Containers can still receive items while a fall waits in the queue. Preserve their live
-	// contents when they land or are accepted by a block below. Other block entities retain the
-	// request-time snapshot, and a removed source entity keeps the snapshot captured by its hook.
-	private static void RefreshContainerSnapshot(IWorldAccessor world, ref SpawnRequest request)
-	{
-		BlockEntity liveBe = world.BlockAccessor.GetBlockEntity(request.InitialPos);
-		if (liveBe is not IBlockEntityContainer) return;
-
-		TreeAttribute freshTree = new TreeAttribute();
-		liveBe.ToTreeAttributes(freshTree);
-		request.BlockEntity = liveBe;
-		request.BlockEntityTree = freshTree;
-	}
-
-	// True when a fall request for this position is already waiting in the queue.
-	public bool IsPending(BlockPos pos)
-	{
-		return pendingPositions.Contains(pos);
-	}
-
-	// Called where vanilla would spawn an EntityBlockFalling. Returns true when the fall was taken
-	// over (queued for an instant resolve, or already queued), false when a player is near and the
-	// caller must spawn the entity as vanilla does.
-	public bool TryRequestInstantFall(Block block, BlockEntity be, BlockPos initialPos, bool doRemoveBlock = true)
-	{
-		// Private copy: used as the pending key and kept by the request. Callers may reuse and
-		// mutate their BlockPos after the call, which would corrupt the hash.
 		BlockPos pos = initialPos.Copy();
 
-		if (pendingPositions.Contains(pos)) return true;
+		if (pendingPositions.Contains(pos)) return;
 
-		if (HasPlayerNearby(pos.ToVec3d())) return false;
+		pendingPositions.Add(pos);
+
+		bool hasPlayerNearby = HasPlayerNearby(pos.ToVec3d());
 
 		// Snapshot the block entity now, while the block is still in place. The instant path has no
 		// EntityBlockFalling.Initialize to do it, and the live block entity may change before the queue runs.
@@ -232,17 +411,29 @@ public class ModSystemFallingBlocks : ModSystem
 			be.ToTreeAttributes(beTree);
 		}
 
-		pendingPositions.Add(pos);
-		instantQueue.Enqueue(new SpawnRequest
+		SpawnRequest request = new SpawnRequest
 		{
-			Block = block,                                          // falling/landing variant
-			SourceBlock = sapi.World.BlockAccessor.GetBlock(pos),   // original source at the position
+			Block = block,                        // falling/landing variant
+			SourceBlock = sapi.World.BlockAccessor.GetBlock(pos), // original source at the position
 			BlockEntity = be,
 			BlockEntityTree = beTree,
 			InitialPos = pos,
-			DoRemoveBlock = doRemoveBlock
-		});
-		return true;
+			FallSound = fallSound,
+			ImpactDamageMul = impactDamageMul,
+			CanFallSideways = canFallSideways,
+			DustIntensity = dustIntensity,
+			DoRemoveBlock = doRemoveBlock,
+			PositionOffset = positionOffset ?? Vec3d.Zero
+		};
+
+		if (hasPlayerNearby)
+		{
+			requestQueue.Add(request);
+		}
+		else
+		{
+			instantQueue.Enqueue(request);
+		}
 	}
 
 	private static void RemoveStartBlock(IBlockAccessor accessor, BlockPos startPos)
