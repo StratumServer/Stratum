@@ -1,0 +1,20 @@
+diff --git a/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs b/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
+index 3607689..02b91e4 100644
+--- a/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
++++ b/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
+@@ -269,10 +269,15 @@ namespace Vintagestory.GameContent
+                 {
+                     var block = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Solid);
+                     var bh = block.GetBehavior<BlockBehaviorUnstableRock>();
+                     if (bh == null) continue;
+ 
++                    // Stratum start: resolve the fall without an entity when no player is in range
++                    ModSystemFallingBlocks stratumFalling = ModSystemFallingBlocks.Instance;
++                    if (stratumFalling != null && stratumFalling.TryRequestInstantFall(bh.collapsedBlock, world.BlockAccessor.GetBlockEntity(pos), pos)) continue;
++                    // Stratum end
++
+                     EntityBlockFalling entityblock = new EntityBlockFalling(bh.collapsedBlock, world.BlockAccessor.GetBlockEntity(pos), pos, fallSound, impactDamageMul, true, dustIntensity);
+                     world.SpawnEntity(entityblock);
+                 }
+             }
+ 

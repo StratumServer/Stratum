@@ -539,6 +539,7 @@ internal class StratumPerformanceConfig
 	public StratumPregenConfig Pregen { get; set; } = new StratumPregenConfig();
 
 	public StratumItemClumpConfig ItemClump { get; set; } = new StratumItemClumpConfig();
+	public StratumFallingBlocksConfig FallingBlocks { get; set; } = new StratumFallingBlocksConfig();
 
 	public StratumSimulationDistanceConfig SimulationDistance { get; set; } = new StratumSimulationDistanceConfig();
 
@@ -589,6 +590,7 @@ internal class StratumPerformanceConfig
 		ChunkRequestManagement ??= new StratumChunkRequestManagementConfig();
 		Pregen ??= new StratumPregenConfig();
 		ItemClump ??= new StratumItemClumpConfig();
+		FallingBlocks ??= new StratumFallingBlocksConfig();
 		SimulationDistance ??= new StratumSimulationDistanceConfig();
 		Physics ??= new StratumPhysicsConfig();
 		EntityTicking ??= new StratumEntityTickingConfig();
@@ -616,6 +618,8 @@ internal class StratumPerformanceConfig
 		Pregen.EnsureSane();
 		ItemClump.EnsureSane();
 		StratumItemClumpConfig.Active = ItemClump; // read by ModSystemItemClump
+		FallingBlocks.EnsureSane();
+		StratumFallingBlocksConfig.Active = FallingBlocks; // read by ModSystemFallingBlocks
 		SimulationDistance.EnsureSane();
 		Physics.EnsureSane();
 		EntityTicking.EnsureSane();
