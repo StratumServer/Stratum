@@ -181,13 +181,16 @@ public class ModSystemFallingBlocks : ModSystem
 		lock (activeLock)
 		{
 			totalFallingBlocks = Math.Max(0, totalFallingBlocks - 1);
-			activeFallingPositions.Remove(entity.initialPos);
+
+			// The position was released when the entity landed or fell away. A block placed again at initialPos
+			// may have a new entity there by now, which a second removal would make fall twice.
+			if (!entity.StratumPositionFreed) activeFallingPositions.Remove(entity.initialPos);
 		}
 	}
 
 	// Free the dedup slot once an entity has landed or fallen away, so a block placed again at
 	// initialPos is allowed to fall again (matches vanilla's short duplicate window). The live count
-	// is intentionally left untouched. Idempotent: safe to call after despawn already removed it.
+	// is intentionally left untouched. The entity calls this once.
 	public void OnFallingBlockLanded(EntityBlockFalling entity)
 	{
 		lock (activeLock)
@@ -281,8 +284,10 @@ public class ModSystemFallingBlocks : ModSystem
 				continue;
 			}
 
+			// The block entity as it is now: the request may have waited a long time, and the block could have been
+			// broken and placed again in between.
 			EntityBlockFalling entityBf = new EntityBlockFalling(
-				request.Block, request.BlockEntity, request.InitialPos,
+				request.Block, world.BlockAccessor.GetBlockEntity(request.InitialPos), request.InitialPos,
 				request.FallSound, request.ImpactDamageMul,
 				request.CanFallSideways, request.DustIntensity);
 			entityBf.DoRemoveBlock = request.DoRemoveBlock;
@@ -317,9 +322,10 @@ public class ModSystemFallingBlocks : ModSystem
 		if (!request.DoRemoveBlock) return;
 
 		ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
+		BlockEntity liveBlockEntity = world.BlockAccessor.GetBlockEntity(request.InitialPos);
 		world.BlockAccessor.SetBlock(0, request.InitialPos);
 		world.BlockAccessor.TriggerNeighbourBlockUpdate(request.InitialPos);
-		SpawnDrops(world, request.InitialPos, drops, request.BlockEntity);
+		SpawnDrops(world, request.InitialPos, drops, liveBlockEntity);
 	}
 
 	// While a request waited, the cell got a different block (for example the player mined the sand
