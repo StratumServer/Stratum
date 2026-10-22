@@ -1,8 +1,8 @@
 diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
-index 0615808..dda7c08 100644
+index 0615808..120a125 100644
 --- a/VSEssentials/Entities/EntityBlockFalling.cs
 +++ b/VSEssentials/Entities/EntityBlockFalling.cs
-@@ -370,10 +370,13 @@ namespace Vintagestory.GameContent
+@@ -370,10 +370,14 @@ namespace Vintagestory.GameContent
          private float soundStartDelay;
          private bool canFallSideways;
          private Vec3d fallMotion = new Vec3d();
@@ -10,13 +10,14 @@ index 0615808..dda7c08 100644
  
 +        // Stratum: falling block system state.
 +        internal bool StratumTracked;
++        internal bool StratumPositionFreed; // initialPos was released from the duplicate set
 +
          internal float dustIntensity;
          internal ItemStack stackForParticleColor;
          internal bool nowImpacted;
  
  
-@@ -499,10 +502,25 @@ namespace Vintagestory.GameContent
+@@ -499,10 +503,25 @@ namespace Vintagestory.GameContent
              {
                  // We have captured the BlockEntity and drops, we can now remove the initial block
                  // (but on a server we delay neighbour updates and notifying the client, deferred until later calls to UpdateBlock(true...)
@@ -42,17 +43,18 @@ index 0615808..dda7c08 100644
  
          /// <summary>
          /// Delays behaviors from ticking to reduce flickering
-@@ -604,17 +622,32 @@ namespace Vintagestory.GameContent
+@@ -604,17 +623,33 @@ namespace Vintagestory.GameContent
              {
                  OnFallToGround(0);
                  World.FrameProfiler.Mark("entity-tick-unsstablefalling-falltoground");
              }
  
 +            // Stratum: free the dedup slot once the entity has landed or fallen away, so a block
-+            // placed again at initialPos can fall again. Idempotent; safe to call after despawn removed it.
-+            if (Api.Side == EnumAppSide.Server && ModSystemFallingBlocks.Instance != null
-+                                               && (fallHandled || initialPos.Y - Pos.Y > 1.0))
++            // placed again at initialPos can fall again. Runs once, so a later entity at initialPos keeps its slot.
++            if (!StratumPositionFreed && Api.Side == EnumAppSide.Server && ModSystemFallingBlocks.Instance != null
++                                      && (fallHandled || initialPos.Y - Pos.Y > 1.0))
 +            {
++                StratumPositionFreed = true;
 +                ModSystemFallingBlocks.Instance.OnFallingBlockLanded(this);
 +            }
 +
