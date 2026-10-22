@@ -170,6 +170,12 @@ public class ModSystemFallingBlocks : ModSystem
 		current.OnNeighbourBlockChange(world, pos, pos.DownCopy());
 	}
 
+	// True when a fall request for this position is already waiting in the queue.
+	public bool IsPending(BlockPos pos)
+	{
+		return pendingPositions.Contains(pos);
+	}
+
 	// Called where vanilla would spawn an EntityBlockFalling. Returns true when the fall was taken
 	// over (queued for an instant resolve, or already queued), false when a player is near and the
 	// caller must spawn the entity as vanilla does.
