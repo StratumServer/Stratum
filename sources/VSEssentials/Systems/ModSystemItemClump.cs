@@ -41,8 +41,10 @@ namespace Vintagestory.GameContent;
 // (attributes, freshness and other transition states) still apply.
 public class ModSystemItemClump : ModSystem
 {
-	// Tick period. Precision does not matter, a few times per second is enough.
-	private const int TickIntervalMs = 250;
+	// Tick period. Merge attempts are budgeted per tick, so the period sets the merge rate: 25 attempts every
+	// 50 ms drain a burst of drops in a few seconds, where the same budget every 250 ms left most of them as
+	// separate entities (simulated and sent to clients) for ten. A tick with nothing due costs one queue peek.
+	private const int TickIntervalMs = 50;
 
 	// An item counts as settled when its squared speed is at most this value.
 	private const double SettledMotionSq = 0.005d;
@@ -63,6 +65,7 @@ public class ModSystemItemClump : ModSystem
 
 	// Reused buffer (the server tick is single threaded).
 	private readonly List<EntityItem> group = new List<EntityItem>();
+	private readonly Dictionary<EntityItem, LandClaim> claimOf = new Dictionary<EntityItem, LandClaim>();
 
 	private float radius;
 	private float verticalRadius;
@@ -149,6 +152,7 @@ public class ModSystemItemClump : ModSystem
 		byId.Clear();
 		while (intake.TryDequeue(out _)) { }
 		group.Clear();
+		claimOf.Clear();
 		matchCollectible = null;
 		sapi = null;
 		running = false;
@@ -420,6 +424,7 @@ public class ModSystemItemClump : ModSystem
 		}
 
 		group.Clear();
+		claimOf.Clear();
 	}
 
 	private void ResyncStack(EntityItem e)
@@ -441,21 +446,27 @@ public class ModSystemItemClump : ModSystem
 
 	private bool InMergeRange(EntityItem a, EntityItem b)
 	{
-		Vec3d pa = a.Pos.XYZ;
-		Vec3d pb = b.Pos.XYZ;
+		EntityPos pa = a.Pos;
+		EntityPos pb = b.Pos;
 		double dx = pa.X - pb.X, dz = pa.Z - pb.Z;
 		return dx * dx + dz * dz <= (double)radius * radius && Math.Abs(pa.Y - pb.Y) <= verticalRadius;
 	}
 
-	// True when both stacks lie outside every claim, or share their first claim.
+	// True when both stacks lie outside every claim, or share their first claim. The claim of a stack is
+	// looked up once per group.
 	private bool SameClaim(EntityItem a, EntityItem b)
 	{
-		LandClaim[] claimsA = sapi.World.Claims.Get(a.Pos.AsBlockPos);
-		LandClaim[] claimsB = sapi.World.Claims.Get(b.Pos.AsBlockPos);
-		bool noClaimA = claimsA == null || claimsA.Length == 0;
-		bool noClaimB = claimsB == null || claimsB.Length == 0;
-		if (noClaimA || noClaimB) return noClaimA && noClaimB;
-		return claimsA[0] == claimsB[0];
+		return ClaimOf(a) == ClaimOf(b);
+	}
+
+	private LandClaim ClaimOf(EntityItem e)
+	{
+		if (claimOf.TryGetValue(e, out LandClaim claim)) return claim;
+
+		LandClaim[] claims = sapi.World.Claims.Get(e.Pos.AsBlockPos);
+		claim = claims != null && claims.Length > 0 ? claims[0] : null;
+		claimOf[e] = claim;
+		return claim;
 	}
 
 	private bool MatchEntity(Entity e)

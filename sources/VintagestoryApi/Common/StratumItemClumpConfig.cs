@@ -7,10 +7,12 @@ namespace Vintagestory.API.Common;
 //
 // Merging rules worth knowing (all of it only applies while Enabled is true):
 //  - A stack a player just dropped takes no part in merging until the vanilla pickup window (1 s) has passed.
-//  - The merged stack gets the despawn clock of the side with more life left. Stacks with different
-//    minsecondsToDespawn (for example a death drop kept for an hour) never merge.
-//  - The search is a sphere-like box (Radius horizontally, VerticalRadius vertically). A vertical radius of 2
-//    reaches through a one block floor or wall, so stacks on both sides of a thin floor or wall can merge.
+//  - The merged stack gets the average despawn clock of the items it holds, weighted by quantity. Stacks with
+//    different minsecondsToDespawn (for example a death drop kept for an hour) never merge.
+//  - The search is a sphere-like box (Radius horizontally, VerticalRadius vertically). Two stacks only mix when
+//    they are within that range of each other and in the same land claim (or both outside every claim). There is
+//    no line of sight check, so a vertical radius of 2 reaches through a one block floor or wall that is not a
+//    claim border.
 public class StratumItemClumpConfig
 {
 	// Set by StratumPerformanceConfig.EnsurePopulated after the config is loaded.
@@ -30,7 +32,7 @@ public class StratumItemClumpConfig
 	// How many times to retry while an item has not settled on the ground.
 	public int MaxSettleAttempts { get; set; } = 20;
 
-	// Budget of merge attempts per system tick (250 ms).
+	// Budget of merge attempts per system tick (50 ms).
 	public int MaxAttemptsPerTick { get; set; } = 25;
 
 	// Maximum number of items in one merge group.
