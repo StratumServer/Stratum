@@ -30,22 +30,93 @@ public class ItemClumpBlacklistScenarios : AtlasScenarioBase
 		await World.Ticks(2);
 
 		ModSystem system = RequireSystem(api);
-		InstallBlacklist(system, "stone-granite", "STONE-AND*", "@^game:stone-chert$");
+		try
+		{
+			InstallBlacklist(system, "stone-granite", "STONE-AND*", "@^game:stone-chert$");
 
-		EntityItem[] granite = Pair(api, player, "game:stone-granite", 0);
-		EntityItem[] andesite = Pair(api, player, "game:stone-andesite", 8);
-		EntityItem[] chert = Pair(api, player, "game:stone-chert", 16);
-		EntityItem[] basalt = Pair(api, player, "game:stone-basalt", 24);
+			EntityItem[] granite = Pair(api, player, "game:stone-granite", 0);
+			EntityItem[] andesite = Pair(api, player, "game:stone-andesite", 8);
+			EntityItem[] chert = Pair(api, player, "game:stone-chert", 16);
+			EntityItem[] basalt = Pair(api, player, "game:stone-basalt", 24);
 
-		// The control merges, which also means the delay and the settling time are over.
-		await World.Until(() => !basalt[1].Alive, timeoutTicks: 300);
-		Assert.True(
-			basalt[0].Alive && basalt[0].Slot.Itemstack.StackSize == 6,
-			"setup failed: the stone that is not blacklisted did not merge, so the system was not running");
+			// The control merges, which also means the delay and the settling time are over.
+			await World.Until(() => !basalt[1].Alive, timeoutTicks: 300);
+			Assert.True(
+				basalt[0].Alive && basalt[0].Slot.Itemstack.StackSize == 6,
+				"setup failed: the stone that is not blacklisted did not merge, so the system was not running");
 
-		AssertApart(granite, "plain code without a domain");
-		AssertApart(andesite, "'*' pattern, upper case");
-		AssertApart(chert, "@regex");
+			AssertApart(granite, "plain code without a domain");
+			AssertApart(andesite, "'*' pattern, upper case");
+			AssertApart(chert, "@regex");
+		}
+		finally
+		{
+			InstallBlacklist(system);
+		}
+	}
+
+	/// <summary>
+	/// An "@regex" entry that does not compile is dropped when the list is normalized. Left in, it would throw
+	/// from WildcardUtil.Match on every merge attempt, and the exception would take the server tick with it, so
+	/// nothing would merge. A regex entry is case sensitive: an upper case one does not match a lower case code.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 120_000)]
+	public async Task InvalidAndUpperCaseRegexEntries_Should_NotStopOtherMerges()
+	{
+		ICoreServerAPI api = World.Api;
+		ITestPlayer player = await World.JoinPlayer("clump-badregex");
+		await World.Ticks(2);
+
+		ModSystem system = RequireSystem(api);
+		try
+		{
+			InstallBlacklist(system, "@[stone", "@^GAME:STONE-BASALT$", "stone-limestone");
+
+			EntityItem[] limestone = Pair(api, player, "game:stone-limestone", 32);
+			EntityItem[] basalt = Pair(api, player, "game:stone-basalt", 40);
+
+			await World.Until(() => !basalt[1].Alive, timeoutTicks: 300);
+			Assert.True(
+				basalt[0].Alive && basalt[0].Slot.Itemstack.StackSize == 6,
+				"the stone merged less than expected: the upper case regex matched, or the invalid entry stopped the merges");
+			AssertApart(limestone, "plain code next to an invalid regex entry");
+		}
+		finally
+		{
+			InstallBlacklist(system);
+		}
+	}
+
+	/// <summary>
+	/// A blacklisted item never enters the queue, so it cannot use a queue slot or a merge budget unit.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 120_000)]
+	public async Task BlacklistedItems_Should_NotEnterTheQueue()
+	{
+		ICoreServerAPI api = World.Api;
+		ITestPlayer player = await World.JoinPlayer("clump-queue");
+		await World.Ticks(2);
+
+		ModSystem system = RequireSystem(api);
+		try
+		{
+			InstallBlacklist(system, "stone-peridotite");
+
+			EntityItem[] blocked = Pair(api, player, "game:stone-peridotite", 48);
+			EntityItem[] control = Pair(api, player, "game:stone-scoria", 56);
+
+			// Both pairs are well inside the delay, so the control stays tracked while the others never were.
+			await World.Ticks(10);
+			System.Collections.IDictionary tracked = (System.Collections.IDictionary)system.GetType()
+				.GetField("byId", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(system)!;
+			Assert.True(tracked.Contains(control[0].EntityId), "setup failed: the control is not tracked by the system");
+			Assert.False(tracked.Contains(blocked[0].EntityId) || tracked.Contains(blocked[1].EntityId),
+				"a blacklisted item was queued for merging");
+		}
+		finally
+		{
+			InstallBlacklist(system);
+		}
 	}
 
 	private static void AssertApart(EntityItem[] pair, string entry)
@@ -89,7 +160,7 @@ public class ItemClumpBlacklistScenarios : AtlasScenarioBase
 		Assert.True(normalize != null && patterns != null && cache != null,
 			"ModSystemItemClump.NormalizeBlacklist, blacklistPatterns or blacklistCache is missing: it was renamed or removed.");
 
-		object normalized = normalize!.Invoke(null, new object[] { new List<string>(entries) })!;
+		object normalized = normalize!.Invoke(null, new object?[] { new List<string>(entries), null })!;
 		patterns!.SetValue(system, normalized);
 		cache!.FieldType.GetMethod("Clear")!.Invoke(cache.GetValue(system), null);
 	}

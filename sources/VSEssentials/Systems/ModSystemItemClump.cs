@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
+using System.Text.RegularExpressions;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
@@ -130,7 +130,7 @@ public class ModSystemItemClump : ModSystem
 		maxSettleAttempts = cfg.MaxSettleAttempts;
 		maxAttemptsPerTick = cfg.MaxAttemptsPerTick;
 		maxGroupSize = cfg.MaxGroupSize;
-		blacklistPatterns = NormalizeBlacklist(cfg.Blacklist);
+		blacklistPatterns = NormalizeBlacklist(cfg.Blacklist, api.Logger);
 		blacklistCache.Clear();
 
 		int trackingRange = GlobalConstants.DefaultSimulationRange;
@@ -215,6 +215,9 @@ public class ModSystemItemClump : ModSystem
 		ItemStack stack = item.Slot?.Itemstack;
 		if (stack != null && stack.Collectible.MaxStackSize <= 1) return;
 
+		// A blacklisted collectible never merges, so it must not use a queue slot or a merge budget unit.
+		if (stack != null && IsBlacklisted(stack.Collectible)) return;
+
 		ItemClumpCandidate c = new ItemClumpCandidate
 		{
 			Entity = item,
@@ -290,6 +293,7 @@ public class ModSystemItemClump : ModSystem
 			//  3) below: the item hangs without support and did not move between two checks.
 			bool frozen = e.State == EnumEntityState.Inactive || NoPlayerNear(e.Pos);
 
+			bool hovering = false;
 			if (!frozen && !IsSettled(e))
 			{
 				EntityPos p = e.Pos;
@@ -300,7 +304,7 @@ public class ModSystemItemClump : ModSystem
 				if (c.HasLastPos && SqDist(p.X, p.Y, p.Z, c.LastX, c.LastY, c.LastZ) < 1e-4)
 				{
 					frozen = true;
-					dbgHovering++;
+					hovering = true;
 				}
 				else
 				{
@@ -326,12 +330,18 @@ public class ModSystemItemClump : ModSystem
 				}
 			}
 
-			if (frozen) dbgFrozen++;
-
 			// Ready to merge, but the budget of expensive attempts is spent for this tick.
-			// Leave it at the head of the queue until the next tick.
-			if (clumpBudget <= 0) break;
+			// Leave it at the head of the queue until the next tick. It is counted when it gets its turn,
+			// not on every tick it waits.
+			if (clumpBudget <= 0)
+			{
+				dbgProcessed--;
+				break;
+			}
 			clumpBudget--;
+
+			if (frozen) dbgFrozen++;
+			if (hovering) dbgHovering++;
 
 			queue.Dequeue();
 			// Stop tracking BEFORE merging: if the item survives it can become a candidate
@@ -628,15 +638,43 @@ public class ModSystemItemClump : ModSystem
 		return m.X * m.X + m.Y * m.Y + m.Z * m.Z <= SettledMotionSq;
 	}
 
-	private static string[] NormalizeBlacklist(List<string> raw)
+	// Trims the entries, adds the default domain and drops what cannot work: an "@regex" that does not compile
+	// would throw from WildcardUtil.Match on every merge attempt and take the whole server tick with it. A
+	// dropped entry is logged when a logger is given. Regex entries are case sensitive (WildcardUtil builds
+	// them without IgnoreCase), the other entries are not, so only the other entries are deduplicated
+	// ignoring case.
+	private static string[] NormalizeBlacklist(List<string> raw, ILogger logger)
 	{
 		if (raw == null) return Array.Empty<string>();
 
-		return raw
-			.Where(entry => !string.IsNullOrWhiteSpace(entry))
-			.Select(entry => AddDefaultDomain(entry.Trim()))
-			.Distinct(StringComparer.OrdinalIgnoreCase)
-			.ToArray();
+		List<string> result = new List<string>();
+		HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+
+		foreach (string entry in raw)
+		{
+			if (string.IsNullOrWhiteSpace(entry)) continue;
+
+			string code = AddDefaultDomain(entry.Trim());
+			bool isRegex = code[0] == '@';
+
+			if (isRegex)
+			{
+				try
+				{
+					// Same construction as WildcardUtil.RegexCache.
+					_ = new Regex(string.Concat("^", code.AsSpan(1), "$"), RegexOptions.CultureInvariant);
+				}
+				catch (ArgumentException ex)
+				{
+					logger?.Warning("[Stratum] ItemClump: ignoring blacklist entry '{0}', it is not a valid regex: {1}", code, ex.Message);
+					continue;
+				}
+			}
+
+			if (seen.Add(isRegex ? code : code.ToLowerInvariant())) result.Add(code);
+		}
+
+		return result.ToArray();
 	}
 
 	// A code without a domain is vanilla: "gear-rusty" becomes "game:gear-rusty".
@@ -656,7 +694,16 @@ public class ModSystemItemClump : ModSystem
 		{
 			// Once per collectible (cached afterwards), so the string allocation is fine here.
 			string code = coll.Code.ToString();
-			hit = WildcardUtil.Match(blacklistPatterns, code);
+			try
+			{
+				hit = WildcardUtil.Match(blacklistPatterns, code);
+			}
+			catch (RegexMatchTimeoutException)
+			{
+				// WildcardUtil gives a regex one second. The collectible is treated as not blacklisted and the
+				// answer is cached, so a slow pattern costs one second once, not on every attempt.
+				sapi?.Logger.Warning("[Stratum] ItemClump: a blacklist regex timed out on '{0}', the item is not blacklisted.", code);
+			}
 		}
 
 		blacklistCache[coll] = hit;
