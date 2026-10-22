@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
-index 061580877c8f51dfc6703faaf895d453aa646e0d..f275d9a8efb18222afaac275852af33dd5222128 100644
+index 061580877c8f51dfc6703faaf895d453aa646e0d..ce45be7d29285f0fb1cacb75949542caa34cd2de 100644
 --- a/VSEssentials/Entities/EntityBlockFalling.cs
 +++ b/VSEssentials/Entities/EntityBlockFalling.cs
 @@ -372,6 +372,13 @@
@@ -101,7 +101,31 @@ index 061580877c8f51dfc6703faaf895d453aa646e0d..f275d9a8efb18222afaac275852af33d
  
              if (Api.World.Side == EnumAppSide.Client)
              {
-@@ -812,6 +884,66 @@
+@@ -687,6 +759,7 @@
+         public override void OnFallToGround(double motionY)
+         {
+             if (fallHandled) return;
++            if (stratumSettleQueued) return; // Stratum: a settle is already on its way, a second landing would place the block at the hopped height
+ 
+             BlockPos pos = Pos.AsBlockPos;
+             BlockPos finalPos = Pos.AsBlockPos;
+@@ -783,6 +856,15 @@
+                         Pos.Y += hopUpHeight;
+                         hopUpHeight += 1;
+                         if (hopUpHeight > 3) hopUpHeight = 1;
++
++                        // Stratum start: a block that can neither replace nor stand in the cell it lands in (sand over leaves,
++                        // which are replaceable 4000 and have no collision box) hops up and falls back into the same cell
++                        // for as long as it lives. Settle it above the obstacle instead.
++                        if (StratumTracked)
++                        {
++                            StratumSettleAt(Pos.AsBlockPos);
++                        }
++                        // Stratum end
+                         return;
+                     }
+                 }
+@@ -812,6 +894,66 @@
              hopUpHeight = 1;
          }
  
