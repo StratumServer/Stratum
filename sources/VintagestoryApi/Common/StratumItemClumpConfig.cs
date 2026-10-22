@@ -38,8 +38,8 @@ public class StratumItemClumpConfig
 
 	public void EnsureSane()
 	{
-		Radius = Math.Clamp(Radius, 0.25f, 8f);
-		VerticalRadius = Math.Clamp(VerticalRadius, 0.25f, 8f);
+		Radius = float.IsFinite(Radius) ? Math.Clamp(Radius, 0.25f, 8f) : 5.0f;
+		VerticalRadius = float.IsFinite(VerticalRadius) ? Math.Clamp(VerticalRadius, 0.25f, 8f) : 2.0f;
 		DelayMs = Math.Clamp(DelayMs, 250, 60000);
 		MaxSettleAttempts = Math.Clamp(MaxSettleAttempts, 1, 200);
 		MaxAttemptsPerTick = Math.Clamp(MaxAttemptsPerTick, 1, 1000);
