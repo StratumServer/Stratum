@@ -547,6 +547,30 @@ public class ModSystemFallingBlocks : ModSystem
 
 		bool canPlace = supported && targetBlock != null && targetBlock.IsReplacableBy(block);
 
+		if (!canPlace && !doRemoveBlock)
+		{
+			// When settling an entity in place (doRemoveBlock == false), its current cell may be occupied
+			// (e.g. by another settling entity in the same column, or obstacle blocks like stacked leaves).
+			// Step up to find the first cell that can accept the block, matching vanilla's hop behavior.
+			BlockPos stepPos = finalPos.Copy();
+			for (int hop = 1; hop <= 4; hop++)
+			{
+				stepPos.Y++;
+				Block candidate = accessor.GetBlock(stepPos);
+				if (candidate != null && candidate.IsReplacableBy(block))
+				{
+					Block candidateSupport = accessor.GetMostSolidBlock(stepPos.DownCopy());
+					if (candidateSupport.Replaceable < 6000 && !candidateSupport.IsLiquid())
+					{
+						finalPos = stepPos;
+						targetBlock = candidate;
+						canPlace = true;
+						break;
+					}
+				}
+			}
+		}
+
 		if (canPlace)
 		{
 			accessor.SetBlock(block.BlockId, finalPos);
