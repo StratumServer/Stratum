@@ -15,13 +15,15 @@ namespace Vintagestory.GameContent;
 // vanilla behavior in that case. With a player nearby everything goes through the entity path
 // and behaves like vanilla.
 //
-// Deliberate policy for the instant path (SimulateInstantFall): a fall resolved without an entity
-// does NOT notify neighbours (plain SetBlock, no TriggerNeighbourBlockUpdate). The goal is to stop
-// collapses from loading the server outside the range of players, so a chain of collapses must not
-// continue there. Consequences, by design:
-//  - a sand/gravel column with no player in range loses its bottom block and the rest stays up until
-//    something next to it changes;
+// The instant path (SimulateInstantFall) notifies neighbours after it removes the block and after it
+// places it, like the entity path does, so a column or a heap keeps coming down. The notifications are
+// queued by the server (at most 500 per tick) and do not load chunks, and the requests they create go
+// back into the same queue, which resolves at most MaxInstantPerTick per tick. A large heap far from
+// players therefore takes longer to land, at a bounded cost per tick.
+//
+// Differences from the entity path, by design:
 //  - a block that was only asked to fall sideways and has solid support below stays where it is;
+//  - snow that lands on a snow block adds a layer above it instead of being absorbed into it;
 //  - requests still waiting when the server stops are resolved in Dispose.
 public class ModSystemFallingBlocks : ModSystem
 {
@@ -30,14 +32,13 @@ public class ModSystemFallingBlocks : ModSystem
 	private ICoreServerAPI sapi;
 	private long tickListenerId;
 
-	// Requests are popped in random order.
-	private readonly List<SpawnRequest> instantQueue = new List<SpawnRequest>();
+	// First in, first out: requests created by a neighbour update arrive bottom up, and resolving them in
+	// that order keeps a block from being asked again because the block under it was still in place.
+	private readonly Queue<SpawnRequest> instantQueue = new Queue<SpawnRequest>();
 
 	// Positions that have a request in the queue. Guards against duplicate requests.
 	// Always holds private copies, never a caller's BlockPos (callers may mutate theirs).
 	private readonly HashSet<BlockPos> pendingPositions = new HashSet<BlockPos>();
-
-	private readonly Random rng = new Random();
 
 	private int activeRange = 128;
 	private int maxInstantPerTick = 100;
@@ -134,7 +135,7 @@ public class ModSystemFallingBlocks : ModSystem
 
 		while (processed < maxInstantPerTick && instantQueue.Count > 0)
 		{
-			SpawnRequest request = PopRandom(instantQueue);
+			SpawnRequest request = instantQueue.Dequeue();
 			pendingPositions.Remove(request.InitialPos);
 			processed++;
 
@@ -159,17 +160,6 @@ public class ModSystemFallingBlocks : ModSystem
 		}
 	}
 
-	// Swap with the last element and remove it, so a random pick stays O(1).
-	private SpawnRequest PopRandom(List<SpawnRequest> list)
-	{
-		int index = rng.Next(list.Count);
-		SpawnRequest picked = list[index];
-		int last = list.Count - 1;
-		list[index] = list[last];
-		list.RemoveAt(last);
-		return picked;
-	}
-
 	// While a request waited, the cell got a different block (for example the player mined the sand
 	// and placed gravel there). That block's own createFallingBlock was skipped by the pending guard
 	// and nothing asks it again, so let it re-check itself.
@@ -178,12 +168,6 @@ public class ModSystemFallingBlocks : ModSystem
 		if (current == null || current.Id == 0) return;
 		BlockPos pos = request.InitialPos;
 		current.OnNeighbourBlockChange(world, pos, pos.DownCopy());
-	}
-
-	// True when the block at pos has a request in the queue.
-	public bool IsPositionPending(BlockPos pos)
-	{
-		return pendingPositions.Contains(pos);
 	}
 
 	// Called where vanilla would spawn an EntityBlockFalling. Returns true when the fall was taken
@@ -209,7 +193,7 @@ public class ModSystemFallingBlocks : ModSystem
 		}
 
 		pendingPositions.Add(pos);
-		instantQueue.Add(new SpawnRequest
+		instantQueue.Enqueue(new SpawnRequest
 		{
 			Block = block,                                          // falling/landing variant
 			SourceBlock = sapi.World.BlockAccessor.GetBlock(pos),   // original source at the position
@@ -219,6 +203,12 @@ public class ModSystemFallingBlocks : ModSystem
 			DoRemoveBlock = doRemoveBlock
 		});
 		return true;
+	}
+
+	private static void RemoveStartBlock(IBlockAccessor accessor, BlockPos startPos)
+	{
+		accessor.SetBlock(0, startPos);
+		accessor.TriggerNeighbourBlockUpdate(startPos);
 	}
 
 	// Drops the block's items and, if the block entity is a container, its contents.
@@ -245,7 +235,8 @@ public class ModSystemFallingBlocks : ModSystem
 	// used for DropContents. sourceBlock is the original block at startPos and is validated before
 	// removal; block is the falling/landing variant that gets placed.
 	//
-	// No neighbour updates here, on purpose (see the policy at the top of the file).
+	// Neighbours are notified after the removal and after the placement, like EntityBlockFalling.UpdateBlock does.
+	// With doRemoveBlock false the caller owns the removal (and its notification).
 	public static void SimulateInstantFall(
 		IWorldAccessor world,
 		Block block,
@@ -272,7 +263,7 @@ public class ModSystemFallingBlocks : ModSystem
 			// Pass the snapshot, not a fresh serialization of the live block entity.
 			if (belowBlock.CanAcceptFallOnto(world, belowPos, block, beTree))
 			{
-				if (doRemoveBlock) accessor.SetBlock(0, startPos);
+				if (doRemoveBlock) RemoveStartBlock(accessor, startPos);
 				belowBlock.OnFallOnto(world, belowPos, block, beTree);
 				return;
 			}
@@ -289,11 +280,10 @@ public class ModSystemFallingBlocks : ModSystem
 
 		// The block would not move and is not turning into another variant: nothing to resolve.
 		// This is the sideways-only fall (solid support below). Removing and re-placing it would
-		// only re-trigger OnBlockPlaced and queue the same request again, which is exactly the load
-		// this system exists to avoid outside the range of players.
+		// only re-trigger OnBlockPlaced and queue the same request again.
 		if (doRemoveBlock && block == sourceBlock && finalPos.Equals(startPos)) return;
 
-		if (doRemoveBlock) accessor.SetBlock(0, startPos);
+		if (doRemoveBlock) RemoveStartBlock(accessor, startPos);
 
 		Block targetBlock = accessor.GetBlock(finalPos);
 		Block supportBlock = accessor.GetMostSolidBlock(finalPos.DownCopy());
@@ -328,6 +318,7 @@ public class ModSystemFallingBlocks : ModSystem
 		if (canPlace)
 		{
 			accessor.SetBlock(block.BlockId, finalPos);
+			accessor.TriggerNeighbourBlockUpdate(finalPos);
 
 			if (beTree != null)
 			{
