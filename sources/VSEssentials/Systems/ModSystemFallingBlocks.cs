@@ -24,7 +24,9 @@ namespace Vintagestory.GameContent;
 // Differences from the entity path, by design:
 //  - a block that was only asked to fall sideways and has solid support below stays where it is;
 //  - snow that lands on a snow block adds a layer above it instead of being absorbed into it;
-//  - requests still waiting when the server stops are resolved in Dispose.
+//  - requests still waiting when the server stops are resolved in Dispose;
+//  - a request whose chunk unloads while it waits is dropped: the rock or block stays where it is and nothing asks
+//    it to fall again after the reload (on the entity path the falling entity is saved with its chunk).
 public class ModSystemFallingBlocks : ModSystem
 {
 	public static ModSystemFallingBlocks Instance { get; private set; }
@@ -39,6 +41,9 @@ public class ModSystemFallingBlocks : ModSystem
 	// Positions that have a request in the queue. Guards against duplicate requests.
 	// Always holds private copies, never a caller's BlockPos (callers may mutate theirs).
 	private readonly HashSet<BlockPos> pendingPositions = new HashSet<BlockPos>();
+
+	// Upper bound for the flush in Dispose, so a request chain cannot keep the shutdown busy for ever.
+	private const int MaxFlushOnDispose = 100000;
 
 	private int activeRange = 128;
 	private int maxInstantPerTick = 100;
@@ -82,11 +87,17 @@ public class ModSystemFallingBlocks : ModSystem
 		// Best effort: the world is still live here (players are disconnected, the save happens
 		// after the mod handlers are disposed). Resolve everything that is still queued so scattered
 		// blocks are not saved at their start cells.
+		// Instance goes first: a block hook that runs during the flush (SetBlock calls OnBlockRemoved and
+		// OnBlockPlaced) then takes the vanilla path instead of adding to the queue that is being drained.
+		if (Instance == this) Instance = null;
+
 		IWorldAccessor world = sapi?.World;
 		if (world != null)
 		{
-			foreach (SpawnRequest request in instantQueue)
+			int flushed = 0;
+			while (instantQueue.Count > 0 && flushed++ < MaxFlushOnDispose)
 			{
+				SpawnRequest request = instantQueue.Dequeue();
 				// try/catch per request: one throwing block (GetDrops, a mod's CanAcceptFallOnto)
 				// must not skip every request after it.
 				try
@@ -110,8 +121,6 @@ public class ModSystemFallingBlocks : ModSystem
 
 		instantQueue.Clear();
 		pendingPositions.Clear();
-
-		if (Instance == this) Instance = null;
 	}
 
 	public bool HasPlayerNearby(Vec3d pos)
