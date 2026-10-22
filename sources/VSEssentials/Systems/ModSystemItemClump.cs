@@ -186,6 +186,10 @@ public class ModSystemItemClump : ModSystem
 	{
 		if (byId.ContainsKey(item.EntityId)) return;
 
+		// A non stackable item can neither receive nor donate, so it never needs a turn in the queue.
+		ItemStack stack = item.Slot?.Itemstack;
+		if (stack != null && stack.Collectible.MaxStackSize <= 1) return;
+
 		ItemClumpCandidate c = new ItemClumpCandidate
 		{
 			Entity = item,
@@ -224,6 +228,16 @@ public class ModSystemItemClump : ModSystem
 			EntityItem e = c.Entity;
 
 			if (!IsValid(e))
+			{
+				queue.Dequeue();
+				byId.Remove(c.EntityId);
+				continue;
+			}
+
+			// A full stack cannot receive and only donates next to other full stacks, which is nothing
+			// to merge. Drop it without spending the expensive budget on it.
+			ItemStack ready = e.Slot.Itemstack;
+			if (ready.StackSize >= ready.Collectible.MaxStackSize)
 			{
 				queue.Dequeue();
 				byId.Remove(c.EntityId);
@@ -356,11 +370,23 @@ public class ModSystemItemClump : ModSystem
 				// stacks) must not mix: the merged stack would get the wrong lifetime.
 				if (DespawnOverride(donor) != DespawnOverride(recv)) continue;
 
+				// Every member is within the radius of the root, but two members can sit up to twice that apart.
+				// Only stacks that are close to each other mix, and never across a land claim border, so
+				// a pile dropped outside a claimed wall cannot pull in the owner's stacks lying behind it.
+				if (!InMergeRange(donor, recv) || !SameClaim(donor, recv)) continue;
+
 				// Vanilla rules: matching attributes, freshness and so on.
 				if (rs.Collectible.GetMergableQuantity(rs, ds, EnumMergePriority.AutoMerge) <= 0) continue;
 
 				int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
-				if (moved <= 0) continue;
+				if (moved <= 0)
+				{
+					// The merge check can run the transition update, which spoils or converts a stack in place
+					// without moving anything. Keep the entities and clients in step with the slots.
+					ResyncStack(donor);
+					ResyncStack(recv);
+					continue;
+				}
 
 				MergeDespawnClock(donor, recv);
 
@@ -374,7 +400,14 @@ public class ModSystemItemClump : ModSystem
 			ItemStack left = donor.Slot.Itemstack;
 			if (left == null || left.StackSize <= 0)
 			{
-				donor.Die(EnumDespawnReason.Removed);
+				// Die only flags the entity, the chunk is dirtied when it is removed on a later entity tick.
+				// Marking it now keeps a crash in between from saving the receiver's new count next to the
+				// donor's old one.
+				if (donor.Alive)
+				{
+					MarkChunkModified(donor);
+					donor.Die(EnumDespawnReason.Removed);
+				}
 			}
 			else
 			{
@@ -387,11 +420,49 @@ public class ModSystemItemClump : ModSystem
 		group.Clear();
 	}
 
+	private void ResyncStack(EntityItem e)
+	{
+		if (!e.Alive) return;
+
+		ItemStack stack = e.Slot.Itemstack;
+		if (stack == null || stack.StackSize <= 0)
+		{
+			MarkChunkModified(e);
+			e.Die(EnumDespawnReason.Removed);
+			return;
+		}
+
+		e.Itemstack = stack;
+		e.WatchedAttributes.MarkPathDirty("itemstack");
+		MarkChunkModified(e);
+	}
+
+	private bool InMergeRange(EntityItem a, EntityItem b)
+	{
+		Vec3d pa = a.Pos.XYZ;
+		Vec3d pb = b.Pos.XYZ;
+		double dx = pa.X - pb.X, dz = pa.Z - pb.Z;
+		return dx * dx + dz * dz <= (double)radius * radius && Math.Abs(pa.Y - pb.Y) <= verticalRadius;
+	}
+
+	// True when both stacks lie outside every claim, or share their first claim.
+	private bool SameClaim(EntityItem a, EntityItem b)
+	{
+		LandClaim[] claimsA = sapi.World.Claims.Get(a.Pos.AsBlockPos);
+		LandClaim[] claimsB = sapi.World.Claims.Get(b.Pos.AsBlockPos);
+		bool noClaimA = claimsA == null || claimsA.Length == 0;
+		bool noClaimB = claimsB == null || claimsB.Length == 0;
+		if (noClaimA || noClaimB) return noClaimA && noClaimB;
+		return claimsA[0] == claimsB[0];
+	}
+
 	private bool MatchEntity(Entity e)
 	{
 		return e is EntityItem ei
 			&& ei.Alive
-			&& ei.Slot?.Itemstack?.Collectible == matchCollectible;
+			&& ei.Slot?.Itemstack is ItemStack stack
+			&& stack.Collectible == matchCollectible
+			&& stack.StackSize < matchCollectible.MaxStackSize;
 	}
 
 	private static int CompareBySizeDesc(EntityItem a, EntityItem b)
