@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Entities/EntityBlockFalling.cs b/VSEssentials/Entities/EntityBlockFalling.cs
-index 0615808..1a19c0b 100644
+index 0615808..d866241 100644
 --- a/VSEssentials/Entities/EntityBlockFalling.cs
 +++ b/VSEssentials/Entities/EntityBlockFalling.cs
 @@ -370,10 +370,17 @@ namespace Vintagestory.GameContent
@@ -20,7 +20,7 @@ index 0615808..1a19c0b 100644
          internal bool nowImpacted;
  
  
-@@ -499,10 +506,27 @@ namespace Vintagestory.GameContent
+@@ -499,10 +506,26 @@ namespace Vintagestory.GameContent
              {
                  // We have captured the BlockEntity and drops, we can now remove the initial block
                  // (but on a server we delay neighbour updates and notifying the client, deferred until later calls to UpdateBlock(true...)
@@ -37,7 +37,6 @@ index 0615808..1a19c0b 100644
 +                    SimulationRange = GlobalConstants.DefaultSimulationRange;
 +                    State = EnumEntityState.Active; // ensure passive physics runs even though AlwaysActive bypasses UpdateTrackedEntityState
 +                    StratumSpawnTimeMs = api.World.ElapsedMilliseconds;
-+                    StratumLastPlayerCheckMs = StratumSpawnTimeMs;
 +                    stratumSystem.OnFallingBlockInitialized(this);
 +                    StratumTracked = true;
 +                }
@@ -48,7 +47,7 @@ index 0615808..1a19c0b 100644
  
          /// <summary>
          /// Delays behaviors from ticking to reduce flickering
-@@ -604,17 +628,68 @@ namespace Vintagestory.GameContent
+@@ -604,17 +627,68 @@ namespace Vintagestory.GameContent
              {
                  OnFallToGround(0);
                  World.FrameProfiler.Mark("entity-tick-unsstablefalling-falltoground");
@@ -117,7 +116,7 @@ index 0615808..1a19c0b 100644
                  if (!reusedMeshRef) meshRef?.Dispose();
                  fallingNow.Remove(EntityId);
                  particleSys.Unregister(this);
-@@ -685,10 +760,11 @@ namespace Vintagestory.GameContent
+@@ -685,10 +759,11 @@ namespace Vintagestory.GameContent
          }
  
          public override void OnFallToGround(double motionY)
@@ -129,7 +128,7 @@ index 0615808..1a19c0b 100644
              BlockPos finalPos = Pos.AsBlockPos;
              Block block = null;
  
-@@ -781,10 +857,19 @@ namespace Vintagestory.GameContent
+@@ -781,10 +856,19 @@ namespace Vintagestory.GameContent
                      else
                      {
                          Pos.Y += hopUpHeight;
@@ -149,7 +148,7 @@ index 0615808..1a19c0b 100644
                  }
  
                  if (impactDamageMul > 0)
-@@ -810,10 +895,80 @@ namespace Vintagestory.GameContent
+@@ -810,10 +894,80 @@ namespace Vintagestory.GameContent
              lingerTicks = 50;
              fallHandled = true;
              hopUpHeight = 1;
