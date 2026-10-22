@@ -26,9 +26,11 @@ namespace StratumScenarios;
 /// otherwise a merge across a chunk border is lost on the next save.
 ///
 /// Timing is expressed in ticks (Atlas paces at ~33 ms), with wide margins, and merges are awaited with
-/// Until. The scenarios assume the default clump delay of 1500 ms where it matters (stated per scenario).
-/// Each scenario uses its own spot (8 blocks apart, beyond the 5 block search radius) and a player name
-/// of at most 16 characters (the engine rejects longer ones).
+/// Until. Where the clump delay itself matters (1500 ms by default), the scenario waits on the server clock
+/// instead of a tick count, because a slow run stretches ticks but not the clump clock.
+/// Each scenario uses its own spot (8 blocks apart, beyond the 5 block search radius), its own item (stacks of
+/// different items never merge, so a pile left by another scenario cannot join in) and a player name of at
+/// most 16 characters (the engine rejects longer ones).
 /// </summary>
 public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 {
@@ -39,7 +41,7 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 		ITestPlayer player = await World.JoinPlayer("clump-window");
 		await World.Ticks(2);
 		Vec3d pos = DropPos(player, 0);
-		Item item = RequireItem(api, "game:flint", "game:stone-granite");
+		Item item = RequireItem(api, "game:flint");
 
 		// Older pile from player A. Wait until its own window is long over and it has settled.
 		EntityItem older = Spawn(api, new ItemStack(item, 5), pos, "clump-window-a");
@@ -78,13 +80,14 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 		ITestPlayer player = await World.JoinPlayer("clump-other");
 		await World.Ticks(2);
 		Vec3d pos = DropPos(player, 8);
-		Item item = RequireItem(api, "game:flint", "game:stone-granite");
+		Item item = RequireItem(api, "game:stone-granite");
 
 		// Settled pile, then a no-dropper stack that will come due about 300 ms after the player drop.
 		EntityItem older = Spawn(api, new ItemStack(item, 5), pos, null);
 		await World.Ticks(90);
 		EntityItem trigger = Spawn(api, new ItemStack(item, 1), pos, null);
-		await World.Ticks(36); // ~1.2 s of the 1.5 s clump delay
+		long triggerSpawnedMs = api.World.ElapsedMilliseconds;
+		await World.Until(() => api.World.ElapsedMilliseconds - triggerSpawnedMs >= 1200, timeoutTicks: 300); // 1.2 s of the 1.5 s clump delay
 
 		EntityItem fresh = Spawn(api, new ItemStack(item, 1), pos, "clump-other-p");
 
@@ -109,7 +112,7 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 		ITestPlayer player = await World.JoinPlayer("clump-nodropper");
 		await World.Ticks(2);
 		Vec3d pos = DropPos(player, 16);
-		Item item = RequireItem(api, "game:flint", "game:stone-granite");
+		Item item = RequireItem(api, "game:stone-andesite");
 
 		EntityItem older = Spawn(api, new ItemStack(item, 5), pos, null);
 		await World.Ticks(90);
@@ -131,7 +134,7 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	[AtlasScenario(TimeoutMs = 120_000)]
 	public async Task Merge_Should_KeepTheClockWithMoreLifeLeft_WhenTheDonorIsCloserToExpiry()
 	{
-		await AssertMergedDeathTime("clump-dt-a", zOffset: 24, receiverTime: 100f, donorTime: 500f);
+		await AssertMergedDeathTime("clump-dt-a", "game:stone-basalt", zOffset: 24, receiverTime: 100f, donorTime: 500f);
 	}
 
 	/// <summary>
@@ -141,16 +144,16 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	[AtlasScenario(TimeoutMs = 120_000)]
 	public async Task Merge_Should_NotShortenAFreshStack_WhenTheDonorIsNearlyExpired()
 	{
-		await AssertMergedDeathTime("clump-dt-b", zOffset: 32, receiverTime: 0f, donorTime: 540f);
+		await AssertMergedDeathTime("clump-dt-b", "game:stone-chert", zOffset: 32, receiverTime: 0f, donorTime: 540f);
 	}
 
-	private async Task AssertMergedDeathTime(string playerName, int zOffset, float receiverTime, float donorTime)
+	private async Task AssertMergedDeathTime(string playerName, string itemCode, int zOffset, float receiverTime, float donorTime)
 	{
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer(playerName);
 		await World.Ticks(2);
 		Vec3d pos = DropPos(player, zOffset);
-		Item item = RequireItem(api, "game:flint", "game:stone-granite");
+		Item item = RequireItem(api, itemCode);
 
 		EntityItem receiver = Spawn(api, new ItemStack(item, 5), pos, null);
 		receiver.Attributes.SetFloat("deathTime", receiverTime);
@@ -179,7 +182,7 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 		ITestPlayer player = await World.JoinPlayer("clump-skip");
 		await World.Ticks(2);
 		Vec3d pos = DropPos(player, 40);
-		Item item = RequireItem(api, "game:flint", "game:stone-granite");
+		Item item = RequireItem(api, "game:stone-peridotite");
 
 		// A death drop style stack (kept for an hour) next to an ordinary one.
 		EntityItem longLived = Spawn(api, new ItemStack(item, 5), pos, null);
@@ -209,7 +212,7 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer("clump-chunk");
 		await World.Ticks(2);
-		Item item = RequireItem(api, "game:flint", "game:stone-granite");
+		Item item = RequireItem(api, "game:stone-limestone");
 
 		// Two stacks on both sides of a chunk border (x = 32 * k), at the terrain surface.
 		Vec3d basePos = DropPos(player, 48);
