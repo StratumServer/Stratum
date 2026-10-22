@@ -74,6 +74,9 @@ public class ModSystemFallingBlocks : ModSystem
 	private int maxFallingLimit = 1000;
 	private int maxInstantPerTick = 100;
 
+	// Read by EntityBlockFalling. 0 means the watchdog is off.
+	public int StuckTimeoutMs { get; private set; } = 15000;
+
 	public override bool ShouldLoad(EnumAppSide forSide)
 	{
 		return forSide == EnumAppSide.Server;
@@ -95,6 +98,7 @@ public class ModSystemFallingBlocks : ModSystem
 
 		maxFallingLimit = cfg.MaxFallingLimit;
 		maxInstantPerTick = cfg.MaxInstantPerTick;
+		StuckTimeoutMs = cfg.StuckTimeoutMs;
 
 		activeRange = api.World.DefaultEntityTrackingRange * GlobalConstants.ChunkSize;
 
