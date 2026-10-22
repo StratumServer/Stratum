@@ -1,7 +1,7 @@
 # Review suggestions, not a gate: no branch rule requires a code owner review.
 # The org has no GitHub teams yet, so owners are listed by login. Add yourself
 # when you take an area.
-*           @trevorftp @pizza2004 @Pixnop
-/docs/      @trevorftp @pizza2004 @Pixnop @Zaldaryon
-/.github/   @trevorftp @pizza2004 @Pixnop
-/scripts/   @trevorftp @pizza2004 @Pixnop
+*           @trevorftp @Zaldaryon @Pixnop
+/docs/      @trevorftp @Pixnop @Zaldaryon
+/.github/   @trevorftp @Zaldaryon @Pixnop
+/scripts/   @trevorftp @Zaldaryon @Pixnop
