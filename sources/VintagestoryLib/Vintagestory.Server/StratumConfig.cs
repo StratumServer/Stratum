@@ -543,6 +543,8 @@ internal class StratumPerformanceConfig
 
 	public StratumEntityTickingConfig EntityTicking { get; set; } = new StratumEntityTickingConfig();
 
+	public StratumEntitySelectionConfig EntitySelection { get; set; } = new StratumEntitySelectionConfig();
+
 	public StratumChunkIoConfig ChunkIo { get; set; } = new StratumChunkIoConfig();
 
 	public StratumChunkPriorityConfig ChunkPriority { get; set; } = new StratumChunkPriorityConfig();
@@ -588,6 +590,7 @@ internal class StratumPerformanceConfig
 		SimulationDistance ??= new StratumSimulationDistanceConfig();
 		Physics ??= new StratumPhysicsConfig();
 		EntityTicking ??= new StratumEntityTickingConfig();
+		EntitySelection ??= new StratumEntitySelectionConfig();
 		AutoSave ??= new StratumAutoSaveConfig();
 		BlockTicks ??= new StratumBlockTickConfig();
 		ChunkIo ??= new StratumChunkIoConfig();
@@ -613,6 +616,7 @@ internal class StratumPerformanceConfig
 		SimulationDistance.EnsureSane();
 		Physics.EnsureSane();
 		EntityTicking.EnsureSane();
+		EntitySelection.EnsureSane();
 		AutoSave.EnsureSane();
 		BlockTicks.EnsureSane();
 		ChunkIo.EnsureSane();
@@ -1278,6 +1282,37 @@ internal class StratumChunkRequestManagementConfig
 		MaxCancelledRequestsPerCleanup = Math.Max(1, MaxCancelledRequestsPerCleanup);
 		ForwardPredictionBlocks = Math.Max(0, ForwardPredictionBlocks);
 		MinimumMovementSpeed = Math.Max(0, MinimumMovementSpeed);
+	}
+}
+
+internal class StratumEntitySelectionConfig
+{
+	// Re-trace at least this often. One extra tick of skip is added for every
+	// PlayersPerExtraSkip playing clients from the previous tick, and the result
+	// is clamped to MaxSkipTicks. A held mouse button traces on that tick anyway,
+	// because the trace is what writes the selection a break is checked against.
+	public int BaseSkipTicks { get; set; } = 3;
+
+	public int PlayersPerExtraSkip { get; set; } = 100;
+
+	public int MaxSkipTicks { get; set; } = 20;
+
+	public int SkipTicks(int onlinePlayers)
+	{
+		int extra = onlinePlayers > 0 ? onlinePlayers / PlayersPerExtraSkip : 0;
+		long skip = (long)BaseSkipTicks + extra;
+		if (skip > MaxSkipTicks)
+		{
+			skip = MaxSkipTicks;
+		}
+		return (int)skip;
+	}
+
+	public void EnsureSane()
+	{
+		BaseSkipTicks = Math.Max(1, BaseSkipTicks);
+		PlayersPerExtraSkip = Math.Max(1, PlayersPerExtraSkip);
+		MaxSkipTicks = Math.Max(BaseSkipTicks, MaxSkipTicks);
 	}
 }
 
