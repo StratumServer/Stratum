@@ -24,8 +24,8 @@ index 0615808..120a125 100644
                  World.BlockAccessor.SetBlock(0, initialPos);
              }
 +
-+            // Stratum start: register with the falling block system
-+            if (api.Side == EnumAppSide.Server)
++            // Stratum start: register with the falling block system once per entity instance
++            if (api.Side == EnumAppSide.Server && !StratumTracked)
 +            {
 +                ModSystemFallingBlocks stratumSystem = ModSystemFallingBlocks.Instance;
 +                if (stratumSystem != null)
@@ -33,8 +33,8 @@ index 0615808..120a125 100644
 +                    AlwaysActive = true;
 +                    SimulationRange = GlobalConstants.DefaultSimulationRange;
 +                    State = EnumEntityState.Active; // ensure passive physics runs even though AlwaysActive bypasses UpdateTrackedEntityState
-+                    StratumTracked = true;
 +                    stratumSystem.OnFallingBlockInitialized(this);
++                    StratumTracked = true;
 +                }
 +            }
 +            // Stratum end

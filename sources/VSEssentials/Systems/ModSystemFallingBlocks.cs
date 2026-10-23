@@ -36,6 +36,7 @@ public class ModSystemFallingBlocks : ModSystem
 {
 	// One retry per tick, so this is roughly 10 seconds at the 32 ms queue tick.
 	private const int MaxRetries = 300;
+	private const int MaxFlushOnDispose = 100000;
 
 	public static ModSystemFallingBlocks Instance { get; private set; }
 
