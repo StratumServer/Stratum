@@ -1,8 +1,41 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-index 04b25be..003c393 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
-@@ -34,25 +34,75 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+@@ -16,10 +16,33 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+ 
+ 	internal ServerMapChunk MapChunk;
+ 
+ 	internal int untilPass;
+ 
++	// Stratum: both the blocking load and the neighbour gate write this. A plain
++	// read-then-store can put a lower pass back after Done was stored, and the
++	// column then stops short of Done. Only a compare-exchange that raises the
++	// value is safe. Returns true when this call stored minPass. replaced is the
++	// value that was there; a negative one means the request was created and not
++	// yet queued, so the caller has to enqueue it.
++	internal static bool StratumTryRaiseUntilPass(ChunkColumnLoadRequest request, int minPass, out int replaced)
++	{
++		int observed;
++		do
++		{
++			observed = Volatile.Read(ref request.untilPass);
++			if (observed >= minPass)
++			{
++				replaced = observed;
++				return false;
++			}
++		}
++		while (Interlocked.CompareExchange(ref request.untilPass, minPass, observed) != observed);
++		replaced = observed;
++		return true;
++	}
++
+ 	internal int chunkX;
+ 
+ 	internal int chunkZ;
+ 
+ 	internal int dimension;
+@@ -34,25 +57,80 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
  
  	internal bool prettified;
  
@@ -47,6 +80,11 @@ index 04b25be..003c393 100644
 +	// boundary-scan call returns.
 +	internal int dispatchClaimed;
 +
++	// Stratum: a worker increments this after it advances the column one stage.
++	// The blocking load treats a change inside its rectangle as progress. A
++	// column outside that rectangle must not keep a stuck request alive.
++	internal int stratumStagesFinished;
++
 +	// Stratum: 0 = live, 1 = the unload pass has committed to dropping this column.
 +	// Set before that pass touches loadedMapChunks or the request queue, so the two
 +	// possible orderings both resolve: a pin that lands first makes the dropper back
@@ -81,7 +119,7 @@ index 04b25be..003c393 100644
  		}
  		set
  		{
-@@ -62,13 +112,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
+@@ -62,13 +140,14 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
  
  	public int CurrentIncompletePass_AsInt
  	{
