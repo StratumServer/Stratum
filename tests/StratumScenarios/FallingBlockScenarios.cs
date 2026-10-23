@@ -14,22 +14,23 @@ using Xunit;
 namespace StratumScenarios;
 
 /// <summary>
-/// Pins down the instant path of ModSystemFallingBlocks (Performance.FallingBlocks, enabled by default).
+/// Pins down ModSystemFallingBlocks (Performance.FallingBlocks, enabled by default).
 ///
 /// Every sand case runs inside a 3x3 rock shaft with a closed wall, so sideways slumping
 /// (sand and gravel have fallSideways) can never add noise to the column under test. A shaft
 /// stands on a rock floor; the part above the floor is 1x1 and open at the bottom.
 ///
 /// Policy under test (see the header of ModSystemFallingBlocks):
-/// - a player nearby: the entity path, a whole column comes down like in vanilla;
+/// - a player nearby: the entity path, a whole column comes down like in vanilla, with at most
+///   MaxFallingLimit entities alive at once;
 /// - no player in range: the instant path. The fall is resolved without an entity and notifies the
 ///   neighbours like the entity path does, so a whole column still comes down, at most
 ///   MaxInstantPerTick blocks per tick.
 ///
 /// ModSystemFallingBlocks lives outside the API assembly, so it is reached by reflection
-/// (the public static Instance, the public TryRequestInstantFall, and the private field
-/// maxInstantPerTick). A missing member fails with a descriptive message: it means the scenario
-/// runs against vanilla or the member was renamed.
+/// (the public static Instance, the public RequestSpawn, and the private fields maxFallingLimit,
+/// maxInstantPerTick and activeFallingPositions). A missing member fails with a descriptive message:
+/// it means the scenario runs against vanilla or the member was renamed.
 /// </summary>
 public class FallingBlockScenarios : AtlasScenarioBase
 {
@@ -109,27 +110,21 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	// floor as crackedrock-granite.
 	// ---------------------------------------------------------------------------------------
 	[AtlasScenario(TimeoutMs = 180_000)]
-	public async Task RockRequestedAsCrackedRock_Should_LandAsCrackedRock_When_NoPlayerInRange()
+	public async Task RockRequestedAsCrackedRock_Should_LandAsCrackedRock_OnBothPaths()
 	{
-		await World.JoinPlayer("fb-variant");
+		ITestPlayer player = await World.JoinPlayer("fb-variant");
 		await World.Ticks(2);
 		object system = RequireSystem();
 
+		// Instant path: nobody near the slab.
 		Shaft far = await PrepareFar(offsetZ: 6);
-		BuildShaft(far, wallTop: 6);
-		World.SetBlock(Rock, far.At(4));
-		await World.Ticks(2);
-		RequestInstantFall(system, Cracked, far.At(4));
-		await World.Until(() => CodeAt(far.At(1)) == "crackedrock-granite", timeoutTicks: 600);
-		await World.Ticks(60);
+		await DropRockSlab(system, far);
+		AssertSlabLanded(far, "instant path");
 
-		string actual = Column(far, 1, 4);
-		string expected = "crackedrock-granite,air,air,air";
-		Assert.True(
-			actual == expected,
-			$"rock-granite requested as crackedrock-granite did not land as crackedrock-granite.{Environment.NewLine}"
-			+ $"  expected (floor+1..+4): {expected}{Environment.NewLine}"
-			+ $"  actual:                 {actual}");
+		// Entity path: the slab is next to the player.
+		Shaft near = PrepareNear(player, offsetX: 10, offsetZ: 6);
+		await DropRockSlab(system, near);
+		AssertSlabLanded(near, "entity path");
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -180,6 +175,252 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			$"gravel placed over a waiting sand request hangs in the air.{Environment.NewLine}"
 			+ $"  expected (floor+1..+{OpenTop}): {expected}{Environment.NewLine}"
 			+ $"  actual:                       {actual}");
+	}
+
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task BlockPlacedOverAWaitingEntityRequest_Should_StillFall()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-near-stale");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		FieldInfo limitField = PrivateField(system, "maxFallingLimit");
+		int originalLimit = (int)limitField.GetValue(system)!;
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 18);
+		BuildShaft(s, wallTop: OpenTop);
+		await World.Ticks(5);
+
+		BlockPos top = s.At(OpenTop);
+		try
+		{
+			// No free slot: the request for the sand waits in the entity queue.
+			limitField.SetValue(system, 0);
+			World.SetBlock(Sand, top);
+			await World.Ticks(3);
+
+			World.SetBlock(Gravel, top);
+			await World.Ticks(3);
+		}
+		finally
+		{
+			limitField.SetValue(system, originalLimit);
+		}
+
+		await World.Until(() => CodeAt(s.At(1)) == "gravel-granite", timeoutTicks: 900);
+		await World.Ticks(30);
+
+		string actual = Column(s, 1, OpenTop);
+		string expected = "gravel," + string.Join(",", Enumerable.Repeat("air", OpenTop - 1));
+		Assert.True(
+			actual == expected,
+			$"gravel placed over a waiting sand request hangs in the air.{Environment.NewLine}"
+			+ $"  expected (floor+1..+{OpenTop}): {expected}{Environment.NewLine}"
+			+ $"  actual:                       {actual}");
+	}
+
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task FallingBlockInitialize_Should_RegisterTheSameEntityOnlyOnce()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-init-once");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 22);
+		BuildShaft(s, wallTop: 8);
+		BlockPos top = s.At(8);
+		World.SetBlock(Sand, top);
+
+		await World.Until(() => FallingEntityAt(top) != null, timeoutTicks: 600);
+		Entity falling = FallingEntityAt(top)!;
+		FieldInfo trackedField = PrivateField(falling, "StratumTracked");
+		Assert.True((bool)trackedField.GetValue(falling)!, "the spawned entity was not registered with the falling block system.");
+
+		FieldInfo countField = PrivateField(system, "totalFallingBlocks");
+		int before = (int)countField.GetValue(system)!;
+		Reinitialize(falling);
+		int after = (int)countField.GetValue(system)!;
+
+		Assert.Equal(before, after);
+		Assert.True((bool)trackedField.GetValue(falling)!, "reinitialization cleared the entity's tracked marker.");
+
+		await World.Until(() => CodeAt(s.At(1)) == "sand-granite", timeoutTicks: 900);
+		await World.Ticks(30);
+	}
+
+	// ---------------------------------------------------------------------------------------
+	// MaxFallingLimit: the number of live falling entities stays at the limit, the rest waits, and
+	// everything lands.
+	// ---------------------------------------------------------------------------------------
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task FallingEntities_Should_StayWithinTheLimit_AndAllLand()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-limit");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		FieldInfo limitField = PrivateField(system, "maxFallingLimit");
+		int originalLimit = (int)limitField.GetValue(system)!;
+		const int limit = 6;
+		const int cols = 5, rows = 4, count = cols * rows;
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 40);
+		try
+		{
+			// Placing sand over air asks it to fall, so the limit is set before the pad is built.
+			limitField.SetValue(system, limit);
+			BuildPad(s, cols, rows);
+
+			int peak = 0;
+			await World.Until(() =>
+			{
+				peak = Math.Max(peak, CountFallingEntities());
+				return PadLanded(s, cols, rows) == count;
+			}, timeoutTicks: 900);
+
+			Assert.True(peak > 0, "no falling entity was ever seen, so the limit was not exercised");
+			Assert.True(peak <= limit, $"{peak} falling entities were alive at once, the limit is {limit}.");
+		}
+		finally
+		{
+			limitField.SetValue(system, originalLimit);
+		}
+	}
+
+	// ---------------------------------------------------------------------------------------
+	// MaxFallingLimit: requests that wait are served in the order they were asked. With a limit of 1 the entities
+	// appear one at a time, so the cells empty in request order (the pad places its sand cell by cell, and a
+	// random pick of 6 requests would match that order once in 720 runs).
+	// ---------------------------------------------------------------------------------------
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task WaitingRequests_Should_BeServed_InTheOrderTheyWereAsked()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-order");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		FieldInfo limitField = PrivateField(system, "maxFallingLimit");
+		int originalLimit = (int)limitField.GetValue(system)!;
+		const int cols = 3, rows = 2;
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 56);
+		try
+		{
+			limitField.SetValue(system, 1);
+			BuildPad(s, cols, rows);
+
+			var expected = new List<(int, int)>();
+			for (int cx = 0; cx < cols; cx++)
+				for (int cz = 0; cz < rows; cz++)
+					expected.Add((cx, cz));
+
+			var order = new List<(int, int)>();
+			var seen = new HashSet<(int, int)>();
+			await World.Until(() =>
+			{
+				foreach ((int cx, int cz) in expected)
+				{
+					if (!seen.Contains((cx, cz)) && CodeAt(PadPos(s, cx, cz, 4)) == "air")
+					{
+						seen.Add((cx, cz));
+						order.Add((cx, cz));
+					}
+				}
+				return seen.Count == expected.Count;
+			}, timeoutTicks: 900);
+
+			Assert.True(
+				order.SequenceEqual(expected),
+				"the waiting requests were not served in the order they were asked."
+				+ $"{Environment.NewLine}  expected: {string.Join(" ", expected)}{Environment.NewLine}  actual:   {string.Join(" ", order)}");
+		}
+		finally
+		{
+			limitField.SetValue(system, originalLimit);
+		}
+	}
+
+	// ---------------------------------------------------------------------------------------
+	// Dedup window: a block placed again at the source cell while the first one is still falling.
+	// ---------------------------------------------------------------------------------------
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task SecondBlockPlacedAtTheSource_Should_Fall_WhileTheFirstIsStillFalling()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-dedup");
+		await World.Ticks(2);
+		RequireSystem();
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 12);
+		BuildShaft(s, wallTop: OpenTop);
+		await World.Ticks(5);
+
+		BlockPos top = s.At(OpenTop);
+		World.SetBlock(Sand, top);
+
+		// Wait until the first block is clearly below its start (vanilla's duplicate window
+		// is about one block), then place a second one in the same cell.
+		await World.Until(
+			() => FallingEntityAt(top) is { } e && e.Pos.Y < top.Y - 3,
+			timeoutTicks: 300);
+		World.SetBlock(Sand, top);
+
+		await World.Ticks(300);
+
+		string actual = Column(s, 1, OpenTop);
+		string expected = "sand,sand," + string.Join(",", Enumerable.Repeat("air", OpenTop - 2));
+		Assert.True(
+			actual == expected,
+			$"second block placed while the first was falling did not fall (dedup slot held too long).{Environment.NewLine}"
+			+ $"  expected (floor+1..+{OpenTop}): {expected}{Environment.NewLine}"
+			+ $"  actual:                       {actual}");
+	}
+
+	// ---------------------------------------------------------------------------------------
+	// Give-up after the retries: the block is removed and its items dropped exactly once.
+	// ---------------------------------------------------------------------------------------
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task GivingUpOnABlockedRequest_Should_RemoveTheBlock_AndDropItOnce()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-giveup");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		object occupied = PrivateField(system, "activeFallingPositions").GetValue(system)!;
+		MethodInfo add = occupied.GetType().GetMethod("Add")!;
+		MethodInfo remove = occupied.GetType().GetMethod("Remove")!;
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 24);
+		BuildShaft(s, wallTop: 2);
+		BlockPos pos = s.At(1);
+		World.SetBlock(Sand, pos);
+		await World.Ticks(3);
+
+		// Mark the cell as occupied by a live falling entity, then ask for the same cell:
+		// every retry finds it occupied until the request gives up.
+		add.Invoke(occupied, new object[] { pos.Copy() });
+		try
+		{
+			RequestSpawn(system, Sand, pos);
+			await World.Ticks(420);
+		}
+		finally
+		{
+			remove.Invoke(occupied, new object[] { pos.Copy() });
+		}
+
+		Assert.True(
+			CodeAt(pos) == "air",
+			$"gave up but the block is still there ('{CodeAt(pos)}'): its items would be duplicated.");
+
+		int dropped = 0;
+		foreach (Entity entity in World.Api.World.LoadedEntities.Values)
+		{
+			if (entity is not EntityItem item || !item.Alive) continue;
+			if (item.Itemstack?.Collectible?.Code?.Path.Contains("sand") != true) continue;
+			if (Math.Abs(item.Pos.X - (pos.X + 0.5)) > 3 || Math.Abs(item.Pos.Z - (pos.Z + 0.5)) > 3) continue;
+			dropped += item.Itemstack.StackSize;
+		}
+		Assert.True(dropped == 1, $"expected exactly one dropped sand block, found {dropped}.");
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -241,7 +482,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		try
 		{
 			budgetField.SetValue(system, 0);
-			RequestInstantFall(system, "game:chest-east", source, be);
+			RequestSpawn(system, "game:chest-east", source, be);
 			await World.Ticks(3);
 
 			IBlockEntityContainer container = (IBlockEntityContainer)be;
@@ -266,6 +507,34 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	// ---------------------------------------------------------------------------------------
 	// Setup helpers.
 	// ---------------------------------------------------------------------------------------
+
+	// A rock-granite slab at floor+4 above a 3 block air gap, requested as crackedrock-granite.
+	private async Task DropRockSlab(object system, Shaft s)
+	{
+		BuildShaft(s, wallTop: 6);
+		World.SetBlock(Rock, s.At(4));
+		await World.Ticks(2);
+		RequestSpawn(system, Cracked, s.At(4));
+		await World.Until(() => CodeAt(s.At(1)) == "crackedrock-granite", timeoutTicks: 600);
+		await World.Ticks(60);
+	}
+
+	private void AssertSlabLanded(Shaft s, string path)
+	{
+		Entity? falling = FallingEntityAt(s.At(4));
+		string entity = falling == null
+			? "no falling entity left"
+			: $"falling entity still alive at y={falling.Pos.Y:F2} (floor top is y={s.FloorY + 1})";
+
+		string actual = Column(s, 1, 4);
+		string expected = "crackedrock-granite,air,air,air";
+		Assert.True(
+			actual == expected,
+			$"{path}: rock-granite requested as crackedrock-granite did not land as crackedrock-granite.{Environment.NewLine}"
+			+ $"  expected (floor+1..+4): {expected}{Environment.NewLine}"
+			+ $"  actual:                 {actual}{Environment.NewLine}"
+			+ $"  {entity}");
+	}
 
 	private async Task<Shaft> PrepareFar(int offsetZ, int offsetX = 200)
 	{
@@ -393,6 +662,26 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		return string.Join(",", parts);
 	}
 
+	private Entity? FallingEntityAt(BlockPos pos)
+	{
+		foreach (Entity e in World.Api.World.LoadedEntities.Values)
+		{
+			if (e.Code?.Path != "blockfalling") continue;
+			if (Math.Abs(e.Pos.X - (pos.X + 0.5)) < 1 && Math.Abs(e.Pos.Z - (pos.Z + 0.5)) < 1) return e;
+		}
+		return null;
+	}
+
+	private int CountFallingEntities()
+	{
+		int count = 0;
+		foreach (Entity e in World.Api.World.LoadedEntities.Values)
+		{
+			if (e.Code?.Path == "blockfalling" && e.Alive) count++;
+		}
+		return count;
+	}
+
 	// ---------------------------------------------------------------------------------------
 	// Reflection into ModSystemFallingBlocks.
 	// ---------------------------------------------------------------------------------------
@@ -426,16 +715,29 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		return field!;
 	}
 
-	// TryRequestInstantFall(Block block, BlockEntity be, BlockPos initialPos, bool doRemoveBlock = true)
-	private void RequestInstantFall(object system, string blockCode, BlockPos pos, BlockEntity? be = null)
+	private void Reinitialize(Entity entity)
+	{
+		PropertyInfo? propertiesProperty = typeof(Entity).GetProperty("Properties", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+		Assert.True(propertiesProperty != null, "Entity.Properties is missing: the engine API changed.");
+		object? properties = propertiesProperty!.GetValue(entity);
+		Assert.True(properties != null, "the falling entity has no properties to reinitialize with.");
+
+		MethodInfo? initialize = entity.GetType().GetMethod("Initialize", BindingFlags.Public | BindingFlags.Instance);
+		Assert.True(initialize != null, "EntityBlockFalling.Initialize is missing: the engine API changed.");
+		initialize!.Invoke(entity, new object?[] { properties, World.Api, entity.InChunkIndex3d });
+	}
+
+	// RequestSpawn(Block block, BlockEntity be, BlockPos initialPos, AssetLocation fallSound,
+	//              float impactDamageMul, bool canFallSideways, float dustIntensity,
+	//              bool doRemoveBlock = true, Vec3d positionOffset = null)
+	private void RequestSpawn(object system, string blockCode, BlockPos pos, BlockEntity? be = null)
 	{
 		Block block = World.Api.World.GetBlock(new AssetLocation(blockCode));
 		Assert.True(block != null && block.BlockId != 0, $"block '{blockCode}' not found.");
 
-		MethodInfo? method = system.GetType().GetMethod("TryRequestInstantFall", BindingFlags.Public | BindingFlags.Instance);
-		Assert.True(method != null, "ModSystemFallingBlocks.TryRequestInstantFall is missing: the signature changed.");
+		MethodInfo? method = system.GetType().GetMethod("RequestSpawn", BindingFlags.Public | BindingFlags.Instance);
+		Assert.True(method != null, "ModSystemFallingBlocks.RequestSpawn is missing: the signature changed.");
 
-		bool taken = (bool)method!.Invoke(system, new object?[] { block, be, pos.Copy(), true })!;
-		Assert.True(taken, $"the request at {pos} was not taken: a player is in range of the position.");
+		method!.Invoke(system, new object?[] { block, be, pos.Copy(), null, 1f, true, 0f, true, null });
 	}
 }
