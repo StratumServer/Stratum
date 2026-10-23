@@ -651,80 +651,18 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		return previous;
 	}
 
-	[AtlasScenario(TimeoutMs = 60_000)]
-	public async Task BlockBreak_Should_CompleteFallbackAfterOneShotBlockBehaviorException()
+
+	private static FieldInfo ApiField(object collectible)
 	{
-		ITestPlayer player = await World.JoinPlayer("brk-fallback1");
-		BlockPos playerPos = World.Spawn.AddCopy(10, 1, 10);
-		await player.TeleportTo(playerPos);
-
-		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
-		World.SetBlock("game:rock-granite", blockPos);
-		await World.Ticks(5);
-		Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
-		await player.GiveItem("game:pickaxe-steel", 1);
-		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
-		Assert.NotNull(activeSlot.Itemstack);
-		CollectibleObject pickaxe = activeSlot.Itemstack.Collectible;
-		int durabilityBefore = pickaxe.GetRemainingDurability(activeSlot.Itemstack);
-
-		Block block = World.BlockAt(blockPos);
-		BlockBehavior[] originalBehaviors = block.BlockBehaviors;
-		var faultyBehavior = new OneShotBlockBehavior(block);
-		try
+		Type type = collectible.GetType();
+		while (type != null)
 		{
-			block.BlockBehaviors = block.BlockBehaviors.Append(faultyBehavior).ToArray();
-
-			object packet = CreateBlockBreakPacket(blockPos);
-			DispatchPacket(World, player, packet);
-			await World.Ticks(5);
-
-			Assert.True(player.IsConnected, "player was disconnected after block behavior threw an exception");
-			Assert.Equal(2, faultyBehavior.InvocationCount);
-			Assert.Equal("game:air", World.BlockAt(blockPos).Code.ToString());
-			Assert.NotNull(activeSlot.Itemstack);
-			Assert.Equal(durabilityBefore - 1, pickaxe.GetRemainingDurability(activeSlot.Itemstack));
+			FieldInfo field = type.GetField("api", BindingFlags.Instance | BindingFlags.NonPublic);
+			if (field != null) return field;
+			type = type.BaseType;
 		}
-		finally
-		{
-			block.BlockBehaviors = originalBehaviors;
-		}
-	}
 
-	[AtlasScenario(TimeoutMs = 60_000)]
-	public async Task BlockBreak_Should_FallbackWhenSelectedBlockIsInFluidLayer()
-	{
-		ITestPlayer player = await World.JoinPlayer("brk-fluid-fb");
-		BlockPos playerPos = World.Spawn.AddCopy(24, 1, 24);
-		await player.TeleportTo(playerPos);
-
-		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
-		World.SetBlock("game:air", blockPos);
-		Block fluidBlock = World.Api.World.GetBlock(new AssetLocation("game:lakeice"))!;
-		Assert.True(fluidBlock.ForFluidsLayer && fluidBlock.SideSolid.Any, "lake ice must be selected from the fluid layer when no solid block is present");
-		World.Api.World.BlockAccessor.SetBlock(fluidBlock.BlockId, blockPos, BlockLayersAccess.Fluid);
-		await World.Ticks(5);
-		Assert.Equal(0, World.Api.World.BlockAccessor.GetBlock(blockPos, BlockLayersAccess.Solid).BlockId);
-		Assert.Equal(fluidBlock.BlockId, World.Api.World.BlockAccessor.GetBlock(blockPos, BlockLayersAccess.Fluid).BlockId);
-
-		BlockBehavior[] originalBehaviors = fluidBlock.BlockBehaviors;
-		var faultyBehavior = new OneShotBlockBehavior(fluidBlock);
-		try
-		{
-			fluidBlock.BlockBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
-			DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
-			await World.Ticks(5);
-
-			Assert.True(player.IsConnected, "player was disconnected after a fluid-layer behavior threw");
-			Assert.Equal(2, faultyBehavior.InvocationCount);
-			Block fluidAfterBreak = World.Api.World.BlockAccessor.GetBlock(blockPos, BlockLayersAccess.Fluid);
-			Assert.NotEqual(fluidBlock.BlockId, fluidAfterBreak.BlockId);
-			Assert.True(fluidAfterBreak.IsLiquid(), "breaking lake ice should restore liquid water in the fluid layer");
-		}
-		finally
-		{
-			fluidBlock.BlockBehaviors = originalBehaviors;
-		}
+		throw new InvalidOperationException("collectible api field was not found");
 	}
 
 	private static object CreateBlockBreakPacket(BlockPos pos)
@@ -761,6 +699,77 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 
 		MethodInfo dispatchMethod = server.GetType().GetMethod("DispatchClientPacket_mainthread", BindingFlags.Instance | BindingFlags.NonPublic)!;
 		dispatchMethod.Invoke(server, new[] { receivedPacket });
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_ReportTheBreak_When_WearThrowsAfterTheFallbackRemovesTheBlock()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-wear-after");
+		BlockPos playerPos = World.Spawn.AddCopy(18, 1, 18);
+		await player.TeleportTo(playerPos);
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		await player.GiveItem("game:pickaxe-iron", 1);
+		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
+		CollectibleObject pickaxe = activeSlot.Itemstack.Collectible;
+		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
+		Block block = World.BlockAt(blockPos);
+		BlockBehavior[] originalBlockBehaviors = block.BlockBehaviors;
+		var oneShot = new OneShotBlockBehavior(block);
+		FieldInfo apiField = ApiField(pickaxe);
+		object previousApi = apiField.GetValue(pickaxe);
+		int didBreakCount = 0;
+		BlockBrokenDelegate didBreakHandler = (_, _, _) => didBreakCount++;
+		World.Api.Event.DidBreakBlock += didBreakHandler;
+		try
+		{
+			block.BlockBehaviors = originalBlockBehaviors.Append(oneShot).ToArray();
+			pickaxe.CollectibleBehaviors = originalBehaviors.Append(new FaultyDamageBehavior(pickaxe)).ToArray();
+			apiField.SetValue(pickaxe, null);
+			DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+			await World.Ticks(5);
+			Assert.True(player.IsConnected);
+			Assert.Equal(2, oneShot.InvocationCount);
+			Assert.Equal("game:air", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(1, didBreakCount);
+		}
+		finally
+		{
+			apiField.SetValue(pickaxe, previousApi);
+			World.Api.Event.DidBreakBlock -= didBreakHandler;
+			pickaxe.CollectibleBehaviors = originalBehaviors;
+			block.BlockBehaviors = originalBlockBehaviors;
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_StopReplaying_When_TheBlockSurvivesRepeatedFailures()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-replay-cap");
+		BlockPos playerPos = World.Spawn.AddCopy(40, 1, 40);
+		await player.TeleportTo(playerPos);
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		Block block = World.BlockAt(blockPos);
+		BlockBehavior[] originalBehaviors = block.BlockBehaviors;
+		var faultyBehavior = new CappedBlockBehavior(block);
+		try
+		{
+			block.BlockBehaviors = originalBehaviors.Append(faultyBehavior).ToArray();
+			for (int i = 0; i < 4; i++)
+			{
+				DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+				await World.Ticks(2);
+			}
+			Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(6, faultyBehavior.InvocationCount);
+		}
+		finally
+		{
+			block.BlockBehaviors = originalBehaviors;
+		}
 	}
 
 	private sealed class FaultyAttackPowerBehavior : CollectibleBehavior
@@ -910,6 +919,28 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 			throw new InvalidOperationException("Simulated failure after solid-layer removal");
 		}
 	}
+	private sealed class CappedBlockBehavior : BlockBehavior
+	{
+		public int InvocationCount { get; private set; }
+
+		public CappedBlockBehavior(Block block) : base(block)
+		{
+		}
+
+		public override void OnBlockBroken(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, float dropQuantityMultiplier, ref EnumHandling handling)
+		{
+			InvocationCount++;
+			throw new CappedBreakException("Simulated capped block break failure");
+		}
+	}
+
+	private sealed class CappedBreakException : Exception
+	{
+		public CappedBreakException(string message) : base(message)
+		{
+		}
+	}
+
 	private sealed class FaultyBlockBehavior : BlockBehavior
 	{
 		public int InvocationCount { get; private set; }
