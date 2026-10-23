@@ -11,8 +11,8 @@ internal struct SpawnRequest
 	public Block SourceBlock;           // original block physically at InitialPos when the request was made
 	public BlockEntity BlockEntity;
 
-	// Snapshot of the block entity attributes taken when the request is made. The live block entity can
-	// change or die while the request waits, and OnFallOnto/FromTreeAttributes need the original state.
+	// Snapshot used by OnFallOnto/FromTreeAttributes. Containers refresh from their live state when
+	// processed; other block entities keep the request-time state, including if the source entity dies.
 	public TreeAttribute BlockEntityTree;
 
 	public BlockPos InitialPos;
