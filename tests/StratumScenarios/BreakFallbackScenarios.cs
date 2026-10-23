@@ -101,12 +101,15 @@ public class BreakFallbackScenarios : AtlasScenarioBase
 		World.SetBlock("game:rock-granite", blockPos);
 		await World.Ticks(5);
 		await player.GiveItem("game:pickaxe-steel", 1);
+		EnumGameMode originalGameMode = player.Player.WorldData.CurrentGameMode;
 		player.Player.WorldData.CurrentGameMode = EnumGameMode.Survival;
 		Block block = World.BlockAt(blockPos);
 		BlockBehavior[] original = block.BlockBehaviors;
+		var failureBehavior = new SurvivalOnlyBreakBehavior(block);
+		bool guardEnabled = SetBlockBreakGuardEnabled(false);
 		try
 		{
-			block.BlockBehaviors = original.Append(new SurvivalOnlyBreakBehavior(block)).ToArray();
+			block.BlockBehaviors = original.Append(failureBehavior).ToArray();
 			for (int i = 0; i < 3; i++)
 			{
 				DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
@@ -114,6 +117,8 @@ public class BreakFallbackScenarios : AtlasScenarioBase
 			}
 
 			Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(6, failureBehavior.OnBlockBrokenInvocationCount);
+			Assert.Equal(0, failureBehavior.GetDropsInvocationCount);
 			player.Player.WorldData.CurrentGameMode = EnumGameMode.Creative;
 			DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
 			await World.Ticks(5);
@@ -121,8 +126,97 @@ public class BreakFallbackScenarios : AtlasScenarioBase
 		}
 		finally
 		{
-			player.Player.WorldData.CurrentGameMode = EnumGameMode.Survival;
+			player.Player.WorldData.CurrentGameMode = originalGameMode;
 			block.BlockBehaviors = original;
+			SetBlockBreakGuardEnabled(guardEnabled);
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_CapRepeatedGetDropsFailures()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-getdrops-cap");
+		BlockPos playerPos = World.Spawn.AddCopy(34, 1, 24);
+		await player.TeleportTo(playerPos);
+		BlockPos blockPos = playerPos.AddCopy(1, 0, 0);
+		World.SetBlock("game:rock-granite", blockPos);
+		await World.Ticks(5);
+		await player.GiveItem("game:pickaxe-steel", 1);
+		EnumGameMode originalGameMode = player.Player.WorldData.CurrentGameMode;
+		player.Player.WorldData.CurrentGameMode = EnumGameMode.Survival;
+		Block block = World.BlockAt(blockPos);
+		BlockBehavior[] original = block.BlockBehaviors;
+		var failureBehavior = new ThrowingGetDropsBehavior(block);
+		bool guardEnabled = SetBlockBreakGuardEnabled(false);
+		try
+		{
+			block.BlockBehaviors = original.Append(failureBehavior).ToArray();
+			for (int i = 0; i < 4; i++)
+			{
+				DispatchPacket(World, player, CreateBlockBreakPacket(blockPos));
+				await World.Ticks(2);
+			}
+
+			Assert.Equal("game:rock-granite", World.BlockAt(blockPos).Code.ToString());
+			Assert.Equal(6, failureBehavior.InvocationCount);
+		}
+		finally
+		{
+			player.Player.WorldData.CurrentGameMode = originalGameMode;
+			block.BlockBehaviors = original;
+			SetBlockBreakGuardEnabled(guardEnabled);
+		}
+	}
+
+	[AtlasScenario(TimeoutMs = 60_000)]
+	public async Task BlockBreak_Should_ExpireAndSweepInactiveFailureEntries()
+	{
+		ITestPlayer player = await World.JoinPlayer("brk-fail-sweep");
+		BlockPos playerPos = World.Spawn.AddCopy(40, 1, 24);
+		await player.TeleportTo(playerPos);
+		BlockPos firstPos = playerPos.AddCopy(1, 0, 0);
+		BlockPos secondPos = playerPos.AddCopy(3, 0, 0);
+		World.SetBlock("game:rock-granite", firstPos);
+		World.SetBlock("game:rock-granite", secondPos);
+		await World.Ticks(5);
+		await player.GiveItem("game:pickaxe-steel", 1);
+		EnumGameMode originalGameMode = player.Player.WorldData.CurrentGameMode;
+		player.Player.WorldData.CurrentGameMode = EnumGameMode.Survival;
+		Block firstBlock = World.BlockAt(firstPos);
+		BlockBehavior[] firstOriginal = firstBlock.BlockBehaviors;
+		var failureBehavior = new CappedBlockBehavior(firstBlock);
+		bool guardEnabled = SetBlockBreakGuardEnabled(false);
+		try
+		{
+			firstBlock.BlockBehaviors = firstOriginal.Append(failureBehavior).ToArray();
+			for (int i = 0; i < 4; i++)
+			{
+				DispatchPacket(World, player, CreateBlockBreakPacket(firstPos));
+				await World.Ticks(2);
+			}
+
+			Assert.Equal(6, failureBehavior.InvocationCount);
+			await Task.Delay(6500);
+			await World.Ticks(120);
+			object blockSimulation = GetBlockSimulationSystem();
+			Assert.Equal(0, GetPrivateCollectionCount(blockSimulation, "stratumFailedBreakAttempts"));
+			Assert.Equal(0, GetPrivateCollectionCount(blockSimulation, "stratumLoggedBreakRefusals"));
+
+			DispatchPacket(World, player, CreateBlockBreakPacket(secondPos));
+			await World.Ticks(2);
+			Assert.Equal(8, failureBehavior.InvocationCount);
+			Assert.Equal(1, GetPrivateCollectionCount(blockSimulation, "stratumFailedBreakAttempts"));
+			Assert.Equal(0, GetPrivateCollectionCount(blockSimulation, "stratumLoggedBreakRefusals"));
+
+			DispatchPacket(World, player, CreateBlockBreakPacket(firstPos));
+			await World.Ticks(2);
+			Assert.Equal(10, failureBehavior.InvocationCount);
+		}
+		finally
+		{
+			player.Player.WorldData.CurrentGameMode = originalGameMode;
+			firstBlock.BlockBehaviors = firstOriginal;
+			SetBlockBreakGuardEnabled(guardEnabled);
 		}
 	}
 
@@ -161,6 +255,52 @@ public class BreakFallbackScenarios : AtlasScenarioBase
 		dispatchMethod.Invoke(server, new[] { receivedPacket });
 	}
 
+	private static bool SetBlockBreakGuardEnabled(bool enabled)
+	{
+		Type runtimeType = Type.GetType("Vintagestory.Server.StratumRuntime, VintagestoryLib", throwOnError: true)!;
+		object config = runtimeType.GetProperty("Config", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
+		object hardening = config.GetType().GetProperty("Hardening")!.GetValue(config)!;
+		PropertyInfo guardProperty = hardening.GetType().GetProperty("BlockBreakGuards")!;
+		bool previous = (bool)guardProperty.GetValue(hardening)!;
+		guardProperty.SetValue(hardening, enabled);
+		return previous;
+	}
+
+	private object GetBlockSimulationSystem()
+	{
+		object server = World.Api.World;
+		FieldInfo systemsField = server.GetType().GetField("Systems", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!;
+		Array systems = (Array)systemsField.GetValue(server)!;
+		foreach (object system in systems)
+		{
+			if (system.GetType().Name == "ServerSystemBlockSimulation") return system;
+		}
+
+		throw new InvalidOperationException("ServerSystemBlockSimulation was not found");
+	}
+
+	private static int GetPrivateCollectionCount(object instance, string fieldName)
+	{
+		FieldInfo field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!;
+		object collection = field.GetValue(instance)!;
+		return (int)collection.GetType().GetProperty("Count")!.GetValue(collection)!;
+	}
+
+	private sealed class CappedBlockBehavior : BlockBehavior
+	{
+		public int InvocationCount { get; private set; }
+
+		public CappedBlockBehavior(Block block) : base(block)
+		{
+		}
+
+		public override void OnBlockBroken(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, float dropQuantityMultiplier, ref EnumHandling handling)
+		{
+			InvocationCount++;
+			throw new InvalidOperationException("Simulated capped block break failure");
+		}
+	}
+
 	private sealed class OneShotBlockBehavior : BlockBehavior
 	{
 		public int InvocationCount { get; private set; }
@@ -179,12 +319,16 @@ public class BreakFallbackScenarios : AtlasScenarioBase
 
 	private sealed class SurvivalOnlyBreakBehavior : BlockBehavior
 	{
+		public int OnBlockBrokenInvocationCount { get; private set; }
+		public int GetDropsInvocationCount { get; private set; }
+
 		public SurvivalOnlyBreakBehavior(Block block) : base(block)
 		{
 		}
 
 		public override void OnBlockBroken(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, float dropQuantityMultiplier, ref EnumHandling handling)
 		{
+			OnBlockBrokenInvocationCount++;
 			if (byPlayer?.WorldData?.CurrentGameMode != EnumGameMode.Creative)
 			{
 				throw new InvalidOperationException("Simulated survival break failure");
@@ -193,6 +337,22 @@ public class BreakFallbackScenarios : AtlasScenarioBase
 
 		public override ItemStack[] GetDrops(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, ref float dropChanceMultiplier, ref EnumHandling handling)
 		{
+			GetDropsInvocationCount++;
+			throw new InvalidOperationException("Simulated GetDrops failure");
+		}
+	}
+
+	private sealed class ThrowingGetDropsBehavior : BlockBehavior
+	{
+		public int InvocationCount { get; private set; }
+
+		public ThrowingGetDropsBehavior(Block block) : base(block)
+		{
+		}
+
+		public override ItemStack[] GetDrops(IWorldAccessor world, BlockPos pos, IPlayer byPlayer, ref float dropChanceMultiplier, ref EnumHandling handling)
+		{
+			InvocationCount++;
 			throw new InvalidOperationException("Simulated GetDrops failure");
 		}
 	}
