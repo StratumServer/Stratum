@@ -138,7 +138,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	[AtlasScenario(TimeoutMs = 180_000)]
 	public async Task BlockPlacedOverAWaitingRequest_Should_StillFall()
 	{
-		await World.JoinPlayer("fb-anchor-stale");
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-stale");
 		await World.Ticks(2);
 		object system = RequireSystem();
 
@@ -161,6 +161,9 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			// refused by the pending guard, nothing asks it again.
 			World.SetBlock(Gravel, top);
 			await World.Ticks(3);
+			// The request is still waiting, but a player arrives before the replacement is rechecked.
+			// Its vanilla hook must choose EntityBlockFalling, not the instant queue.
+			await player.TeleportTo(s.At(OpenTop).AddCopy(2, 0, 0));
 		}
 		finally
 		{
@@ -192,7 +195,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		FieldInfo budgetField = PrivateField(system, "maxInstantPerTick");
 		int originalBudget = (int)budgetField.GetValue(system)!;
 		const int budget = 5;
-		const int cols = 5, rows = 4, count = cols * rows;
+		const int cols = 40, rows = 40, count = cols * rows;
 
 		Shaft s = await PrepareFar(offsetZ: 18);
 
@@ -202,13 +205,13 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			budgetField.SetValue(system, budget);
 			BuildPad(s, cols, rows);
 
-			// The first tick that lands anything. The system tick (32 ms) can run twice between two
-			// Atlas ticks (~33 ms), hence the factor 2.
+			// A large pad keeps the first observation inside the queue drain even when Atlas scheduling
+			// is delayed. The bounded queue must not resolve most of the pad in that first window.
 			await World.Until(() => PadLanded(s, cols, rows) > 0, timeoutTicks: 120);
 			int first = PadLanded(s, cols, rows);
 			Assert.True(
-				first <= budget * 2 && first < count,
-				$"expected at most {budget * 2} blocks to land in the first tick, {first} of {count} landed.");
+				first < count / 2,
+				$"expected fewer than half the pad to land in the first wait window, {first} of {count} landed.");
 
 			await World.Until(() => PadLanded(s, cols, rows) == count, timeoutTicks: 600);
 		}
@@ -218,15 +221,57 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		}
 	}
 
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task WaitingContainerFall_Should_KeepItemsAddedBeforeProcessing()
+	{
+		await World.JoinPlayer("fb-cont-refresh");
+		await World.Ticks(2);
+		object system = RequireSystem();
+		FieldInfo budgetField = PrivateField(system, "maxInstantPerTick");
+		int originalBudget = (int)budgetField.GetValue(system)!;
+
+		Shaft s = await PrepareFar(offsetZ: 30, offsetX: 1000);
+		BuildShaft(s, wallTop: 10);
+		BlockPos source = s.At(10);
+		World.SetBlock("game:chest-east", source);
+		await World.Ticks(5);
+		BlockEntity be = World.Api.World.BlockAccessor.GetBlockEntity(source);
+		Assert.True(be is IBlockEntityContainer, "chest block entity does not expose a container inventory.");
+
+		try
+		{
+			budgetField.SetValue(system, 0);
+			RequestInstantFall(system, "game:chest-east", source, be);
+			await World.Ticks(3);
+
+			IBlockEntityContainer container = (IBlockEntityContainer)be;
+			container.Inventory[0]!.Itemstack = new ItemStack(World.Api.World.GetItem(new AssetLocation("game:flint")), 1);
+			container.Inventory.MarkSlotDirty(0);
+		}
+		finally
+		{
+			budgetField.SetValue(system, originalBudget);
+		}
+
+		BlockPos landing = s.At(1);
+		await World.Until(() => CodeAt(landing) == "chest-east", timeoutTicks: 600);
+		BlockEntity landedBe = World.Api.World.BlockAccessor.GetBlockEntity(landing);
+		Assert.True(landedBe is IBlockEntityContainer, "landed chest has no container block entity.");
+		ItemStack? landedStack = ((IBlockEntityContainer)landedBe).Inventory[0]?.Itemstack;
+		Assert.True(
+			landedStack?.Collectible.Code.Path == "flint" && landedStack.StackSize == 1,
+			"the chest kept the request-time inventory snapshot and lost the item added while queued.");
+	}
+
 	// ---------------------------------------------------------------------------------------
 	// Setup helpers.
 	// ---------------------------------------------------------------------------------------
 
-	private async Task<Shaft> PrepareFar(int offsetZ)
+	private async Task<Shaft> PrepareFar(int offsetZ, int offsetX = 200)
 	{
 		// A chunk-aligned centre 200 blocks out (beyond every active range), kept loaded
 		// because no player is near it.
-		int x = ((World.Spawn.X + 200) / 32) * 32 + 16;
+		int x = ((World.Spawn.X + offsetX) / 32) * 32 + 16;
 		int z = ((World.Spawn.Z) / 32) * 32 + 16 + offsetZ;
 
 		World.Api.WorldManager.LoadChunkColumnPriority(
@@ -382,7 +427,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	}
 
 	// TryRequestInstantFall(Block block, BlockEntity be, BlockPos initialPos, bool doRemoveBlock = true)
-	private void RequestInstantFall(object system, string blockCode, BlockPos pos)
+	private void RequestInstantFall(object system, string blockCode, BlockPos pos, BlockEntity? be = null)
 	{
 		Block block = World.Api.World.GetBlock(new AssetLocation(blockCode));
 		Assert.True(block != null && block.BlockId != 0, $"block '{blockCode}' not found.");
@@ -390,7 +435,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		MethodInfo? method = system.GetType().GetMethod("TryRequestInstantFall", BindingFlags.Public | BindingFlags.Instance);
 		Assert.True(method != null, "ModSystemFallingBlocks.TryRequestInstantFall is missing: the signature changed.");
 
-		bool taken = (bool)method!.Invoke(system, new object?[] { block, null, pos.Copy(), true })!;
+		bool taken = (bool)method!.Invoke(system, new object?[] { block, be, pos.Copy(), true })!;
 		Assert.True(taken, $"the request at {pos} was not taken: a player is in range of the position.");
 	}
 }

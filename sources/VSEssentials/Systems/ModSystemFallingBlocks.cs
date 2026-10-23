@@ -104,6 +104,7 @@ public class ModSystemFallingBlocks : ModSystem
 				{
 					Block current = world.BlockAccessor.GetBlock(request.InitialPos);
 					if (current == null || current.Id == 0 || current != request.SourceBlock) continue;
+					RefreshContainerSnapshot(world, ref request);
 
 					ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
 					SimulateInstantFall(
@@ -154,6 +155,7 @@ public class ModSystemFallingBlocks : ModSystem
 				RecheckReplacedBlock(world, request, current);
 				continue;
 			}
+			RefreshContainerSnapshot(world, ref request);
 
 			ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
 
@@ -177,6 +179,20 @@ public class ModSystemFallingBlocks : ModSystem
 		if (current == null || current.Id == 0) return;
 		BlockPos pos = request.InitialPos;
 		current.OnNeighbourBlockChange(world, pos, pos.DownCopy());
+	}
+
+	// Containers can still receive items while a fall waits in the queue. Preserve their live
+	// contents when they land or are accepted by a block below. Other block entities retain the
+	// request-time snapshot, and a removed source entity keeps the snapshot captured by its hook.
+	private static void RefreshContainerSnapshot(IWorldAccessor world, ref SpawnRequest request)
+	{
+		BlockEntity liveBe = world.BlockAccessor.GetBlockEntity(request.InitialPos);
+		if (liveBe is not IBlockEntityContainer) return;
+
+		TreeAttribute freshTree = new TreeAttribute();
+		liveBe.ToTreeAttributes(freshTree);
+		request.BlockEntity = liveBe;
+		request.BlockEntityTree = freshTree;
 	}
 
 	// True when a fall request for this position is already waiting in the queue.
