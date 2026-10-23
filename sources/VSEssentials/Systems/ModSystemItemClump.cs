@@ -226,7 +226,7 @@ public class ModSystemItemClump : ModSystem
 		};
 		byId[c.EntityId] = c;
 		queue.Enqueue(c);
-		dbgEnqueued++;
+		if (debug) dbgEnqueued++;
 	}
 
 	private void OnTick(float dt)
@@ -255,13 +255,13 @@ public class ModSystemItemClump : ModSystem
 			if (c.DueMs > now) break; // the queue is monotonic, the rest is too early as well
 
 			EntityItem e = c.Entity;
-			dbgProcessed++;
+			if (debug) dbgProcessed++;
 
 			if (!IsValid(e))
 			{
 				queue.Dequeue();
 				byId.Remove(c.EntityId);
-				dbgInvalid++;
+				if (debug) dbgInvalid++;
 				continue;
 			}
 
@@ -318,13 +318,13 @@ public class ModSystemItemClump : ModSystem
 					if (++c.Attempts >= maxSettleAttempts)
 					{
 						byId.Remove(c.EntityId);
-						dbgGaveUp++;
+						if (debug) dbgGaveUp++;
 					}
 					else
 					{
 						c.DueMs = now + delayMs;
 						queue.Enqueue(c);
-						dbgRetried++;
+						if (debug) dbgRetried++;
 					}
 					continue;
 				}
@@ -335,13 +335,13 @@ public class ModSystemItemClump : ModSystem
 			// not on every tick it waits.
 			if (clumpBudget <= 0)
 			{
-				dbgProcessed--;
+				if (debug) dbgProcessed--;
 				break;
 			}
 			clumpBudget--;
 
-			if (frozen) dbgFrozen++;
-			if (hovering) dbgHovering++;
+			if (debug && frozen) dbgFrozen++;
+			if (debug && hovering) dbgHovering++;
 
 			queue.Dequeue();
 			// Stop tracking BEFORE merging: if the item survives it can become a candidate
@@ -401,7 +401,7 @@ public class ModSystemItemClump : ModSystem
 
 		if (found == null || found.Length < 2)
 		{
-			dbgSearchLt2++;
+			if (debug) dbgSearchLt2++;
 			return;
 		}
 
@@ -419,7 +419,7 @@ public class ModSystemItemClump : ModSystem
 
 			if (group.Count < 2)
 			{
-				dbgGroupLt2++;
+				if (debug) dbgGroupLt2++;
 				return;
 			}
 
@@ -474,7 +474,7 @@ public class ModSystemItemClump : ModSystem
 					recv.Itemstack = recv.Slot.Itemstack;
 					recv.WatchedAttributes.MarkPathDirty("itemstack");
 					MarkChunkModified(recv);
-					dbgMerged++;
+					if (debug) dbgMerged++;
 				}
 
 				ItemStack left = donor.Slot.Itemstack;
@@ -487,7 +487,7 @@ public class ModSystemItemClump : ModSystem
 					{
 						MarkChunkModified(donor);
 						donor.Die(EnumDespawnReason.Removed);
-						dbgKilled++;
+						if (debug) dbgKilled++;
 					}
 				}
 				else

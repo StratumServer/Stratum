@@ -119,6 +119,53 @@ public class ItemClumpBlacklistScenarios : AtlasScenarioBase
 		}
 	}
 
+	[AtlasScenario(TimeoutMs = 120_000)]
+	public async Task DebugCounters_Should_NotChange_WhenDebugIsDisabled()
+	{
+		ICoreServerAPI api = World.Api;
+		ITestPlayer player = await World.JoinPlayer("clump-nodebug");
+		await World.Ticks(2);
+
+		ModSystem system = RequireSystem(api);
+		const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+		FieldInfo debugField = system.GetType().GetField("debug", flags)!;
+		string[] counterNames =
+		{
+			"dbgEnqueued", "dbgProcessed", "dbgInvalid", "dbgFrozen", "dbgRetried", "dbgGaveUp",
+			"dbgSearchLt2", "dbgGroupLt2", "dbgMerged", "dbgKilled", "dbgQueueMax", "dbgHovering", "dbgSamples"
+		};
+		FieldInfo[] counters = new FieldInfo[counterNames.Length];
+		int[] previousValues = new int[counterNames.Length];
+		bool previousDebug = (bool)debugField.GetValue(system)!;
+
+		for (int i = 0; i < counterNames.Length; i++)
+		{
+			counters[i] = system.GetType().GetField(counterNames[i], flags)!;
+			previousValues[i] = (int)counters[i].GetValue(system)!;
+		}
+
+		try
+		{
+			debugField.SetValue(system, false);
+			foreach (FieldInfo counter in counters) counter.SetValue(system, 0);
+
+			EntityItem[] pair = Pair(api, player, "game:stone-obsidian", 64);
+			await World.Until(() => !pair[1].Alive, timeoutTicks: 300);
+			Assert.True(pair[0].Alive && pair[0].Slot.Itemstack.StackSize == 6,
+				"setup failed: the non-debug item pair did not merge");
+
+			foreach (FieldInfo counter in counters)
+			{
+				Assert.Equal(0, counter.GetValue(system));
+			}
+		}
+		finally
+		{
+			debugField.SetValue(system, previousDebug);
+			for (int i = 0; i < counters.Length; i++) counters[i].SetValue(system, previousValues[i]);
+		}
+	}
+
 	private static void AssertApart(EntityItem[] pair, string entry)
 	{
 		Assert.True(
