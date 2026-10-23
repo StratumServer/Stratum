@@ -27,9 +27,13 @@ namespace StratumScenarios;
 ///   neighbours like the entity path does, so a whole column still comes down, at most
 ///   MaxInstantPerTick blocks per tick.
 ///
+/// The watchdog: an entity that stays alive longer than StuckTimeoutMs is placed where it hangs, an entity with
+/// no player in range is resolved from its start cell, and an entity that despawns before it landed still
+/// places its block.
+///
 /// ModSystemFallingBlocks lives outside the API assembly, so it is reached by reflection
-/// (the public static Instance, the public RequestSpawn, and the private fields maxFallingLimit,
-/// maxInstantPerTick and activeFallingPositions). A missing member fails with a descriptive message:
+/// (the public static Instance, the public RequestSpawn, the public StuckTimeoutMs, and the private fields
+/// maxFallingLimit, maxInstantPerTick and activeFallingPositions). A missing member fails with a descriptive message:
 /// it means the scenario runs against vanilla or the member was renamed.
 /// </summary>
 public class FallingBlockScenarios : AtlasScenarioBase
@@ -39,6 +43,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	private const string Sand = "game:sand-granite";
 	private const string Gravel = "game:gravel-granite";
 	private const string Air = "game:air";
+	private const string Leaves = "game:leaves-placed-oak";
 
 	// Layout of the column cases, measured from the floor: floor+4 is the support, floor+5..+10 six sand.
 	private const int ColumnSupport = 4;
@@ -424,6 +429,149 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// Despawn safety net with StuckTimeoutMs = 0.
+	// ---------------------------------------------------------------------------------------
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task StuckTimeoutDisabled_Should_SettleBlock_WhenEntityDespawns()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-stuck");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		// Set StuckTimeoutMs to 0 (watchdog disabled)
+		PropertyInfo timeoutProp = system.GetType().GetProperty("StuckTimeoutMs")!;
+		Assert.True(timeoutProp != null, "StuckTimeoutMs property not found");
+		int originalTimeout = (int)timeoutProp.GetValue(system)!;
+		timeoutProp.SetValue(system, 0);
+
+		try
+		{
+			Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 30);
+			BuildShaft(s, wallTop: OpenTop);
+			await World.Ticks(5);
+
+			BlockPos top = s.At(OpenTop);
+			World.SetBlock(Sand, top);
+
+			await World.Until(() => FallingEntityAt(top) != null, timeoutTicks: 300);
+			Entity falling = FallingEntityAt(top)!;
+
+			// Forcefully kill the entity (simulating a vanilla timeout or a mod)
+			falling.Die(EnumDespawnReason.Removed);
+
+			await World.Ticks(5); // Give the safety net a chance to act
+
+			string actual = Column(s, 1, 2);
+			Assert.True(
+				actual.StartsWith("sand"),
+				$"Block was lost on despawn with StuckTimeoutMs=0. Expected sand at bottom, got: {actual}");
+		}
+		finally
+		{
+			timeoutProp.SetValue(system, originalTimeout);
+		}
+	}
+
+	// An entity that outlives StuckTimeoutMs is placed where it hangs: it does not wait for the fall to end.
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task EntityOlderThanTheTimeout_Should_BeSettledInPlace()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-timeout");
+		await World.Ticks(2);
+		RequireSystem();
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 36);
+		BuildShaft(s, wallTop: OpenTop);
+		await World.Ticks(5);
+
+		BlockPos top = s.At(OpenTop);
+		World.SetBlock(Sand, top);
+
+		// Still high in the shaft: far more than a few ticks of falling left.
+		await World.Until(() => FallingEntityAt(top) is { } e && e.Pos.Y < top.Y - 1, timeoutTicks: 300);
+		Entity falling = FallingEntityAt(top)!;
+		Assert.True(falling.Pos.Y > s.FloorY + 9, $"setup failed: the entity already fell to y={falling.Pos.Y:F1}");
+
+		// Pretend it has been alive for 20 s.
+		FieldInfo spawnMs = falling.GetType().GetField("StratumSpawnTimeMs", BindingFlags.NonPublic | BindingFlags.Instance)!;
+		Assert.True(spawnMs != null, "EntityBlockFalling.StratumSpawnTimeMs is missing: it was renamed or removed.");
+		spawnMs.SetValue(falling, World.Api.World.ElapsedMilliseconds - 20_000);
+
+		// Natural landing from here takes about a second (30 ticks). The settle takes a tick or two.
+		await World.Until(() => CodeAt(s.At(1)).StartsWith("sand"), timeoutTicks: 8);
+		Assert.True(!falling.Alive, "the block landed but the entity is still alive");
+	}
+
+	// No player in range of a falling entity: it is resolved from its start cell instead of being simulated.
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task EntityWithNoPlayerInRange_Should_BeSettledAtOnce()
+	{
+		await World.JoinPlayer("fb-anchor-nobody");
+		await World.Ticks(2);
+		RequireSystem();
+
+		Shaft s = await PrepareFar(offsetZ: 24);
+		BuildShaft(s, wallTop: OpenTop);
+		World.SetBlock(Rock, s.At(OpenTop));
+		await World.Ticks(5);
+
+		// A rock block has no falling behavior of its own, so nothing but this entity moves it.
+		SpawnFallingEntity(Rock, s.At(OpenTop));
+
+		// Natural landing from 14 blocks takes about a second (30 ticks); the watchdog checks on its first tick.
+		await World.Until(() => CodeAt(s.At(1)) == "rock-granite", timeoutTicks: 12);
+		Assert.True(FallingEntityAt(s.At(OpenTop)) == null, "the block landed but the entity is still alive");
+	}
+
+	// ---------------------------------------------------------------------------------------
+	// Sand over leaves at the bottom of a shaft. Leaves are replaceable 4000 and have no collision box, sand is
+	// replaceable 600, so sand can neither replace the leaves nor stand in them. Vanilla hops the entity up and
+	// places the block a block or two too high; the placed block falls again as a new entity, and so on.
+	// ---------------------------------------------------------------------------------------
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task SandOverLeaves_Should_RestOnTheLeaves_WithoutFallingAgain()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-leaves");
+		await World.Ticks(2);
+		RequireSystem();
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 48);
+		BuildShaft(s, wallTop: OpenTop);
+		World.SetBlock(Leaves, s.At(1));
+		await World.Ticks(5);
+
+		World.SetBlock(Sand, s.At(OpenTop));
+
+		// Every falling entity seen over the next 20 s, by id, and how long it takes until none is left.
+		var seen = new HashSet<long>();
+		int ticks = 0;
+		await World.Until(() =>
+		{
+			ticks++;
+			int alive = 0;
+			foreach (Entity e in World.Api.World.LoadedEntities.Values)
+			{
+				if (e.Code?.Path != "blockfalling" || !e.Alive) continue;
+				if (Math.Abs(e.Pos.X - (s.X + 0.5)) > 3 || Math.Abs(e.Pos.Z - (s.Z + 0.5)) > 3) continue;
+				seen.Add(e.EntityId);
+				alive++;
+			}
+			return seen.Count > 0 && alive == 0;
+		}, timeoutTicks: 600);
+		await World.Ticks(60);
+
+		string actual = Column(s, 1, 4);
+		Assert.True(
+			CodeAt(s.At(1)).StartsWith("leaves") && CodeAt(s.At(2)).StartsWith("sand") && CodeAt(s.At(3)) == "air",
+			$"sand did not come to rest on the leaves (floor+1..+4: {actual}).");
+		Assert.True(
+			seen.Count == 1,
+			$"{seen.Count} falling entities were created for one block of sand: it keeps falling again after a hop.");
+		// Without the settle on the first hop the entity keeps hopping until the 15 s watchdog (450 ticks) places it.
+		Assert.True(ticks < 200, $"the sand took {ticks} ticks to settle on the leaves, it should not wait for the watchdog.");
+	}
+
+	// ---------------------------------------------------------------------------------------
 	// MaxInstantPerTick bounds the work per tick, and everything still lands.
 	// ---------------------------------------------------------------------------------------
 	[AtlasScenario(TimeoutMs = 180_000)]
@@ -670,6 +818,24 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			if (Math.Abs(e.Pos.X - (pos.X + 0.5)) < 1 && Math.Abs(e.Pos.Z - (pos.Z + 0.5)) < 1) return e;
 		}
 		return null;
+	}
+
+	// Spawns an EntityBlockFalling directly, like a mod or the coal pile would, bypassing the system's queues.
+	private void SpawnFallingEntity(string blockCode, BlockPos pos)
+	{
+		Block block = World.Api.World.GetBlock(new AssetLocation(blockCode));
+		Assert.True(block != null && block.BlockId != 0, $"block '{blockCode}' not found.");
+
+		Type? type = null;
+		foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+		{
+			type = assembly.GetType("Vintagestory.GameContent.EntityBlockFalling");
+			if (type != null) break;
+		}
+		Assert.True(type != null, "EntityBlockFalling not found.");
+
+		object entity = Activator.CreateInstance(type!, block, null, pos.Copy(), null, 1f, true, 0f)!;
+		World.Api.World.SpawnEntity((Entity)entity);
 	}
 
 	private int CountFallingEntities()

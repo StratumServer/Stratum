@@ -11,6 +11,8 @@ namespace Vintagestory.API.Common;
 //  - With no player in range a fall is resolved instantly, without an entity. The neighbours are notified
 //    like on the entity path, so a column or a heap keeps coming down, at most MaxInstantPerTick blocks per tick.
 //    A block that was only asked to fall sideways and has solid support below stays where it is.
+//  - The watchdog (StuckTimeoutMs, or no player nearby) settles an entity in place; a block that already
+//    stepped sideways is put back on its start cell when nobody is near.
 //  - Requests still waiting when the server stops are resolved on shutdown. Requests whose column is
 //    unloaded earlier stay at their start cell. Entities in flight when a column unloads are left to vanilla:
 //    they are saved with the chunk and land after the reload.
@@ -34,9 +36,14 @@ public class StratumFallingBlocksConfig
 	// neighbours, which can ask more blocks to fall, so a bigger heap lasts longer instead of costing more per tick.
 	public int MaxInstantPerTick { get; set; } = 100;
 
+	// Watchdog in ms for falling entities that never settle (vanilla bug). An entity alive longer
+	// than this is placed where it currently hangs. 0 disables the watchdog.
+	public int StuckTimeoutMs { get; set; } = 15000;
+
 	public void EnsureSane()
 	{
 		MaxFallingLimit = Math.Clamp(MaxFallingLimit, 10, 10000);
 		MaxInstantPerTick = Math.Clamp(MaxInstantPerTick, 1, 10000); // 0 would process everything in one tick
+		StuckTimeoutMs = Math.Clamp(StuckTimeoutMs, 0, 120000);
 	}
 }
