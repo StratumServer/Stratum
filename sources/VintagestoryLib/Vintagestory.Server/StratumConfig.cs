@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 
 namespace Vintagestory.Server;
@@ -27,6 +28,8 @@ internal class StratumConfig
 	public StratumClientModPolicyConfig ClientModPolicy { get; set; } = new StratumClientModPolicyConfig();
 
 	public StratumPerformanceConfig Performance { get; set; } = new StratumPerformanceConfig();
+
+	public StratumShardConfig Shard { get; set; } = new StratumShardConfig();
 
 	public StratumWorldgenConfig Worldgen { get; set; } = new StratumWorldgenConfig();
 
@@ -73,6 +76,7 @@ internal class StratumConfig
 		Anticheat ??= new StratumAnticheatConfig();
 		ClientModPolicy ??= new StratumClientModPolicyConfig();
 		Performance ??= new StratumPerformanceConfig();
+		Shard ??= new StratumShardConfig();
 		Worldgen ??= new StratumWorldgenConfig();
 		MobSpawning ??= new StratumMobSpawningConfig();
 		Commands ??= new StratumCommandsConfig();
@@ -96,6 +100,7 @@ internal class StratumConfig
 		Anticheat.EnsureSane();
 		ClientModPolicy.EnsurePopulated();
 		Performance.EnsurePopulated();
+		Shard.EnsureSane();
 		MobSpawning.EnsureSane();
 		Commands.EnsurePopulated();
 		Chat.EnsurePopulated();
@@ -2072,5 +2077,67 @@ internal class StratumAnnouncementsConfig
 		Messages ??= Array.Empty<string>();
 		Prefix ??= "";
 		Suffix ??= "";
+	}
+}
+
+internal class StratumShardConfig
+{
+	public bool Enabled { get; set; }
+
+	public int MinX { get; set; }
+
+	public int MaxX { get; set; } = int.MaxValue;
+
+	public int MinZ { get; set; }
+
+	public int MaxZ { get; set; } = int.MaxValue;
+
+	public string RedirectHost { get; set; } = "127.0.0.1";
+
+	public string RedirectName { get; set; } = "shard";
+
+	public void EnsureSane()
+	{
+		if (MaxX < MinX) MaxX = MinX;
+		if (MaxZ < MinZ) MaxZ = MinZ;
+		RedirectHost ??= "";
+		RedirectName ??= "";
+	}
+}
+
+internal static class StratumShard
+{
+	private static readonly HashSet<string> HandedOff = new HashSet<string>();
+
+	internal static readonly List<string> Handoffs = new List<string>();
+
+	public static bool AllowsEntity(Entity entity)
+	{
+		StratumShardConfig shard = StratumRuntime.Config.Shard;
+		if (shard == null || !shard.Enabled) return true;
+		double x = entity.Pos.X;
+		double z = entity.Pos.Z;
+		return x >= shard.MinX && x <= shard.MaxX && z >= shard.MinZ && z <= shard.MaxZ;
+	}
+
+	public static bool AllowsColumn(int chunkX, int chunkZ)
+	{
+		StratumShardConfig shard = StratumRuntime.Config.Shard;
+		if (shard == null || !shard.Enabled) return true;
+		int x = chunkX * 32;
+		int z = chunkZ * 32;
+		return x + 32 >= shard.MinX - 32 && x <= shard.MaxX + 32 && z + 32 >= shard.MinZ - 32 && z <= shard.MaxZ + 32;
+	}
+
+	public static void TryHandoff(ServerMain server, EntityPlayer player)
+	{
+		string uid = player.PlayerUID;
+		if (string.IsNullOrEmpty(uid) || !HandedOff.Add(uid)) return;
+		StratumShardConfig shard = StratumRuntime.Config.Shard;
+		Handoffs.Add(uid + " " + (int)player.Pos.X + "," + (int)player.Pos.Y + "," + (int)player.Pos.Z);
+		if (player.Player is ServerPlayer serverPlayer)
+		{
+			server.SendServerRedirect(serverPlayer, shard.RedirectHost, shard.RedirectName);
+		}
 	}
 }
