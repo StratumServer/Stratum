@@ -21,6 +21,14 @@ namespace Vintagestory.API.Server
         public static System.Action<ChunkColumnGenerationDelegate, ChunkColumnGenerationDelegate, string> RegisterLateOptimized;
 
         /// <summary>
+        /// True on the thread that is running the serial Terrain stage. Public
+        /// tall-grass calls during that stage stay on the generator that just
+        /// seeded the column. Callers outside the stage still use the worker.
+        /// </summary>
+        [System.ThreadStatic]
+        public static bool SerialTerrainStageActive;
+
+        /// <summary>
         /// Registers a generator for the late Terrain stage.
         /// Outside Stratum, it registers through the vanilla Terrain pass.
         /// </summary>
