@@ -337,94 +337,97 @@ public class ModSystemItemClump : ModSystem
 		if (found == null || found.Length < 2) return;
 
 		group.Clear();
-		group.Add(root);
-		for (int i = 0; i < found.Length && group.Count < maxGroupSize; i++)
+		claimOf.Clear();
+		try
 		{
-			if (found[i] is not EntityItem other || other == root) continue;
-			if (!IsValid(other) || (!frozen && !IsSettled(other)) || InPickupWindow(other, now)) continue;
-			group.Add(other);
-		}
+			group.Add(root);
+			for (int i = 0; i < found.Length && group.Count < maxGroupSize; i++)
+			{
+				if (found[i] is not EntityItem other || other == root) continue;
+				if (!IsValid(other) || (!frozen && !IsSettled(other)) || InPickupWindow(other, now)) continue;
+				group.Add(other);
+			}
 
-		if (group.Count < 2)
+			if (group.Count < 2) return;
+
+			// Largest stacks first (receivers), ties broken by EntityId for determinism.
+			group.Sort(bySizeDesc);
+
+			// Donors go from the end (smallest), receivers from the start (largest).
+			for (int d = group.Count - 1; d > 0; d--)
+			{
+				EntityItem donor = group[d];
+				if (!IsValid(donor)) continue;
+
+				for (int r = 0; r < d; r++)
+				{
+					EntityItem recv = group[r];
+					if (!IsValid(recv)) continue;
+
+					ItemStack ds = donor.Slot.Itemstack;
+					if (ds == null || ds.StackSize <= 0) break;
+
+					ItemStack rs = recv.Slot.Itemstack;
+					int space = rs.Collectible.MaxStackSize - rs.StackSize;
+					if (space <= 0) continue;
+
+					// Stacks that expire on different clocks (a death drop kept for an hour next to ordinary
+					// stacks) must not mix: the merged stack would get the wrong lifetime.
+					if (DespawnOverride(donor) != DespawnOverride(recv)) continue;
+
+					// Every member is within the radius of the root, but two members can sit up to twice that apart.
+					// Only stacks that are close to each other mix, and never across a land claim border, so
+					// a pile dropped outside a claimed wall cannot pull in the owner's stacks lying behind it.
+					if (!InMergeRange(donor, recv) || !SameClaim(donor, recv)) continue;
+
+					// Vanilla rules: matching attributes, freshness and so on.
+					if (rs.Collectible.GetMergableQuantity(rs, ds, EnumMergePriority.AutoMerge) <= 0) continue;
+
+					int receiverBefore = rs.StackSize;
+					int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
+					if (moved <= 0)
+					{
+						// The merge check can run the transition update, which spoils or converts a stack in place
+						// without moving anything. Keep the entities and clients in step with the slots.
+						ResyncStack(donor);
+						ResyncStack(recv);
+						continue;
+					}
+
+					MergeDespawnClock(donor, recv, receiverBefore, moved);
+
+					// The Itemstack setter does not mark the path dirty, so do it explicitly (as vanilla BlockMeal does),
+					// otherwise clients that already track the item keep the old stack size.
+					recv.Itemstack = recv.Slot.Itemstack;
+					recv.WatchedAttributes.MarkPathDirty("itemstack");
+					MarkChunkModified(recv);
+				}
+
+				ItemStack left = donor.Slot.Itemstack;
+				if (left == null || left.StackSize <= 0)
+				{
+					// Die only flags the entity, the chunk is dirtied when it is removed on a later entity tick.
+					// Marking it now keeps a crash in between from saving the receiver's new count next to the
+					// donor's old one.
+					if (donor.Alive)
+					{
+						MarkChunkModified(donor);
+						donor.Die(EnumDespawnReason.Removed);
+					}
+				}
+				else
+				{
+					donor.Itemstack = left;
+					donor.WatchedAttributes.MarkPathDirty("itemstack");
+					MarkChunkModified(donor);
+				}
+			}
+		}
+		finally
 		{
 			group.Clear();
-			return;
+			claimOf.Clear();
 		}
-
-		// Largest stacks first (receivers), ties broken by EntityId for determinism.
-		group.Sort(bySizeDesc);
-
-		// Donors go from the end (smallest), receivers from the start (largest).
-		for (int d = group.Count - 1; d > 0; d--)
-		{
-			EntityItem donor = group[d];
-
-			for (int r = 0; r < d; r++)
-			{
-				ItemStack ds = donor.Slot.Itemstack;
-				if (ds == null || ds.StackSize <= 0) break;
-
-				EntityItem recv = group[r];
-				ItemStack rs = recv.Slot.Itemstack;
-				if (rs == null) continue;
-
-				int space = rs.Collectible.MaxStackSize - rs.StackSize;
-				if (space <= 0) continue;
-
-				// Stacks that expire on different clocks (a death drop kept for an hour next to ordinary
-				// stacks) must not mix: the merged stack would get the wrong lifetime.
-				if (DespawnOverride(donor) != DespawnOverride(recv)) continue;
-
-				// Every member is within the radius of the root, but two members can sit up to twice that apart.
-				// Only stacks that are close to each other mix, and never across a land claim border, so
-				// a pile dropped outside a claimed wall cannot pull in the owner's stacks lying behind it.
-				if (!InMergeRange(donor, recv) || !SameClaim(donor, recv)) continue;
-
-				// Vanilla rules: matching attributes, freshness and so on.
-				if (rs.Collectible.GetMergableQuantity(rs, ds, EnumMergePriority.AutoMerge) <= 0) continue;
-
-				int receiverBefore = rs.StackSize;
-				int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
-				if (moved <= 0)
-				{
-					// The merge check can run the transition update, which spoils or converts a stack in place
-					// without moving anything. Keep the entities and clients in step with the slots.
-					ResyncStack(donor);
-					ResyncStack(recv);
-					continue;
-				}
-
-				MergeDespawnClock(donor, recv, receiverBefore, moved);
-
-				// The Itemstack setter does not mark the path dirty, so do it explicitly (as vanilla BlockMeal does),
-				// otherwise clients that already track the item keep the old stack size.
-				recv.Itemstack = recv.Slot.Itemstack;
-				recv.WatchedAttributes.MarkPathDirty("itemstack");
-				MarkChunkModified(recv);
-			}
-
-			ItemStack left = donor.Slot.Itemstack;
-			if (left == null || left.StackSize <= 0)
-			{
-				// Die only flags the entity, the chunk is dirtied when it is removed on a later entity tick.
-				// Marking it now keeps a crash in between from saving the receiver's new count next to the
-				// donor's old one.
-				if (donor.Alive)
-				{
-					MarkChunkModified(donor);
-					donor.Die(EnumDespawnReason.Removed);
-				}
-			}
-			else
-			{
-				donor.Itemstack = left;
-				donor.WatchedAttributes.MarkPathDirty("itemstack");
-				MarkChunkModified(donor);
-			}
-		}
-
-		group.Clear();
-		claimOf.Clear();
 	}
 
 	private void ResyncStack(EntityItem e)
