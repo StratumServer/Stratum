@@ -219,6 +219,35 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			+ $"  actual:                       {actual}");
 	}
 
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task FallingBlockInitialize_Should_RegisterTheSameEntityOnlyOnce()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-init-once");
+		await World.Ticks(2);
+		object system = RequireSystem();
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 22);
+		BuildShaft(s, wallTop: 8);
+		BlockPos top = s.At(8);
+		World.SetBlock(Sand, top);
+
+		await World.Until(() => FallingEntityAt(top) != null, timeoutTicks: 600);
+		Entity falling = FallingEntityAt(top)!;
+		FieldInfo trackedField = PrivateField(falling, "StratumTracked");
+		Assert.True((bool)trackedField.GetValue(falling)!, "the spawned entity was not registered with the falling block system.");
+
+		FieldInfo countField = PrivateField(system, "totalFallingBlocks");
+		int before = (int)countField.GetValue(system)!;
+		Reinitialize(falling);
+		int after = (int)countField.GetValue(system)!;
+
+		Assert.Equal(before, after);
+		Assert.True((bool)trackedField.GetValue(falling)!, "reinitialization cleared the entity's tracked marker.");
+
+		await World.Until(() => CodeAt(s.At(1)) == "sand-granite", timeoutTicks: 900);
+		await World.Ticks(30);
+	}
+
 	// ---------------------------------------------------------------------------------------
 	// MaxFallingLimit: the number of live falling entities stays at the limit, the rest waits, and
 	// everything lands.
@@ -684,6 +713,18 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		FieldInfo? field = system.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
 		Assert.True(field != null, $"ModSystemFallingBlocks.{name} is missing: it was renamed or removed.");
 		return field!;
+	}
+
+	private void Reinitialize(Entity entity)
+	{
+		PropertyInfo? propertiesProperty = typeof(Entity).GetProperty("Properties", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+		Assert.True(propertiesProperty != null, "Entity.Properties is missing: the engine API changed.");
+		object? properties = propertiesProperty!.GetValue(entity);
+		Assert.True(properties != null, "the falling entity has no properties to reinitialize with.");
+
+		MethodInfo? initialize = entity.GetType().GetMethod("Initialize", BindingFlags.Public | BindingFlags.Instance);
+		Assert.True(initialize != null, "EntityBlockFalling.Initialize is missing: the engine API changed.");
+		initialize!.Invoke(entity, new object?[] { properties, World.Api, entity.InChunkIndex3d });
 	}
 
 	// RequestSpawn(Block block, BlockEntity be, BlockPos initialPos, AssetLocation fallSound,
