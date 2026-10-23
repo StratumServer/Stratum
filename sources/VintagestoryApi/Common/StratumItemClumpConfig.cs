@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Vintagestory.API.Common;
 
@@ -38,6 +39,15 @@ public class StratumItemClumpConfig
 	// Maximum number of items in one merge group.
 	public int MaxGroupSize { get; set; } = 32;
 
+	// Full collectible codes that never merge. Supports '*' ("game:gear-*") and "@regex". A code without a domain
+	// is treated as vanilla. Codes and '*' patterns are case insensitive. A regex has to match the whole
+	// lowercase code ("@game:gear-.*") and is case sensitive. An entry that is not a valid regex is ignored
+	// and logged at start.
+	public List<string> Blacklist { get; set; } = new List<string>();
+
+	// Logs merge statistics every 10 seconds.
+	public bool Debug { get; set; } = false;
+
 	public void EnsureSane()
 	{
 		Radius = float.IsFinite(Radius) ? Math.Clamp(Radius, 0.25f, 8f) : 5.0f;
@@ -46,5 +56,6 @@ public class StratumItemClumpConfig
 		MaxSettleAttempts = Math.Clamp(MaxSettleAttempts, 1, 200);
 		MaxAttemptsPerTick = Math.Clamp(MaxAttemptsPerTick, 1, 1000);
 		MaxGroupSize = Math.Clamp(MaxGroupSize, 2, 256);
+		Blacklist ??= new List<string>();
 	}
 }
