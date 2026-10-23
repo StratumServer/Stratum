@@ -21,13 +21,14 @@ public class TerrainPeekScenarios : AtlasScenarioBase
 	{
 		int chunkX = 140;
 		int chunkZ = 150;
-		Dictionary<Vec2i, IServerChunk[]> peeked = null;
+		Dictionary<Vec2i, IServerChunk[]>? peeked = null;
 		World.Api.WorldManager.PeekChunkColumn(chunkX, chunkZ, new ChunkPeekOptions
 		{
 			UntilPass = EnumWorldGenPass.Terrain,
 			OnGenerated = columns => peeked = columns
 		});
 		await World.Until(() => peeked != null, timeoutTicks: 2400);
+		Assert.NotNull(peeked);
 
 		Assert.Single(peeked);
 		IServerChunk[] chunks = Assert.Single(peeked.Values);
