@@ -1,5 +1,4 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
-index 159b06c..ad1bc4c 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
 @@ -1,139 +1,1076 @@
@@ -524,7 +523,7 @@ index 159b06c..ad1bc4c 100644
 +				return false;
 +			}
 +
-+			if (stage >= req.untilPass)
++			if (stage >= Volatile.Read(ref req.untilPass))
 +			{
 +				req.FlagToRequeue();
 +				stage = -1;
@@ -1594,7 +1593,8 @@ index 159b06c..ad1bc4c 100644
 +	/// </summary>
  	public bool CanGenerateChunkColumn(ChunkColumnLoadRequest chunkRequest)
  	{
- 		if (chunkRequest.CurrentIncompletePass_AsInt >= chunkRequest.untilPass || !ensurePrettyNeighbourhood(chunkRequest))
+-		if (chunkRequest.CurrentIncompletePass_AsInt >= chunkRequest.untilPass || !ensurePrettyNeighbourhood(chunkRequest))
++		if (chunkRequest.CurrentIncompletePass_AsInt >= Volatile.Read(ref chunkRequest.untilPass) || !ensurePrettyNeighbourhood(chunkRequest))
  		{
  			return false;
  		}
@@ -2572,7 +2572,7 @@ index 159b06c..ad1bc4c 100644
  				millisecondsSinceStart = server.totalUnpausedTime.ElapsedMilliseconds;
  				float num4 = 100f * ((float)server.loadedChunks.Count / (float)server.WorldMap.ChunkMapSizeY - (float)num) / (float)num2;
  				ServerMain.Logger.Event(num4.ToString("0.#") + "% ({0} in queue)", chunkthread.requestedChunkColumns.Count);
-@@ -1298,37 +2661,84 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1298,58 +2661,117 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				{
  					ServerMain.Logger.StoryEvent("...");
  				}
@@ -2660,7 +2660,15 @@ index 159b06c..ad1bc4c 100644
  				foreach (ChunkColumnLoadRequest requestedChunkColumn3 in chunkthread.requestedChunkColumns)
  				{
  					if (requestedChunkColumn3 != null)
-@@ -1340,16 +2750,25 @@ internal class ServerSystemSupplyChunks : ServerSystem
+ 					{
+ 						string text = ((requestedChunkColumn3.chunkX >= chunkX1 && requestedChunkColumn3.chunkX <= chunkX2 && requestedChunkColumn3.chunkZ >= chunkZ1 && requestedChunkColumn3.chunkZ <= chunkZ2) ? " (in original req)" : "");
+-						ServerMain.Logger.Error("Column " + requestedChunkColumn3.ChunkX + "," + requestedChunkColumn3.ChunkZ + " has reached pass " + requestedChunkColumn3.CurrentIncompletePass_AsInt + text);
++						int stratumUntil = Volatile.Read(ref requestedChunkColumn3.untilPass);
++						int stratumClaimed = Volatile.Read(ref requestedChunkColumn3.dispatchClaimed);
++						bool stratumIndexed = chunkthread.requestedChunkColumns.elementsByIndex.TryGetValue(requestedChunkColumn3.Index, out ChunkColumnLoadRequest stratumCurrent) && ReferenceEquals(stratumCurrent, requestedChunkColumn3);
++						ServerMain.Logger.Error("Column " + requestedChunkColumn3.ChunkX + "," + requestedChunkColumn3.ChunkZ + " has reached pass " + requestedChunkColumn3.CurrentIncompletePass_AsInt + " untilPass " + stratumUntil + " claimed " + stratumClaimed + " indexed " + stratumIndexed + " blocking " + requestedChunkColumn3.blockingRequest + " disposed " + requestedChunkColumn3.Disposed + text);
+ 					}
+ 				}
  				throw new Exception("Somehow worldgen has become stuck in an endless loop, please report this as a bug!  Additional data in the server-main log");
  			}
  		}
@@ -2686,7 +2694,7 @@ index 159b06c..ad1bc4c 100644
  				if (chunkRequest.CurrentIncompletePass == EnumWorldGenPass.Terrain)
  				{
  					ushort sunLight = (ushort)server.sunBrightness;
-@@ -1359,32 +2778,66 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1359,32 +2781,66 @@ internal class ServerSystemSupplyChunks : ServerSystem
  					}
  				}
  			}
@@ -2755,7 +2763,7 @@ index 159b06c..ad1bc4c 100644
  			return;
  		}
  		for (int i = 0; i < list.Count; i++)
-@@ -1396,89 +2849,139 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1396,89 +2852,139 @@ internal class ServerSystemSupplyChunks : ServerSystem
  			catch (Exception ex)
  			{
  				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
@@ -2912,7 +2920,7 @@ index 159b06c..ad1bc4c 100644
  			chunkthread.requestedChunkColumns.Enqueue(curRequest);
  			return true;
  		}
-@@ -1490,13 +2993,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1490,13 +2996,19 @@ internal class ServerSystemSupplyChunks : ServerSystem
  				ServerMain.Logger.VerboseDebug("Un-pausing all worldgen threads.");
  			}
  		}
@@ -2932,7 +2940,7 @@ index 159b06c..ad1bc4c 100644
  			if (requestedChunkColumn != null && !requestedChunkColumn.Disposed)
  			{
  				server.loadedMapChunks.Remove(requestedChunkColumn.mapIndex2d);
-@@ -1505,104 +3014,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
+@@ -1505,104 +3017,181 @@ internal class ServerSystemSupplyChunks : ServerSystem
  		}
  		chunkthread.requestedChunkColumns.Clear();
  		ServerMain.Logger.VerboseDebug("Incomplete chunks stored and wiped.");
