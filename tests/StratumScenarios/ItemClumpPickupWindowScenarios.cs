@@ -19,8 +19,8 @@ namespace StratumScenarios;
 /// poured into an older pile. Items without a dropper have no window and merge as usual.
 ///
 /// Despawn clock: deathTime is ELAPSED time (EntityBehaviorDespawn adds to it and kills the item once
-/// it passes minSeconds), so the merged stack takes the average of both clocks weighted by quantity: it
-/// ages like the items it holds, and fresh drops cannot keep an old pile alive for ever.
+/// it passes minSeconds). The merged stack keeps the larger remaining despawn time of both stacks, so
+/// merging never shortens the lifetime of either side.
 /// Stacks with different minsecondsToDespawn never merge.
 ///
 /// Chunk save: a merge marks the chunk of the receiver (and of a surviving donor) as modified,
@@ -40,32 +40,39 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	{
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer("clump-window");
-		await World.Ticks(2);
-		Vec3d pos = DropPos(player, 0);
-		Item item = RequireItem(api, "game:flint");
+		try
+		{
+			await World.Ticks(2);
+			Vec3d pos = DropPos(player, 0);
+			Item item = RequireItem(api, "game:flint");
 
-		// Older pile from player A. Wait until its own window is long over and it has settled.
-		EntityItem older = Spawn(api, new ItemStack(item, 5), pos, "clump-window-a");
-		await World.Ticks(90);
-		Assert.True(older.Alive && older.Slot.Itemstack.StackSize == 5,
-			"setup failed: the older pile is gone or changed before the test started");
+			// Older pile from player A. Wait until its own window is long over and it has settled.
+			EntityItem older = Spawn(api, new ItemStack(item, 5), pos, "clump-window-a");
+			await World.Ticks(90);
+			Assert.True(older.Alive && older.Slot.Itemstack?.StackSize == 5,
+				"setup failed: the older pile is gone or changed before the test started");
 
-		// Fresh drop from player B right next to it.
-		EntityItem fresh = Spawn(api, new ItemStack(item, 1), pos, "clump-window-b");
-		await World.Ticks(8);
+			// Fresh drop from player B right next to it.
+			EntityItem fresh = Spawn(api, new ItemStack(item, 1), pos, "clump-window-b");
+			await World.Ticks(8);
 
-		Assert.True(
-			older.Alive && fresh.Alive
-				&& older.Slot.Itemstack.StackSize == 5 && fresh.Slot.Itemstack.StackSize == 1,
-			"fresh drop was merged inside its pickup window: "
-			+ $"older alive={older.Alive} size={older.Slot.Itemstack?.StackSize}, "
-			+ $"fresh alive={fresh.Alive} size={fresh.Slot.Itemstack?.StackSize}");
+			Assert.True(
+				older.Alive && fresh.Alive
+					&& older.Slot.Itemstack?.StackSize == 5 && fresh.Slot.Itemstack?.StackSize == 1,
+				"fresh drop was merged inside its pickup window: "
+				+ $"older alive={older.Alive} size={older.Slot.Itemstack?.StackSize}, "
+				+ $"fresh alive={fresh.Alive} size={fresh.Slot.Itemstack?.StackSize}");
 
-		// After the window the merge is allowed again and must happen.
-		await World.Until(() => !fresh.Alive, timeoutTicks: 300);
-		Assert.True(!fresh.Alive && older.Alive && older.Slot.Itemstack.StackSize == 6,
-			"fresh drop did not merge into the older pile after the pickup window: "
-			+ $"older alive={older.Alive} size={older.Slot.Itemstack?.StackSize}, fresh alive={fresh.Alive}");
+			// After the window the merge is allowed again and must happen.
+			await World.Until(() => !fresh.Alive, timeoutTicks: 300);
+			Assert.True(!fresh.Alive && older.Alive && older.Slot.Itemstack?.StackSize == 6,
+				"fresh drop did not merge into the older pile after the pickup window: "
+				+ $"older alive={older.Alive} size={older.Slot.Itemstack?.StackSize}, fresh alive={fresh.Alive}");
+		}
+		finally
+		{
+			player.Player.Disconnect();
+		}
 	}
 
 	/// <summary>
@@ -79,31 +86,38 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	{
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer("clump-other");
-		await World.Ticks(2);
-		Vec3d pos = DropPos(player, 8);
-		Item item = RequireItem(api, "game:stone-granite");
+		try
+		{
+			await World.Ticks(2);
+			Vec3d pos = DropPos(player, 8);
+			Item item = RequireItem(api, "game:stone-granite");
 
-		// Settled pile, then a no-dropper stack that will come due about 300 ms after the player drop.
-		EntityItem older = Spawn(api, new ItemStack(item, 5), pos, null);
-		await World.Ticks(90);
-		EntityItem trigger = Spawn(api, new ItemStack(item, 1), pos, null);
-		long triggerSpawnedMs = api.World.ElapsedMilliseconds;
-		await World.Until(() => api.World.ElapsedMilliseconds - triggerSpawnedMs >= 1200, timeoutTicks: 300); // 1.2 s of the 1.5 s clump delay
+			// Settled pile, then a no-dropper stack that will come due about 300 ms after the player drop.
+			EntityItem older = Spawn(api, new ItemStack(item, 5), pos, null);
+			await World.Ticks(90);
+			EntityItem trigger = Spawn(api, new ItemStack(item, 1), pos, null);
+			long triggerSpawnedMs = api.World.ElapsedMilliseconds;
+			await World.Until(() => api.World.ElapsedMilliseconds - triggerSpawnedMs >= 1200, timeoutTicks: 300); // 1.2 s of the 1.5 s clump delay
 
-		EntityItem fresh = Spawn(api, new ItemStack(item, 1), pos, "clump-other-p");
+			EntityItem fresh = Spawn(api, new ItemStack(item, 1), pos, "clump-other-p");
 
-		// The trigger merges into the pile while the fresh drop is still in its window ...
-		await World.Until(() => !trigger.Alive, timeoutTicks: 120);
-		Assert.True(
-			fresh.Alive && fresh.Slot.Itemstack.StackSize == 1,
-			"a no-dropper stack that came due pulled the player's fresh drop in during its pickup window "
-			+ $"(fresh alive={fresh.Alive} size={fresh.Slot.Itemstack?.StackSize}, "
-			+ $"pile size={older.Slot.Itemstack?.StackSize})");
+			// The trigger merges into the pile while the fresh drop is still in its window ...
+			await World.Until(() => !trigger.Alive, timeoutTicks: 120);
+			Assert.True(
+				fresh.Alive && fresh.Slot.Itemstack?.StackSize == 1,
+				"a no-dropper stack that came due pulled the player's fresh drop in during its pickup window "
+				+ $"(fresh alive={fresh.Alive} size={fresh.Slot.Itemstack?.StackSize}, "
+				+ $"pile size={older.Slot.Itemstack?.StackSize})");
 
-		// ... and the fresh drop joins the pile after its own window.
-		await World.Until(() => !fresh.Alive, timeoutTicks: 300);
-		Assert.True(older.Alive && older.Slot.Itemstack.StackSize == 7,
-			$"expected one pile of 7 in the end, got {older.Slot.Itemstack?.StackSize}");
+			// ... and the fresh drop joins the pile after its own window.
+			await World.Until(() => !fresh.Alive, timeoutTicks: 300);
+			Assert.True(older.Alive && older.Slot.Itemstack?.StackSize == 7,
+				$"expected one pile of 7 in the end, got {older.Slot.Itemstack?.StackSize}");
+		}
+		finally
+		{
+			player.Player.Disconnect();
+		}
 	}
 
 	[AtlasScenario(TimeoutMs = 120_000)]
@@ -111,70 +125,91 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	{
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer("clump-nodropper");
-		await World.Ticks(2);
-		Vec3d pos = DropPos(player, 16);
-		Item item = RequireItem(api, "game:stone-andesite");
+		try
+		{
+			await World.Ticks(2);
+			Vec3d pos = DropPos(player, 16);
+			Item item = RequireItem(api, "game:stone-andesite");
 
-		EntityItem older = Spawn(api, new ItemStack(item, 5), pos, null);
-		await World.Ticks(90);
-		EntityItem fresh = Spawn(api, new ItemStack(item, 1), pos, null);
+			EntityItem older = Spawn(api, new ItemStack(item, 5), pos, null);
+			await World.Ticks(90);
+			EntityItem fresh = Spawn(api, new ItemStack(item, 1), pos, null);
 
-		await World.Until(() => !fresh.Alive, timeoutTicks: 300);
-		Assert.True(!fresh.Alive && older.Alive && older.Slot.Itemstack.StackSize == 6,
-			"drops without a dropper did not merge: "
-			+ $"older alive={older.Alive} size={older.Slot.Itemstack?.StackSize}, fresh alive={fresh.Alive}");
+			await World.Until(() => !fresh.Alive, timeoutTicks: 300);
+			Assert.True(!fresh.Alive && older.Alive && older.Slot.Itemstack?.StackSize == 6,
+				"drops without a dropper did not merge: "
+				+ $"older alive={older.Alive} size={older.Slot.Itemstack?.StackSize}, fresh alive={fresh.Alive}");
+		}
+		finally
+		{
+			player.Player.Disconnect();
+		}
 	}
 
 	// deathTime is elapsed time. The large pile is the receiver (largest stacks receive).
 
 	/// <summary>
 	/// A pile of 5 that is far from expiry (deathTime 100 of 600) receives one item that is close to it (500).
-	/// Keeping the larger value would give all six the clock of the item about to expire, and the whole pile
-	/// would vanish 100 s later. The weighted average is (5 * 100 + 500) / 6, about 167.
+	/// Keeping the larger remaining time preserves the receiver's longer life (~500 s left, deathTime ~100).
 	/// </summary>
 	[AtlasScenario(TimeoutMs = 120_000)]
 	public async Task Merge_Should_KeepTheClockWithMoreLifeLeft_WhenTheDonorIsCloserToExpiry()
 	{
-		await AssertMergedDeathTime("clump-dt-a", "game:stone-basalt", zOffset: 24, receiverTime: 100f, donorTime: 500f);
+		await AssertMergedDeathTime("clump-dt-a", "game:stone-basalt", zOffset: 24, receiverTime: 100f, donorTime: 500f, expectedTime: 100f);
 	}
 
 	/// <summary>
-	/// A fresh pile of 5 (0) receives one item aged 540. Keeping the larger value would make all of them
-	/// vanish about 60 s later, where vanilla keeps the five for about 600 s. The weighted average is
-	/// (5 * 0 + 540) / 6 = 90.
+	/// A fresh pile of 5 (deathTime 0) receives one item aged 540. Keeping the larger remaining time
+	/// preserves the fresh pile's full lifetime (~600 s left, deathTime ~0).
 	/// </summary>
 	[AtlasScenario(TimeoutMs = 120_000)]
 	public async Task Merge_Should_NotShortenAFreshStack_WhenTheDonorIsNearlyExpired()
 	{
-		await AssertMergedDeathTime("clump-dt-b", "game:stone-chert", zOffset: 32, receiverTime: 0f, donorTime: 540f);
+		await AssertMergedDeathTime("clump-dt-b", "game:stone-chert", zOffset: 32, receiverTime: 0f, donorTime: 540f, expectedTime: 0f);
 	}
 
-	private async Task AssertMergedDeathTime(string playerName, string itemCode, int zOffset, float receiverTime, float donorTime)
+	/// <summary>
+	/// An old, larger pile of 5 (deathTime 540, ~60 s left) receives a fresh drop of 1 (deathTime 0, ~600 s left).
+	/// Keeping the larger remaining time adopts the fresh drop's life (~600 s left, deathTime ~0).
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 120_000)]
+	public async Task Merge_Should_AdoptTheFreshDropsClock_WhenAnOldPileReceivesAFreshDrop()
+	{
+		await AssertMergedDeathTime("clump-dt-c", "game:stone-slate", zOffset: 40, receiverTime: 540f, donorTime: 0f, expectedTime: 0f);
+	}
+
+	private async Task AssertMergedDeathTime(string playerName, string itemCode, int zOffset, float receiverTime, float donorTime, float expectedTime)
 	{
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer(playerName);
-		await World.Ticks(2);
-		Vec3d pos = DropPos(player, zOffset);
-		Item item = RequireItem(api, itemCode);
+		try
+		{
+			await World.Ticks(2);
+			Vec3d pos = DropPos(player, zOffset);
+			Item item = RequireItem(api, itemCode);
 
-		EntityItem receiver = Spawn(api, new ItemStack(item, 5), pos, null);
-		receiver.Attributes.SetFloat("deathTime", receiverTime);
-		await World.Ticks(90);
+			EntityItem receiver = Spawn(api, new ItemStack(item, 5), pos, null);
+			receiver.Attributes.SetFloat("deathTime", receiverTime);
+			await World.Ticks(90);
 
-		EntityItem donor = Spawn(api, new ItemStack(item, 1), pos, null);
-		donor.Attributes.SetFloat("deathTime", donorTime);
+			EntityItem donor = Spawn(api, new ItemStack(item, 1), pos, null);
+			donor.Attributes.SetFloat("deathTime", donorTime);
 
-		await World.Until(() => !donor.Alive, timeoutTicks: 300);
-		Assert.True(receiver.Alive && receiver.Slot.Itemstack.StackSize == 6,
-			$"setup failed: expected one pile of 6, got alive={receiver.Alive} size={receiver.Slot.Itemstack?.StackSize}");
+			await World.Until(() => !donor.Alive, timeoutTicks: 300);
+			Assert.True(receiver.Alive && receiver.Slot.Itemstack?.StackSize == 6,
+				$"setup failed: expected one pile of 6, got alive={receiver.Alive} size={receiver.Slot.Itemstack?.StackSize}");
 
-		// The clock keeps ticking by a few seconds at most while the scenario runs.
-		float expected = (5 * receiverTime + 1 * donorTime) / 6f;
-		float actual = receiver.Attributes.GetFloat("deathTime", -1f);
-		Assert.True(
-			Math.Abs(actual - expected) < 25f,
-			$"merged pile deathTime is {actual}, expected about {expected} (5 items at {receiverTime} and 1 at {donorTime}, "
-			+ "averaged by quantity)");
+			// The clock keeps ticking by a few seconds at most while the scenario runs.
+			float actual = receiver.Attributes.GetFloat("deathTime", -1f);
+			Assert.True(
+				Math.Abs(actual - expectedTime) < 25f,
+				$"merged pile deathTime is {actual}, expected about {expectedTime} (receiver at {receiverTime} and donor at {donorTime}, "
+				+ "larger remaining time kept)");
+		}
+		finally
+		{
+			player.Player.Disconnect();
+		}
 	}
 
 	[AtlasScenario(TimeoutMs = 120_000)]
@@ -182,24 +217,31 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	{
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer("clump-skip");
-		await World.Ticks(2);
-		Vec3d pos = DropPos(player, 40);
-		Item item = RequireItem(api, "game:stone-peridotite");
+		try
+		{
+			await World.Ticks(2);
+			Vec3d pos = DropPos(player, 48);
+			Item item = RequireItem(api, "game:stone-peridotite");
 
-		// A death drop style stack (kept for an hour) next to an ordinary one.
-		EntityItem longLived = Spawn(api, new ItemStack(item, 5), pos, null);
-		longLived.Attributes.SetInt("minsecondsToDespawn", 3600);
-		EntityItem ordinary = Spawn(api, new ItemStack(item, 1), pos, null);
+			// A death drop style stack (kept for an hour) next to an ordinary one.
+			EntityItem longLived = Spawn(api, new ItemStack(item, 5), pos, null);
+			longLived.Attributes.SetInt("minsecondsToDespawn", 3600);
+			EntityItem ordinary = Spawn(api, new ItemStack(item, 1), pos, null);
 
-		// Well past the clump delay (1500 ms) and the settling time.
-		await World.Ticks(240);
+			// Well past the clump delay (1500 ms) and the settling time.
+			await World.Ticks(240);
 
-		Assert.True(
-			longLived.Alive && ordinary.Alive
-				&& longLived.Slot.Itemstack.StackSize == 5 && ordinary.Slot.Itemstack.StackSize == 1,
-			"stacks with different minsecondsToDespawn were merged: "
-			+ $"long-lived alive={longLived.Alive} size={longLived.Slot.Itemstack?.StackSize}, "
-			+ $"ordinary alive={ordinary.Alive} size={ordinary.Slot.Itemstack?.StackSize}");
+			Assert.True(
+				longLived.Alive && ordinary.Alive
+					&& longLived.Slot.Itemstack?.StackSize == 5 && ordinary.Slot.Itemstack?.StackSize == 1,
+				"stacks with different minsecondsToDespawn were merged: "
+				+ $"long-lived alive={longLived.Alive} size={longLived.Slot.Itemstack?.StackSize}, "
+				+ $"ordinary alive={ordinary.Alive} size={ordinary.Slot.Itemstack?.StackSize}");
+		}
+		finally
+		{
+			player.Player.Disconnect();
+		}
 	}
 
 	/// <summary>
@@ -213,59 +255,67 @@ public class ItemClumpPickupWindowScenarios : AtlasScenarioBase
 	{
 		ICoreServerAPI api = World.Api;
 		ITestPlayer player = await World.JoinPlayer("clump-chunk");
-		await World.Ticks(2);
-		Item item = RequireItem(api, "game:stone-limestone");
+		try
+		{
+			await World.Ticks(2);
+			Item item = RequireItem(api, "game:stone-limestone");
 
-		// Two stacks on both sides of a chunk border (x = 32 * k), at the terrain surface.
-		Vec3d basePos = DropPos(player, 48);
-		int border = ((int)basePos.X / 32 + 1) * 32;
-		double z = basePos.Z;
-		int surface = World.Api.World.BlockAccessor.GetTerrainMapheightAt(new BlockPos(border, 1, (int)z, 0));
-		double y = surface + 2;
+			// Two stacks on both sides of a chunk border (x = 32 * k), at the terrain surface.
+			Vec3d basePos = DropPos(player, 56);
+			int border = ((int)basePos.X / 32 + 1) * 32;
+			double z = basePos.Z;
+			int surface = World.Api.World.BlockAccessor.GetTerrainMapheightAt(new BlockPos(border, 1, (int)z, 0));
+			double y = surface + 2;
 
-		EntityItem receiver = Spawn(api, new ItemStack(item, 5), new Vec3d(border - 0.5, y, z), null);
-		await World.Ticks(90);
-		Assert.True(receiver.Alive, "setup failed: the receiver is gone");
+			EntityItem receiver = Spawn(api, new ItemStack(item, 5), new Vec3d(border - 0.5, y, z), null);
+			await World.Ticks(90);
+			Assert.True(receiver.Alive, "setup failed: the receiver is gone");
 
-		// Clear the flag on the receiver's chunk, then bring the donor from the other side.
-		object receiverChunk = ChunkOf(api, receiver);
-		SetDirtyForSaving(receiverChunk, false);
+			// Clear the flag on the receiver's chunk, then bring the donor from the other side.
+			object receiverChunk = ChunkOf(api, receiver);
+			SetDirtyForSaving(receiverChunk, false);
 
-		EntityItem donor = Spawn(api, new ItemStack(item, 1), new Vec3d(border + 0.5, y, z), null);
-		await World.Ticks(2);
-		Assert.True(donor.InChunkIndex3d != receiver.InChunkIndex3d,
-			"setup failed: both stacks are in the same chunk, the scenario needs a chunk border between them");
-		SetDirtyForSaving(receiverChunk, false); // the spawn of the donor must not be what dirties it
+			EntityItem donor = Spawn(api, new ItemStack(item, 1), new Vec3d(border + 0.5, y, z), null);
+			await World.Ticks(2);
+			Assert.True(donor.InChunkIndex3d != receiver.InChunkIndex3d,
+				"setup failed: both stacks are in the same chunk, the scenario needs a chunk border between them");
+			SetDirtyForSaving(receiverChunk, false); // the spawn of the donor must not be what dirties it
 
-		await World.Until(() => !donor.Alive, timeoutTicks: 300);
-		Assert.True(receiver.Alive && receiver.Slot.Itemstack.StackSize == 6,
-			$"setup failed: expected one pile of 6, got alive={receiver.Alive} size={receiver.Slot.Itemstack?.StackSize}");
+			await World.Until(() => !donor.Alive, timeoutTicks: 300);
+			Assert.True(receiver.Alive && receiver.Slot.Itemstack?.StackSize == 6,
+				$"setup failed: expected one pile of 6, got alive={receiver.Alive} size={receiver.Slot.Itemstack?.StackSize}");
 
-		Assert.True(
-			GetDirtyForSaving(receiverChunk),
-			"the receiver's chunk is not marked for saving after a merge across a chunk border: "
-			+ "the next save would write the old stack size");
+			Assert.True(
+				GetDirtyForSaving(receiverChunk),
+				"the receiver's chunk is not marked for saving after a merge across a chunk border: "
+				+ "the next save would write the old stack size");
+		}
+		finally
+		{
+			player.Player.Disconnect();
+		}
 	}
 
 	// ---------------------------------------------------------------------------------------
 
 	private static EntityItem Spawn(ICoreServerAPI api, ItemStack stack, Vec3d pos, string? dropper)
 	{
-		EntityItem entity = (EntityItem)api.World.SpawnItemEntity(stack, pos, new Vec3d());
-		if (dropper != null) entity.ByPlayerUid = dropper;
-		return entity;
+		EntityItem? entity = (EntityItem?)api.World.SpawnItemEntity(stack, pos, new Vec3d());
+		Assert.NotNull(entity);
+		if (dropper != null) entity!.ByPlayerUid = dropper;
+		return entity!;
 	}
 
 	private static Vec3d DropPos(ITestPlayer player, int zOffset)
 	{
-		return player.Player.Entity.Pos.XYZ.AddCopy(1.2, 0.2, 0.2 + zOffset);
+		return player.Player.Entity.Pos.XYZ.AddCopy(3.5, 0.2, 0.2 + zOffset);
 	}
 
 	private static Item RequireItem(ICoreServerAPI api, params string[] codes)
 	{
 		foreach (string code in codes)
 		{
-			Item item = api.World.GetItem(new AssetLocation(code));
+			Item? item = api.World.GetItem(new AssetLocation(code));
 			if (item != null) return item;
 		}
 		throw new InvalidOperationException("none of the item codes resolved: " + string.Join(", ", codes));

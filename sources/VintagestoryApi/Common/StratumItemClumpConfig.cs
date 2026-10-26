@@ -8,8 +8,9 @@ namespace Vintagestory.API.Common;
 //
 // Merging rules worth knowing (all of it only applies while Enabled is true):
 //  - A stack a player just dropped takes no part in merging until the vanilla pickup window (1 s) has passed.
-//  - The merged stack gets the average despawn clock of the items it holds, weighted by quantity. Stacks with
-//    different minsecondsToDespawn (for example a death drop kept for an hour) never merge.
+//  - The merged stack keeps the larger remaining despawn time of both stacks, so merging never shortens
+//    the lifetime of either side. Stacks with different minsecondsToDespawn (for example a death drop
+//    kept for an hour) never merge.
 //  - The search is a sphere-like box (Radius horizontally, VerticalRadius vertically). Two stacks only mix when
 //    they are within that range of each other and in the same land claim (or both outside every claim). There is
 //    no line of sight check, so a vertical radius of 2 reaches through a one block floor or wall that is not a

@@ -29,11 +29,11 @@ namespace Vintagestory.GameContent;
 //  - A stack a player just dropped is still inside the pickup window of EntityItem.CanCollect
 //    (other players cannot take it yet). It takes no part in merging, neither as donor nor as
 //    receiver, until that window has passed, so merging never skips it.
-//  - The merged stack gets the average despawn clock of the items it holds, weighted by quantity.
-//    deathTime is elapsed time (EntityBehaviorDespawn adds to it and kills the item once it passes
-//    minSeconds). Taking the smaller value of the pair would let a trickle of fresh drops keep an old pile
-//    alive for ever, and the larger one would cut a fresh pile short. Stacks with different minsecondsToDespawn (for
-//    example a death drop kept for an hour) never merge, otherwise one side would get the wrong lifetime.
+//  - The merged stack keeps the larger remaining despawn time of both sides, so neither stack
+//    vanishes earlier than vanilla allows. deathTime is elapsed time (EntityBehaviorDespawn adds to it
+//    and kills the item once it passes minSeconds), so the receiver's deathTime is adjusted to
+//    DespawnSeconds - max(recvLeft, donorLeft). Stacks with different minsecondsToDespawn (for
+//    example a death drop kept for an hour) never merge.
 //  - A merge moves items between entities that may sit in different chunks. Only the chunk of a donor that
 //    dies is dirtied by the removal, so the receiver and a surviving donor chunk are marked modified
 //    explicitly, otherwise the next save writes the old counts.
@@ -432,6 +432,11 @@ public class ModSystemItemClump : ModSystem
 				EntityItem donor = group[d];
 				if (!IsValid(donor)) continue;
 
+				ItemStack donorInitialStack = donor.Slot.Itemstack;
+				int donorStartSize = donorInitialStack?.StackSize ?? 0;
+				CollectibleObject donorStartColl = donorInitialStack?.Collectible;
+				int donorMovedTotal = 0;
+
 				for (int r = 0; r < d; r++)
 				{
 					EntityItem recv = group[r];
@@ -443,6 +448,9 @@ public class ModSystemItemClump : ModSystem
 					ItemStack rs = recv.Slot.Itemstack;
 					int space = rs.Collectible.MaxStackSize - rs.StackSize;
 					if (space <= 0) continue;
+
+					// Do not mix swimming items (e.g. dissolving in water) with non-swimming ones.
+					if (donor.Swimming != recv.Swimming) continue;
 
 					// Stacks that expire on different clocks (a death drop kept for an hour next to ordinary
 					// stacks) must not mix: the merged stack would get the wrong lifetime.
@@ -456,18 +464,24 @@ public class ModSystemItemClump : ModSystem
 					// Vanilla rules: matching attributes, freshness and so on.
 					if (rs.Collectible.GetMergableQuantity(rs, ds, EnumMergePriority.AutoMerge) <= 0) continue;
 
-					int receiverBefore = rs.StackSize;
+					int donorBefore = ds.StackSize;
+					CollectibleObject donorCollBefore = ds.Collectible;
+					int recvBefore = rs.StackSize;
+					CollectibleObject recvCollBefore = rs.Collectible;
+
 					int moved = donor.Slot.TryPutInto(sapi.World, recv.Slot, Math.Min(space, ds.StackSize));
 					if (moved <= 0)
 					{
 						// The merge check can run the transition update, which spoils or converts a stack in place
-						// without moving anything. Keep the entities and clients in step with the slots.
-						ResyncStack(donor);
-						ResyncStack(recv);
+						// without moving anything. Only resync if the slot's stack actually changed.
+						ResyncStackIfChanged(donor, donorBefore, donorCollBefore);
+						ResyncStackIfChanged(recv, recvBefore, recvCollBefore);
 						continue;
 					}
 
-					MergeDespawnClock(donor, recv, receiverBefore, moved);
+					donorMovedTotal += moved;
+					MergeDespawnClock(donor, recv);
+					recv.itemSpawnedMilliseconds = Math.Max(recv.itemSpawnedMilliseconds, donor.itemSpawnedMilliseconds);
 
 					// The Itemstack setter does not mark the path dirty, so do it explicitly (as vanilla BlockMeal does),
 					// otherwise clients that already track the item keep the old stack size.
@@ -490,7 +504,7 @@ public class ModSystemItemClump : ModSystem
 						if (debug) dbgKilled++;
 					}
 				}
-				else
+				else if (donorMovedTotal > 0 || left.StackSize != donorStartSize || left.Collectible != donorStartColl)
 				{
 					donor.Itemstack = left;
 					donor.WatchedAttributes.MarkPathDirty("itemstack");
@@ -505,7 +519,7 @@ public class ModSystemItemClump : ModSystem
 		}
 	}
 
-	private void ResyncStack(EntityItem e)
+	private void ResyncStackIfChanged(EntityItem e, int sizeBefore, CollectibleObject collBefore)
 	{
 		if (!e.Alive) return;
 
@@ -517,9 +531,12 @@ public class ModSystemItemClump : ModSystem
 			return;
 		}
 
-		e.Itemstack = stack;
-		e.WatchedAttributes.MarkPathDirty("itemstack");
-		MarkChunkModified(e);
+		if (stack.StackSize != sizeBefore || stack.Collectible != collBefore)
+		{
+			e.Itemstack = stack;
+			e.WatchedAttributes.MarkPathDirty("itemstack");
+			MarkChunkModified(e);
+		}
 	}
 
 	private bool InMergeRange(EntityItem a, EntityItem b)
@@ -567,8 +584,46 @@ public class ModSystemItemClump : ModSystem
 		return e != null
 			&& e.Alive
 			&& e.World != null
+			&& !e.InLava
+			&& !e.IsOnFire
 			&& e.Slot?.Itemstack != null
-			&& e.Slot.Itemstack.StackSize > 0;
+			&& e.Slot.Itemstack.StackSize > 0
+			&& !RestsOnItemFlow(e);
+	}
+
+	private static bool RestsOnItemFlow(EntityItem e)
+	{
+		IBlockAccessor ba = e.World?.BlockAccessor;
+		if (ba == null) return false;
+
+		EntityPos pos = e.Pos;
+		if (pos == null) return false;
+
+		int x = (int)Math.Floor(pos.X);
+		int z = (int)Math.Floor(pos.Z);
+		int yCurrent = (int)Math.Floor(pos.Y);
+		int yBelow = (int)Math.Floor(pos.Y - 0.1);
+
+		BlockPos bp = new BlockPos(x, yCurrent, z, pos.Dimension);
+		if (IsItemFlow(ba.GetBlockEntity(bp))) return true;
+
+		if (yBelow != yCurrent)
+		{
+			bp.Y = yBelow;
+			if (IsItemFlow(ba.GetBlockEntity(bp))) return true;
+		}
+
+		return false;
+	}
+
+	private static bool IsItemFlow(BlockEntity be)
+	{
+		if (be == null) return false;
+		for (Type t = be.GetType(); t != null; t = t.BaseType)
+		{
+			if (t.Name == "BlockEntityItemFlow") return true;
+		}
+		return false;
 	}
 
 	// Per entity override of the despawn time (a death drop is kept for an hour); 0 means the default.
@@ -578,19 +633,17 @@ public class ModSystemItemClump : ModSystem
 	}
 
 	// deathTime is elapsed time, not remaining time: EntityBehaviorDespawn adds to it and kills the item
-	// once it passes minSeconds. The receiver keeps the average of both clocks weighted by the quantity each
-	// side contributes, so the pile ages like the items it holds and a trickle of fresh drops cannot keep
-	// it alive for ever.
-	private static void MergeDespawnClock(EntityItem donor, EntityItem recv, int receiverBefore, int moved)
+	// once it passes minSeconds. The receiver keeps the larger remaining despawn time of both stacks, so
+	// merging never shortens the lifetime of either side.
+	private static void MergeDespawnClock(EntityItem donor, EntityItem recv)
 	{
 		EntityBehaviorDespawn donorClock = donor.GetBehavior<EntityBehaviorDespawn>();
 		EntityBehaviorDespawn recvClock = recv.GetBehavior<EntityBehaviorDespawn>();
 		if (donorClock == null || recvClock == null) return;
 
-		double total = (double)receiverBefore + moved;
-		if (total <= 0) return;
-
-		recvClock.DeathTime = (float)((recvClock.DeathTime * (double)receiverBefore + donorClock.DeathTime * (double)moved) / total);
+		float recvLeft = recvClock.DespawnSeconds - recvClock.DeathTime;
+		float donorLeft = donorClock.DespawnSeconds - donorClock.DeathTime;
+		recvClock.DeathTime = recvClock.DespawnSeconds - Math.Max(recvLeft, donorLeft);
 	}
 
 	// Entity merges change an entity of a chunk that nothing else has dirtied. Autosave, unload and
