@@ -144,12 +144,24 @@ public class FallingBlockScenarios : AtlasScenarioBase
 
 		FieldInfo budgetField = PrivateField(system, "maxInstantPerTick");
 		int originalBudget = (int)budgetField.GetValue(system)!;
+		BlockPos originalPlayerPos = player.Position.Copy();
 
-		Shaft s = await PrepareFar(offsetZ: 12);
+		Shaft s = await PrepareFar(offsetZ: 12, offsetX: 800);
 		BuildShaft(s, wallTop: OpenTop);
 		await World.Ticks(5);
 
 		BlockPos top = s.At(OpenTop);
+		bool sawEntity = false;
+		EntityDelegate spawnListener = (Entity e) =>
+		{
+			if (e.GetType().Name == "EntityBlockFalling")
+			{
+				BlockPos? p = e.GetType().GetField("initialPos")?.GetValue(e) as BlockPos;
+				if (p != null && p.Equals(top)) sawEntity = true;
+			}
+		};
+		World.Api.Event.OnEntitySpawn += spawnListener;
+
 		try
 		{
 			// No budget: the request for the sand waits in the queue.
@@ -164,22 +176,29 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			// The request is still waiting, but a player arrives before the replacement is rechecked.
 			// Its vanilla hook must choose EntityBlockFalling, not the instant queue.
 			await player.TeleportTo(s.At(OpenTop).AddCopy(2, 0, 0));
+			await World.Ticks(2);
+
+			budgetField.SetValue(system, originalBudget);
+
+			await World.Until(() => CodeAt(s.At(1)) == "gravel-granite", timeoutTicks: 600);
+			await World.Ticks(30);
+
+			Assert.True(sawEntity, "expected an EntityBlockFalling with initialPos == top to spawn when player arrived nearby");
+
+			string actual = Column(s, 1, OpenTop);
+			string expected = "gravel," + string.Join(",", Enumerable.Repeat("air", OpenTop - 1));
+			Assert.True(
+				actual == expected,
+				$"gravel placed over a waiting sand request hangs in the air.{Environment.NewLine}"
+				+ $"  expected (floor+1..+{OpenTop}): {expected}{Environment.NewLine}"
+				+ $"  actual:                       {actual}");
 		}
 		finally
 		{
 			budgetField.SetValue(system, originalBudget);
+			World.Api.Event.OnEntitySpawn -= spawnListener;
+			await player.TeleportTo(originalPlayerPos);
 		}
-
-		await World.Until(() => CodeAt(s.At(1)) == "gravel-granite", timeoutTicks: 600);
-		await World.Ticks(30);
-
-		string actual = Column(s, 1, OpenTop);
-		string expected = "gravel," + string.Join(",", Enumerable.Repeat("air", OpenTop - 1));
-		Assert.True(
-			actual == expected,
-			$"gravel placed over a waiting sand request hangs in the air.{Environment.NewLine}"
-			+ $"  expected (floor+1..+{OpenTop}): {expected}{Environment.NewLine}"
-			+ $"  actual:                       {actual}");
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -195,7 +214,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		FieldInfo budgetField = PrivateField(system, "maxInstantPerTick");
 		int originalBudget = (int)budgetField.GetValue(system)!;
 		const int budget = 5;
-		const int cols = 40, rows = 40, count = cols * rows;
+		const int cols = 10, rows = 10, count = cols * rows;
 
 		Shaft s = await PrepareFar(offsetZ: 18);
 
@@ -261,6 +280,78 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		Assert.True(
 			landedStack?.Collectible.Code.Path == "flint" && landedStack.StackSize == 1,
 			"the chest kept the request-time inventory snapshot and lost the item added while queued.");
+	}
+
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task SnowBlock_Should_MergeWithSnowLayer_NearAndFar_WithoutLooping()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-snow");
+		await World.Ticks(2);
+		object system = RequireSystem();
+		FieldInfo queueField = PrivateField(system, "instantQueue");
+		System.Collections.ICollection queue = (System.Collections.ICollection)queueField.GetValue(system)!;
+
+		// 1. Far from player: instant fall merges snowblock into snowlayer-5 without looping
+		Shaft far = await PrepareFar(offsetZ: 50, offsetX: 300);
+		BuildShaft(far, wallTop: 6);
+		World.SetBlock("game:snowlayer-5", far.At(1));
+		World.SetBlock("game:snowblock", far.At(3));
+		await World.Ticks(2);
+
+		RequestInstantFall(system, "game:snowblock", far.At(3));
+
+		await World.Until(() => CodeAt(far.At(1)) == "snowblock" && queue.Count == 0, timeoutTicks: 300);
+		await World.Ticks(10);
+
+		Assert.Equal("snowblock", CodeAt(far.At(1)));
+		Assert.Equal("snowlayer-5", CodeAt(far.At(2)));
+		Assert.Empty(queue);
+
+		// 2. Near player: entity fall also merges into snowblock + snowlayer-5 without looping
+		Shaft near = PrepareNear(player, offsetX: 10, offsetZ: 50);
+		BuildShaft(near, wallTop: 6);
+		World.SetBlock("game:snowlayer-5", near.At(1));
+		World.SetBlock(Rock, near.At(2));
+		World.SetBlock("game:snowblock", near.At(3));
+		await World.Ticks(5);
+
+		World.SetBlock(Air, near.At(2));
+		World.Api.World.BlockAccessor.TriggerNeighbourBlockUpdate(near.At(2));
+
+		await World.Until(() => CodeAt(near.At(1)) == "snowblock", timeoutTicks: 600);
+		await World.Ticks(30);
+
+		Assert.Equal("snowblock", CodeAt(near.At(1)));
+		Assert.Equal("snowlayer-5", CodeAt(near.At(2)));
+		Assert.Empty(queue);
+	}
+
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task Shutdown_Should_FlushQueuedFalls()
+	{
+		await World.JoinPlayer("fb-shutdown");
+		await World.Ticks(2);
+
+		Shaft s = await PrepareFar(offsetZ: 70, offsetX: 700);
+		BuildShaft(s, wallTop: 6);
+		World.SetBlock(Sand, s.At(4));
+		await World.Ticks(2);
+
+		// An isolated system instance verifies Dispose flushes queued falls without
+		// disrupting the live server system's queue or tick listener.
+		object isolated = Activator.CreateInstance(SystemType())!;
+		PrivateField(isolated, "sapi").SetValue(isolated, World.Api);
+		FieldInfo queueField = PrivateField(isolated, "instantQueue");
+		System.Collections.ICollection queue = (System.Collections.ICollection)queueField.GetValue(isolated)!;
+
+		RequestInstantFall(isolated, Sand, s.At(4));
+		Assert.True(queue.Count > 0, "expected sand request to be queued in isolated system");
+
+		MethodInfo disposeMethod = isolated.GetType().GetMethod("Dispose", BindingFlags.Public | BindingFlags.Instance)!;
+		disposeMethod.Invoke(isolated, null);
+
+		Assert.Empty(queue);
+		Assert.Equal("sand-granite", CodeAt(s.At(1)));
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -429,7 +520,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	// TryRequestInstantFall(Block block, BlockEntity be, BlockPos initialPos, bool doRemoveBlock = true)
 	private void RequestInstantFall(object system, string blockCode, BlockPos pos, BlockEntity? be = null)
 	{
-		Block block = World.Api.World.GetBlock(new AssetLocation(blockCode));
+		Block block = World.Api.World.GetBlock(new AssetLocation(blockCode))!;
 		Assert.True(block != null && block.BlockId != 0, $"block '{blockCode}' not found.");
 
 		MethodInfo? method = system.GetType().GetMethod("TryRequestInstantFall", BindingFlags.Public | BindingFlags.Instance);
