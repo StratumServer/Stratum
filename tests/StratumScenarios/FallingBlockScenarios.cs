@@ -59,7 +59,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	[AtlasScenario(TimeoutMs = 180_000)]
 	public async Task SandColumn_Should_FallCompletely_When_NoPlayerInRange()
 	{
-		await World.JoinPlayer("fb-anchor-far");
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-far");
 		await World.Ticks(2);
 		RequireSystem();
 
@@ -78,6 +78,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			$"far column: expected the whole column to land (instant path with neighbour updates).{Environment.NewLine}"
 			+ $"  expected (floor+1..+{ColumnTop}): {expected}{Environment.NewLine}"
 			+ $"  actual:                         {actual}");
+		player.Player.Disconnect();
 	}
 
 	// The contrast: with a player nearby the same column comes down through the entity path.
@@ -103,6 +104,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			$"near column: expected the whole column to land (entity path).{Environment.NewLine}"
 			+ $"  expected (floor+1..+{ColumnTop}): {expected}{Environment.NewLine}"
 			+ $"  actual:                         {actual}");
+		player.Player.Disconnect();
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -126,6 +128,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		Shaft near = PrepareNear(player, offsetX: 10, offsetZ: 6);
 		await DropRockSlab(system, near);
 		AssertSlabLanded(near, "entity path");
+		player.Player.Disconnect();
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -194,6 +197,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			budgetField.SetValue(system, originalBudget);
 			World.Api.Event.OnEntitySpawn -= spawnListener;
 			await player.TeleportTo(originalPlayerPos);
+			player.Player.Disconnect();
 		}
 	}
 
@@ -237,6 +241,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			$"gravel placed over a waiting sand request hangs in the air.{Environment.NewLine}"
 			+ $"  expected (floor+1..+{OpenTop}): {expected}{Environment.NewLine}"
 			+ $"  actual:                       {actual}");
+		player.Player.Disconnect();
 	}
 
 	[AtlasScenario(TimeoutMs = 180_000)]
@@ -266,6 +271,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 
 		await World.Until(() => CodeAt(s.At(1)) == "sand-granite", timeoutTicks: 900);
 		await World.Ticks(30);
+		player.Player.Disconnect();
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -304,6 +310,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		finally
 		{
 			limitField.SetValue(system, originalLimit);
+			player.Player.Disconnect();
 		}
 	}
 
@@ -357,6 +364,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		finally
 		{
 			limitField.SetValue(system, originalLimit);
+			player.Player.Disconnect();
 		}
 	}
 
@@ -393,6 +401,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			$"second block placed while the first was falling did not fall (dedup slot held too long).{Environment.NewLine}"
 			+ $"  expected (floor+1..+{OpenTop}): {expected}{Environment.NewLine}"
 			+ $"  actual:                       {actual}");
+		player.Player.Disconnect();
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -441,6 +450,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			dropped += item.Itemstack.StackSize;
 		}
 		Assert.True(dropped == 1, $"expected exactly one dropped sand block, found {dropped}.");
+		player.Player.Disconnect();
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -449,7 +459,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	[AtlasScenario(TimeoutMs = 180_000)]
 	public async Task InstantFalls_Should_StayWithinThePerTickBudget_AndAllLand()
 	{
-		await World.JoinPlayer("fb-anchor-budget");
+		ITestPlayer player = await World.JoinPlayer("fb-anchor-budget");
 		await World.Ticks(2);
 		object system = RequireSystem();
 
@@ -479,13 +489,14 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		finally
 		{
 			budgetField.SetValue(system, originalBudget);
+			player.Player.Disconnect();
 		}
 	}
 
 	[AtlasScenario(TimeoutMs = 180_000)]
 	public async Task WaitingContainerFall_Should_KeepItemsAddedBeforeProcessing()
 	{
-		await World.JoinPlayer("fb-cont-refresh");
+		ITestPlayer player = await World.JoinPlayer("fb-cont-refresh");
 		await World.Ticks(2);
 		object system = RequireSystem();
 		FieldInfo budgetField = PrivateField(system, "maxInstantPerTick");
@@ -522,6 +533,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		Assert.True(
 			landedStack?.Collectible.Code.Path == "flint" && landedStack.StackSize == 1,
 			"the chest kept the request-time inventory snapshot and lost the item added while queued.");
+		player.Player.Disconnect();
 	}
 
 	[AtlasScenario(TimeoutMs = 180_000)]
@@ -566,12 +578,13 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		Assert.Equal("snowblock", CodeAt(near.At(1)));
 		Assert.Equal("snowlayer-5", CodeAt(near.At(2)));
 		Assert.Empty(queue);
+		player.Player.Disconnect();
 	}
 
 	[AtlasScenario(TimeoutMs = 180_000)]
 	public async Task Shutdown_Should_FlushQueuedFalls()
 	{
-		await World.JoinPlayer("fb-shutdown");
+		ITestPlayer player = await World.JoinPlayer("fb-shutdown");
 		await World.Ticks(2);
 
 		Shaft s = await PrepareFar(offsetZ: 70, offsetX: 700);
@@ -594,6 +607,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 
 		Assert.Empty(queue);
 		Assert.Equal("sand-granite", CodeAt(s.At(1)));
+		player.Player.Disconnect();
 	}
 
 	[AtlasScenario(TimeoutMs = 180_000)]
@@ -643,6 +657,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		Assert.Equal(0, CountFallingEntities());
 		Assert.Empty(instantQ);
 		Assert.Empty(requestQ);
+		player.Player.Disconnect();
 	}
 
 	[AtlasScenario(TimeoutMs = 180_000)]
@@ -684,6 +699,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 			seen.Count == 1,
 			$"{seen.Count} falling entities were created for one block of sand: it keeps falling again after a hop.");
 		Assert.True(ticks < 200, $"the sand took {ticks} ticks to settle on the leaves, it should not wait for a timeout.");
+		player.Player.Disconnect();
 	}
 
 	[AtlasScenario(TimeoutMs = 180_000)]
@@ -705,6 +721,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 
 		await World.Until(() => CodeAt(s.At(1)) == "sand-granite", timeoutTicks: 600);
 		Assert.Equal("sand-granite", CodeAt(s.At(1)));
+		player.Player.Disconnect();
 	}
 
 	// ---------------------------------------------------------------------------------------
