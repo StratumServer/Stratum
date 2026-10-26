@@ -53,7 +53,7 @@ public class RockCollapseScenarios : AtlasScenarioBase
 
 		IBlockAccessor ba = api.World.BlockAccessor;
 		int floorY = ba.GetTerrainMapheightAt(new BlockPos(cx, 1, cz, 0)) + 30;
-		Block rock = api.World.GetBlock(new AssetLocation("game:rock-limestone"));
+		Block rock = api.World.GetBlock(new AssetLocation("game:rock-limestone"))!;
 		Assert.True(rock != null, "game:rock-limestone not found");
 
 		// A floor to land on, and a one layer slab hanging 7 blocks above it with nothing under or beside it.

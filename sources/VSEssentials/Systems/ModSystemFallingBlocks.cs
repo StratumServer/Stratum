@@ -23,8 +23,10 @@ namespace Vintagestory.GameContent;
 //
 // Differences from the entity path, by design:
 //  - a block that was only asked to fall sideways and has solid support below stays where it is;
-//  - snow that lands on a snow block adds a layer above it instead of being absorbed into it;
-//  - requests still waiting when the server stops are resolved in Dispose;
+//  - an instant fall only walks straight down and does not step sideways into adjacent free cells before landing;
+//  - a snow block falling on a partial snow layer merges into it, leaving a snow block and the remaining layer on top;
+//  - requests still waiting when the server stops are resolved in Dispose (only requests currently in the queue are
+//    flushed; higher blocks in a column waiting for neighbour updates remain at their start cells);
 //  - a request whose chunk unloads while it waits is dropped: the rock or block stays where it is and nothing asks
 //    it to fall again after the reload (on the entity path the falling entity is saved with its chunk).
 public class ModSystemFallingBlocks : ModSystem
@@ -149,25 +151,32 @@ public class ModSystemFallingBlocks : ModSystem
 			pendingPositions.Remove(request.InitialPos);
 			processed++;
 
-			Block current = world.BlockAccessor.GetBlock(request.InitialPos);
-			if (current == null || current.Id == 0 || current != request.SourceBlock)
+			try
 			{
-				RecheckReplacedBlock(world, request, current);
-				continue;
+				Block current = world.BlockAccessor.GetBlock(request.InitialPos);
+				if (current == null || current.Id == 0 || current != request.SourceBlock)
+				{
+					RecheckReplacedBlock(world, request, current);
+					continue;
+				}
+				RefreshContainerSnapshot(world, ref request);
+
+				ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
+
+				SimulateInstantFall(
+					world,
+					request.Block,
+					request.SourceBlock,
+					request.BlockEntity,
+					request.BlockEntityTree,
+					request.InitialPos,
+					drops,
+					request.DoRemoveBlock);
 			}
-			RefreshContainerSnapshot(world, ref request);
-
-			ItemStack[] drops = request.Block.GetDrops(world, request.InitialPos, null);
-
-			SimulateInstantFall(
-				world,
-				request.Block,
-				request.SourceBlock,
-				request.BlockEntity,
-				request.BlockEntityTree,
-				request.InitialPos,
-				drops,
-				request.DoRemoveBlock);
+			catch (Exception e)
+			{
+				sapi?.Logger.Warning("[Stratum] Falling block simulation failed at {0}: {1}", request.InitialPos, e.Message);
+			}
 		}
 	}
 
@@ -344,7 +353,7 @@ public class ModSystemFallingBlocks : ModSystem
 			return;
 		}
 
-		bool canPlace = supported && (targetBlock.IsLiquid() || targetBlock.Replaceable >= 6000);
+		bool canPlace = supported && targetBlock != null && targetBlock.IsReplacableBy(block);
 
 		if (canPlace)
 		{
