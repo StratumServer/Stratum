@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
+using Vintagestory.API.Util;
 
 namespace Vintagestory.GameContent;
 
@@ -37,6 +39,8 @@ namespace Vintagestory.GameContent;
 //    explicitly, otherwise the next save writes the old counts.
 //  - Spawn and despawn events can come from worker threads (RegionTicking), so they only append to a
 //    concurrent queue; the queue and the index are touched from the tick listener alone.
+//  - Blacklist uses vanilla WildcardUtil.Match ('*', case insensitive, "@regex"). The result is cached
+//    per collectible, so Code.ToString() runs once.
 // Merging goes through ItemSlot.TryPutInto and GetMergableQuantity, so all vanilla rules
 // (attributes, freshness and other transition states) still apply.
 public class ModSystemItemClump : ModSystem
@@ -67,6 +71,10 @@ public class ModSystemItemClump : ModSystem
 	private readonly List<EntityItem> group = new List<EntityItem>();
 	private readonly Dictionary<EntityItem, LandClaim> claimOf = new Dictionary<EntityItem, LandClaim>();
 
+	// Blacklist result per collectible.
+	private readonly Dictionary<CollectibleObject, bool> blacklistCache = new Dictionary<CollectibleObject, bool>();
+	private string[] blacklistPatterns = Array.Empty<string>();
+
 	private float radius;
 	private float verticalRadius;
 	private int delayMs;
@@ -78,6 +86,13 @@ public class ModSystemItemClump : ModSystem
 	// so speed and OnGround keep their values from spawn). The smaller of the server tracking
 	// range and the entity simulation range.
 	private int frozenRange;
+
+	// Debug statistics (Debug in the config).
+	private bool debug;
+	private long debugNextLogMs;
+	private int dbgEnqueued, dbgProcessed, dbgInvalid, dbgFrozen, dbgRetried,
+		dbgGaveUp, dbgSearchLt2, dbgGroupLt2, dbgMerged, dbgKilled, dbgQueueMax, dbgHovering;
+	private int dbgSamples;
 
 	// Parameter for the search predicate, avoids a closure per call.
 	private CollectibleObject matchCollectible;
@@ -115,6 +130,8 @@ public class ModSystemItemClump : ModSystem
 		maxSettleAttempts = cfg.MaxSettleAttempts;
 		maxAttemptsPerTick = cfg.MaxAttemptsPerTick;
 		maxGroupSize = cfg.MaxGroupSize;
+		blacklistPatterns = NormalizeBlacklist(cfg.Blacklist, api.Logger);
+		blacklistCache.Clear();
 
 		int trackingRange = GlobalConstants.DefaultSimulationRange;
 		try
@@ -127,8 +144,10 @@ public class ModSystemItemClump : ModSystem
 		}
 		frozenRange = Math.Max(trackingRange, GlobalConstants.ChunkSize);
 
-		api.Logger.Notification("[Stratum] ItemClump: enabled, radius={0}/{1}, frozenRange={2}",
-			radius, verticalRadius, frozenRange);
+		debug = cfg.Debug;
+		debugNextLogMs = 0;
+		api.Logger.Notification("[Stratum] ItemClump: enabled, radius={0}/{1}, frozenRange={2}, debug={3}",
+			radius, verticalRadius, frozenRange, debug);
 
 		api.Event.OnEntitySpawn += OnEntitySpawn;
 		api.Event.OnEntityLoaded += OnEntitySpawn; // same logic for spawn and load
@@ -153,6 +172,7 @@ public class ModSystemItemClump : ModSystem
 		while (intake.TryDequeue(out _)) { }
 		group.Clear();
 		claimOf.Clear();
+		blacklistCache.Clear();
 		matchCollectible = null;
 		sapi = null;
 		running = false;
@@ -195,6 +215,9 @@ public class ModSystemItemClump : ModSystem
 		ItemStack stack = item.Slot?.Itemstack;
 		if (stack != null && stack.Collectible.MaxStackSize <= 1) return;
 
+		// A blacklisted collectible never merges, so it must not use a queue slot or a merge budget unit.
+		if (stack != null && IsBlacklisted(stack.Collectible)) return;
+
 		ItemClumpCandidate c = new ItemClumpCandidate
 		{
 			Entity = item,
@@ -203,6 +226,7 @@ public class ModSystemItemClump : ModSystem
 		};
 		byId[c.EntityId] = c;
 		queue.Enqueue(c);
+		if (debug) dbgEnqueued++;
 	}
 
 	private void OnTick(float dt)
@@ -231,11 +255,13 @@ public class ModSystemItemClump : ModSystem
 			if (c.DueMs > now) break; // the queue is monotonic, the rest is too early as well
 
 			EntityItem e = c.Entity;
+			if (debug) dbgProcessed++;
 
 			if (!IsValid(e))
 			{
 				queue.Dequeue();
 				byId.Remove(c.EntityId);
+				if (debug) dbgInvalid++;
 				continue;
 			}
 
@@ -267,6 +293,7 @@ public class ModSystemItemClump : ModSystem
 			//  3) below: the item hangs without support and did not move between two checks.
 			bool frozen = e.State == EnumEntityState.Inactive || NoPlayerNear(e.Pos);
 
+			bool hovering = false;
 			if (!frozen && !IsSettled(e))
 			{
 				EntityPos p = e.Pos;
@@ -277,6 +304,7 @@ public class ModSystemItemClump : ModSystem
 				if (c.HasLastPos && SqDist(p.X, p.Y, p.Z, c.LastX, c.LastY, c.LastZ) < 1e-4)
 				{
 					frozen = true;
+					hovering = true;
 				}
 				else
 				{
@@ -290,20 +318,30 @@ public class ModSystemItemClump : ModSystem
 					if (++c.Attempts >= maxSettleAttempts)
 					{
 						byId.Remove(c.EntityId);
+						if (debug) dbgGaveUp++;
 					}
 					else
 					{
 						c.DueMs = now + delayMs;
 						queue.Enqueue(c);
+						if (debug) dbgRetried++;
 					}
 					continue;
 				}
 			}
 
 			// Ready to merge, but the budget of expensive attempts is spent for this tick.
-			// Leave it at the head of the queue until the next tick.
-			if (clumpBudget <= 0) break;
+			// Leave it at the head of the queue until the next tick. It is counted when it gets its turn,
+			// not on every tick it waits.
+			if (clumpBudget <= 0)
+			{
+				if (debug) dbgProcessed--;
+				break;
+			}
 			clumpBudget--;
+
+			if (debug && frozen) dbgFrozen++;
+			if (debug && hovering) dbgHovering++;
 
 			queue.Dequeue();
 			// Stop tracking BEFORE merging: if the item survives it can become a candidate
@@ -311,6 +349,25 @@ public class ModSystemItemClump : ModSystem
 			byId.Remove(c.EntityId);
 			TryClump(e, frozen);
 		}
+
+		if (debug) DebugLog(now);
+	}
+
+	private void DebugLog(long now)
+	{
+		if (queue.Count > dbgQueueMax) dbgQueueMax = queue.Count;
+		if (now < debugNextLogMs) return;
+		debugNextLogMs = now + 10000;
+
+		sapi.Logger.Notification(
+			"[Stratum] ItemClump 10s: enqueued={0} processed={1} invalid={2} frozen={3} (hovering={12}) retried={4} gaveUp={5} " +
+			"search<2={6} group<2={7} mergedOps={8} donorsKilled={9} queue={10} (max {11})",
+			dbgEnqueued, dbgProcessed, dbgInvalid, dbgFrozen, dbgRetried, dbgGaveUp,
+			dbgSearchLt2, dbgGroupLt2, dbgMerged, dbgKilled, queue.Count, dbgQueueMax, dbgHovering);
+
+		dbgEnqueued = dbgProcessed = dbgInvalid = dbgFrozen = dbgRetried = dbgGaveUp =
+			dbgSearchLt2 = dbgGroupLt2 = dbgMerged = dbgKilled = dbgQueueMax = dbgHovering = 0;
+		dbgSamples = 0;
 	}
 
 	private void TryClump(EntityItem root, bool frozen)
@@ -320,6 +377,7 @@ public class ModSystemItemClump : ModSystem
 
 		// A non stackable or already full stack can neither receive nor meaningfully donate.
 		if (coll.MaxStackSize <= 1 || rootStack.StackSize >= coll.MaxStackSize) return;
+		if (IsBlacklisted(coll)) return;
 
 		long now = sapi.World.ElapsedMilliseconds;
 
@@ -334,7 +392,18 @@ public class ModSystemItemClump : ModSystem
 			matchCollectible = null;
 		}
 
-		if (found == null || found.Length < 2) return;
+		if (debug && dbgSamples < 5)
+		{
+			dbgSamples++;
+			sapi.Logger.Notification("[Stratum] ItemClump sample: {0} x{1} at {2} frozen={3} found={4}",
+				coll.Code, rootStack.StackSize, root.Pos.XYZ, frozen, found?.Length ?? -1);
+		}
+
+		if (found == null || found.Length < 2)
+		{
+			if (debug) dbgSearchLt2++;
+			return;
+		}
 
 		group.Clear();
 		claimOf.Clear();
@@ -348,7 +417,11 @@ public class ModSystemItemClump : ModSystem
 				group.Add(other);
 			}
 
-			if (group.Count < 2) return;
+			if (group.Count < 2)
+			{
+				if (debug) dbgGroupLt2++;
+				return;
+			}
 
 			// Largest stacks first (receivers), ties broken by EntityId for determinism.
 			group.Sort(bySizeDesc);
@@ -401,6 +474,7 @@ public class ModSystemItemClump : ModSystem
 					recv.Itemstack = recv.Slot.Itemstack;
 					recv.WatchedAttributes.MarkPathDirty("itemstack");
 					MarkChunkModified(recv);
+					if (debug) dbgMerged++;
 				}
 
 				ItemStack left = donor.Slot.Itemstack;
@@ -413,6 +487,7 @@ public class ModSystemItemClump : ModSystem
 					{
 						MarkChunkModified(donor);
 						donor.Die(EnumDespawnReason.Removed);
+						if (debug) dbgKilled++;
 					}
 				}
 				else
@@ -561,5 +636,101 @@ public class ModSystemItemClump : ModSystem
 		if (!e.OnGround && !e.FeetInLiquid && !e.Swimming) return false;
 		Vec3d m = e.Pos.Motion;
 		return m.X * m.X + m.Y * m.Y + m.Z * m.Z <= SettledMotionSq;
+	}
+
+	// Trims the entries, adds the default domain and drops what cannot work: an "@regex" that does not compile
+	// would throw from WildcardUtil.Match on every merge attempt and take the whole server tick with it. A
+	// dropped entry is logged when a logger is given. Regex entries are case sensitive (WildcardUtil builds
+	// them without IgnoreCase), the other entries are not, so only the other entries are deduplicated
+	// ignoring case.
+	private static string[] NormalizeBlacklist(List<string> raw, ILogger logger)
+	{
+		if (raw == null) return Array.Empty<string>();
+
+		List<string> result = new List<string>();
+		HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+
+		foreach (string entry in raw)
+		{
+			if (string.IsNullOrWhiteSpace(entry)) continue;
+
+			string code = AddDefaultDomain(entry.Trim());
+			bool isRegex = code[0] == '@';
+
+			if (isRegex)
+			{
+				try
+				{
+					// Same construction as WildcardUtil.RegexCache.
+					_ = new Regex(string.Concat("^", code.AsSpan(1), "$"), RegexOptions.CultureInvariant);
+				}
+				catch (ArgumentException ex)
+				{
+					logger?.Warning("[Stratum] ItemClump: ignoring blacklist entry '{0}', it is not a valid regex: {1}", code, ex.Message);
+					continue;
+				}
+
+				if (!code.AsSpan(1).Contains(':'))
+				{
+					logger?.Warning("[Stratum] ItemClump: blacklist regex '{0}' does not specify a domain ('@domain:...') and will not match any collectible code.", code);
+				}
+			}
+
+			if (seen.Add(isRegex ? code : code.ToLowerInvariant())) result.Add(code);
+		}
+
+		return result.ToArray();
+	}
+
+	// A code without a domain is vanilla: "gear-rusty" becomes "game:gear-rusty".
+	// Regex patterns ("@...") are left alone.
+	private static string AddDefaultDomain(string code)
+	{
+		return code[0] == '@' || code.Contains(':') ? code : "game:" + code;
+	}
+
+	private bool IsBlacklisted(CollectibleObject coll)
+	{
+		if (blacklistPatterns.Length == 0) return false;
+		if (blacklistCache.TryGetValue(coll, out bool cached)) return cached;
+
+		bool hit = false;
+		if (coll.Code != null)
+		{
+			// Once per collectible (cached afterwards), so the string allocation is fine here.
+			string code = coll.Code.ToString();
+			string[] patterns = blacklistPatterns;
+			for (int i = 0; i < patterns.Length; i++)
+			{
+				string pattern = patterns[i];
+				try
+				{
+					if (WildcardUtil.Match(pattern, code))
+					{
+						hit = true;
+						break;
+					}
+				}
+				catch (RegexMatchTimeoutException)
+				{
+					sapi?.Logger.Warning("[Stratum] ItemClump: dropping blacklist regex '{0}' after a match timeout on '{1}'.", pattern, code);
+					DropBlacklistPattern(pattern);
+				}
+			}
+		}
+
+		blacklistCache[coll] = hit;
+		return hit;
+	}
+
+	private void DropBlacklistPattern(string pattern)
+	{
+		int index = Array.IndexOf(blacklistPatterns, pattern);
+		if (index < 0) return;
+
+		string[] updated = new string[blacklistPatterns.Length - 1];
+		if (index > 0) Array.Copy(blacklistPatterns, 0, updated, 0, index);
+		if (index < updated.Length) Array.Copy(blacklistPatterns, index + 1, updated, index, updated.Length - index);
+		blacklistPatterns = updated;
 	}
 }
