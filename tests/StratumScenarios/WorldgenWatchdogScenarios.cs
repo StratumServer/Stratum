@@ -43,18 +43,39 @@ public class WorldgenWatchdogScenarios : AtlasScenarioBase
 
 		object lowRing = Column(requestType, 4L, 6, 15);
 		object lowBeyond = Column(requestType, 5L, 5, 15);
-		object zRing = Column(requestType, 6L, 15, 6);
-		object zBeyond = Column(requestType, 7L, 15, 5);
-		Array offset = Array.CreateInstance(requestType, 4);
+		object zLowRing = Column(requestType, 6L, 15, 6);
+		object zLowBeyond = Column(requestType, 7L, 15, 5);
+		object zHighRing = Column(requestType, 8L, 15, 24);
+		object zHighBeyond = Column(requestType, 9L, 15, 25);
+		Array offset = Array.CreateInstance(requestType, 6);
 		offset.SetValue(lowRing, 0);
 		offset.SetValue(lowBeyond, 1);
-		offset.SetValue(zRing, 2);
-		offset.SetValue(zBeyond, 3);
+		offset.SetValue(zLowRing, 2);
+		offset.SetValue(zLowBeyond, 3);
+		offset.SetValue(zHighRing, 4);
+		offset.SetValue(zHighBeyond, 5);
 		finished.SetValue(lowRing, 4);
 		finished.SetValue(lowBeyond, 8);
-		finished.SetValue(zRing, 3);
-		finished.SetValue(zBeyond, 6);
-		Assert.Equal(7, (int)progress.Invoke(null, new object[] { offset, 10, 10, 20, 20 })!);
+		finished.SetValue(zLowRing, 3);
+		finished.SetValue(zLowBeyond, 6);
+		finished.SetValue(zHighRing, 5);
+		finished.SetValue(zHighBeyond, 7);
+		Assert.Equal(12, (int)progress.Invoke(null, new object[] { offset, 10, 10, 20, 20 })!);
+
+		object nsX = Column(requestType, 10L, 6, 18);
+		object nsXBeyond = Column(requestType, 11L, 5, 18);
+		object nsZ = Column(requestType, 12L, 15, 29);
+		object nsZBeyond = Column(requestType, 13L, 15, 30);
+		Array nonSquare = Array.CreateInstance(requestType, 4);
+		nonSquare.SetValue(nsX, 0);
+		nonSquare.SetValue(nsXBeyond, 1);
+		nonSquare.SetValue(nsZ, 2);
+		nonSquare.SetValue(nsZBeyond, 3);
+		finished.SetValue(nsX, 2);
+		finished.SetValue(nsXBeyond, 5);
+		finished.SetValue(nsZ, 3);
+		finished.SetValue(nsZBeyond, 7);
+		Assert.Equal(5, (int)progress.Invoke(null, new object[] { nonSquare, 10, 12, 20, 25 })!);
 	}
 
 	private object Column(Type requestType, long index, int x, int z)

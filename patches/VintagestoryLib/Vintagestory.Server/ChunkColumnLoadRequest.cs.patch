@@ -1,4 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
+index 04b25be..42fcef4 100644
 --- a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs
 @@ -16,10 +16,33 @@ public class ChunkColumnLoadRequest : ILongIndex, IChunkColumnGenerateRequest
@@ -81,8 +82,8 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ChunkColumnLoadRequest.cs b/Vin
 +	internal int dispatchClaimed;
 +
 +	// Stratum: a worker increments this after it advances the column one stage.
-+	// The blocking load treats a change inside its rectangle as progress. A
-+	// column outside that rectangle must not keep a stuck request alive.
++	// The blocking load treats a change inside its rectangle and neighbour ring
++	// as progress. A column outside that area must not keep a stuck request alive.
 +	internal int stratumStagesFinished;
 +
 +	// Stratum: 0 = live, 1 = the unload pass has committed to dropping this column.
