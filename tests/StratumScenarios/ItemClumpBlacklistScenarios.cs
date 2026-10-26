@@ -13,7 +13,7 @@ namespace StratumScenarios;
 
 /// <summary>
 /// Performance.ItemClump.Blacklist: a blacklisted collectible never merges, whether the entry is a plain
-/// code (without a domain, so it is read as game:), a '*' pattern or an "@regex". A stone that matches no
+/// code (with or without a domain, plain codes without one are read as game:), a '*' pattern or an "@regex". A stone that matches no
 /// entry still merges, so the scenario also proves the system was running.
 ///
 /// The server reads the blacklist once at start, and the scenarios share one server, so the patterns are
@@ -32,7 +32,7 @@ public class ItemClumpBlacklistScenarios : AtlasScenarioBase
 		ModSystem system = RequireSystem(api);
 		try
 		{
-			InstallBlacklist(system, "stone-granite", "STONE-AND*", "@^game:stone-chert$");
+			InstallBlacklist(system, "stone-granite", "game:STONE-AND*", "@^game:stone-chert$");
 
 			EntityItem[] granite = Pair(api, player, "game:stone-granite", 0);
 			EntityItem[] andesite = Pair(api, player, "game:stone-andesite", 8);
@@ -46,7 +46,7 @@ public class ItemClumpBlacklistScenarios : AtlasScenarioBase
 				"setup failed: the stone that is not blacklisted did not merge, so the system was not running");
 
 			AssertApart(granite, "plain code without a domain");
-			AssertApart(andesite, "'*' pattern, upper case");
+			AssertApart(andesite, "'*' pattern with domain, upper case");
 			AssertApart(chert, "@regex");
 		}
 		finally
@@ -163,6 +163,45 @@ public class ItemClumpBlacklistScenarios : AtlasScenarioBase
 		{
 			debugField.SetValue(system, previousDebug);
 			for (int i = 0; i < counters.Length; i++) counters[i].SetValue(system, previousValues[i]);
+		}
+	}
+
+	/// <summary>
+	/// A regex entry that causes a match timeout is dropped from the active blacklist patterns with a
+	/// warning, so subsequent entries in the blacklist still match and later items do not pay the timeout again.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 120_000)]
+	public async Task TimedOutRegex_Should_BeDropped_AndNotBlockSubsequentEntries()
+	{
+		ICoreServerAPI api = World.Api;
+		ITestPlayer player = await World.JoinPlayer("clump-timeout");
+		await World.Ticks(2);
+
+		ModSystem system = RequireSystem(api);
+		try
+		{
+			// "@((.*)+)+!" triggers catastrophic backtracking on codes without '!'.
+			// "game:stone-bauxite" is placed after it to prove subsequent entries are still evaluated.
+			InstallBlacklist(system, "@((.*)+)+!", "game:stone-bauxite");
+
+			EntityItem[] bauxite = Pair(api, player, "game:stone-bauxite", 72);
+			EntityItem[] basalt = Pair(api, player, "game:stone-basalt", 80);
+
+			await World.Until(() => !basalt[1].Alive, timeoutTicks: 300);
+			Assert.True(
+				basalt[0].Alive && basalt[0].Slot.Itemstack.StackSize == 6,
+				"setup failed: the control stone did not merge");
+
+			AssertApart(bauxite, "pattern placed after a timed out regex");
+
+			FieldInfo patternsField = system.GetType().GetField("blacklistPatterns", BindingFlags.Instance | BindingFlags.NonPublic)!;
+			string[] currentPatterns = (string[])patternsField.GetValue(system)!;
+			Assert.DoesNotContain("@((.*)+)+!", currentPatterns);
+			Assert.Contains("game:stone-bauxite", currentPatterns);
+		}
+		finally
+		{
+			InstallBlacklist(system);
 		}
 	}
 

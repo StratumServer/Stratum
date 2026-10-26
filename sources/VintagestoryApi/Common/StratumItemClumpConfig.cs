@@ -39,10 +39,11 @@ public class StratumItemClumpConfig
 	// Maximum number of items in one merge group.
 	public int MaxGroupSize { get; set; } = 32;
 
-	// Full collectible codes that never merge. Supports '*' ("game:gear-*") and "@regex". A code without a domain
-	// is treated as vanilla. Codes and '*' patterns are case insensitive. A regex has to match the whole
-	// lowercase code ("@game:gear-.*") and is case sensitive. An entry that is not a valid regex is ignored
-	// and logged at start.
+	// Full collectible codes that never merge. Supports '*' ("game:gear-*") and "@regex". Plain codes and '*'
+	// patterns without a domain are treated as vanilla ("gear-*" becomes "game:gear-*") and match case
+	// insensitively. A regex must match the whole lowercase code including the domain ("@game:gear-.*") and
+	// is case sensitive; a regex without a domain will not match any collectible. An entry that is not a
+	// valid regex is ignored and logged at start.
 	public List<string> Blacklist { get; set; } = new List<string>();
 
 	// Logs merge statistics every 10 seconds.

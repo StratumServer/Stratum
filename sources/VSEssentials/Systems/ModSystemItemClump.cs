@@ -669,6 +669,11 @@ public class ModSystemItemClump : ModSystem
 					logger?.Warning("[Stratum] ItemClump: ignoring blacklist entry '{0}', it is not a valid regex: {1}", code, ex.Message);
 					continue;
 				}
+
+				if (!code.AsSpan(1).Contains(':'))
+				{
+					logger?.Warning("[Stratum] ItemClump: blacklist regex '{0}' does not specify a domain ('@domain:...') and will not match any collectible code.", code);
+				}
 			}
 
 			if (seen.Add(isRegex ? code : code.ToLowerInvariant())) result.Add(code);
@@ -694,19 +699,38 @@ public class ModSystemItemClump : ModSystem
 		{
 			// Once per collectible (cached afterwards), so the string allocation is fine here.
 			string code = coll.Code.ToString();
-			try
+			string[] patterns = blacklistPatterns;
+			for (int i = 0; i < patterns.Length; i++)
 			{
-				hit = WildcardUtil.Match(blacklistPatterns, code);
-			}
-			catch (RegexMatchTimeoutException)
-			{
-				// WildcardUtil gives a regex one second. The collectible is treated as not blacklisted and the
-				// answer is cached, so a slow pattern costs one second once, not on every attempt.
-				sapi?.Logger.Warning("[Stratum] ItemClump: a blacklist regex timed out on '{0}', the item is not blacklisted.", code);
+				string pattern = patterns[i];
+				try
+				{
+					if (WildcardUtil.Match(pattern, code))
+					{
+						hit = true;
+						break;
+					}
+				}
+				catch (RegexMatchTimeoutException)
+				{
+					sapi?.Logger.Warning("[Stratum] ItemClump: dropping blacklist regex '{0}' after a match timeout on '{1}'.", pattern, code);
+					DropBlacklistPattern(pattern);
+				}
 			}
 		}
 
 		blacklistCache[coll] = hit;
 		return hit;
+	}
+
+	private void DropBlacklistPattern(string pattern)
+	{
+		int index = Array.IndexOf(blacklistPatterns, pattern);
+		if (index < 0) return;
+
+		string[] updated = new string[blacklistPatterns.Length - 1];
+		if (index > 0) Array.Copy(blacklistPatterns, 0, updated, 0, index);
+		if (index < updated.Length) Array.Copy(blacklistPatterns, index + 1, updated, index, updated.Length - index);
+		blacklistPatterns = updated;
 	}
 }
