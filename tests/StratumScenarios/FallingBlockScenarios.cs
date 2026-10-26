@@ -38,6 +38,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 	private const string Cracked = "game:crackedrock-granite";
 	private const string Sand = "game:sand-granite";
 	private const string Gravel = "game:gravel-granite";
+	private const string Leaves = "game:leaves-placed-oak";
 	private const string Air = "game:air";
 
 	// Layout of the column cases, measured from the floor: floor+4 is the support, floor+5..+10 six sand.
@@ -539,7 +540,7 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		World.SetBlock("game:snowblock", far.At(3));
 		await World.Ticks(2);
 
-		RequestInstantFall(system, "game:snowblock", far.At(3));
+		RequestSpawn(system, "game:snowblock", far.At(3));
 
 		await World.Until(() => CodeAt(far.At(1)) == "snowblock" && queue.Count == 0, timeoutTicks: 300);
 		await World.Ticks(10);
@@ -585,13 +586,124 @@ public class FallingBlockScenarios : AtlasScenarioBase
 		FieldInfo queueField = PrivateField(isolated, "instantQueue");
 		System.Collections.ICollection queue = (System.Collections.ICollection)queueField.GetValue(isolated)!;
 
-		RequestInstantFall(isolated, Sand, s.At(4));
+		RequestSpawn(isolated, Sand, s.At(4));
 		Assert.True(queue.Count > 0, "expected sand request to be queued in isolated system");
 
 		MethodInfo disposeMethod = isolated.GetType().GetMethod("Dispose", BindingFlags.Public | BindingFlags.Instance)!;
 		disposeMethod.Invoke(isolated, null);
 
 		Assert.Empty(queue);
+		Assert.Equal("sand-granite", CodeAt(s.At(1)));
+	}
+
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task SnowBlocks_NearPlayer_OnPartialLayers_Should_SettleWithoutLooping()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-snow-near");
+		await World.Ticks(2);
+		object system = RequireSystem();
+		FieldInfo instantQField = PrivateField(system, "instantQueue");
+		FieldInfo requestQField = PrivateField(system, "requestQueue");
+		System.Collections.ICollection instantQ = (System.Collections.ICollection)instantQField.GetValue(system)!;
+		System.Collections.ICollection requestQ = (System.Collections.ICollection)requestQField.GetValue(system)!;
+
+		// 4 columns near player with snowlayer-1 to 4
+		Shaft[] shafts = new Shaft[4];
+		for (int i = 0; i < 4; i++)
+		{
+			shafts[i] = PrepareNear(player, offsetX: 8 + (i * 3), offsetZ: 40);
+			BuildShaft(shafts[i], wallTop: 6);
+			World.SetBlock($"game:snowlayer-{i + 1}", shafts[i].At(1));
+			World.SetBlock(Rock, shafts[i].At(2));
+			World.SetBlock("game:snowblock", shafts[i].At(3));
+		}
+		await World.Ticks(5);
+
+		for (int i = 0; i < 4; i++)
+		{
+			World.SetBlock(Air, shafts[i].At(2));
+			World.Api.World.BlockAccessor.TriggerNeighbourBlockUpdate(shafts[i].At(2));
+		}
+
+		await World.Until(() =>
+		{
+			for (int i = 0; i < 4; i++)
+			{
+				if (CodeAt(shafts[i].At(1)) != "snowblock") return false;
+			}
+			return CountFallingEntities() == 0 && instantQ.Count == 0 && requestQ.Count == 0;
+		}, timeoutTicks: 600);
+		await World.Ticks(30);
+
+		for (int i = 0; i < 4; i++)
+		{
+			Assert.Equal("snowblock", CodeAt(shafts[i].At(1)));
+			Assert.Equal($"snowlayer-{i + 1}", CodeAt(shafts[i].At(2)));
+		}
+		Assert.Equal(0, CountFallingEntities());
+		Assert.Empty(instantQ);
+		Assert.Empty(requestQ);
+	}
+
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task SandOverLeaves_Should_RestOnTheLeaves_WithoutFallingAgain()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-leaves");
+		await World.Ticks(2);
+		RequireSystem();
+
+		Shaft s = PrepareNear(player, offsetX: 10, offsetZ: 48);
+		BuildShaft(s, wallTop: OpenTop);
+		World.SetBlock(Leaves, s.At(1));
+		await World.Ticks(5);
+
+		World.SetBlock(Sand, s.At(OpenTop));
+
+		var seen = new HashSet<long>();
+		int ticks = 0;
+		await World.Until(() =>
+		{
+			ticks++;
+			int alive = 0;
+			foreach (Entity e in World.Api.World.LoadedEntities.Values)
+			{
+				if (e.Code?.Path != "blockfalling" || !e.Alive) continue;
+				if (Math.Abs(e.Pos.X - (s.X + 0.5)) > 3 || Math.Abs(e.Pos.Z - (s.Z + 0.5)) > 3) continue;
+				seen.Add(e.EntityId);
+				alive++;
+			}
+			return seen.Count > 0 && alive == 0;
+		}, timeoutTicks: 600);
+		await World.Ticks(60);
+
+		string actual = Column(s, 1, 4);
+		Assert.True(
+			CodeAt(s.At(1)).StartsWith("leaves") && CodeAt(s.At(2)).StartsWith("sand") && CodeAt(s.At(3)) == "air",
+			$"sand did not come to rest on the leaves (floor+1..+4: {actual}).");
+		Assert.True(
+			seen.Count == 1,
+			$"{seen.Count} falling entities were created for one block of sand: it keeps falling again after a hop.");
+		Assert.True(ticks < 200, $"the sand took {ticks} ticks to settle on the leaves, it should not wait for a timeout.");
+	}
+
+	[AtlasScenario(TimeoutMs = 180_000)]
+	public async Task EntityNearEdgeOfRange_Should_LandViaActivePassivePhysics()
+	{
+		ITestPlayer player = await World.JoinPlayer("fb-active-edge");
+		await World.Ticks(2);
+		RequireSystem();
+
+		// Shaft 110 blocks away from player (inside activeRange 128, outside ordinary simulation range)
+		Shaft s = PrepareNear(player, offsetX: 110, offsetZ: 0);
+		BuildShaft(s, wallTop: 6);
+		World.SetBlock(Rock, s.At(3));
+		World.SetBlock(Sand, s.At(4));
+		await World.Ticks(5);
+
+		World.SetBlock(Air, s.At(3));
+		World.Api.World.BlockAccessor.TriggerNeighbourBlockUpdate(s.At(3));
+
+		await World.Until(() => CodeAt(s.At(1)) == "sand-granite", timeoutTicks: 600);
 		Assert.Equal("sand-granite", CodeAt(s.At(1)));
 	}
 
