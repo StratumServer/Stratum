@@ -47,7 +47,7 @@ public class DespawnClockScenarios : AtlasScenarioBase
 		BlockPos farPos = player.Position.AddCopy(200, 1, 0);
 		World.Api.WorldManager.LoadChunkColumnPriority(farPos.X / 32, farPos.Z / 32, new Vintagestory.API.Server.ChunkLoadOptions { KeepLoaded = true });
 		await World.Until(() => World.Api.World.BlockAccessor.GetChunkAtBlockPos(farPos) != null, timeoutTicks: 600);
-		Entity far = SpawnRestingItem(farPos);
+		Entity far = SpawnRestingItem(farPos, "game:stone-andesite");
 		await World.Ticks(5);
 
 		object sim = Simulation();
@@ -120,9 +120,11 @@ public class DespawnClockScenarios : AtlasScenarioBase
 		throw new InvalidOperationException("entity simulation was not loaded");
 	}
 
-	private Entity SpawnRestingItem(BlockPos pos)
+	// The item clump merges lone resting stacks of the same item within a few blocks, so each scenario of this
+	// class uses its own item: a stone left by the other scenario cannot absorb this one.
+	private Entity SpawnRestingItem(BlockPos pos, string code = "game:stone-granite")
 	{
-		Item item = World.Api.World.GetItem(new AssetLocation("game:stone-granite"));
+		Item item = World.Api.World.GetItem(new AssetLocation(code));
 		Entity entity = World.Api.World.SpawnItemEntity(new ItemStack(item, 1), pos.ToVec3d());
 		entity.Pos.Motion.Set(0, 0, 0);
 		entity.ServerPos.Motion.Set(0, 0, 0);
