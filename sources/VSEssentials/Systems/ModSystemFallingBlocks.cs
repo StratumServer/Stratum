@@ -24,10 +24,15 @@ namespace Vintagestory.GameContent;
 //
 // Differences from the entity path, by design:
 //  - a block that was only asked to fall sideways and has solid support below stays where it is;
-//  - snow that lands on a snow block adds a layer above it instead of being absorbed into it;
-//  - requests still waiting in a queue when the server stops are resolved in Dispose, but requests whose
-//    column is unloaded earlier stay at their start cell. Entities in flight when a column unloads are left
-//    to vanilla: they are saved with the chunk and land after the reload.
+//  - an instant fall only walks straight down and does not step sideways into adjacent free cells before landing;
+//  - a snow block falling on a partial snow layer merges into it, leaving a snow block and the remaining layer on top;
+//  - requests still waiting when the server stops are resolved in Dispose (only requests currently in the queue are
+//    flushed; higher blocks in a column waiting for neighbour updates remain at their start cells);
+//  - a request whose chunk unloads while it waits is dropped: the rock or block stays where it is and nothing asks
+//    it to fall again after the reload (on the entity path the falling entity is saved with its chunk). Entities in
+//    flight when a column unloads are left to vanilla: they are saved with the chunk and land after the reload;
+//  - with a player nearby, requestQueue is a single server-wide FIFO capped at MaxFallingLimit, so falls anywhere
+//    wait behind an ongoing collapse, and rock collapse neighbour checks are spaced by 300 to 500 ms.
 //
 // Threading: with RegionTicking on, falling entities tick on worker threads, so the live-entity
 // bookkeeping (activeFallingPositions, totalFallingBlocks) is guarded by a lock. Queues and block
@@ -74,6 +79,9 @@ public class ModSystemFallingBlocks : ModSystem
 	private int maxFallingLimit = 1000;
 	private int maxInstantPerTick = 100;
 
+	// Read by EntityBlockFalling. 0 disables the stuck timeout only.
+	public int StuckTimeoutMs { get; private set; } = 15000;
+
 	public override bool ShouldLoad(EnumAppSide forSide)
 	{
 		return forSide == EnumAppSide.Server;
@@ -95,6 +103,7 @@ public class ModSystemFallingBlocks : ModSystem
 
 		maxFallingLimit = cfg.MaxFallingLimit;
 		maxInstantPerTick = cfg.MaxInstantPerTick;
+		StuckTimeoutMs = cfg.StuckTimeoutMs;
 
 		activeRange = api.World.DefaultEntityTrackingRange * GlobalConstants.ChunkSize;
 
@@ -541,6 +550,30 @@ public class ModSystemFallingBlocks : ModSystem
 		}
 
 		bool canPlace = supported && targetBlock != null && targetBlock.IsReplacableBy(block);
+
+		if (!canPlace && !doRemoveBlock)
+		{
+			// When settling an entity in place (doRemoveBlock == false), its current cell may be occupied
+			// (e.g. by another settling entity in the same column, or obstacle blocks like stacked leaves).
+			// Step up to find the first cell that can accept the block, matching vanilla's hop behavior.
+			BlockPos stepPos = finalPos.Copy();
+			for (int hop = 1; hop <= 4; hop++)
+			{
+				stepPos.Y++;
+				Block candidate = accessor.GetBlock(stepPos);
+				if (candidate != null && candidate.IsReplacableBy(block))
+				{
+					Block candidateSupport = accessor.GetMostSolidBlock(stepPos.DownCopy());
+					if (candidateSupport.Replaceable < 6000 && !candidateSupport.IsLiquid())
+					{
+						finalPos = stepPos;
+						targetBlock = candidate;
+						canPlace = true;
+						break;
+					}
+				}
+			}
+		}
 
 		if (canPlace)
 		{
