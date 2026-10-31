@@ -1,0 +1,21 @@
+diff --git a/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs b/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs
+index 5427456..8f7accc 100644
+--- a/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs
++++ b/VSSurvivalMod/BlockBehavior/BehaviorUnstableFalling.cs
+@@ -201,10 +201,16 @@ namespace Vintagestory.GameContent
+ 
+             // Change after falling, like a broken variant or a "lower shape"
+             if (variantAfterFalling != null) block = world.BlockAccessor.GetBlock(variantAfterFalling);
+ 
+             var be = world.BlockAccessor.GetBlockEntity(ourPos);
++
++            // Stratum start: resolve the fall without an entity when no player is in range
++            ModSystemFallingBlocks stratumFalling = ModSystemFallingBlocks.Instance;
++            if (stratumFalling != null && stratumFalling.TryRequestInstantFall(block, be, ourPos)) return;
++            // Stratum end
++
+             EntityBlockFalling entityBf = new EntityBlockFalling(block, be, ourPos, fallSound, impactDamageMul, true, dustIntensity);
+ 
+             world.SpawnEntity(entityBf);
+         }
+ 
