@@ -30,6 +30,15 @@ internal static class StratumWorldgenCompat
 	// Original shared generators need vanilla's serial scheduling when the worker swap is not applied.
 	public static bool TerrainRequiresSerialFallback { get; private set; }
 
+	// Called once per server, before any mod registers. The pairs hold the previous server's
+	// generators, and through them that server's whole world, so a process that boots
+	// several servers in a row would otherwise keep every one of them alive.
+	public static void Reset()
+	{
+		pendingLateHandlers.Clear();
+		TerrainRequiresSerialFallback = false;
+	}
+
 	public static void RegisterTerrainLate(ServerMain server, ChunkColumnGenerationDelegate handler, string worldType)
 	{
 		RegisterTerrainLate(server, handler, handler, worldType);
