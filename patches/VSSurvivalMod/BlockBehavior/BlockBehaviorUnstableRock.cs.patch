@@ -1,56 +1,79 @@
 diff --git a/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs b/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
-index 3607689..124f231 100644
+index 3607689..5fb70b4 100644
 --- a/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
 +++ b/VSSurvivalMod/BlockBehavior/BlockBehaviorUnstableRock.cs
-@@ -248,10 +248,15 @@ namespace Vintagestory.GameContent
+@@ -248,19 +248,43 @@ namespace Vintagestory.GameContent
              collapseLayer(world, yorderedPositions, y);
          }
  
          private void collapseLayer(IWorldAccessor world, IOrderedEnumerable<BlockPos> yorderedPositions, int y)
          {
-+            // Stratum start: a layer whose rocks all wait in the instant queue has nothing new to pass on
-+            bool stratumSawPending = false;
++            ModSystemFallingBlocks stratumSystem = ModSystemFallingBlocks.Instance; // Stratum: falling block system
++            bool stratumSawPending = false; // Stratum: a layer whose rocks all wait in a queue has nothing new to pass on
 +            bool stratumSawOther = false;
-+            // Stratum end
 +
              foreach (var pos in yorderedPositions)
              {
                  if (pos.Y < y) continue;
                  if (pos.Y > y)
                  {
-@@ -269,15 +274,35 @@ namespace Vintagestory.GameContent
-                 {
-                     var block = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Solid);
-                     var bh = block.GetBehavior<BlockBehaviorUnstableRock>();
-                     if (bh == null) continue;
+                     world.Api.Event.RegisterCallback((dt) => collapseLayer(world, yorderedPositions, pos.Y), 200);
+                     return;
+                 }
  
-+                    // Stratum start: resolve the fall without an entity when no player is in range
-+                    ModSystemFallingBlocks stratumFalling = ModSystemFallingBlocks.Instance;
-+                    if (stratumFalling != null)
-+                    {
-+                        bool stratumWasPending = stratumFalling.IsPending(pos);
-+                        if (stratumFalling.TryRequestInstantFall(bh.collapsedBlock, world.BlockAccessor.GetBlockEntity(pos), pos))
-+                        {
-+                            if (stratumWasPending) stratumSawPending = true; else stratumSawOther = true;
-+                            continue;
-+                        }
-+                    }
-+                    stratumSawOther = true;
-+                    // Stratum end
++                // Stratum start: route through the falling block system when enabled
++                if (stratumSystem != null)
++                {
++                    Block stratumBlock = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Solid);
++                    BlockBehaviorUnstableRock stratumBh = stratumBlock.GetBehavior<BlockBehaviorUnstableRock>();
++                    if (stratumBh == null) continue;
 +
++                    // Skip positions already active or pending so a queued collapse cannot double-spawn drops.
++                    if (stratumSystem.IsPositionActiveOrPending(pos))
++                    {
++                        stratumSawPending = true;
++                        continue;
++                    }
++
++                    stratumSawOther = true;
++                    stratumSystem.RequestSpawn(stratumBh.collapsedBlock, world.BlockAccessor.GetBlockEntity(pos), pos, fallSound, impactDamageMul, true, dustIntensity);
++                    continue;
++                }
++                // Stratum end
++
+                 // Prevents duplication
+                 Entity entity = world.GetNearestEntity(pos.ToVec3d().Add(0.5, 0.5, 0.5), 1, 1.5f, (e) =>
+                 {
+                     return e is EntityBlockFalling ebf && ebf.initialPos.Equals(pos);
+                 });
+@@ -274,14 +298,29 @@ namespace Vintagestory.GameContent
                      EntityBlockFalling entityblock = new EntityBlockFalling(bh.collapsedBlock, world.BlockAccessor.GetBlockEntity(pos), pos, fallSound, impactDamageMul, true, dustIntensity);
                      world.SpawnEntity(entityblock);
                  }
              }
  
 +            // Stratum start: the rocks of a request stay in place until the queue resolves it, so the same region is
-+            // found again by every nested call. Vanilla stops because a spawned entity removes its rock at once. With
-+            // only pending rocks here, nothing changed and the chain ends.
-+            if (stratumSawPending && !stratumSawOther) return;
++            // found again by every nested call. With only pending rocks here nothing changed and the chain ends.
++            if (stratumSystem != null && stratumSawPending && !stratumSawOther) return;
 +            // Stratum end
 +
              var firstpos = yorderedPositions.First();
              for (int i = 0; i < 3; i++)
              {
-                 checkCollapsibleNeighbours(world, firstpos.AddCopy(world.Rand.Next(17) - 8, 0, world.Rand.Next(17) - 8));
+-                checkCollapsibleNeighbours(world, firstpos.AddCopy(world.Rand.Next(17) - 8, 0, world.Rand.Next(17) - 8));
++                // Stratum start: spread the checks over time so a chain collapse does not flood the callback stack
++                BlockPos npos = firstpos.AddCopy(world.Rand.Next(17) - 8, 0, world.Rand.Next(17) - 8);
++
++                if (stratumSystem != null)
++                {
++                    world.Api.Event.RegisterCallback((dt) => checkCollapsibleNeighbours(world, npos), 300 + i * 100);
++                    continue;
++                }
++
++                checkCollapsibleNeighbours(world, npos);
++                // Stratum end
              }
+         }
+ 
+         private CollapsibleSearchResult searchCollapsible(BlockPos startPos, bool ignoreBeams)
+         {
