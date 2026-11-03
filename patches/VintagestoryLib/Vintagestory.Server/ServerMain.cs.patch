@@ -1886,7 +1886,7 @@ index 6f69cd3..31b2632 100644
  			serverAssetsPacket.packet = packet_Server;
  			if (DummyNetConnection.SendServerPacketDirectly(CreatePacketIdentification(controlServerPrivilege: true)))
  			{
-@@ -4696,14 +5505,39 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4696,14 +5505,45 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  
  	private void SendWorldMetaData(IServerPlayer player)
  	{
@@ -1919,7 +1919,13 @@ index 6f69cd3..31b2632 100644
 +
 +	private string GetStratumWorldMetaDataCacheKey()
 +	{
-+		return string.Concat(SaveGameData.SavegameIdentifier, "|", seaLevel, "|", sunBrightness, "|", blockLightLevels.Length, "|", sunLightLevels.Length);
++		return string.Concat(SaveGameData.SavegameIdentifier, "|", seaLevel, "|", sunBrightness, "|", blockLightLevels.Length, "|", sunLightLevels.Length, "|", GetStratumWorldConfigCacheKey());
++	}
++
++	// Both join packets embed the world config, which /wc, /worldconfigcreate and mods edit in place
++	private string GetStratumWorldConfigCacheKey()
++	{
++		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData((SaveGameData.WorldConfiguration as TreeAttribute).ToBytes()));
 +	}
 +
  	internal Packet_Server WorldMetaDataPacket()
@@ -1927,7 +1933,7 @@ index 6f69cd3..31b2632 100644
  		float[] array = blockLightLevels;
  		Packet_WorldMetaData packet_WorldMetaData = new Packet_WorldMetaData();
  		int[] array2 = new int[array.Length];
-@@ -4756,14 +5590,53 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4756,14 +5596,54 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		{
  			((DummyUdpNetServer)UdpSockets[0]).Client.Player = player;
  		}
@@ -1974,7 +1980,8 @@ index 6f69cd3..31b2632 100644
 +			clientModPolicy.Enabled ? "1" : "0", "|",
 +			clientModPolicy.StrictWhitelist ? "1" : "0", "|",
 +			clientModPolicy.IncludeServerUniversalMods ? "1" : "0", "|",
-+			string.Join(",", clientModPolicy.AllowModIds ?? new List<string>()));
++			string.Join(",", clientModPolicy.AllowModIds ?? new List<string>()), "|",
++			GetStratumWorldConfigCacheKey());
 +	}
 +
  	private Packet_Server CreatePacketIdentification(bool controlServerPrivilege)
@@ -1982,7 +1989,7 @@ index 6f69cd3..31b2632 100644
  		List<Packet_ModId> list = (from mod in api.ModLoader.Mods
  			where mod.Info.Side.IsUniversal()
  			select new Packet_ModId
-@@ -4792,15 +5665,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4792,15 +5672,20 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  			RequireRemapping = ((controlServerPrivilege && requiresRemaps) ? 1 : 0)
  		};
  		Logger.Notification((Config.DisableAutoRemap ? ("Sending server identification with remap " + requiresRemaps) : "Sending server identification") + ". Server control privilege is " + controlServerPrivilege);
@@ -2005,7 +2012,7 @@ index 6f69cd3..31b2632 100644
  		}
  		return new Packet_Server
  		{
-@@ -4812,21 +5690,37 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4812,21 +5697,37 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	public void BroadcastPlayerData(IServerPlayer owningPlayer, bool sendInventory = true, bool sendPrivileges = false)
  	{
  		Packet_Server packet = ((ServerWorldPlayerData)owningPlayer.WorldData).ToPacket(owningPlayer, sendInventory, sendPrivileges);
@@ -2044,7 +2051,7 @@ index 6f69cd3..31b2632 100644
  	}
  
  	public void BroadcastPlayerPings()
-@@ -4844,12 +5738,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -4844,12 +5745,12 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  				array[num] = item.Id;
  				array2[num] = (int)(1000f * item.Player.Ping);
  				num++;
@@ -2059,7 +2066,7 @@ index 6f69cd3..31b2632 100644
  			Id = 3,
  			PlayerPing = packet_ServerPlayerPing
  		};
-@@ -5141,11 +6035,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -5141,11 +6042,11 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  		}
  	}
  
