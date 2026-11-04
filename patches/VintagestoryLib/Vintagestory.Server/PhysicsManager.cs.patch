@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
-index 2c2605d..75de122 100644
+index 2c2605d..c9d9088 100644
 --- a/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 +++ b/VintagestoryLib/Vintagestory.Server/PhysicsManager.cs
 @@ -1,6 +1,7 @@
@@ -563,7 +563,7 @@ index 2c2605d..75de122 100644
  		list2.Clear();
  		foreach (Entity item4 in list3)
  		{
-@@ -593,61 +882,166 @@ public class PhysicsManager : LoadBalancedTask
+@@ -593,61 +882,169 @@ public class PhysicsManager : LoadBalancedTask
  		list3.Clear();
  	}
  
@@ -610,9 +610,12 @@ index 2c2605d..75de122 100644
  					{
 -						Entity entity = item.Entity;
 -						if (entity is EntityPlayer entityPlayer)
++						// Stratum: ToPacketForOtherPlayers is filtered by privacy guards. Never send it to the player it describes:
++						// the owner's full inventory arrives separately via BroadcastPlayerData and would be overwritten.
++						bool stratumIsOwnEntity = client.Player != null && entityPlayer.PlayerUID == client.Player.PlayerUID;
 +						long stratumSectionStart = stratumRecordSectionTimings ? StratumRuntime.Timings.GetTimestamp() : 0L;
 +						server.PlayersByUid.TryGetValue(entityPlayer.PlayerUID, out var value);
-+						if (value != null)
++						if (value != null && !stratumIsOwnEntity)
  						{
 -							server.PlayersByUid.TryGetValue(entityPlayer.PlayerUID, out var value);
 -							if (value != null)
@@ -754,7 +757,7 @@ index 2c2605d..75de122 100644
  	public void GatherUpdatePacketsFromAllThreads()
  	{
  		Dictionary<long, Packet_EntityAttributes> dict = entitiesFullUpdate[0];
-@@ -682,10 +1076,16 @@ public class PhysicsManager : LoadBalancedTask
+@@ -682,10 +1079,16 @@ public class PhysicsManager : LoadBalancedTask
  			{
  				try
  				{
@@ -771,7 +774,7 @@ index 2c2605d..75de122 100644
  						{
  							list.Add(value);
  						}
-@@ -728,18 +1128,62 @@ public class PhysicsManager : LoadBalancedTask
+@@ -728,18 +1131,62 @@ public class PhysicsManager : LoadBalancedTask
  	{
  		if (entity is EntityPlayer)
  		{
@@ -836,7 +839,7 @@ index 2c2605d..75de122 100644
  			if (entityAgent != null)
  			{
  				entityAgent.Controls.Dirty = false;
-@@ -747,10 +1191,106 @@ public class PhysicsManager : LoadBalancedTask
+@@ -747,10 +1194,106 @@ public class PhysicsManager : LoadBalancedTask
  			entity.tagsDirty = false;
  		}
  		CompletePositionUpdate(entity);
@@ -943,7 +946,7 @@ index 2c2605d..75de122 100644
  		EntityTagPacket result = null;
  		SyncedTreeAttribute watchedAttributes = entity.WatchedAttributes;
  		if (watchedAttributes.AllDirty)
-@@ -779,82 +1319,252 @@ public class PhysicsManager : LoadBalancedTask
+@@ -779,82 +1322,252 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		watchedAttributes.MarkClean();
  		return result;
@@ -1219,7 +1222,7 @@ index 2c2605d..75de122 100644
  			if (list2.Count > 0)
  			{
  				BulkAnimationPacket message = new BulkAnimationPacket
-@@ -872,35 +1582,66 @@ public class PhysicsManager : LoadBalancedTask
+@@ -872,35 +1585,66 @@ public class PhysicsManager : LoadBalancedTask
  				AnimationsAndTagsChannel.SendPacket(item2, client.Player);
  			}
  		}
@@ -1288,7 +1291,7 @@ index 2c2605d..75de122 100644
  					flag = true;
  				}
  			}
-@@ -990,11 +1731,14 @@ public class PhysicsManager : LoadBalancedTask
+@@ -990,11 +1734,14 @@ public class PhysicsManager : LoadBalancedTask
  		return ServerPackets.getEntityPositionPacket(entity.Pos, entity, 1);
  	}
  
@@ -1304,7 +1307,7 @@ index 2c2605d..75de122 100644
  		{
  			Id = 80,
  			EntityPosition = entityPosition
-@@ -1007,10 +1751,16 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1007,10 +1754,16 @@ public class PhysicsManager : LoadBalancedTask
  			if (client.State.ConnectedOrPlaying() && client.Entityplayer != null)
  			{
  				EntityPos pos2 = client.Entityplayer.Pos;
@@ -1321,7 +1324,7 @@ index 2c2605d..75de122 100644
  					server.SendPacket(client.Id, packet);
  				}
  			}
-@@ -1026,16 +1776,29 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1026,16 +1779,29 @@ public class PhysicsManager : LoadBalancedTask
  		if (threadNumber == 0)
  		{
  			threadNumber = 1;
@@ -1356,7 +1359,7 @@ index 2c2605d..75de122 100644
  		Dictionary<long, AnimationPacket> dictionary2 = entitiesAnimPackets[threadNumber - 1];
  		dictionary.Clear();
  		dictionary2.Clear();
-@@ -1097,10 +1860,19 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1097,10 +1863,19 @@ public class PhysicsManager : LoadBalancedTask
  		try
  		{
  			int num5 = -1;
@@ -1376,7 +1379,7 @@ index 2c2605d..75de122 100644
  				int num6 = (ticksToDo - num5 + 1) % 2;
  				num5 += num6;
  				bool flag2 = num5 == ticksToDo - 1;
-@@ -1108,27 +1880,116 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1108,27 +1883,116 @@ public class PhysicsManager : LoadBalancedTask
  				bool forceUpdate = (num5 + currentTick) % 30 <= num6;
  				for (int j = num3; j < num4; j++)
  				{
@@ -1497,7 +1500,7 @@ index 2c2605d..75de122 100644
  						physicsTickable2.OnPhysicsTick(dt);
  						if (frameProfilerUtil == null)
  						{
-@@ -1196,58 +2057,177 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1196,58 +2060,177 @@ public class PhysicsManager : LoadBalancedTask
  		if (doBuildAttributes)
  		{
  			eFullUpdate = entitiesFullUpdate[0];
@@ -1682,7 +1685,7 @@ index 2c2605d..75de122 100644
  		if (!server.stopped)
  		{
  			return server.exitState.Exit;
-@@ -1262,11 +2242,25 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1262,11 +2245,25 @@ public class PhysicsManager : LoadBalancedTask
  
  	public void StartWorkerThread(int threadNum)
  	{
