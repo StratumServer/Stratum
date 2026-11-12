@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs b/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs
-index dd648f2..d098d6b 100644
+index dd648f2..225a4c2 100644
 --- a/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs
 +++ b/VintagestoryLib/Vintagestory.Common/InventoryPlayerBackpacks.cs
 @@ -159,10 +159,11 @@ public class InventoryPlayerBackpacks : InventoryBasePlayer
@@ -8,7 +8,7 @@ index dd648f2..d098d6b 100644
  			if (bagSlots[i].Itemstack != null)
  			{
  				dirtySlots.Add(i);
-+				StratumAnySlotDirty = 1;
++				System.Threading.Interlocked.Exchange(ref InventoryBase.StratumAnySlotDirty, 1);
  			}
  			bagSlots[i].Itemstack = null;
  		}
@@ -20,7 +20,7 @@ index dd648f2..d098d6b 100644
  				if (handling == EnumHandling.PassThrough)
  				{
  					dirtySlots.Add(i);
-+					StratumAnySlotDirty = 1;
++					System.Threading.Interlocked.Exchange(ref InventoryBase.StratumAnySlotDirty, 1);
  					spawnItemEntity(itemSlot.Itemstack, pos, despawnSeconds);
  					itemSlot.Itemstack = null;
  				}

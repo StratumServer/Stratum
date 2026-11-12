@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/Inventory/InventoryBase.cs b/VintagestoryApi/Common/Inventory/InventoryBase.cs
-index 0820ca0..4aeda6f 100644
+index 0820ca0..2a5b22a 100644
 --- a/VintagestoryApi/Common/Inventory/InventoryBase.cs
 +++ b/VintagestoryApi/Common/Inventory/InventoryBase.cs
 @@ -39,10 +39,19 @@ namespace Vintagestory.API.Common
@@ -28,10 +28,10 @@ index 0820ca0..4aeda6f 100644
          /// </summary>
          public HashSet<int> dirtySlots = new HashSet<int>();
  
-+        // Stratum: volatile flag for SendDirtySlots fast path. Set to 1 by MarkSlotDirty
++        // Stratum: atomic flag for SendDirtySlots fast path. Set to 1 by MarkSlotDirty
 +        // and DiscardAll; checked and cleared by ServerSystemInventory.SendDirtySlots to
 +        // skip full client iteration when no inventory changed since last scan.
-+        internal static volatile int StratumAnySlotDirty;
++        internal static int StratumAnySlotDirty;
 +
          /// <summary>
          /// The internal name of the inventory instance.
@@ -44,7 +44,7 @@ index 0820ca0..4aeda6f 100644
          {
              if (slotId < 0) throw new Exception("Negative slotid?!");
              dirtySlots.Add(slotId);
-+            StratumAnySlotDirty = 1; // Stratum: signal SendDirtySlots to scan
++            System.Threading.Interlocked.Exchange(ref StratumAnySlotDirty, 1); // Stratum: signal SendDirtySlots to scan
          }
  
          /// <summary>
@@ -56,7 +56,7 @@ index 0820ca0..4aeda6f 100644
  
                  this[i].Itemstack = null;
              }
-+            StratumAnySlotDirty = 1; // Stratum: signal SendDirtySlots to scan
++            System.Threading.Interlocked.Exchange(ref StratumAnySlotDirty, 1); // Stratum: signal SendDirtySlots to scan
          }
  
  

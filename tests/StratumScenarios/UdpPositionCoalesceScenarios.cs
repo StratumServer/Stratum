@@ -26,21 +26,21 @@ public class UdpPositionCoalesceScenarios : AtlasScenarioBase
 		try
 		{
 			dynamic clients = server.GetType().GetField("Clients")!.GetValue(server)!;
-			object client = null;
+			object? client = null;
 			foreach (object candidate in (IEnumerable)clients.Values)
 			{
 				client = candidate;
 				break;
 			}
-			Assert.NotNull(client);
+			object activeClient = client ?? throw new InvalidOperationException("No connected client was available.");
 
 			object first = PositionPacket(1, 10);
 			object second = PositionPacket(1, 20);
 			object other = PositionPacket(2, 30);
 			MethodInfo enqueue = queueType.GetMethod("QueuePacket", BindingFlags.Instance | BindingFlags.NonPublic)!;
-			enqueue.Invoke(queue, new[] { client, first });
-			enqueue.Invoke(queue, new[] { client, second });
-			enqueue.Invoke(queue, new[] { client, other });
+			enqueue.Invoke(queue, new[] { activeClient, first });
+			enqueue.Invoke(queue, new[] { activeClient, second });
+			enqueue.Invoke(queue, new[] { activeClient, other });
 
 			object entries = queueType.GetField("queue", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(queue)!;
 			Assert.Equal(2, (int)entries.GetType().GetProperty("Count")!.GetValue(entries)!);
@@ -68,12 +68,13 @@ public class UdpPositionCoalesceScenarios : AtlasScenarioBase
 
 	private static object FirstPacket(object entries)
 	{
-		object queued = null;
+		object? queued = null;
 		foreach (object item in (IEnumerable)entries)
 		{
 			queued = item;
 			break;
 		}
-		return queued!.GetType().GetField("packet", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(queued)!;
+		object selected = queued ?? throw new InvalidOperationException("The UDP queue was empty.");
+		return selected.GetType().GetField("packet", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(selected)!;
 	}
 }
