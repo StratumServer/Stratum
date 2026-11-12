@@ -24,7 +24,7 @@ public class BodyTemperatureScenarios : AtlasScenarioBase
 		try
 		{
 			ITestPlayer player = await World.JoinPlayer("temp-off");
-			object behavior = null;
+			object? behavior = null;
 			foreach (EntityBehavior candidate in player.Entity.SidedProperties.Behaviors)
 			{
 				if (candidate.GetType().Name == "EntityBehaviorBodyTemperature")
@@ -33,11 +33,11 @@ public class BodyTemperatureScenarios : AtlasScenarioBase
 					break;
 				}
 			}
-			Assert.NotNull(behavior);
-			Assert.Equal(1f, Field(behavior, "stratumUpdateThreshold"));
-			Assert.Equal(3f, Field(behavior, "stratumHeatSourceThreshold"));
-			Assert.Equal(0f, Field(behavior, "stratumFreezingAnimThreshold"));
-			Assert.Equal(10f, Field(behavior, "stratumDamageCheckThreshold"));
+			object foundBehavior = behavior ?? throw new InvalidOperationException("Body temperature behavior was missing.");
+			Assert.Equal(1f, Field(foundBehavior, "stratumUpdateThreshold"));
+			Assert.Equal(3f, Field(foundBehavior, "stratumHeatSourceThreshold"));
+			Assert.Equal(0f, Field(foundBehavior, "stratumFreezingAnimThreshold"));
+			Assert.Equal(10f, Field(foundBehavior, "stratumDamageCheckThreshold"));
 		}
 		finally
 		{

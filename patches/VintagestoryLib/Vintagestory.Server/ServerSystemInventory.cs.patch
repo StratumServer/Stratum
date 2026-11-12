@@ -1,4 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
+index 19f5199..2853f4b 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs
 @@ -1,7 +1,8 @@
@@ -148,7 +149,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  		{
  			if (!value.IsPlayingClient)
  			{
-@@ -201,51 +265,116 @@ internal class ServerSystemInventory : ServerSystem
+@@ -201,51 +265,115 @@ internal class ServerSystemInventory : ServerSystem
  				{
  					item.Itemstack?.Collectible?.UpdateAndGetTransitionStates(server, item);
  				}
@@ -163,13 +164,12 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
 +		long stratumStarted = StratumRuntime.Timings.GetTimestamp();
 +		stratumPlayerDataBroadcastsThisPass.Clear();
 +		stratumSlotPacketsThisPass = 0;
-+		if (Volatile.Read(ref InventoryBase.StratumAnySlotDirty) == 0 && stratumPendingPlayerData.Count == 0)
++		if (Interlocked.Exchange(ref InventoryBase.StratumAnySlotDirty, 0) == 0 && stratumPendingPlayerData.Count == 0)
  		{
 -			if (!value.IsPlayingClient)
 +			StratumRuntime.Timings.RecordElapsed("inventory.dirtySlots", stratumStarted);
 +			return;
 +		}
-+		Volatile.Write(ref InventoryBase.StratumAnySlotDirty, 0);
 +
 +		int stratumBroadcastBudget = StratumRuntime.Config.Performance.InventoryFlush.MaxPlayerDataBroadcastsPerPass;
 +		bool stratumUnlimited = stratumBroadcastBudget <= 0;
@@ -246,7 +246,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
 +		}
 +		if (stratumPendingPlayerData.Count > 0)
 +		{
-+			Volatile.Write(ref InventoryBase.StratumAnySlotDirty, 1);
++			Interlocked.Exchange(ref InventoryBase.StratumAnySlotDirty, 1);
 +		}
 +		if (stratumClientCount > 0 && stratumServed > 0)
 +		{
@@ -270,7 +270,7 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  	public override void OnPlayerJoin(ServerPlayer player)
  	{
  		foreach (InventoryBase value in player.inventoryMgr.Inventories.Values)
-@@ -369,11 +498,13 @@ internal class ServerSystemInventory : ServerSystem
+@@ -369,11 +497,13 @@ internal class ServerSystemInventory : ServerSystem
  				HitPosition = hitPosition,
  				Entity = value2,
  				Position = value2.Pos.XYZ
@@ -278,14 +278,14 @@ diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemInventory.cs b/Vint
  		}
 -		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && (blockSelection != null || entitySelection != null) && !((blockSelection?.Position != null) ? ((IPlayer)player).IsInInteractionRangeOf(blockSelection.Position, 0f) : player.IsInInteractionRangeOf(entitySelection.Entity, 0f)))
 +		// Stratum: Always check both targets so a nearby block cannot hide a distant entity.
-+		if ((blockSelection != null && !((IPlayer)player).IsInInteractionRangeOf(blockSelection.Position, 0f))
++		if ((blockSelection != null && !StratumBlockReachGuard.IsWithinBlockInteractionRange((IPlayer)player, blockSelection.Position, 0f))
 +		    || (entitySelection != null && !player.IsInInteractionRangeOf(entitySelection.Entity, 0f)))
  		{
  			ServerMain.Logger.Audit("{0} tried to interact with {1} out of range.", player.PlayerName, (blockSelection?.Position != null) ? "a block" : "an entity");
  			if (blockSelection != null)
  			{
  				(server.GetBlock(blockSelection.Position)?.GetBlockEntity<BlockEntity>(blockSelection.Position))?.MarkDirty();
-@@ -494,10 +625,12 @@ internal class ServerSystemInventory : ServerSystem
+@@ -494,10 +624,12 @@ internal class ServerSystemInventory : ServerSystem
  		player.InventoryManager.GetInventory(createItemstack.TargetInventoryId, out var invFound);
  		ItemSlot itemSlot = invFound?[createItemstack.TargetSlot];
  		if (player.WorldData.CurrentGameMode == EnumGameMode.Creative && itemSlot != null)

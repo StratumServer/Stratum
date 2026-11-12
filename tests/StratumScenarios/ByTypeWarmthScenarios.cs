@@ -18,7 +18,8 @@ public class ByTypeWarmthScenarios : AtlasScenarioBase
 	public async Task SurgeonHood_Should_KeepTheNestedWarmth()
 	{
 		await World.Ticks(1);
-		Item hood = World.Api.World.GetItem(new AssetLocation("game:clothes-face-surgeonhood"));
+		Item hood = World.Api.World.GetItem(new AssetLocation("game:clothes-face-surgeonhood"))
+			?? throw new System.InvalidOperationException("Surgeon hood item was missing.");
 		Assert.NotNull(hood);
 		Assert.Equal(0.25f, hood.Attributes["warmth"].AsFloat(-1f));
 
