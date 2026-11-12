@@ -1,0 +1,18 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerWorldPlayerData.cs b/VintagestoryLib/Vintagestory.Server/ServerWorldPlayerData.cs
+index b21864b..7d7934b 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerWorldPlayerData.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerWorldPlayerData.cs
+@@ -420,11 +420,12 @@ public class ServerWorldPlayerData : IWorldPlayerData
+ 		}
+ 		Packet_InventoryContents[] array = new Packet_InventoryContents[list.Count];
+ 		int num = 0;
+ 		foreach (InventoryBasePlayer item2 in list)
+ 		{
+-			array[num++] = (item2.InvNetworkUtil as InventoryNetworkUtil).ToPacket(owningPlayer);
++			// Stratum: Only send equipped items to other players.
++			array[num++] = StratumInventorySync.GetPublicInventory(item2, owningPlayer);
+ 		}
+ 		return new Packet_Server
+ 		{
+ 			Id = 41,
+ 			PlayerData = new Packet_PlayerData

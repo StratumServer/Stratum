@@ -1,0 +1,18 @@
+diff --git a/VintagestoryLib/Vintagestory.Server.Systems/QueuedUDPPacket.cs b/VintagestoryLib/Vintagestory.Server.Systems/QueuedUDPPacket.cs
+--- a/VintagestoryLib/Vintagestory.Server.Systems/QueuedUDPPacket.cs
++++ b/VintagestoryLib/Vintagestory.Server.Systems/QueuedUDPPacket.cs
+@@ -8,10 +8,14 @@ internal class QueuedUDPPacket
+ 
+ 	internal ConnectedClient client;
+ 
+ 	internal long creationTime;
+ 
++	// Stratum: 1 once the UDP thread has taken this entry. A newer position then
++	// enqueues its own entry instead of writing into one that is already being sent.
++	internal int stratumSending;
++
+ 	public QueuedUDPPacket(ConnectedClient client, Packet_UdpPacket udpPacket)
+ 	{
+ 		packet = udpPacket;
+ 		this.client = client;
+ 		creationTime = Environment.TickCount;

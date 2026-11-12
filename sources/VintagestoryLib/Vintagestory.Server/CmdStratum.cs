@@ -211,12 +211,22 @@ internal class CmdStratum
 		string result = (loaded ? StratumCommandText.Confirm("Stratum config reloaded", message) : StratumCommandText.Danger("Stratum config failed") + ": " + StratumCommandText.Escape(message)) + "\n" + FormatPreflight(report);
 		if (loaded)
 		{
+			StratumInventoryPrivacy.InventoryGuardsEnabled = StratumRuntime.Config.Hardening.InventoryGuards;
 			CmdStratumEssentials.RegisterConfiguredPrivileges(server);
 			StratumCoopCombatSystem.Apply(StratumRuntime.Config.CoopCombat);
+			StratumFriendlyFireSystem.Apply(StratumRuntime.Config.FriendlyFire);
 			StratumMobSpawning.Refresh(); // Stratum: issue #216 resync after config reload
 			// Stratum: clear region ticking fallback state on reload (#10)
 			var sim = server.Systems.OfType<ServerSystemEntitySimulation>().FirstOrDefault();
 			sim?.StratumClearFallbackState();
+			// Issue #335: a kind turned exclusive in stratum.json applies to its existing groups
+			// unchecked, so say who now holds two of them rather than leave it for staff to find.
+			List<string> exclusiveViolations = StratumGroupPolicy.WarnExclusiveViolations(server);
+			if (exclusiveViolations.Count > 0)
+			{
+				result += "\n" + StratumCommandText.Warning("Exclusive group kinds")
+					+ ": " + StratumCommandText.Escape(string.Join("; ", exclusiveViolations)) + ". Use /group admin remove to settle it.";
+			}
 			StratumRuntime.LogInfo($"config reloaded: {message}; preflight {report.Summary}");
 		}
 		else
@@ -456,9 +466,40 @@ internal class CmdStratum
 		output.Append(StratumCommandText.Row("URL links", chat.LinkifyUrls ? "true" : "false"));
 		output.Append(StratumCommandText.Row("Prefix format", rolePrefixes.Format));
 
-		foreach (KeyValuePair<string, StratumRolePrefixConfig> entry in rolePrefixes.Roles.OrderBy(entry => entry.Key))
+		foreach (KeyValuePair<string, StratumRolePrefixList> entry in rolePrefixes.Roles.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
 		{
-			output.Append(StratumCommandText.Bullet(entry.Key, rolePrefixes.Format.Replace("{tag}", entry.Value.Tag) + " " + entry.Value.Color + (entry.Value.Enabled ? "" : " disabled")));
+			StringBuilder stack = new StringBuilder();
+			StringBuilder detail = new StringBuilder();
+			if (entry.Value?.Prefixes != null)
+			{
+				foreach (StratumRolePrefixConfig prefix in entry.Value.Prefixes.OrderByDescending(prefix => prefix.Priority))
+				{
+					if (prefix == null)
+					{
+						continue;
+					}
+
+					// The stack shows what a player actually sees, so a disabled tag is listed in
+					// the detail but left out of the render.
+					if (prefix.Enabled)
+					{
+						stack.Append(rolePrefixes.Format.Replace("{tag}", prefix.Tag));
+					}
+
+					if (detail.Length > 0)
+					{
+						detail.Append(", ");
+					}
+
+					detail.Append(prefix.Tag).Append(" p").Append(prefix.Priority).Append(' ').Append(prefix.Color);
+					if (!prefix.Enabled)
+					{
+						detail.Append(" disabled");
+					}
+				}
+			}
+
+			output.Append(StratumCommandText.Bullet(entry.Key, (stack.Length == 0 ? "none" : stack.ToString()) + "  " + detail));
 		}
 
 		return TextCommandResult.Success(output.ToString());
@@ -811,6 +852,7 @@ internal class CmdStratum
 		try
 		{
 			StratumRuntime.Config.EnsurePopulated();
+			StratumInventoryPrivacy.InventoryGuardsEnabled = StratumRuntime.Config.Hardening.InventoryGuards;
 			StratumMobSpawning.Refresh(); // Stratum: issue #216 apply live config changes
 			StratumRuntime.SaveConfig();
 		}

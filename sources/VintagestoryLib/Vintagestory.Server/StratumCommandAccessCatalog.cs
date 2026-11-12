@@ -47,6 +47,7 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("staffchat", "/staffchat", commands.StaffChat, "Use /staffchat");
 		yield return new StratumCommandAccessEntry("chatcontrol", "/slowmode", commands.ChatControl, "Use /slowmode, /lockchat, /chatclear, and /chattoggle");
 		yield return new StratumCommandAccessEntry("coopcombat", "/pvecombat", commands.CoopCombat, "Use /pvecombat");
+		yield return new StratumCommandAccessEntry("friendlyfire", "/friendlyfire", commands.FriendlyFire, "Use /friendlyfire");
 		yield return new StratumCommandAccessEntry("staffbroadcast", "/staffbroadcast", commands.StaffBroadcast, "Use /staffbroadcast");
 		yield return new StratumCommandAccessEntry("info", "/rules", commands.InfoCommands, "Use /rules, /discord, /website, and /motd");
 		yield return new StratumCommandAccessEntry("vanish", "/vanish", commands.Vanish, "Use /vanish and /vanish hideothers");
@@ -63,6 +64,12 @@ internal static class StratumCommandAccessCatalog
 		yield return new StratumCommandAccessEntry("reports", "/reports", commands.ReportManage, "Use /reports staff queue commands");
 		yield return new StratumCommandAccessEntry("kit", "/kit", commands.Kits, "Use /kit");
 		yield return new StratumCommandAccessEntry("kitedit", "/kitedit", commands.KitEdit, "Manage kits");
+		yield return new StratumCommandAccessEntry("groupadmin", "/group admin", commands.GroupAdmin, "Administer player groups: kinds, locks, roster freeze, relations, tags");
+		yield return new StratumCommandAccessEntry("class", "/class", commands.ClassChange, "Use /class to change class or request a change");
+		yield return new StratumCommandAccessEntry("classrequests", "/classrequests", commands.ClassChangeManage, "Approve or deny class change requests");
+		yield return new StratumCommandAccessEntry("revive", "/revive", commands.Revive, "Use /revive");
+		yield return new StratumCommandAccessEntry("restart", "/restart", commands.Restart, "Use /restart");
+		yield return new StratumCommandAccessEntry("clearitems", "/clearitems", commands.ClearItems, "Use /clearitems");
 	}
 
 	public static StratumCommandAccessEntry Find(StratumCommandsConfig commands, string command)

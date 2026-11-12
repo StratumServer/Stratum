@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/9.GenRivulets.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/9.GenRivulets.cs
-index 6e99fe9..7ee2063 100644
+index 6e99fe9..70c4756 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/9.GenRivulets.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/9.GenRivulets.cs
 @@ -57,10 +57,12 @@ namespace Vintagestory.ServerMods
@@ -15,7 +15,19 @@ index 6e99fe9..7ee2063 100644
  
              blockAccessor.BeginColumn();
              var mapChunk = chunks[0].MapChunk;
-@@ -127,14 +129,21 @@ namespace Vintagestory.ServerMods
+@@ -122,19 +124,33 @@ namespace Vintagestory.ServerMods
+             {
+                 tryGenRivulet(chunks, chunkX, chunkZ, geoActivityYThreshold + 10, true);
+             }
+         }
+ 
++        // Stratum: vanilla draws NextInt(MapSizeY - surfaceY). The short-column guard still
++        // clamps the written y to maxRivuletY, which is at most MapSizeY - 2.
++        internal static int StratumRivuletAboveSurfaceHeight(int mapSizeY, int surfaceY)
++        {
++            return mapSizeY - surfaceY;
++        }
++
          private void tryGenRivulet(IServerChunk[] chunks, int chunkX, int chunkZ, float geoActivityYThreshold, bool lava)
          {
              var mapChunk = chunks[0].MapChunk;
@@ -29,7 +41,7 @@ index 6e99fe9..7ee2063 100644
 +            if (maxRivuletY <= 1) return;
 +
 +            surfaceY = Math.Min(surfaceY, maxRivuletY);
-+            int aboveSurfaceHeight = Math.Max(1, maxRivuletY - surfaceY + 1);
++            int aboveSurfaceHeight = StratumRivuletAboveSurfaceHeight(api.WorldManager.MapSizeY, surfaceY);
  
              int dx = 1 + rnd.NextInt(chunksize - 2);
 -            int y = Math.Min(1 + rnd.NextInt(surfaceY) + rnd.NextInt(aboveSurfaceHeight) * rnd.NextInt(aboveSurfaceHeight), api.WorldManager.MapSizeY - 2);
@@ -39,7 +51,7 @@ index 6e99fe9..7ee2063 100644
              ushort hereSurfaceY = mapChunk.WorldGenTerrainHeightMap[dz * chunksize + dx];
              if (y > hereSurfaceY && rnd.NextInt(2) == 0) return; // Half as common overground
  
-@@ -147,10 +156,11 @@ namespace Vintagestory.ServerMods
+@@ -147,10 +163,11 @@ namespace Vintagestory.ServerMods
              {
                  BlockFacing facing = BlockFacing.ALLFACES[i];
                  fx = dx + facing.Normali.X;
@@ -51,7 +63,7 @@ index 6e99fe9..7ee2063 100644
                      chunks[fy / chunksize].Data.GetBlockIdUnsafe((chunksize * (fy % chunksize) + fz) * chunksize + fx)
                  ];
  
-@@ -162,10 +172,11 @@ namespace Vintagestory.ServerMods
+@@ -162,10 +179,11 @@ namespace Vintagestory.ServerMods
                  {
                      if (facing == BlockFacing.UP) quantitySolid = 0;   // We don't place rivulets on flat ground!
                      else if (facing == BlockFacing.DOWN)   // Nor in 1-block thick ceilings
@@ -63,7 +75,7 @@ index 6e99fe9..7ee2063 100644
                      }
                  }
              }
-@@ -177,10 +188,11 @@ namespace Vintagestory.ServerMods
+@@ -177,10 +195,11 @@ namespace Vintagestory.ServerMods
              {
                  if (structuresIntersectingChunk[i].Contains(pos)) return;
              }
@@ -75,7 +87,7 @@ index 6e99fe9..7ee2063 100644
              Block existing = api.World.GetBlock(chunk.Data.GetBlockId(index, BlockLayersAccess.Solid));
              if (existing.EntityClass != null)
              {
-@@ -203,10 +215,11 @@ namespace Vintagestory.ServerMods
+@@ -203,10 +222,11 @@ namespace Vintagestory.ServerMods
              int dx = 4 + rnd.NextInt(chunksize - 8);
              int dz = 4 + rnd.NextInt(chunksize - 8);
              int y = mapChunk.WorldGenTerrainHeightMap[dz * chunksize + dx] - 2;
@@ -87,7 +99,7 @@ index 6e99fe9..7ee2063 100644
              Vec3i dir = null;
              int len = 0;
              for (int i = 0; i < BlockFacing.HORIZONTALS.Length; i++)
-@@ -215,20 +228,22 @@ namespace Vintagestory.ServerMods
+@@ -215,20 +235,22 @@ namespace Vintagestory.ServerMods
  
                  // All direct neighbours need to be solid
                  fx = dx + facing.Normali.X;
@@ -110,7 +122,7 @@ index 6e99fe9..7ee2063 100644
                      bool belowSolid = api.World.Blocks[chunks[(fy - 1) / chunksize].Data.GetBlockIdUnsafe((chunksize * ((fy - 1) % chunksize) + fz) * chunksize + fx)].SideSolid.All;
                      bool solid = block.SideSolid.All;
                      if ((len < 2 && !solid) || !belowSolid) break;
-@@ -265,10 +280,15 @@ namespace Vintagestory.ServerMods
+@@ -265,10 +287,15 @@ namespace Vintagestory.ServerMods
                      blockAccessor.ScheduleBlockUpdate(pos);
                  }
              }

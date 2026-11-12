@@ -1,0 +1,526 @@
+using System.Collections;
+using System.Reflection;
+using Atlas.Api;
+using Atlas.XUnit;
+using Vintagestory.API.Common;
+using Vintagestory.API.Server;
+using Xunit;
+
+namespace StratumScenarios;
+
+/// <summary>
+/// Two ends of issue #312. The first scenario is the per-caller half of the vanish rule: /near
+/// must still list the world for the vanished staff member and must not list the vanished staff
+/// member for anyone else. It runs each /near through ITestPlayer.ExecuteCommand, which carries
+/// the caller's real role and privileges, because IWorldSession.ExecuteCommand runs as the
+/// console, which is an admin and would see everything regardless of the filter under test.
+///
+/// The second is the reconnect window fixed by this PR. Vanish persists in player data and is
+/// now restored in FinalizePlayerIdentification, before the first SpawnEntity and before
+/// ServerReady, so a vanished player reconnecting announces nothing. Restoring it later, from
+/// OnPlayerJoin, leaves a window of several seconds in which nearby players get a join message, a
+/// entity spawn with an exact position and a nametag, position updates, and then a despawn. This
+/// scenario fails against that older code, which is the reason it exists. The reconnect assertion
+/// checks what the observer's client was sent (the entity on any of its three paths, and the
+/// player data), rather than relying only on the separate join message. It ends with /vanish off,
+/// after which the same observer has to receive both: that is the control that tells "hidden
+/// because vanished" from an observer that was never listening.
+///
+/// The third is the live toggle: the observer is already in range and holds the staff member's
+/// entity when the vanish starts. What it asserts is what the observer's client holds
+/// (IClientObservations.KnowsEntity), because an arrival list cannot tell "hidden" from "never
+/// sent again": the observer already has the entity, so nothing new would reach it either way.
+/// The hide shows up as the server telling the observer's client the entity is gone.
+///
+/// The fourth is the join: a plain observer joins after the staff member vanished. A test player is
+/// an admin from its first packet, and an admin is sent vanished staff, so this observer is joined
+/// through JoinAsPlainPlayer, which lowers its role inside a PlayerJoin handler before the server
+/// builds the player list it sends a joiner.
+/// </summary>
+public class VanishPrivacyScenarios : AtlasScenarioBase
+{
+	/// <summary>
+	/// How long to wait before reading "the observer never received X". On this fork, which sends
+	/// the entities entering a client's range as one packet 40 (see the PhysicsManager patch), a
+	/// player returning into range was measured on one install over two runs of 20 rounds for each
+	/// Atlas version. With 0.16.0-rc.1: 8 to 9 passes in 12 rounds of each run, 14 to 39 in the
+	/// others. With 0.16.0-rc.3: 8 to 9 passes in 19 rounds of each run, 13 in the other. rc.2 made
+	/// TeleportTo register the player in the target chunk, which the engine alone does 20 to 30
+	/// passes late, and that fits the slow rounds, but the comparison did not isolate that change
+	/// from the rest of rc.2 and rc.3, and the final 0.16.0 was not measured separately. 60 is a
+	/// margin over the largest value seen with either release candidate, not a derived bound.
+	/// </summary>
+	private const int AbsenceWindowTicks = 60;
+
+	/// <summary>
+	/// The bound of a wait for the observer's client to be told something changed (an entity gone,
+	/// an entity back). Measured on this fork, /vanish on and /vanish off send their packets inside
+	/// the command, so the wait holds on its first poll. The engine's own despawn report comes 1 to
+	/// 7 passes after a despawn and a return into range took up to 38, so the bound is far above
+	/// all of them: a wait that reaches it means the server did not send the packet, not that it
+	/// was slow. A run that passes never waits for it.
+	/// </summary>
+	private const int ChangeWindowTicks = 600;
+
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Near_Should_HideVanishedStaff_When_CalledByPlainPlayer()
+	{
+		ITestPlayer observer = await World.JoinPlayer("vanish-obs");
+		ITestPlayer staff = await World.JoinPlayer("vanish-mod");
+		await GrantVanishRole(staff);
+		// A dummy-socket test player rides IsSinglePlayerClient, which
+		// ServerMain.HandleRequestJoin promotes to the server's max-privilege role on join. Demote
+		// the observer explicitly so it actually lacks stratum.vanish, or it can already see
+		// vanished staff and the negative assertion below proves nothing.
+		await DemoteToPlainPlayer(observer);
+
+		// JoinPlayer scatters players near spawn; pin both so the /near radius is not the
+		// variable under test.
+		await observer.TeleportTo(World.Spawn.AddCopy(0, 1, 0));
+		await staff.TeleportTo(World.Spawn.AddCopy(4, 1, 0));
+		await World.Ticks(10);
+
+		CommandResult before = await observer.ExecuteCommand("/near 60");
+		Assert.Contains("vanish-mod", before.Message);
+
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
+		await World.Ticks(10);
+
+		// The vanished player still sees the world.
+		CommandResult fromStaff = await staff.ExecuteCommand("/near 60");
+		Assert.Contains("vanish-obs", fromStaff.Message);
+
+		// The plain observer does not see the vanished player.
+		CommandResult fromObserver = await observer.ExecuteCommand("/near 60");
+		Assert.DoesNotContain("vanish-mod", fromObserver.Message);
+
+		CommandResult unvanish = await staff.ExecuteCommand("/vanish off");
+		Assert.True(unvanish.Ok, unvanish.Message);
+		await World.Ticks(10);
+		CommandResult after = await observer.ExecuteCommand("/near 60");
+		Assert.Contains("vanish-mod", after.Message);
+	}
+
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task VanishedReconnect_Should_NotAnnounceJoin_When_StillVanished()
+	{
+		ITestPlayer observer = await World.JoinPlayer("reconnect-obs");
+		ITestPlayer staff = await World.JoinPlayer("reconnect-mod");
+		await GrantVanishRole(staff);
+		await DemoteToPlainPlayer(observer);
+
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
+		await World.Ticks(10);
+
+		staff.Player.Disconnect();
+		await World.Until(() => !staff.IsConnected, timeoutTicks: 600);
+
+		// Start from "nothing received yet". Clear() forgets everything the observer was sent so far,
+		// the original non-vanished join of "reconnect-mod" included: its entity, its player data and
+		// its join announcement.
+		observer.Client.Clear();
+
+		ITestPlayer rejoined = await RejoinAfterDisconnect("reconnect-mod");
+		ITestPlayer plain = await World.JoinPlayer("reconnect-plain");
+		Assert.True(rejoined.IsConnected, "the vanished player did not come back");
+		Assert.True(plain.IsConnected);
+		long vanishedId = rejoined.Player.Entity.EntityId;
+		string vanishedUid = rejoined.Player.PlayerUID;
+
+		// A client gets an entity on one of three paths and the slowest takes dozens of passes, so
+		// wait the whole AbsenceWindowTicks (see its documentation) before reading an absence.
+		await World.Ticks(AbsenceWindowTicks);
+
+		// The control first: the same observer, the same window, a player who is not vanished. If this
+		// fails, the absence below would only mean "nothing was captured".
+		Assert.True(
+			observer.Client.HasReceivedEntity(plain.Player.Entity.EntityId),
+			"the observer never received the plain player's entity, so its observations prove nothing");
+		Assert.True(observer.Client.HasReceivedPlayerData(plain.Player.PlayerUID));
+
+		// The vanished player's entity (spawn, tracked range or join list: HasReceivedEntity is the
+		// union of the three) and its player data (packet 41) must not have reached the observer.
+		Assert.False(
+			observer.Client.HasReceivedEntity(vanishedId),
+			$"the vanished player's entity reached the observer: {Describe(observer, vanishedId)}");
+		Assert.False(observer.Client.HasReceivedPlayerData(vanishedUid));
+
+		IReadOnlyList<string> announcements = observer.Client.Chat()
+			.Where(line => line.Type == EnumChatType.JoinLeave)
+			.Select(line => line.Message)
+			.ToList();
+		Assert.DoesNotContain(announcements, line => line.Contains("reconnect-mod", StringComparison.Ordinal));
+		Assert.Contains(announcements, line => line.Contains("reconnect-plain", StringComparison.Ordinal));
+
+		// The other end: the condition lifts, and the same observer must now receive the entity and
+		// its player data. Without this the scenario cannot tell "hidden because vanished" from
+		// "never sent to this observer at all".
+		int revealTick = World.CurrentTick;
+		CommandResult reveal = await rejoined.ExecuteCommand("/vanish off");
+		Assert.True(reveal.Ok, reveal.Message);
+		await World.Until(() => observer.Client.HasReceivedEntity(vanishedId), timeoutTicks: AbsenceWindowTicks);
+
+		ReceivedEntity arrival = observer.Client.EntityArrivals().First(a => a.EntityId == vanishedId);
+		// A sanity check on Atlas's stamp, not a second proof: nothing awaits between the absence read
+		// above and the command, so an arrival stamped at or before revealTick would already have
+		// failed that read. Atlas stamps an arrival with the pass that drained it, so the entity the
+		// command sent is stamped revealTick + 1.
+		Assert.True(arrival.Tick > revealTick, $"the entity arrival is not stamped after /vanish off ran: {arrival}, reveal at tick {revealTick}");
+		Assert.True(observer.Client.HasReceivedPlayerData(vanishedUid), "the player data did not follow the entity");
+	}
+
+	/// <summary>
+	/// The live half of the same rule. The observer is in range and holds the staff member's entity,
+	/// so the hide has to reach it as a departure: it must stop knowing the entity once the vanish
+	/// starts, keep not knowing it, and know it again after /vanish off. A third player who is not
+	/// vanished is the control: the same observer keeps knowing that entity over the whole period,
+	/// so the loss is the staff member's and not a client that stopped listening or drifted out of
+	/// range.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Vanish_Should_MakeObserverDropEntity_ThenKnowItAgain_When_ToggledInRange()
+	{
+		ITestPlayer observer = await World.JoinPlayer("toggle-obs");
+		ITestPlayer staff = await World.JoinPlayer("toggle-mod");
+		ITestPlayer control = await World.JoinPlayer("toggle-ctl");
+		await GrantVanishRole(staff);
+		await DemoteToPlainPlayer(observer);
+		await observer.TeleportTo(World.Spawn.AddCopy(0, 1, 0));
+		await staff.TeleportTo(World.Spawn.AddCopy(4, 1, 0));
+		await control.TeleportTo(World.Spawn.AddCopy(-4, 1, 0));
+		long staffId = staff.Player.Entity.EntityId;
+		long controlId = control.Player.Entity.EntityId;
+		string staffUid = staff.Player.PlayerUID;
+
+		// The starting state is asserted, not assumed: the observer holds both entities. It joined
+		// as an admin, which is why it was sent the staff member at all.
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(staffId) && observer.Client.KnowsEntity(controlId),
+			() => $"the observer does not hold both entities before the vanish: {Describe(observer, staffId)}, {Describe(observer, controlId)}");
+
+		// Clear() opens the window the departures and arrivals below are read in. KnowsEntity is not
+		// part of it: the entities the observer holds stay held across the Clear().
+		observer.Client.Clear();
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
+		int vanishTick = World.CurrentTick;
+
+		await UntilOrFail(
+			() => !observer.Client.KnowsEntity(staffId),
+			() => $"the observer still holds the vanished staff member's entity {ChangeWindowTicks} ticks after /vanish on, arrivals: [{Describe(observer, staffId)}], departures: [{DescribeDepartures(observer)}]");
+		Assert.Contains(observer.Client.EntityDepartures(), d => d.EntityId == staffId);
+
+		// It stays gone: nothing re-sends the entity or its player data while the vanish lasts.
+		await World.Ticks(AbsenceWindowTicks);
+		Assert.False(
+			observer.Client.KnowsEntity(staffId),
+			$"the vanished staff member's entity came back to the observer: {Describe(observer, staffId)}");
+		Assert.False(observer.Client.HasReceivedEntity(staffId), $"the observer was sent the vanished staff member again: {Describe(observer, staffId)}");
+		Assert.False(observer.Client.HasReceivedPlayerData(staffUid), "the observer was sent the vanished staff member's player data again");
+
+		// The control, over the same period: still held, and never reported gone.
+		Assert.True(observer.Client.KnowsEntity(controlId), "the observer lost the control player over the same period, so its observations prove nothing");
+		Assert.DoesNotContain(observer.Client.EntityDepartures(), d => d.EntityId == controlId);
+
+		int revealTick = World.CurrentTick;
+		CommandResult reveal = await staff.ExecuteCommand("/vanish off");
+		Assert.True(reveal.Ok, reveal.Message);
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(staffId),
+			() => $"the observer does not hold the staff member's entity {ChangeWindowTicks} ticks after /vanish off, arrivals: [{Describe(observer, staffId)}], departures: [{DescribeDepartures(observer)}]");
+
+		ReceivedEntity arrival = observer.Client.EntityArrivals().First(a => a.EntityId == staffId);
+		Assert.True(arrival.Tick > revealTick, $"the entity arrival is not stamped after /vanish off ran: {arrival}, reveal at tick {revealTick}, vanish at {vanishTick}");
+		Assert.True(observer.Client.HasReceivedPlayerData(staffUid), "the player data did not follow the entity");
+		Assert.True(observer.Client.KnowsEntity(controlId), "the observer lost the control player by the end");
+	}
+
+	/// <summary>
+	/// The join half of the same rule: the staff member is already vanished when the observer joins,
+	/// so what the server sends a new joiner (its player list and the entities around it) must not
+	/// carry the staff member. Demoting the observer after the join, as the other scenarios do, is
+	/// too late for the player list: it is built while the observer is still the admin every test
+	/// player starts as. A player who is not vanished and joins after the observer is the control.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Vanish_Should_StayHiddenFromJoinList_When_PlainObserverJoinsAfterTheVanish()
+	{
+		// The staff member keeps the admin role every test player joins with, which carries
+		// stratum.vanish, so there is nothing to grant.
+		ITestPlayer staff = await World.JoinPlayer("late-mod");
+		await staff.TeleportTo(World.Spawn.AddCopy(4, 1, 0));
+		CommandResult vanish = await staff.ExecuteCommand("/vanish on");
+		Assert.True(vanish.Ok, vanish.Message);
+		long staffId = staff.Player.Entity.EntityId;
+		string staffUid = staff.Player.PlayerUID;
+
+		ITestPlayer observer = await JoinAsPlainPlayer("late-obs");
+		Assert.Equal("suplayer", observer.Player.Role.Code);
+		Assert.False(observer.Player.HasPrivilege("stratum.vanish"), "the observer is not an ordinary player, so it would be sent vanished staff");
+		await observer.TeleportTo(World.Spawn.AddCopy(0, 1, 0));
+
+		ITestPlayer control = await World.JoinPlayer("late-ctl");
+		await control.TeleportTo(World.Spawn.AddCopy(-4, 1, 0));
+		long controlId = control.Player.Entity.EntityId;
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(controlId),
+			() => $"the observer never came to know the control player: {Describe(observer, controlId)}");
+		await World.Ticks(AbsenceWindowTicks);
+
+		// The control first: the observer was listening, and was sent a player who is not vanished
+		// both as an entity and as player data.
+		Assert.True(observer.Client.HasReceivedPlayerData(control.Player.PlayerUID), "the observer was not sent the control player's data, so its observations prove nothing");
+
+		Assert.False(
+			observer.Client.HasReceivedPlayerData(staffUid),
+			$"the vanished staff member's player data reached the observer on its join: {string.Join(", ", observer.Client.PlayerData().Where(p => p.PlayerUid == staffUid))}");
+		Assert.False(
+			observer.Client.KnowsEntity(staffId) || observer.Client.HasReceivedEntity(staffId),
+			$"the vanished staff member's entity reached the observer: {Describe(observer, staffId)}");
+		Assert.Equal("suplayer", observer.Player.Role.Code);
+
+		int revealTick = World.CurrentTick;
+		CommandResult reveal = await staff.ExecuteCommand("/vanish off");
+		Assert.True(reveal.Ok, reveal.Message);
+		await UntilOrFail(
+			() => observer.Client.KnowsEntity(staffId),
+			() => $"the observer does not hold the staff member's entity {ChangeWindowTicks} ticks after /vanish off, arrivals: [{Describe(observer, staffId)}]");
+
+		ReceivedEntity arrival = observer.Client.EntityArrivals().First(a => a.EntityId == staffId);
+		Assert.True(arrival.Tick > revealTick, $"the entity arrival is not stamped after /vanish off ran: {arrival}, reveal at tick {revealTick}");
+		Assert.True(observer.Client.HasReceivedPlayerData(staffUid), "the player data did not follow the entity");
+	}
+
+	private async Task GrantVanishRole(ITestPlayer player)
+	{
+		// stratum.vanish lives in the staff privilege set, which the sumod role carries. The
+		// console caller (IWorldSession.ExecuteCommand) has grantrevoke.
+		CommandResult result = await World.ExecuteCommand($"/player {player.Player.PlayerName} role sumod");
+		Assert.True(result.Ok, $"could not promote {player.Player.PlayerName}: {result.Message}");
+		await World.Until(() => player.Player.HasPrivilege("stratum.vanish"), timeoutTicks: 200);
+	}
+
+	private async Task DemoteToPlainPlayer(ITestPlayer player)
+	{
+		// suplayer is ServerConfig.DefaultRoleCode: the ordinary survival-player role, which does
+		// not carry stratum.vanish (only sumod, crmod and admin do).
+		CommandResult result = await World.ExecuteCommand($"/player {player.Player.PlayerName} role suplayer");
+		Assert.True(result.Ok, $"could not demote {player.Player.PlayerName}: {result.Message}");
+		await World.Until(() => !player.Player.HasPrivilege("stratum.vanish"), timeoutTicks: 200);
+	}
+
+	private static string Describe(ITestPlayer observer, long entityId)
+	{
+		return string.Join(", ", observer.Client.EntityArrivals().Where(a => a.EntityId == entityId));
+	}
+
+	private static string DescribeDepartures(ITestPlayer observer)
+	{
+		return string.Join(", ", observer.Client.EntityDepartures());
+	}
+
+	/// <summary>
+	/// World.Until, with the failure naming what was waited for: its own timeout message can only
+	/// say that a predicate stayed false, and the predicates here are lambdas. The message is a
+	/// function so it reads the observations when the wait fails, not when it starts.
+	/// </summary>
+	private async Task UntilOrFail(Func<bool> condition, Func<string> failure)
+	{
+		try
+		{
+			await World.Until(condition, timeoutTicks: ChangeWindowTicks);
+		}
+		catch (ScenarioTimeoutException)
+		{
+			Assert.Fail(failure());
+		}
+	}
+
+	/// <summary>
+	/// Joins a test player that is an ordinary player (suplayer) by the time the server builds what
+	/// it sends a joiner. JoinPlayer takes no role and the engine makes every test player an admin
+	/// at three points of its join, the last of them its own PlayerJoin handler, so the role is
+	/// lowered in a PlayerJoin handler subscribed before the join, which runs after all three.
+	/// Two limits, both the engine's. The handlers subscribed at boot, the fork's own included
+	/// (restoring a persisted vanish, the update and class-request staff notices), run first and
+	/// see the joiner as an admin; none of them matters to an observer that is not vanished and
+	/// has nothing pending in a scenario world. And the role lasts only until the engine next
+	/// fetches the player's record, which a privilege grant, revoke or deny, /op and the /player
+	/// role, privilege and whitelist subcommands aimed at it do: this class never does that to
+	/// the observer, and the scenario asserts the role again at its end.
+	/// </summary>
+	private async Task<ITestPlayer> JoinAsPlainPlayer(string name)
+	{
+		void LowerRole(IServerPlayer joiner)
+		{
+			if (joiner.PlayerName == name)
+			{
+				joiner.SetRole("suplayer");
+			}
+		}
+
+		World.Api.Event.PlayerJoin += LowerRole;
+		try
+		{
+			return await World.JoinPlayer(name);
+		}
+		finally
+		{
+			World.Api.Event.PlayerJoin -= LowerRole;
+		}
+	}
+
+	private async Task<ITestPlayer> RejoinAfterDisconnect(string name)
+	{
+		// JoinPlayer frees the joined-name claim from a game-thread check that runs a few ticks
+		// after IsConnected flips, not synchronously with the disconnect.
+		for (int attempt = 0; attempt < 30; attempt++)
+		{
+			try
+			{
+				return await World.JoinPlayer(name);
+			}
+			catch (AtlasSetupException)
+			{
+				await World.Ticks(10);
+			}
+		}
+
+		throw new InvalidOperationException($"'{name}' never became rejoinable after the disconnect.");
+	}
+}
+
+/// <summary>
+/// Reads packets Atlas does not decode. Atlas 0.16.1 empties the dummy receive buffer on
+/// every server pass and drops packet 58, so this has to be read in the same game-thread
+/// turn that sent the packet, before that pass returns.
+/// </summary>
+internal sealed class PacketProbe
+{
+	private const int ExchangeBlockPacketId = 58;
+	private const BindingFlags Internal = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+	private readonly IEnumerable queue;
+	private readonly object gate;
+	private readonly int baseline;
+
+	private PacketProbe(IEnumerable queue, object gate, int baseline)
+	{
+		this.queue = queue;
+		this.gate = gate;
+		this.baseline = baseline;
+	}
+
+	public static PacketProbe Attach(IWorldSession world, ITestPlayer player)
+	{
+		object server = world.Api.World;
+		object clients = server.GetType().GetField("Clients", Internal)!.GetValue(server)!;
+		object client = clients.GetType().GetProperty("Item")!.GetValue(clients, new object[] { player.Player.ClientId })!;
+		object socket = client.GetType().GetProperty("Socket")!.GetValue(client)!;
+		object network = socket.GetType().GetField("network", Internal)!.GetValue(socket)!;
+		object gate = network.GetType().GetField("ClientReceiveBufferLock", Internal)!.GetValue(network)!;
+		var queue = (IEnumerable)network.GetType().GetField("ClientReceiveBuffer", Internal)!.GetValue(network)!;
+		int baseline;
+		lock (gate)
+		{
+			baseline = ((ICollection)queue).Count;
+		}
+
+		return new PacketProbe(queue, gate, baseline);
+	}
+
+	public IReadOnlyList<ExchangeBlock> NewExchangeBlocks()
+	{
+		var found = new List<ExchangeBlock>();
+		foreach (object packet in NewPackets())
+		{
+			if (Member<int>(packet, "Id") != ExchangeBlockPacketId)
+			{
+				continue;
+			}
+
+			object? exchange = NullableMember(packet, "ExchangeBlock");
+			if (exchange == null)
+			{
+				continue;
+			}
+
+			found.Add(new ExchangeBlock(
+				Member<int>(exchange, "X"),
+				Member<int>(exchange, "Y"),
+				Member<int>(exchange, "Z"),
+				Member<int>(exchange, "BlockType")));
+		}
+
+		return found;
+	}
+
+	private IReadOnlyList<object> NewPackets()
+	{
+		var payloads = new List<(byte[] Data, int Length)>();
+		lock (gate)
+		{
+			int index = 0;
+			foreach (object item in queue)
+			{
+				if (index++ < baseline)
+				{
+					continue;
+				}
+
+				payloads.Add((Member<byte[]>(item, "Data"), Member<int>(item, "Length")));
+			}
+		}
+
+		Type serializerType = Type.GetType("Packet_ServerSerializer, VintagestoryLib")!;
+		Type packetType = Type.GetType("Packet_Server, VintagestoryLib")!;
+		MethodInfo deserialize = serializerType.GetMethod("DeserializeBuffer")!;
+		var packets = new List<object>();
+		foreach ((byte[] data, int length) in payloads)
+		{
+			packets.Add(deserialize.Invoke(null, new object?[] { data, length, Activator.CreateInstance(packetType) })!);
+		}
+
+		return packets;
+	}
+
+	private static T Member<T>(object target, string name)
+	{
+		const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+		PropertyInfo? property = target.GetType().GetProperty(name, flags);
+		if (property != null)
+		{
+			return (T)property.GetValue(target)!;
+		}
+
+		FieldInfo? field = target.GetType().GetField(name, flags);
+		if (field != null)
+		{
+			return (T)field.GetValue(target)!;
+		}
+
+		throw new MissingMemberException(target.GetType().FullName, name);
+	}
+
+	private static object? NullableMember(object target, string name)
+	{
+		const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+		PropertyInfo? property = target.GetType().GetProperty(name, flags);
+		if (property != null)
+		{
+			return property.GetValue(target);
+		}
+
+		FieldInfo? field = target.GetType().GetField(name, flags);
+		if (field != null)
+		{
+			return field.GetValue(target);
+		}
+
+		throw new MissingMemberException(target.GetType().FullName, name);
+	}
+}
+
+internal readonly record struct ExchangeBlock(int X, int Y, int Z, int BlockId);

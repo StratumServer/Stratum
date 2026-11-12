@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs b/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
-index 4e4704b..126d2ef 100644
+index 4e4704b..299e83c 100644
 --- a/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
 +++ b/VSSurvivalMod/Systems/Microblock/BEMicroBlock.cs
 @@ -86,10 +86,24 @@ namespace Vintagestory.GameContent
@@ -27,20 +27,30 @@ index 4e4704b..126d2ef 100644
          // bits 8..11 = ymin
          // bits 12..15 = ymax
          // bits 16..19 = zmin
-@@ -472,31 +486,51 @@ namespace Vintagestory.GameContent
+@@ -472,42 +486,74 @@ namespace Vintagestory.GameContent
          #region Voxel math
  
  
          public void ConvertToVoxels(out BoolArray16x16x16 voxels, out byte[,,] materials)
          {
--            voxels = new BoolArray16x16x16();
--            materials = new byte[16, 16, 16];
-+            // Stratum start:
-+            // instead of new BoolArray/byte[][] we use ThreadLocal + Span<byte> for flat addressing of byte[,,]; SetRangeTrue/Fill instead of nested loops
++            // BeginEdit hands these grids to the caller. A shared thread-local grid would
++            // be cleared by the next block opened on this thread.
+             voxels = new BoolArray16x16x16();
+             materials = new byte[16, 16, 16];
++            StratumFillVoxels(voxels, materials);
++        }
++
++        private void StratumConvertToThreadLocalVoxels(out BoolArray16x16x16 voxels, out byte[,,] materials)
++        {
 +            voxels = RebuildVoxelsTL.Value;
 +            voxels.Clear();
 +            materials = RebuildMaterialsTL.Value;
-+            Array.Clear(materials, 0, 16 * 16 * 16); // clear stale data from previous block entities on this thread
++            Array.Clear(materials, 0, 16 * 16 * 16);
++            StratumFillVoxels(voxels, materials);
++        }
++
++        private void StratumFillVoxels(BoolArray16x16x16 voxels, byte[,,] materials)
++        {
 +
 +
 +            // byte[,,] in .NET is stored contiguously in memory (row-major),
@@ -86,9 +96,48 @@ index 4e4704b..126d2ef 100644
  
          public void RebuildCuboidList()
          {
-             ConvertToVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
+-            ConvertToVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
++            StratumConvertToThreadLocalVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
              RebuildCuboidList(Voxels, VoxelMaterial);
-@@ -768,110 +802,113 @@ namespace Vintagestory.GameContent
+         }
+ 
+ 
+         public void FlipVoxels(BlockFacing frontFacing)
+         {
+-            ConvertToVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
++            StratumConvertToThreadLocalVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
+ 
+             BoolArray16x16x16 outVoxels = new BoolArray16x16x16();
+             byte[,,] outVoxelMaterial = new byte[16, 16, 16];
+ 
+             // Ok, now we can actually modify the voxel
+@@ -659,11 +705,11 @@ namespace Vintagestory.GameContent
+         }
+ 
+ 
+         public int GetVoxelMaterialAt(Vec3i voxelPos)
+         {
+-            ConvertToVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
++            StratumConvertToThreadLocalVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
+ 
+             if (Voxels[voxelPos.X, voxelPos.Y, voxelPos.Z])
+             {
+                 return BlockIds[VoxelMaterial[voxelPos.X, voxelPos.Y, voxelPos.Z]];
+             }
+@@ -671,11 +717,11 @@ namespace Vintagestory.GameContent
+             return 0;
+         }
+ 
+         public bool SetVoxel(Vec3i voxelPos, bool state, byte materialId, int size)
+         {
+-            ConvertToVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
++            StratumConvertToThreadLocalVoxels(out BoolArray16x16x16 Voxels, out byte[,,] VoxelMaterial);
+ 
+             // Ok, now we can actually modify the voxel
+             bool wasChanged = false;
+ 
+             int endx = voxelPos.X + size;
+@@ -768,110 +814,113 @@ namespace Vintagestory.GameContent
          {
              RebuildCuboidList();
              MarkDirty(true);
@@ -249,7 +298,7 @@ index 4e4704b..126d2ef 100644
              {
                  int preva = GetLightAbsorption();
                  absorbAnyLight = doEmitSideAo;
-@@ -886,15 +923,11 @@ namespace Vintagestory.GameContent
+@@ -886,15 +935,11 @@ namespace Vintagestory.GameContent
              for (int i = 0; i < 6; i++)
              {
                  sidecenterSolid[i] = edgeCenterVoxelsMissing[i] < 5;
@@ -266,7 +315,7 @@ index 4e4704b..126d2ef 100644
              if (BlockIds.Length == 1 && Api.World.GetBlock(BlockIds[0]).RenderPass == EnumChunkRenderPass.Meta)
              {
                  emitSideAo = 0;
-@@ -910,15 +943,21 @@ namespace Vintagestory.GameContent
+@@ -910,15 +955,21 @@ namespace Vintagestory.GameContent
                  {
                      bebhmicroblock.RebuildCuboidList(Voxels, VoxelMaterial);
                  }
@@ -288,7 +337,7 @@ index 4e4704b..126d2ef 100644
          {
              prevEmitSideAo ^= emitSideAo;  // This is now the changed bits
              if (prevEmitSideAo == 0) return;  // No change
-@@ -935,81 +974,96 @@ namespace Vintagestory.GameContent
+@@ -935,81 +986,96 @@ namespace Vintagestory.GameContent
              return sideAlmostSolid[0] && sideAlmostSolid[1] && sideAlmostSolid[2] && sideAlmostSolid[3] && sideAlmostSolid[5];
          }
  
@@ -400,7 +449,7 @@ index 4e4704b..126d2ef 100644
  
          public virtual void RegenSelectionBoxes(IWorldAccessor worldForResolve, IPlayer byPlayer)
          {
-@@ -2557,29 +2611,103 @@ namespace Vintagestory.GameContent
+@@ -2557,29 +2623,103 @@ namespace Vintagestory.GameContent
          {
              return GetEncompassingHitbox(VoxelCuboids);
          }
@@ -427,17 +476,15 @@ index 4e4704b..126d2ef 100644
 +            // Instantly zeroes out all 64 elements without creating a new object (zero allocations)
 +            Array.Clear(voxels, 0, 64);
 +        }
- 
--        public BoolArray16x16x16()
++
 +        [MethodImpl(MethodImplOptions.AggressiveInlining)]
 +        public bool Get(int x, int y, int z)
-         {
--            voxels = new BitArray(16 * 16 * 16);
++        {
 +            // Calculates flat index and checks the target bit using a fast bitwise AND
 +            int index = ((x * 16) + y) * 16 + z;
 +            return (voxels[index >> 6] & (1UL << (index & 63))) != 0;
-         }
- 
++        }
++
 +        [MethodImpl(MethodImplOptions.AggressiveInlining)]
 +        public void Set(int x, int y, int z, bool value)
 +        {
@@ -448,15 +495,17 @@ index 4e4704b..126d2ef 100644
 +            else
 +                voxels[index >> 6] &= ~(1UL << (index & 63));
 +        }
-+
+ 
+-        public BoolArray16x16x16()
 +        [MethodImpl(MethodImplOptions.AggressiveInlining)]
 +        public void SetTrue(int x, int y, int z)
-+        {
+         {
+-            voxels = new BitArray(16 * 16 * 16);
 +            // Optimized Set version: forcibly sets the bit to 1 without an 'if' condition check
 +            int index = ((x * 16) + y) * 16 + z;
 +            voxels[index >> 6] |= (1UL << (index & 63));
-+        }
-+
+         }
+ 
 +        [MethodImpl(MethodImplOptions.AggressiveInlining)]
 +        public bool GetFlat(int index) => (voxels[index >> 6] & (1UL << (index & 63))) != 0;
 +

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
-index 6b3cdd0..8145edc 100644
+index 6b3cdd0..86b2e83 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemBlockSimulation.cs
 @@ -3,10 +3,11 @@ using System.Collections.Concurrent;
@@ -14,7 +14,7 @@ index 6b3cdd0..8145edc 100644
  using Vintagestory.API.Server;
  using Vintagestory.API.Util;
  using Vintagestory.Common;
-@@ -14,10 +15,14 @@ using Vintagestory.Common.Database;
+@@ -14,10 +15,15 @@ using Vintagestory.Common.Database;
  
  namespace Vintagestory.Server;
  
@@ -23,13 +23,14 @@ index 6b3cdd0..8145edc 100644
 +	private const int DevCommandBlockUsePacketId = 24112;
 +	private const double StratumBlockEntityPacketRangeSlack = 4;
 +	private const int stratumMaxBlockUseStepsPerPacket = 5000; // Stratum: Match the held-item catch-up limit.
++	private readonly ConcurrentDictionary<(string ItemCode, string BlockCode, Type ExceptionType, string Callback, bool Fallback), byte> stratumLoggedBlockBreakExceptions = new(); // Stratum: bound repeated block-break exception logs.
 +
  	private class BlockPosWithExtraObject
  	{
  		public BlockPos pos;
  
  		public object extra;
-@@ -52,10 +57,17 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -52,10 +58,26 @@ public class ServerSystemBlockSimulation : ServerSystem
  
  	private BlockPos tmpPos = new BlockPos(0);
  
@@ -37,17 +38,26 @@ index 6b3cdd0..8145edc 100644
  
 +	private int stratumBlockTickRotation;
 +	private int stratumRandomTickSlice; // Stratum: current slice index for random tick spreading
-+	private const int StratumPosPoolSize = 2048;
-+	private BlockPos[] stratumPosPool;
-+	private int stratumPosPoolIndex;
-+	private FluidBlockPos[] stratumFluidPosPool;
-+	private int stratumFluidPosPoolIndex;
++	private readonly Dictionary<long, List<StratumDirtyBlockUpdate>> stratumDirtyBlocksByChunk = new();
++	private readonly List<long> stratumDirtyChunkScratch = new();
++	private readonly Dictionary<(int X, int Y, int Z), int> stratumDirtyPosIndex = new();
++	private long stratumDirtyBacklogLogMs;
++
++	private struct StratumDirtyBlockUpdate
++	{
++		public int X;
++		public int Y;
++		public int Z;
++		public int BlockId;
++		public int ExceptClientId;
++	}
++
  	public ServerSystemBlockSimulation(ServerMain server)
  		: base(server)
  	{
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.PacketHandlers[3] = HandleBlockPlaceOrBreak;
-@@ -319,13 +331,229 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -319,13 +341,231 @@ public class ServerSystemBlockSimulation : ServerSystem
  	}
  
  	private void HandleBlockEntityPacket(Packet_Client packet, ConnectedClient client)
@@ -91,7 +101,9 @@ index 6b3cdd0..8145edc 100644
 +			return false;
 +		}
 +
-+		if (!IsBlockEntityPacketInRange(player, pos))
++		// Stratum: #307 - Hardening.BlockEntityPacketRangeGuard gates this packet path only. The
++		// dev command block path keeps its range check unconditionally.
++		if (StratumRuntime.Config.Hardening.BlockEntityPacketRangeGuard && !IsBlockEntityPacketInRange(player, pos))
 +		{
 +			ServerMain.Logger.Audit("{0} tried to send a block entity packet out of range at {1}", player.PlayerName, pos);
 +			StratumAnticheatReporter.RecordBlockEntityOutOfRange(server, player, pos);
@@ -155,8 +167,8 @@ index 6b3cdd0..8145edc 100644
 +		return string.Equals(assemblyName, "VSSurvivalMod", StringComparison.Ordinal)
 +			|| string.Equals(assemblyName, "VSEssentials", StringComparison.Ordinal)
 +			|| string.Equals(assemblyName, "VintagestoryLib", StringComparison.Ordinal);
- 	}
- 
++	}
++
 +	private static bool IsBlockEntityPacketInRange(ServerPlayer player, BlockPos pos)
 +	{
 +		double maxRange = player.WorldData.PickingRange + StratumBlockEntityPacketRangeSlack;
@@ -198,8 +210,8 @@ index 6b3cdd0..8145edc 100644
 +			SelectionBoxIndex = 0
 +		});
 +		return true;
-+	}
-+
+ 	}
+ 
 +	private bool TryAllowDevCommandBlockUse(BlockPos pos, ConnectedClient client)
 +	{
 +		ServerPlayer player = client?.Player;
@@ -278,7 +290,7 @@ index 6b3cdd0..8145edc 100644
  		Packet_ClientBlockPlaceOrBreak blockPlaceOrBreak = packet.BlockPlaceOrBreak;
  		BlockSelection blockSelection = new BlockSelection
  		{
-@@ -338,10 +566,15 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -338,10 +578,15 @@ public class ServerSystemBlockSimulation : ServerSystem
  		};
  		if (client.Player.WorldData.CurrentGameMode == EnumGameMode.Spectator)
  		{
@@ -294,7 +306,7 @@ index 6b3cdd0..8145edc 100644
  		{
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			string code = "noprivilege-buildbreak-" + enumWorldAccessResponse.ToString().ToLowerInvariant();
-@@ -354,12 +587,29 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -354,12 +599,29 @@ public class ServerSystemBlockSimulation : ServerSystem
  				code = "noprivilege-buildbreak-" + claimant.Substring("custommessage-".Length);
  			}
  			client.Player.SendIngameError(code, null, claimant);
@@ -314,7 +326,7 @@ index 6b3cdd0..8145edc 100644
  		if (blockPlaceOrBreak.Mode == 2)
  		{
 +			// Stratum: Decor removal bypasses the reach check in TryModifyBlockInWorld.
-+			if (!((IPlayer)client.Player).IsInInteractionRangeOf(blockSelection.Position, 0.7f))
++			if (!StratumBlockReachGuard.IsWithinBlockInteractionRange((IPlayer)client.Player, blockSelection.Position, 0.7f))
 +			{
 +				RevertBlockInteractions(client.Player, blockSelection.Position);
 +				return;
@@ -324,7 +336,7 @@ index 6b3cdd0..8145edc 100644
  				worldChunk.BreakDecor(server, blockSelection.Position, blockSelection.Face);
  				worldChunk.MarkModified();
  			}
-@@ -391,10 +641,13 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -391,10 +653,13 @@ public class ServerSystemBlockSimulation : ServerSystem
  		Packet_ClientHandInteraction handInteraction = packet.HandInteraction;
  		if (client.Player.WorldData.CurrentGameMode == EnumGameMode.Spectator || handInteraction.UseType == 0 || handInteraction.MouseButton != 2)
  		{
@@ -338,23 +350,26 @@ index 6b3cdd0..8145edc 100644
  		Vec3d hitPosition = new Vec3d(CollectibleNet.DeserializeDoublePrecise(handInteraction.HitX), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitY), CollectibleNet.DeserializeDoublePrecise(handInteraction.HitZ));
  		BlockSelection blockSelection = new BlockSelection
  		{
-@@ -402,10 +655,15 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -402,11 +667,17 @@ public class ServerSystemBlockSimulation : ServerSystem
  			Face = face,
  			HitPosition = hitPosition,
  			SelectionBoxIndex = handInteraction.SelectionBoxIndex,
  			SelectionBoxId = handInteraction.SelectionBoxId
  		};
+-		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !((IPlayer)player).IsInInteractionRangeOf(blockPos, 0f))
 +		if (!StratumBlockReachGuard.TryAcceptBlockInteract(server, client, blockSelection, out string stratumReachDisconnectReason))
 +		{
 +			RejectStratumBlockReach(client, blockSelection.Position, stratumReachDisconnectReason);
 +			return;
 +		}
- 		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !((IPlayer)player).IsInInteractionRangeOf(blockPos, 0f))
++		// Stratum: Block reach applies even with AntiAbuse off.
++		if (!StratumBlockReachGuard.IsWithinBlockInteractionRange((IPlayer)player, blockPos, 0f))
  		{
  			ServerMain.Logger.Audit("{0} tried to interact with a block out of range.", player.PlayerName);
  			RevertBlockInteractions(client.Player, blockSelection.Position);
  			return;
-@@ -418,11 +676,10 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 		}
+@@ -418,11 +689,10 @@ public class ServerSystemBlockSimulation : ServerSystem
  			LandClaim blockingLandClaimant = server.WorldMap.GetBlockingLandClaimant(client.Player, blockSelection.Position, EnumBlockAccessFlags.BuildOrBreak);
  			client.Player.SendIngameError(code, null, blockingLandClaimant?.LastKnownOwnerName);
  			return;
@@ -366,7 +381,7 @@ index 6b3cdd0..8145edc 100644
  		{
  		default:
  			return;
-@@ -483,10 +740,21 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -483,10 +753,21 @@ public class ServerSystemBlockSimulation : ServerSystem
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.UP), sendPlayerData: false);
  		RevertBlockInteraction2(targetPlayer, pos.AddCopy(BlockFacing.DOWN), sendPlayerData: false);
  		server.SendOwnPlayerData(targetPlayer);
@@ -388,7 +403,21 @@ index 6b3cdd0..8145edc 100644
  		server.SendSetBlock(targetPlayer, server.WorldMap.RawRelaxedBlockAccess.GetBlockId(pos), pos.X, pos.InternalY, pos.Z);
  		BlockEntity blockEntity = server.WorldMap.RawRelaxedBlockAccess.GetBlockEntity(pos);
  		if (blockEntity != null)
-@@ -573,11 +841,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -503,11 +784,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 	{
+ 		BlockPos blockPos = new BlockPos(cmd.X, cmd.Y, cmd.Z);
+ 		Vec3d hitPosition = new Vec3d(CollectibleNet.DeserializeDouble(cmd.HitX), CollectibleNet.DeserializeDouble(cmd.HitY), CollectibleNet.DeserializeDouble(cmd.HitZ));
+ 		ItemSlot activeHotbarSlot = player.inventoryMgr.ActiveHotbarSlot;
+ 		bool flag = server.PlayerHasPrivilege(player.ClientId, Privilege.pickingrange);
+-		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !flag && !((IPlayer)player).IsInInteractionRangeOf(blockPos, 0.7f))
++		// Stratum: Check break and placement reach with AntiAbuse off too.
++		if (!flag && !StratumBlockReachGuard.IsWithinBlockInteractionRange((IPlayer)player, blockPos, 0.7f))
+ 		{
+ 			ServerMain.Logger.Audit("Client {0} tried to break/place a block out of range | {1}", player.PlayerName, activeHotbarSlot.Itemstack?.ToString());
+ 			activeHotbarSlot.MarkDirty();
+ 			return false;
+ 		}
+@@ -573,15 +855,14 @@ public class ServerSystemBlockSimulation : ServerSystem
  					server.BroadcastHotbarSlot(player);
  				}
  				activeHotbarSlot.MarkDirty();
@@ -398,11 +427,108 @@ index 6b3cdd0..8145edc 100644
 +		// Stratum: Unknown packet modes must not fall through to block breaking.
 +		else if (cmd.Mode == Packet_BlockSetModeEnum.Break)
  		{
- 			Block block3 = server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 2);
- 			int index = ((!block3.SideSolid.Any) ? server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 1).Id : block3.BlockId);
- 			Block block4 = (blockSelection.Block = server.Blocks[index]);
+-			Block block3 = server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 2);
+-			int index = ((!block3.SideSolid.Any) ? server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 1).Id : block3.BlockId);
+-			Block block4 = (blockSelection.Block = server.Blocks[index]);
++			Block block4 = (blockSelection.Block = StratumGetSelectedBreakBlock(blockPos));
  			IItemStack itemstack = activeHotbarSlot.Itemstack;
-@@ -619,10 +888,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			int num = 0;
+ 			if (itemstack != null)
+ 			{
+ 				num = itemstack.Collectible.GetToolTier(activeHotbarSlot);
+@@ -595,18 +876,87 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			float dropQuantityMultiplier = 1f;
+ 			EnumHandling handling = EnumHandling.PassThrough;
+ 			server.EventManager.TriggerBreakBlock(player, blockSelection, ref dropQuantityMultiplier, ref handling);
+ 			if (handling == EnumHandling.PassThrough)
+ 			{
+-				if (itemstack != null)
++				StratumBreakFailureKey stratumFailKey = new StratumBreakFailureKey(blockPos.X, blockPos.Y, blockPos.Z, blockPos.dimension, block4.BlockId);
++				long stratumFailNow = Environment.TickCount64;
++				StratumSweepFailedBreakAttemptsIfDue(stratumFailNow);
++				int stratumFailedAttempts = 0;
++				if (stratumFailedBreakAttempts.TryGetValue(stratumFailKey, out StratumBreakFailure stratumFailure))
++				{
++					bool stratumExpired = stratumFailNow - stratumFailure.LastMs > StratumBreakFailureTimeoutMs;
++					bool stratumModeChanged = stratumFailure.Mode != player.WorldData.CurrentGameMode;
++					if (!stratumExpired && !stratumModeChanged)
++					{
++						stratumFailedAttempts = stratumFailure.Count;
++					}
++					else
++					{
++						stratumLoggedBreakRefusals.Remove(stratumFailKey);
++					}
++				}
++				if (stratumFailedAttempts >= 3)
+ 				{
+-					itemstack.Collectible.OnBlockBrokenWith(server, player.Entity, activeHotbarSlot, blockSelection, dropQuantityMultiplier);
++					if (stratumLoggedBreakRefusals.Add(stratumFailKey))
++					{
++						ServerMain.Logger.Warning("Stratum refused to replay a failed break of {0} at {1} for {2}", block4.Code, blockPos, player.PlayerName);
++					}
++					return false;
+ 				}
+-				else
++				// Stratum: Protect against unhandled exceptions in item/block break callbacks (#282).
++				try
++				{
++					if (itemstack != null)
++					{
++						// Stratum: Return through the existing client-resync path when a collectible behavior vetoes the break.
++						if (!itemstack.Collectible.OnBlockBrokenWith(server, player.Entity, activeHotbarSlot, blockSelection, dropQuantityMultiplier)
++							&& StratumGetSelectedBreakBlock(blockPos).BlockId == block4.BlockId)
++						{
++							return false;
++						}
++					}
++					else
++					{
++						block4.OnBlockBroken(server, blockPos, player, dropQuantityMultiplier);
++					}
++				}
++				catch (Exception ex)
+ 				{
+-					block4.OnBlockBroken(server, blockPos, player, dropQuantityMultiplier);
++					StratumLogBlockBreakException(itemstack, block4, ex, false, blockSelection, player);
++					try
++					{
++						if (StratumGetSelectedBreakBlock(blockPos).BlockId == block4.BlockId)
++						{
++							block4.OnBlockBroken(server, blockPos, player, dropQuantityMultiplier);
++							if (itemstack != null)
++							{
++								EnumItemDamageSource[] damagedBy = itemstack.Collectible.GetDamagedBy(activeHotbarSlot);
++								if (damagedBy != null && damagedBy.Contains(EnumItemDamageSource.BlockBreaking))
++								{
++									itemstack.Collectible.DamageItem(server, player.Entity, activeHotbarSlot, 1, true);
++								}
++							}
++						}
++					}
++					catch (Exception fallbackEx)
++					{
++						StratumLogBlockBreakException(itemstack, block4, fallbackEx, true, blockSelection, player);
++						if (StratumGetSelectedBreakBlock(blockPos).BlockId == block4.BlockId)
++						{
++							stratumFailedBreakAttempts[stratumFailKey] = new StratumBreakFailure
++							{
++								Count = stratumFailedAttempts + 1,
++								LastMs = stratumFailNow,
++								Mode = player.WorldData.CurrentGameMode
++							};
++							return false;
++						}
++					}
+ 				}
++				stratumFailedBreakAttempts.Remove(stratumFailKey);
++				stratumLoggedBreakRefusals.Remove(stratumFailKey);
+ 				if (server.WorldMap.GetChunk(blockSelection.Position) is ServerChunk serverChunk2)
+ 				{
+ 					serverChunk2.BlocksRemoved++;
+ 					serverChunk2.DirtyForSaving = true;
+ 				}
+@@ -619,14 +969,120 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (activeHotbarSlot.Itemstack == null && itemstack != null)
  			{
  				server.BroadcastHotbarSlot(player);
@@ -416,8 +542,114 @@ index 6b3cdd0..8145edc 100644
  		return true;
  	}
  
++	// A break that keeps failing while the block is still there must not replay
++	// OnBlockBroken and GetDrops on every client packet. The entry expires after
++	// a few seconds and when the game mode changes, and the key includes dimension.
++	private readonly Dictionary<StratumBreakFailureKey, StratumBreakFailure> stratumFailedBreakAttempts = new Dictionary<StratumBreakFailureKey, StratumBreakFailure>();
++
++	private readonly HashSet<StratumBreakFailureKey> stratumLoggedBreakRefusals = new HashSet<StratumBreakFailureKey>();
++	private const long StratumBreakFailureTimeoutMs = 5000;
++	private const long StratumBreakFailureSweepIntervalMs = 1000;
++	private long stratumNextBreakFailureSweepMs;
++
++	private void StratumSweepFailedBreakAttemptsIfDue(long nowMs)
++	{
++		if (nowMs < stratumNextBreakFailureSweepMs) return;
++		StratumSweepFailedBreakAttempts(nowMs);
++		stratumNextBreakFailureSweepMs = nowMs + StratumBreakFailureSweepIntervalMs;
++	}
++
++	private void StratumSweepFailedBreakAttempts(long nowMs)
++	{
++		List<StratumBreakFailureKey> expiredKeys = null;
++		foreach (KeyValuePair<StratumBreakFailureKey, StratumBreakFailure> entry in stratumFailedBreakAttempts)
++		{
++			if (nowMs - entry.Value.LastMs <= StratumBreakFailureTimeoutMs) continue;
++			expiredKeys ??= new List<StratumBreakFailureKey>();
++			expiredKeys.Add(entry.Key);
++		}
++
++		if (expiredKeys == null) return;
++		foreach (StratumBreakFailureKey key in expiredKeys)
++		{
++			stratumFailedBreakAttempts.Remove(key);
++			stratumLoggedBreakRefusals.Remove(key);
++		}
++	}
++
++	private struct StratumBreakFailure
++	{
++		public int Count;
++		public long LastMs;
++		public EnumGameMode Mode;
++	}
++
++	private readonly struct StratumBreakFailureKey : IEquatable<StratumBreakFailureKey>
++	{
++		public readonly int X;
++		public readonly int Y;
++		public readonly int Z;
++		public readonly int Dimension;
++		public readonly int BlockId;
++
++		public StratumBreakFailureKey(int x, int y, int z, int dimension, int blockId)
++		{
++			X = x;
++			Y = y;
++			Z = z;
++			Dimension = dimension;
++			BlockId = blockId;
++		}
++
++		public bool Equals(StratumBreakFailureKey other)
++		{
++			return X == other.X && Y == other.Y && Z == other.Z && Dimension == other.Dimension && BlockId == other.BlockId;
++		}
++
++		public override bool Equals(object obj)
++		{
++			return obj is StratumBreakFailureKey other && Equals(other);
++		}
++
++		public override int GetHashCode()
++		{
++			return HashCode.Combine(X, Y, Z, Dimension, BlockId);
++		}
++	}
++
++	// Stratum: Match the block selection rule for retries and post-callback vetoes.
++	private Block StratumGetSelectedBreakBlock(BlockPos blockPos)
++	{
++		Block block = server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 2);
++		int blockId = !block.SideSolid.Any ? server.WorldMap.RelaxedBlockAccess.GetBlock(blockPos, 1).Id : block.BlockId;
++		return server.Blocks[blockId];
++	}
++
++	// Stratum: Bound repeated outer-handler logging after collectible behaviors fail.
++	private void StratumLogBlockBreakException(IItemStack itemstack, Block block, Exception exception, bool fallback, BlockSelection blockSelection, ServerPlayer player)
++	{
++		string itemCode = itemstack?.Collectible?.Code?.ToString() ?? "(empty hand)";
++		string blockCode = block.Code.ToString();
++		string callback = fallback ? "fallback OnBlockBroken" : itemstack != null ? "OnBlockBrokenWith" : "OnBlockBroken";
++		if (!stratumLoggedBlockBreakExceptions.TryAdd((itemCode, blockCode, exception.GetType(), callback, fallback), 0)) return;
++
++		if (fallback)
++		{
++			ServerMain.Logger.Error("Exception thrown during {0} for block {1} at {2} for player {3}:", callback, blockCode, blockSelection.Position, player.PlayerName);
++		}
++		else
++		{
++			ServerMain.Logger.Error("Exception thrown during {0} for block {1} at {2} for player {3} with item {4}:", callback, blockCode, blockSelection.Position, player.PlayerName, itemCode);
++		}
++		ServerMain.Logger.Error(exception);
++	}
++
  	internal bool IsAnyPlayerInBlock(BlockPos pos, Block block, IPlayer ignorePlayer)
-@@ -650,11 +923,14 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 	{
+ 		Cuboidf[] collisionBoxes = block.GetCollisionBoxes(server.BlockAccessor, pos);
+ 		if (collisionBoxes == null)
+ 		{
+@@ -650,15 +1106,19 @@ public class ServerSystemBlockSimulation : ServerSystem
  		return false;
  	}
  
@@ -432,8 +664,213 @@ index 6b3cdd0..8145edc 100644
  
  	private void UpdateEvery100ms(float t1)
  	{
++		StratumSweepFailedBreakAttemptsIfDue(Environment.TickCount64);
  		HandleDirtyAndUpdatedBlocks();
-@@ -778,12 +1054,20 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 		SendDirtyBlockEntities();
+ 	}
+ 
+ 	private void HandleDirtyAndUpdatedBlocks()
+@@ -667,15 +1127,22 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 		while (server.UpdatedBlocks.Count > 0 && num++ < 500)
+ 		{
+ 			BlockPos pos = server.UpdatedBlocks.Dequeue();
+ 			server.TriggerNeighbourBlocksUpdate(pos);
+ 		}
+-		Vec4i result;
+-		while (!server.DirtyBlocks.IsEmpty && server.DirtyBlocks.TryDequeue(out result))
++		StratumBlockTickConfig stratumBlockTicks = StratumRuntime.Config.Performance.BlockTicks;
++		int stratumDirtyBefore = server.DirtyBlocks.Count;
++		int stratumModifiedBefore = server.ModifiedBlocks.Count;
++		int stratumNoRelightBefore = server.ModifiedBlocksNoRelight.Count;
++		int stratumDirtyBudget = stratumBlockTicks.MaxDirtyBlocksPerPass;
++		int stratumDirtyWaiting = server.DirtyBlocks.Count;
++		// More than 8x the cap: this pass may publish up to 4x the cap.
++		if ((long)stratumDirtyWaiting > stratumDirtyBudget * 8L)
+ 		{
+-			server.SendSetBlock(server.BlockAccessor.GetBlockRaw(result.X, result.Y, result.Z).Id, result.X, result.Y, result.Z, result.W, exchangeOnly: true);
++			stratumDirtyBudget = (int)Math.Min((long)stratumDirtyWaiting, stratumDirtyBudget * 4L);
+ 		}
++		StratumDrainDirtyBlocks(stratumDirtyBudget);
+ 		if (!server.ModifiedBlocks.IsEmpty)
+ 		{
+ 			List<BlockPos> list = new List<BlockPos>();
+ 			BlockPos result2;
+ 			while (!server.ModifiedBlocks.IsEmpty && server.ModifiedBlocks.TryDequeue(out result2))
+@@ -704,10 +1171,12 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 		if (server.ModifiedBlocksMinimal.Count > 0)
+ 		{
+ 			server.SendSetBlocksPacket(server.ModifiedBlocksMinimal, 70);
+ 			server.ModifiedBlocksMinimal.Clear();
+ 		}
++		StratumRuntime.PerformanceStats.RecordDirtyBlockPublish(stratumDirtyBefore, server.DirtyBlocks.Count, stratumModifiedBefore, server.ModifiedBlocks.Count, stratumNoRelightBefore, server.ModifiedBlocksNoRelight.Count);
++		StratumLogDirtyBlockBacklog();
+ 		if (!server.ModifiedDecors.IsEmpty)
+ 		{
+ 			List<BlockPos> list3 = new List<BlockPos>();
+ 			BlockPos result4;
+ 			while (!server.ModifiedDecors.IsEmpty && server.ModifiedDecors.TryDequeue(out result4))
+@@ -716,17 +1185,107 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			}
+ 			server.SendSetDecorsPackets(list3);
+ 		}
+ 	}
+ 
++	// Stratum: cap distinct DirtyBlocks. The block id is read at publish time.
++	// A repeat in the same pass keeps the exception only when both entries agree.
++	private void StratumDrainDirtyBlocks(int budget)
++	{
++		stratumDirtyBlocksByChunk.Clear();
++		stratumDirtyChunkScratch.Clear();
++		stratumDirtyPosIndex.Clear();
++		if (server.DirtyBlocks.IsEmpty)
++		{
++			return;
++		}
++		int taken = 0;
++		while (taken < budget && server.DirtyBlocks.TryDequeue(out Vec4i result))
++		{
++			int blockId = server.BlockAccessor.GetBlockRaw(result.X, result.Y, result.Z).Id;
++			var posKey = (result.X, result.Y, result.Z);
++			if (stratumDirtyPosIndex.TryGetValue(posKey, out int existingIndex))
++			{
++				long existingChunk = server.WorldMap.ChunkIndex3D(result.X / 32, result.Y / 32, result.Z / 32);
++				List<StratumDirtyBlockUpdate> existing = stratumDirtyBlocksByChunk[existingChunk];
++				StratumDirtyBlockUpdate prior = existing[existingIndex];
++				prior.BlockId = blockId;
++				prior.ExceptClientId = prior.ExceptClientId == result.W ? result.W : -1;
++				existing[existingIndex] = prior;
++				continue;
++			}
++			taken++;
++			long chunkIndex = server.WorldMap.ChunkIndex3D(result.X / 32, result.Y / 32, result.Z / 32);
++			if (!stratumDirtyBlocksByChunk.TryGetValue(chunkIndex, out List<StratumDirtyBlockUpdate> updates))
++			{
++				updates = new List<StratumDirtyBlockUpdate>();
++				stratumDirtyBlocksByChunk[chunkIndex] = updates;
++				stratumDirtyChunkScratch.Add(chunkIndex);
++			}
++			stratumDirtyPosIndex[posKey] = updates.Count;
++			updates.Add(new StratumDirtyBlockUpdate
++			{
++				X = result.X,
++				Y = result.Y,
++				Z = result.Z,
++				BlockId = blockId,
++				ExceptClientId = result.W
++			});
++		}
++		foreach (long chunkIndex in stratumDirtyChunkScratch)
++		{
++			List<StratumDirtyBlockUpdate> updates = stratumDirtyBlocksByChunk[chunkIndex];
++			foreach (ConnectedClient client in server.Clients.Values)
++			{
++				if (!client.State.ConnectedOrPlaying() || client.Player == null || !client.DidSendChunk(chunkIndex))
++				{
++					continue;
++				}
++				for (int i = 0; i < updates.Count; i++)
++				{
++					StratumDirtyBlockUpdate update = updates[i];
++					if (update.ExceptClientId == client.Id)
++					{
++						continue;
++					}
++					server.SendSetBlock(client.Player, update.BlockId, update.X, update.Y, update.Z, exchangeOnly: true);
++				}
++			}
++		}
++	}
++
++	private void StratumLogDirtyBlockBacklog()
++	{
++		int dirtyLeft = server.DirtyBlocks.Count;
++		int modifiedLeft = server.ModifiedBlocks.Count;
++		int modifiedNoRelightLeft = server.ModifiedBlocksNoRelight.Count;
++		if (dirtyLeft == 0 && modifiedLeft == 0 && modifiedNoRelightLeft == 0)
++		{
++			return;
++		}
++		long now = server.ElapsedMilliseconds;
++		if (now - stratumDirtyBacklogLogMs < 1000)
++		{
++			return;
++		}
++		stratumDirtyBacklogLogMs = now;
++		ServerMain.Logger.Debug("[Stratum] dirty block pass left queued: dirty={0} modified={1} modifiedNoRelight={2}", dirtyLeft, modifiedLeft, modifiedNoRelightLeft);
++	}
++
++	// Stratum: Cache full snapshots separately from public ones.
++	private readonly Dictionary<Packet_BlockEntity, BlockEntity> stratumInventoryBlockEntities = new();
++	private readonly Dictionary<Packet_BlockEntity, Packet_BlockEntity> stratumFullBlockEntities = new();
++
+ 	private void SendDirtyBlockEntities()
+ 	{
+ 		if (server.DirtyBlockEntities.IsEmpty)
+ 		{
+ 			return;
+ 		}
+ 		blockEntitiesPacked.Clear();
++		stratumInventoryBlockEntities.Clear();
++		stratumFullBlockEntities.Clear();
+ 		noblockEntities.Clear();
+ 		positionsDone.Clear();
+ 		ConcurrentQueue<BlockPos> dirtyBlockEntities = server.DirtyBlockEntities;
+ 		if (!dirtyBlockEntities.IsEmpty)
+ 		{
+@@ -737,11 +1296,16 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 				if (positionsDone.Add(result))
+ 				{
+ 					BlockEntity blockEntity = server.WorldMap.GetBlockEntity(result);
+ 					if (blockEntity != null)
+ 					{
+-						blockEntitiesPacked.Add(BlockEntityToPacket(blockEntity, ms));
++						// Stratum: remember which packet came from which container so the
++						// per-player send pass below can swap in a filtered or full tree
++						// depending on whether that recipient has the container open.
++						Packet_BlockEntity packet = BlockEntityToPacket(blockEntity, ms);
++						blockEntitiesPacked.Add(packet);
++						if (blockEntity is IBlockEntityContainer) stratumInventoryBlockEntities.Add(packet, blockEntity);
+ 					}
+ 					else
+ 					{
+ 						noblockEntities.Add(result);
+ 					}
+@@ -762,28 +1326,54 @@ public class ServerSystemBlockSimulation : ServerSystem
+ 			foreach (Packet_BlockEntity item in blockEntitiesPacked)
+ 			{
+ 				long index3d = server.WorldMap.ChunkIndex3D(new ChunkPos(item.PosX / 32, item.PosY / 32, item.PosZ / 32));
+ 				if (value.DidSendChunk(index3d))
+ 				{
+-					playerBlockEntitiesPacked.Add(item);
++					// Stratum start: send the full snapshot to viewers, the public one to everyone else.
++					if (StratumInventoryPrivacy.InventoryGuardsEnabled
++						&& stratumInventoryBlockEntities.TryGetValue(item, out BlockEntity blockEntity)
++						&& StratumInventorySync.CanViewBlockEntity(blockEntity, value.Player))
++					{
++						if (!stratumFullBlockEntities.TryGetValue(item, out Packet_BlockEntity fullPacket))
++						{
++							fullPacket = StratumInventorySync.GetFullBlockEntityPacket(blockEntity, item);
++							stratumFullBlockEntities.Add(item, fullPacket);
++						}
++						playerBlockEntitiesPacked.Add(fullPacket);
++					}
++					else
++					{
++						playerBlockEntitiesPacked.Add(item);
++					}
++					// Stratum end
+ 				}
+ 			}
+ 			if (playerBlockEntitiesPacked.Count + noblockEntities.Count > 0)
+ 			{
+ 				SendBlockEntitiesPacket(value, playerBlockEntitiesPacked, noblockEntities);
+ 			}
+ 		}
++		stratumInventoryBlockEntities.Clear();
++		stratumFullBlockEntities.Clear();
+ 	}
+ 
+ 	public override void OnServerTick(float dt)
  	{
  		if (server.RunPhase != EnumServerRunPhase.RunGame)
  		{
@@ -456,7 +893,7 @@ index 6b3cdd0..8145edc 100644
  			{
  				continue;
  			}
-@@ -812,22 +1096,37 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -812,22 +1402,32 @@ public class ServerSystemBlockSimulation : ServerSystem
  			catch (Exception e)
  			{
  				ServerMain.Logger.Error("Exception thrown in block.OnServerGameTick() for block code '{0}':", block?.Code);
@@ -475,11 +912,6 @@ index 6b3cdd0..8145edc 100644
  		{
  			return;
  		}
-+		if (queuedTicks.IsEmpty)
-+		{
-+			stratumPosPoolIndex = 0;
-+			stratumFluidPosPoolIndex = 0;
-+		}
 +		long stratumTimingStart = StratumRuntime.Timings.GetTimestamp();
  		chunksToBeTicked.Clear();
 +		StratumPerformanceConfig stratumPerformance = StratumRuntime.Config.Performance;
@@ -495,7 +927,7 @@ index 6b3cdd0..8145edc 100644
  			foreach (int clientId in clientIds)
  			{
  				if (!server.Clients.TryGetValue(clientId, out var value) || value.State != EnumClientState.Playing)
-@@ -862,34 +1161,116 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -862,34 +1462,116 @@ public class ServerSystemBlockSimulation : ServerSystem
  						}
  					}
  				}
@@ -615,7 +1047,7 @@ index 6b3cdd0..8145edc 100644
  		{
  			int num6 = rand.Next(32);
  			int num7 = rand.Next(32);
-@@ -905,29 +1286,73 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -905,10 +1587,11 @@ public class ServerSystemBlockSimulation : ServerSystem
  			if (fluid != 0)
  			{
  				tryTickBlock(server.WorldMap.Blocks[fluid], tmpPos.Set(num + num6, num2 + num8, num3 + num7));
@@ -627,66 +1059,18 @@ index 6b3cdd0..8145edc 100644
  	private bool tryTickBlock(Block block, BlockPos atPos)
  	{
  		if (!block.ShouldReceiveServerGameTicks(server.api.World, atPos, rand, out var extra))
- 		{
- 			return false;
- 		}
- 		if (extra == null)
- 		{
--			queuedTicks.Enqueue(atPos.Copy());
-+			queuedTicks.Enqueue(StratumGetPooledPos(atPos));
- 		}
- 		else
- 		{
- 			queuedTicks.Enqueue(new BlockPosWithExtraObject(atPos.Copy(), extra));
- 		}
- 		return true;
- 	}
+@@ -928,12 +1611,12 @@ public class ServerSystemBlockSimulation : ServerSystem
  
-+	private BlockPos StratumGetPooledPos(BlockPos source)
-+	{
-+		if (source is FluidBlockPos)
-+		{
-+			return StratumGetPooledFluidPos(source);
-+		}
-+		if (stratumPosPool == null)
-+		{
-+			stratumPosPool = new BlockPos[StratumPosPoolSize];
-+			for (int i = 0; i < StratumPosPoolSize; i++)
-+			{
-+				stratumPosPool[i] = new BlockPos(0);
-+			}
-+		}
-+		if (stratumPosPoolIndex < StratumPosPoolSize)
-+		{
-+			BlockPos pooled = stratumPosPool[stratumPosPoolIndex++];
-+			pooled.Set(source.X, source.Y, source.Z);
-+			pooled.SetDimension(source.dimension);
-+			return pooled;
-+		}
-+		return source.Copy();
-+	}
-+
-+	private FluidBlockPos StratumGetPooledFluidPos(BlockPos source)
-+	{
-+		if (stratumFluidPosPool == null)
-+		{
-+			stratumFluidPosPool = new FluidBlockPos[StratumPosPoolSize];
-+			for (int i = 0; i < StratumPosPoolSize; i++)
-+			{
-+				stratumFluidPosPool[i] = new FluidBlockPos();
-+			}
-+		}
-+		if (stratumFluidPosPoolIndex < StratumPosPoolSize)
-+		{
-+			FluidBlockPos pooled = stratumFluidPosPool[stratumFluidPosPoolIndex++];
-+			pooled.Set(source.X, source.Y, source.Z);
-+			pooled.SetDimension(source.dimension);
-+			return pooled;
-+		}
-+		return (FluidBlockPos)source.Copy();
-+	}
  	private Packet_BlockEntity BlockEntityToPacket(BlockEntity blockEntity, FastMemoryStream ms)
  	{
  		ms.Reset();
  		BinaryWriter stream = new BinaryWriter(ms);
- 		TreeAttribute treeAttribute = new TreeAttribute();
+-		TreeAttribute treeAttribute = new TreeAttribute();
+-		blockEntity.ToTreeAttributes(treeAttribute);
++		// Stratum: Hide unopened inventory slots.
++		ITreeAttribute treeAttribute = StratumInventorySync.GetBlockEntityAttributes(blockEntity);
+ 		treeAttribute.ToBytes(stream);
+ 		string text = ServerMain.ClassRegistry.blockEntityTypeToClassnameMapping[blockEntity.GetType()];
+ 		byte[] array = ms.ToArray();
+ 		Packet_BlockEntity packet_BlockEntity = new Packet_BlockEntity();
+ 		packet_BlockEntity.Classname = text;

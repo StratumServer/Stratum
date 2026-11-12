@@ -86,6 +86,8 @@ release manifest, verifies it, unpacks it, and writes Stratum's patched files on
 top. Later launches use the prepared install unless the Stratum or base version
 changes.
 
+The documentation site at https://stratumvs.dev/docs/ covers installation, configuration, commands, compatibility, moderation, and troubleshooting.
+
 ## Flags
 
 | Flag                       | Effect                                    |
@@ -94,15 +96,19 @@ changes.
 | `--stratum-help`           | Print launcher options and exit           |
 | `--stratum-refresh`        | Download and prepare the base server again |
 | `--stratum-skip-bootstrap` | Skip first-run prepare work                |
-| `--stratum-prepare-only`   | Prepare the install, then exit             |
+| `--stratum-prepare-only`   | Prepare the install, then exit. Exits non-zero if the build embeds no patched files; refused with `--stratum-skip-bootstrap` |
 | `--stratum-no-banner`      | Suppress the startup banner               |
 
 Anything else is forwarded to the server, such as `--port` or `--dataPath`.
 
 ## Commands
 
-Stratum adds a set of in-game commands on top of vanilla. See
-[docs/commands/kits.md](docs/commands/kits.md) for `/kit` and `/kitedit`.
+Stratum adds a set of in-game commands on top of vanilla. The full list of pages is in [docs/README.md](docs/README.md).
+
+- [docs/commands/kits.md](docs/commands/kits.md): `/kit` and `/kitedit`.
+- [docs/role-prefixes.md](docs/role-prefixes.md): stacking role name prefixes.
+- [docs/commands/friendlyfire.md](docs/commands/friendlyfire.md): `/friendlyfire`, the runtime group friendly-fire toggle.
+- [docs/commands/inventory-privacy.md](docs/commands/inventory-privacy.md): the `hardening.inventoryGuards` inventory privacy setting.
 
 ## Build
 
@@ -121,7 +127,7 @@ make smoke        # build + boot-test the server
 git clone https://github.com/StratumServer/Stratum.git
 cd Stratum
 .\scripts\bootstrap.ps1
-dotnet build VintageStory.slnx -c Release
+dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true
 .\scripts\smoke-test.ps1    # boot-test the server
 ```
 
@@ -147,4 +153,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md#versioning-and-releases) for the full sche
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE) for the Stratum source code, patches, scripts and documentation. It grants no rights to Vintage Story, see [NOTICE.md](NOTICE.md).

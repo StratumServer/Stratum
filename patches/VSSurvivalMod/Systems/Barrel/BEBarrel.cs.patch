@@ -1,0 +1,46 @@
+diff --git a/VSSurvivalMod/Systems/Barrel/BEBarrel.cs b/VSSurvivalMod/Systems/Barrel/BEBarrel.cs
+index 8b593ea..e1760df 100644
+--- a/VSSurvivalMod/Systems/Barrel/BEBarrel.cs
++++ b/VSSurvivalMod/Systems/Barrel/BEBarrel.cs
+@@ -1,6 +1,7 @@
+ using System;
++using System.Collections.Generic;
+ using Vintagestory.API.Client;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Config;
+ using Vintagestory.API.Datastructures;
+ using Vintagestory.API.MathTools;
+@@ -254,10 +255,20 @@ namespace Vintagestory.GameContent
+         public void SealBarrel()
+         {
+             if (Sealed) return;
+ 
+             Sealed = true;
++            // Stratum: Close open windows when sealing the barrel.
++            if (StratumInventoryPrivacy.InventoryGuardsEnabled && Api is ICoreServerAPI sapi)
++            {
++                foreach (string uid in new List<string>(Inventory.openedByPlayerGUIds))
++                {
++                    if (Api.World.PlayerByUid(uid) is not IServerPlayer player) continue;
++                    player.InventoryManager.CloseInventory(Inventory);
++                    sapi.Network.SendBlockEntityPacket(player, Pos, (int)EnumBlockEntityPacketId.Close);
++                }
++            }
+             SealedSinceTotalHours = Api.World.Calendar.TotalHours;
+             MarkDirty(true);
+         }
+ 
+ 
+@@ -328,10 +339,12 @@ namespace Vintagestory.GameContent
+                 player.InventoryManager?.CloseInventory(Inventory);
+             }
+ 
+             if (packetid == (int)EnumBlockEntityPacketId.Open)
+             {
++                // Stratum: Reject open requests for sealed barrels.
++                if (Sealed) return;
+                 var perms = new BlockEntity.CachedAccessPerms(this.Api.World, this.Pos, player);
+                 if (!perms.IsInteractingPlayerAllowedTo(EnumBlockAccessFlags.Use, true, "barrel"))
+                 {
+                     // No reverting, just drop the request.
+                     return;

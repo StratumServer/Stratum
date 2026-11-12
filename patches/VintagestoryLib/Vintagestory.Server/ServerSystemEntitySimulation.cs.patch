@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
-index ea1d5c0..ea00cfd 100644
+index ea1d5c0..30900e0 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySimulation.cs
 @@ -1,8 +1,13 @@
@@ -17,7 +17,7 @@ index ea1d5c0..ea00cfd 100644
  using Vintagestory.API.Common.Entities;
  using Vintagestory.API.Config;
  using Vintagestory.API.Datastructures;
-@@ -22,13 +27,153 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -22,13 +27,155 @@ public class ServerSystemEntitySimulation : ServerSystem
  
  	private Dictionary<string, List<string>> deathMessagesCache;
  
@@ -142,6 +142,8 @@ index ea1d5c0..ea00cfd 100644
 +
 +		public float AccumulatedDeltaTime;
 +
++		public float ClampedDeltaTime;
++
 +		// Stratum ambient-fauna tier: resolved once per entity (StartsWith against the configured
 +		// prefix list) and cached so the per-tick check is a couple of field reads.
 +		public bool AmbientResolved;
@@ -171,7 +173,7 @@ index ea1d5c0..ea00cfd 100644
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.clientAwarenessEvents[EnumClientAwarenessEvent.ChunkTransition].Add(OnPlayerLeaveChunk);
  		server.PacketHandlers[17] = HandleEntityInteraction;
-@@ -43,26 +188,33 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -43,26 +190,33 @@ public class ServerSystemEntitySimulation : ServerSystem
  		player.Player.ItemCollectMode = packet.RuntimeSetting.ItemCollectMode;
  	}
  
@@ -208,7 +210,7 @@ index ea1d5c0..ea00cfd 100644
  	private void EventManager_OnGameWorldBeingSaved()
  	{
  		if (server.RunPhase != EnumServerRunPhase.Shutdown)
-@@ -77,66 +229,271 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -77,66 +231,281 @@ public class ServerSystemEntitySimulation : ServerSystem
  	}
  
  	public override void OnBeginModsAndConfigReady()
@@ -356,6 +358,13 @@ index ea1d5c0..ea00cfd 100644
 +		int stratumLookedAtBlocks = 0;
 +		int stratumTcpFallbackClients = 0; // Stratum: count clients stuck on TCP position fallback
 +		int stratumSelectionTickIndex = ++stratumSelectionTickCounter;
++		// Stratum: the raytrace updates the player's selection. OnBeingLookedAt and the
++		// break guard both read it. The skip grows with the online count so a crowded
++		// server does not trace every player every few ticks.
++		StratumEntitySelectionConfig stratumSelection = StratumRuntime.Config.Performance.EntitySelection;
++		// Playing clients from the previous tick. Clients also holds the queue.
++		int stratumSelectionMaxSkip = stratumSelection.SkipTicks(stratumSelectionPlayingClients);
++		int stratumPlayingNow = 0;
  		foreach (ConnectedClient value in server.Clients.Values)
  		{
  			ConnectedClient client = value;
@@ -366,22 +375,22 @@ index ea1d5c0..ea00cfd 100644
 -				player.Entity.PreviousBlockSelection = player.Entity.BlockSelection?.Position.Copy();
 -				server.RayTraceForSelection(player, ref player.Entity.BlockSelection, ref player.Entity.EntitySelection, bFilter, eFilter);
 -				if (player.Entity.BlockSelection != null)
++				stratumPlayingNow++;
 +				if (client.FallBackToTcp) stratumTcpFallbackClients++; // Stratum: TCP fallback counter
 +				ServerPlayer player = client.Player;
 +				EntityPlayer entityPlayer = player.Entity;
 +				UpdateStratumPreviousBlockSelection(entityPlayer);
-+
 +				// Stratum: throttle the per-client raytrace. At 350 players the per-tick
 +				// fanout of RayTraceForSelection dominated entity.selection. Skip the trace
 +				// when the player has not moved or rotated meaningfully AND we re-traced
-+				// recently; OnBeingLookedAt still fires every tick on the cached selection.
++				// recently. OnBeingLookedAt and a held break both use that cached selection.
 +				if (!stratumSelectionState.TryGetValue(client.Id, out StratumSelectionState selState))
  				{
 -					bool firstTick = player.Entity.PreviousBlockSelection == null || player.Entity.BlockSelection.Position != player.Entity.PreviousBlockSelection;
 -					server.BlockAccessor.GetBlock(player.Entity.BlockSelection.Position).OnBeingLookedAt(player, player.Entity.BlockSelection, firstTick);
 +					selState = new StratumSelectionState
 +					{
-+						LastTraceTickIndex = stratumSelectionTickIndex - StratumSelectionMaxSkipTicks - 1
++						LastTraceTickIndex = stratumSelectionTickIndex - stratumSelectionMaxSkip - 1
 +					};
 +					stratumSelectionState[client.Id] = selState;
  				}
@@ -398,8 +407,10 @@ index ea1d5c0..ea00cfd 100644
 +				float dpitch = System.MathF.Abs(serverPos.Pitch - selState.LastPitch);
 +				bool moved = (dx * dx + dy * dy + dz * dz) > StratumSelectionPosThresholdSq;
 +				bool turned = dyaw > StratumSelectionRotThreshold || dpitch > StratumSelectionRotThreshold;
-+				bool ticksElapsed = (stratumSelectionTickIndex - selState.LastTraceTickIndex) >= StratumSelectionMaxSkipTicks;
-+				bool shouldTrace = moved || turned || ticksElapsed;
++				bool ticksElapsed = (stratumSelectionTickIndex - selState.LastTraceTickIndex) >= stratumSelectionMaxSkip;
++				EntityControls stratumControls = entityPlayer.ServerControls;
++				bool mining = stratumControls.LeftMouseDown || stratumControls.RightMouseDown;
++				bool shouldTrace = ticksElapsed || mining || moved || turned;
 +
 +				if (shouldTrace)
  				{
@@ -439,6 +450,7 @@ index ea1d5c0..ea00cfd 100644
 -				return false;
  			}
  		}
++		stratumSelectionPlayingClients = stratumPlayingNow;
 +		StratumRuntime.PerformanceStats.RecordEntitySelectionTick(stratumSelectionTraces, stratumLookedAtBlocks);
 +		StratumRuntime.PerformanceStats.RecordNetworkStats(stratumTcpFallbackClients);
 +		StratumRuntime.Timings.RecordElapsed("entity.selection", stratumSelectionTimingStart);
@@ -459,7 +471,7 @@ index ea1d5c0..ea00cfd 100644
 +
 +	private readonly Dictionary<int, StratumSelectionState> stratumSelectionState = new Dictionary<int, StratumSelectionState>();
 +	private int stratumSelectionTickCounter;
-+	private const int StratumSelectionMaxSkipTicks = 3;             // re-trace at least every 3 server ticks
++	private int stratumSelectionPlayingClients;
 +	private const double StratumSelectionPosThresholdSq = 0.0025;   // 5cm
 +	private const float StratumSelectionRotThreshold = 0.015f;      // ~0.86 degrees
 +
@@ -500,7 +512,7 @@ index ea1d5c0..ea00cfd 100644
  		SendEntityDespawns();
  		int count = server.DelayedSpawnQueue.Count;
  		if (count <= 0)
-@@ -185,19 +542,151 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -185,19 +554,164 @@ public class ServerSystemEntitySimulation : ServerSystem
  		}
  	}
  
@@ -541,6 +553,7 @@ index ea1d5c0..ea00cfd 100644
 +		long stratumInanimateEntityTickTicks = 0L;
 +		bool stratumRecordEntityCategoryTimings = StratumRuntime.Timings.Enabled;
 +		StratumEntityBehaviorTimings.SetEnabled(stratumRecordEntityCategoryTimings);
++		bool stratumRecordEntityTypeTimings = StratumEntityBehaviorTimings.Enabled; // Stratum: admin switch or a reader's lease, so entity types are recorded for readers too
 +		int stratumCreatureBudget = Math.Max(0, stratumEntityTicking.MaxCreatureTicksPerTick);
 +		int stratumCreatureEligibleSeen = 0;
 +		int stratumCreatureBudgetTicked = 0;
@@ -562,10 +575,15 @@ index ea1d5c0..ea00cfd 100644
 +				continue;
 +			}
 +
-+			bool shouldTickDimension = !Dimensions.ShouldNotTick(value.Pos, value.Api);
++			bool stratumShardAllowed = StratumShard.AllowsEntity(value);
++			if (!stratumShardAllowed)
++			{
++				stratumEntitiesThrottled++;
++			}
++			bool shouldTickDimension = stratumShardAllowed && !Dimensions.ShouldNotTick(value.Pos, value.Api);
 +			if (shouldTickDimension)
 +			{
-+				if (ShouldThrottleStratumEntityTick(value, stratumEntityTicking, dt, out float tickDeltaTime, out bool stratumExcludedFromBudget))
++				if (ShouldThrottleStratumEntityTick(value, stratumEntityTicking, dt, out float tickDeltaTime, out float despawnDeltaTime, out bool stratumExcludedFromBudget))
 +				{
 +					stratumEntitiesThrottled++;
 +					continue;
@@ -601,6 +619,7 @@ index ea1d5c0..ea00cfd 100644
 +						}
 +						st.SkippedTicks++;
 +						st.AccumulatedDeltaTime += tickDeltaTime;
++						st.ClampedDeltaTime += float.IsNaN(despawnDeltaTime) ? Math.Min(dt, 0.2f) : despawnDeltaTime;
 +						stratumEntitiesThrottled++;
 +						continue;
 +					}
@@ -610,13 +629,16 @@ index ea1d5c0..ea00cfd 100644
 -					value.OnGameTick(dt);
 +					bool stratumIsPlayerEntity = value is EntityPlayer;
 +					bool stratumIsCreatureEntity = !stratumIsPlayerEntity && value.IsCreature;
-+					long stratumEntityTickStart = stratumRecordEntityCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
++					long stratumEntityTickStart = stratumRecordEntityTypeTimings ? Stopwatch.GetTimestamp() : 0L;
 +					try
 +					{
++					// Stratum: raw sum for every behavior, clamped sum for despawn only.
++					Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaTime = despawnDeltaTime;
 +					value.OnGameTick(tickDeltaTime);
 +					}
 +					finally
 +					{
++						Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaTime = float.NaN;
 +						if (stratumRecordEntityCategoryTimings)
 +						{
 +							long stratumEntityTickElapsed = Stopwatch.GetTimestamp() - stratumEntityTickStart;
@@ -632,6 +654,9 @@ index ea1d5c0..ea00cfd 100644
 +							{
 +								stratumInanimateEntityTickTicks += stratumEntityTickElapsed;
 +							}
++						}
++						if (stratumRecordEntityTypeTimings)
++						{
 +							// Stratum: per-entity-type timing (#7)
 +							string stratumTypeKey = stratumEntityTypeTimingKeys.GetOrAdd(value.Code?.Path ?? "unknown", static k => "entity.type." + k);
 +							StratumEntityBehaviorTimings.RecordNamed(stratumTypeKey, stratumEntityTickStart);
@@ -655,7 +680,7 @@ index ea1d5c0..ea00cfd 100644
  				{
  					if (value is EntityPlayer entityPlayer)
  					{
-@@ -209,12 +698,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -209,12 +723,17 @@ public class ServerSystemEntitySimulation : ServerSystem
  						ServerMain.Logger.Warning("Exception while ticking entity {0} ({1}) at {2}: ", value.GetName(), value.Properties?.Class, value.Pos);
  						ServerMain.Logger.Error(e);
  					}
@@ -673,7 +698,7 @@ index ea1d5c0..ea00cfd 100644
  		}
  		ServerMain.FrameProfiler.Enter("despawning");
  		foreach (KeyValuePair<Entity, EntityDespawnData> item in list)
-@@ -222,27 +716,855 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -222,27 +741,917 @@ public class ServerSystemEntitySimulation : ServerSystem
  			server.DespawnEntity(item.Key, item.Value);
  			ServerMain.FrameProfiler.Mark("despawned-", item.Key.Code.Path);
  		}
@@ -786,6 +811,7 @@ index ea1d5c0..ea00cfd 100644
 +
 +		bool recordCategoryTimings = StratumRuntime.Timings.Enabled;
 +		StratumEntityBehaviorTimings.SetEnabled(recordCategoryTimings);
++		bool recordEntityTypeTimings = StratumEntityBehaviorTimings.Enabled; // Stratum: admin switch or a reader's lease, so entity types are recorded for readers too
 +
 +		// Player tick on main thread (sequential).
 +		int seen = 0, ticked = 0, throttled = 0;
@@ -796,13 +822,22 @@ index ea1d5c0..ea00cfd 100644
 +		foreach (Entity p in players)
 +		{
 +			seen++;
++			if (!StratumShard.AllowsEntity(p))
++			{
++				throttled++;
++				continue;
++			}
 +			if (Dimensions.ShouldNotTick(p.Pos, p.Api))
 +			{
 +				dimSkipped++;
 +				continue;
 +			}
 +			long t0 = recordCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
-+			try { p.OnGameTick(dt); }
++			try
++			{
++				Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaTime = float.NaN;
++				p.OnGameTick(dt);
++			}
 +			catch (Exception e)
 +			{
 +				ServerMain.Logger.Warning("Exception while ticking player {0}: ", ((EntityPlayer)p).GetName());
@@ -842,22 +877,35 @@ index ea1d5c0..ea00cfd 100644
 +				Interlocked.Increment(ref throttledP);
 +				return;
 +			}
-+			bool shouldTickDimension = !Dimensions.ShouldNotTick(value.Pos, value.Api);
++			bool stratumShardAllowed = StratumShard.AllowsEntity(value);
++			if (!stratumShardAllowed)
++			{
++				Interlocked.Increment(ref throttledP);
++			}
++			bool shouldTickDimension = stratumShardAllowed && !Dimensions.ShouldNotTick(value.Pos, value.Api);
 +			if (!shouldTickDimension)
 +			{
-+				Interlocked.Increment(ref dimSkippedP);
++				if (stratumShardAllowed)
++				{
++					Interlocked.Increment(ref dimSkippedP);
++				}
 +			}
 +			else
 +			{
-+				if (ShouldThrottleStratumEntityTick(value, entityCfg, dt, out float tickDeltaTime, out bool _))
++				if (ShouldThrottleStratumEntityTick(value, entityCfg, dt, out float tickDeltaTime, out float despawnDeltaTime, out bool _))
 +				{
 +					Interlocked.Increment(ref throttledP);
 +				}
 +				else
 +				{
 +					bool isCreature = value.IsCreature;
-+					long t0 = recordCategoryTimings ? Stopwatch.GetTimestamp() : 0L;
-+					try { value.OnGameTick(tickDeltaTime); }
++					long t0 = recordEntityTypeTimings ? Stopwatch.GetTimestamp() : 0L;
++					try
++					{
++						// Stratum: raw sum for every behavior, clamped sum for despawn only.
++						Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaTime = despawnDeltaTime;
++						value.OnGameTick(tickDeltaTime);
++					}
 +					catch (Exception e)
 +					{
 +						Interlocked.Increment(ref stratumParallelTickFailures);
@@ -874,11 +922,18 @@ index ea1d5c0..ea00cfd 100644
 +							Interlocked.CompareExchange(ref stratumParallelTickFailureSample, sample, null);
 +						}
 +					}
++					finally
++					{
++						Vintagestory.API.Common.Entities.StratumEntityBehaviorTimings.DespawnDeltaTime = float.NaN;
++					}
 +					if (recordCategoryTimings)
 +					{
 +						long el = Stopwatch.GetTimestamp() - t0;
 +						if (isCreature) Interlocked.Add(ref creatureTicksP, el);
 +						else Interlocked.Add(ref inanimateTicksP, el);
++					}
++					if (recordEntityTypeTimings)
++					{
 +						// Stratum: per-entity-type timing (#7)
 +						string stratumTypeKey = stratumEntityTypeTimingKeys.GetOrAdd(value.Code?.Path ?? "unknown", static k => "entity.type." + k);
 +						StratumEntityBehaviorTimings.RecordNamed(stratumTypeKey, t0);
@@ -1310,25 +1365,43 @@ index ea1d5c0..ea00cfd 100644
 +	}
 +	// Stratum end
 +
-+	private bool ShouldThrottleStratumEntityTick(Entity entity, StratumEntityTickingConfig config, float dt, out float tickDeltaTime, out bool isExcludedFromThrottle)
++	// Stratum: ConcurrentDictionary.TryRemove locks its bucket even when the id was never
++	// stored. Players, disabled throttling, and near-band entities take that lock every tick
++	// and almost never have an entry. ContainsKey does not. See #315.
++	private void StratumForgetTickStateIfPresent(long entityId)
++	{
++		if (stratumEntityTickStates.ContainsKey(entityId))
++		{
++			stratumEntityTickStates.TryRemove(entityId, out _);
++		}
++	}
++
++	private bool ShouldThrottleStratumEntityTick(Entity entity, StratumEntityTickingConfig config, float dt, out float tickDeltaTime, out float despawnDeltaTime, out bool isExcludedFromThrottle)
 +	{
 +		tickDeltaTime = dt;
++		despawnDeltaTime = float.NaN;
 +		isExcludedFromThrottle = false;
-+		if (!config.Enabled || entity is EntityPlayer || stratumPlayerPositions.Count == 0)
++		// Stratum: players are never inserted. Skipping the dictionary is the common case
++		// on a full bot run (1k-2k players, every tick).
++		if (entity is EntityPlayer)
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			return false;
++		}
++		if (!config.Enabled || stratumPlayerPositions.Count == 0)
++		{
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
 +		if ((entity.IsCreature && !config.ThrottleCreatures) || (!entity.IsCreature && !config.ThrottleInanimate))
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
 +		if (config.SkipMovingEntities && IsStratumMovingEntity(entity, config.MovingEntitySpeedThreshold))
 +		{
-+			stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++			StratumForgetTickStateIfPresent(entity.EntityId);
 +			return false;
 +		}
 +
@@ -1401,11 +1474,22 @@ index ea1d5c0..ea00cfd 100644
 +
 +		if (tickInterval <= 1)
 +		{
++			// A bank from a far stretch is paid on this tick. Leaving it until the entity
++			// is far again lets one later payout age a near creature by the whole wait.
++			if (stratumEntityTickStates.TryGetValue(entity.EntityId, out StratumEntityTickState pending)
++				&& (pending.AccumulatedDeltaTime != 0f || pending.ClampedDeltaTime != 0f))
++			{
++				tickDeltaTime = pending.AccumulatedDeltaTime + dt;
++				despawnDeltaTime = pending.ClampedDeltaTime + (dt > 0.2f ? 0.2f : dt);
++				pending.SkippedTicks = 0;
++				pending.AccumulatedDeltaTime = 0f;
++				pending.ClampedDeltaTime = 0f;
++			}
 +			// Keep state if we just cached the ambient resolution, otherwise we'd re-resolve every
 +			// tick. State object is tiny; OnDespawn paths handle removal.
 +			if (!stratumAmbientTierEnabledCached || !entity.IsCreature)
 +			{
-+				stratumEntityTickStates.TryRemove(entity.EntityId, out _);
++				StratumForgetTickStateIfPresent(entity.EntityId);
 +			}
 +			return false;
 +		}
@@ -1418,14 +1502,17 @@ index ea1d5c0..ea00cfd 100644
 +
 +		state.SkippedTicks++;
 +		state.AccumulatedDeltaTime += dt;
++		state.ClampedDeltaTime += dt > 0.2f ? 0.2f : dt;
 +		if (state.SkippedTicks < tickInterval)
 +		{
 +			return true;
 +		}
 +
 +		tickDeltaTime = state.AccumulatedDeltaTime;
++		despawnDeltaTime = state.ClampedDeltaTime;
 +		state.SkippedTicks = 0;
 +		state.AccumulatedDeltaTime = 0f;
++		state.ClampedDeltaTime = 0f;
 +		return false;
 +	}
 +
@@ -1533,8 +1620,24 @@ index ea1d5c0..ea00cfd 100644
  		ItemStack itemStack = client.Player.InventoryManager?.ActiveHotbarSlot?.Itemstack;
  		float num = itemStack?.Collectible.GetAttackRange(itemStack) ?? GlobalConstants.DefaultAttackRange;
  		double x = pos.X + client.Entityplayer.LocalEyePos.X;
-@@ -257,10 +1579,16 @@ public class ServerSystemEntitySimulation : ServerSystem
- 		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !player.IsInInteractionRangeOf(entity))
+@@ -251,16 +1660,31 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 		bool flag = p.MouseButton == 0;
+ 		if ((cuboidd.ShortestDistanceFrom(x, y, z) > (double)(num * 2f) && flag) || (flag && (((!server.Config.AllowPvP || !player.HasPrivilege("attackplayers")) && entity is EntityPlayer) || (!player.HasPrivilege("attackcreatures") && entity is EntityAgent))) || (entity is EntityPlayer entityPlayer && !(entityPlayer.Player is IServerPlayer { ConnectionState: EnumClientState.Playing })))
+ 		{
+ 			return;
+ 		}
++		// Stratum: group friendly fire (#277). Drop an attack on a group mate here, before the
++		// interact event fires, so it behaves exactly like the vanilla PvP-off return just above:
++		// no slap sound, no weapon durability loss in OnAttackingWith, no combat-log tag. Only
++		// attacks (flag), never right-click interactions like healing a group mate.
++		if (flag && StratumFriendlyFireGuard.BlocksMeleeAttack(player, entity))
++		{
++			return;
++		}
+ 		Vec3d vec3d = new Vec3d(CollectibleNet.DeserializeDouble(p.HitX), CollectibleNet.DeserializeDouble(p.HitY), CollectibleNet.DeserializeDouble(p.HitZ));
+-		if (server.Config.AntiAbuse >= EnumProtectionLevel.Basic && !player.IsInInteractionRangeOf(entity))
++		// Stratum: Always check reach for right-click interactions.
++		if ((!flag || server.Config.AntiAbuse >= EnumProtectionLevel.Basic) && !player.IsInInteractionRangeOf(entity))
  		{
  			ServerMain.Logger.Audit("{0} tried to interact with an entity out of range.", player.PlayerName);
  			return;
@@ -1550,7 +1653,7 @@ index ea1d5c0..ea00cfd 100644
  			player.Entity.EntitySelection = new EntitySelection
  			{
  				Entity = entity,
-@@ -279,14 +1607,46 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -279,14 +1703,46 @@ public class ServerSystemEntitySimulation : ServerSystem
  		{
  			entity.OnInteract(player.Entity, player.InventoryManager.ActiveHotbarSlot, vec3d, (p.MouseButton != 0) ? EnumInteractMode.Interact : EnumInteractMode.Attack);
  		}
@@ -1599,7 +1702,7 @@ index ea1d5c0..ea00cfd 100644
  			server.EventManager.TriggerPlayerRespawn(client.Player);
  		}
  		else
-@@ -384,16 +1744,24 @@ public class ServerSystemEntitySimulation : ServerSystem
+@@ -384,37 +1840,66 @@ public class ServerSystemEntitySimulation : ServerSystem
  	{
  		if (deathMessagesCache == null)
  		{
@@ -1626,7 +1729,9 @@ index ea1d5c0..ea00cfd 100644
  			item.Entityplayer.DeadNotify = false;
  			item.WorldData.Deaths++;
  			server.EventManager.TriggerPlayerDeath(item.Player, item.Entityplayer.DeathReason);
-@@ -401,13 +1769,17 @@ public class ServerSystemEntitySimulation : ServerSystem
+-			server.BroadcastPacket(new Packet_Server
++			// Stratum #312: do not disclose a vanished player's death to clients that cannot see them.
++			Packet_Server deathPacket = new Packet_Server
  			{
  				Id = 45,
  				PlayerDeath = new Packet_PlayerDeath
@@ -1635,7 +1740,21 @@ index ea1d5c0..ea00cfd 100644
 -					LivesLeft = ((num < 0) ? (-1) : Math.Max(0, num - item.WorldData.Deaths))
 +					LivesLeft = StratumLivesStore.GetLivesLeft(server, item.ServerData, item.WorldData) // Stratum: include bonus lives in death packets
  				}
- 			});
+-			});
++			};
++			List<IServerPlayer> hiddenPlayers = null;
++			if (StratumStaffCommandState.IsVanished(item.Player.PlayerUID))
++			{
++				foreach (ConnectedClient client in server.Clients.Values)
++				{
++					if (client.Player != null && StratumStaffCommandState.ShouldHideEntityFromClient(item.Entityplayer, client))
++					{
++						(hiddenPlayers ??= new List<IServerPlayer>()).Add(client.Player);
++					}
++				}
++			}
++			server.BroadcastPacket(deathPacket, hiddenPlayers?.ToArray());
++			// Stratum end
 +			if (StratumLivesStore.ShouldAutoRespawn(server, item)) // Stratum: auto-respawn players with bonus lives
 +			{
 +				server.EventManager.TriggerPlayerRespawn(item.Player);
@@ -1645,7 +1764,18 @@ index ea1d5c0..ea00cfd 100644
  			string text = "";
  			if (num2)
  			{
-@@ -422,10 +1794,11 @@ public class ServerSystemEntitySimulation : ServerSystem
+ 				text = GetDeathMessage(item, deathReason);
+-				server.joinLeaveDeathMessage(text, EnumChatType.Notification, item.Player);
++				if (!StratumStaffCommandState.IsVanished(item.Player.PlayerUID))
++				{
++					server.joinLeaveDeathMessage(text, EnumChatType.Notification, item.Player);
++				}
+ 			}
+ 			if (deathReason?.GetCauseEntity() is EntityPlayer entityPlayer)
+ 			{
+ 				string playerName = server.PlayerByUid(entityPlayer.PlayerUID).PlayerName;
+ 				ServerMain.Logger.Audit(Lang.Get("{0} killed {1}, with item (if any): {2}", playerName, item.PlayerName, entityPlayer.RightHandItemSlot?.Itemstack?.Collectible.Code));
+@@ -422,10 +1907,11 @@ public class ServerSystemEntitySimulation : ServerSystem
  			else
  			{
  				ServerMain.Logger.Audit(Lang.Get("{0} died. Death message: {1}", item.PlayerName, text));

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/GameMain.cs b/VintagestoryLib/Vintagestory.Common/GameMain.cs
-index 48c8694..f7fd804 100644
+index 48c8694..806205d 100644
 --- a/VintagestoryLib/Vintagestory.Common/GameMain.cs
 +++ b/VintagestoryLib/Vintagestory.Common/GameMain.cs
 @@ -29,10 +29,21 @@ public abstract class GameMain : IWorldIntersectionSupplier
@@ -262,3 +262,21 @@ index 48c8694..f7fd804 100644
  	public Entity[] GetEntitiesInsideCuboid(BlockPos startPos, BlockPos endPos, ActionConsumable<Entity> matches = null)
  	{
  		int num = Math.Min(startPos.X, endPos.X);
+@@ -305,11 +417,16 @@ public abstract class GameMain : IWorldIntersectionSupplier
+ 
+ 	public Cuboidf[] GetBlockIntersectionBoxes(BlockPos pos, bool liquidSelectable)
+ 	{
+ 		int num = 0;
+ 		List<Cuboidf> list;
+-		if (blockAccessor.GetChunkAtBlockPos(pos) is WorldChunk worldChunk)
++		// Stratum: GetDecorSelectionBoxes allocates a list on every call, so skip it for interior cells of a chunk with no decors
++		if (blockAccessor.GetChunkAtBlockPos(pos) is WorldChunk worldChunk &&
++			(worldChunk.Decors is { Count: > 0 } ||
++			 (pos.X & 31) is 0 or 31 ||
++			 (pos.Y & 31) is 0 or 31 ||
++			 (pos.Z & 31) is 0 or 31))
+ 		{
+ 			list = worldChunk.GetDecorSelectionBoxes(blockAccessor, pos);
+ 			num = list.Count;
+ 		}
+ 		else

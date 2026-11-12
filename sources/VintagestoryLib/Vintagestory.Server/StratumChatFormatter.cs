@@ -32,21 +32,53 @@ internal static class StratumChatFormatter
 		config.EnsurePopulated();
 		StratumRolePrefixesConfig rolePrefixes = config.Appearance.RolePrefixes;
 
-		if (!config.Chat.Enabled || !rolePrefixes.Enabled || player?.Role == null)
+		if (!config.Chat.Enabled || player == null)
 		{
 			return false;
 		}
 
-		KeyValuePair<string, StratumRolePrefixConfig>? prefixEntry = FindPrefix(rolePrefixes.Roles, player.Role.Code);
-		if (prefixEntry == null)
+		// Stratum #335: a group tag renders on its own, so a server can run group tags with role
+		// prefixes switched off. Null unless the player holds a tagged group.
+		string groupTag = null;
+		StratumGroupsConfig groups = config.Groups;
+		if (groups.Enabled && groups.ShowTagInChat)
+		{
+			string tag = StratumGroupPolicy.ResolveTag(player);
+			if (tag != null)
+			{
+				groupTag = ApplyColorAndWeight(FormatTag(groups.TagFormat, tag), groups.TagColor, bold: false);
+			}
+		}
+
+		List<StratumRolePrefixConfig> prefixes = rolePrefixes.Enabled && player.Role != null
+			? rolePrefixes.ResolveFor(player.Role.Code)
+			: null;
+		if (prefixes == null && groupTag == null)
 		{
 			return false;
 		}
 
-		StratumRolePrefixConfig prefix = prefixEntry.Value.Value;
-		string tag = FormatTag(rolePrefixes.Format, prefix.Tag);
-		string renderedTag = ApplyColorAndWeight(EnsureTrailingSpace(tag), prefix.Color, prefix.Bold);
-		formattedMessage = renderedTag + "<strong>" + EscapeVtml(player.PlayerName) + ":</strong> " + messageBody;
+		prefixes ??= new List<StratumRolePrefixConfig>();
+		StringBuilder renderedTags = new StringBuilder();
+		if (groupTag != null)
+		{
+			renderedTags.Append(prefixes.Count == 0 ? EnsureTrailingSpace(groupTag) : groupTag + " ");
+		}
+
+		for (int index = 0; index < prefixes.Count; index++)
+		{
+			StratumRolePrefixConfig prefix = prefixes[index];
+			string tag = FormatTag(rolePrefixes.Format, prefix.Tag);
+			// One space separates the whole stack from the name, so only the last tag carries it.
+			if (index == prefixes.Count - 1)
+			{
+				tag = EnsureTrailingSpace(tag);
+			}
+
+			renderedTags.Append(ApplyColorAndWeight(tag, prefix.Color, prefix.Bold));
+		}
+
+		formattedMessage = renderedTags + "<strong>" + EscapeVtml(player.PlayerName) + ":</strong> " + messageBody;
 		return true;
 	}
 
@@ -151,21 +183,6 @@ internal static class StratumChatFormatter
 	private static string EnsureTrailingSpace(string value)
 	{
 		return string.IsNullOrEmpty(value) || value.EndsWith(" ", StringComparison.Ordinal) ? value : value + " ";
-	}
-
-	private static KeyValuePair<string, StratumRolePrefixConfig>? FindPrefix(Dictionary<string, StratumRolePrefixConfig> prefixes, string roleCode)
-	{
-		if (prefixes == null || string.IsNullOrWhiteSpace(roleCode))
-		{
-			return null;
-		}
-
-		KeyValuePair<string, StratumRolePrefixConfig>[] matches = prefixes
-			.Where(entry => entry.Value != null && entry.Value.Enabled && string.Equals(entry.Key, roleCode, StringComparison.OrdinalIgnoreCase))
-			.OrderByDescending(entry => entry.Value.Priority)
-			.ToArray();
-
-		return matches.Length == 0 ? null : matches[0];
 	}
 
 	private static string FormatTag(string format, string tag)

@@ -5,9 +5,8 @@ monitors progress through startup phases, and verifies it reaches RunGame
 without fatal errors. Detects stalls by checking log growth rather than a
 hard timeout.
 
-Does not yet pipe the console command probe scripts/smoke-test.sh runs on
-Linux/macOS (registration and argument-handling coverage for commands like
-/kitedit); this script is boot-only for now.
+The focused inventory privacy smoke test is run after the Release build. The
+interactive console command probe remains Linux/macOS-only.
 
 .PARAMETER Patience
 Seconds without log output before declaring a stall. Default: 60.
@@ -33,22 +32,42 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+# Prefer StratumServer.exe, Stratum's own launcher, which applies VanillaBootstrap and
+# PatchedFileOverlay. A VintagestoryServer.exe in the same directory is the vanilla
+# archive's own entry point, copied in as a side effect of the first overlay; preferring
+# it would silently boot-test unpatched vanilla code (mirrors scripts/smoke-test.sh).
 $serverDir = Join-Path $repoRoot 'StratumServer\bin\Release\net10.0'
-$serverBin = Join-Path $serverDir 'VintagestoryServer.exe'
-if (-not (Test-Path $serverBin)) {
-    $serverBin = Join-Path $serverDir 'StratumServer.exe'
+function Resolve-ServerBin {
+    $stratum = Join-Path $serverDir 'StratumServer.exe'
+    if (Test-Path $stratum) { return $stratum }
+    $vanilla = Join-Path $serverDir 'VintagestoryServer.exe'
+    if (Test-Path $vanilla) { return $vanilla }
+    return $null
 }
+$serverBin = Resolve-ServerBin
 
 Push-Location $repoRoot
 try {
-    # Build if binary is missing.
-    if (-not (Test-Path $serverBin)) {
+    # Build if binary is missing. -p:EmbedPatchedFiles=true is required so StratumServer
+    # carries this working tree's patched DLLs; without it PatchedFileOverlay has nothing
+    # to overlay and the server silently runs the downloaded vanilla assemblies.
+    if (-not $serverBin) {
         Write-Host "Building Release..."
-        dotnet build VintageStory.slnx -c Release --verbosity quiet
+        dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true --verbosity quiet
+        $serverBin = Resolve-ServerBin
     }
 
-    if (-not (Test-Path $serverBin)) {
-        Write-Error "Server binary not found: $serverBin"
+    if (-not $serverBin) {
+        Write-Error "Server binary not found in $serverDir"
+        exit 1
+    }
+
+    dotnet run --project tests/InventoryPrivacySmoke/InventoryPrivacySmoke.csproj -c Release
+    if ($LASTEXITCODE -ne 0) {
+        # Stratum: $ErrorActionPreference = 'Stop' only converts PowerShell errors to
+        # terminating ones. It does not inspect a native process's exit code, so a failing
+        # check here would otherwise reach the PASS banner at the bottom of this script.
+        Write-Error "InventoryPrivacySmoke failed (exit $LASTEXITCODE)"
         exit 1
     }
 
@@ -137,13 +156,16 @@ try {
         }
     }
 
-    # Read final log.
+    # Read final logs. The patched resolver reports failures on stderr on Windows.
+    $errorLog = Join-Path $DataPath 'smoke-test-err.log'
     $finalLog = if (Test-Path $logFile) { Get-Content $logFile -Raw -ErrorAction SilentlyContinue } else { '' }
+    $finalError = if (Test-Path $errorLog) { Get-Content $errorLog -Raw -ErrorAction SilentlyContinue } else { '' }
+    $diagnosticLog = $finalLog + "`n" + $finalError
 
     if (-not $reachedRunGame -and $finalLog -match 'Entering runphase RunGame') {
         $reachedRunGame = $true
     }
-    if ($finalLog -match 'Fatal|Unhandled exception') {
+    if ($diagnosticLog -match 'Fatal|Unhandled exception|Failed to resolve assembly') {
         $hasFatal = $true
     }
 
@@ -160,6 +182,7 @@ try {
         Write-Error "  Fatal errors found in log."
     }
     Write-Error "  Log: $logFile"
+    Write-Error "  Error log: $errorLog"
     exit 1
 
 } finally {

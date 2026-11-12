@@ -6,7 +6,7 @@ Do not file public issues for security bugs.
 
 Preferred: DM a maintainer on [Discord](https://discord.gg/pd24fawhsD). Fastest response.
 
-Backup: open a private report through [GitHub Security Advisories](https://github.com/trevorftp/Stratum/security/advisories/new) if you can't reach anyone on Discord.
+Backup: open a private report through [GitHub Security Advisories](https://github.com/StratumServer/Stratum/security/advisories/new) if you can't reach anyone on Discord.
 
 Include:
 

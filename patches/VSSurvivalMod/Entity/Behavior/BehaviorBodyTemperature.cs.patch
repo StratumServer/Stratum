@@ -1,5 +1,5 @@
 diff --git a/VSSurvivalMod/Entity/Behavior/BehaviorBodyTemperature.cs b/VSSurvivalMod/Entity/Behavior/BehaviorBodyTemperature.cs
-index 3ee16b5..832ed91 100644
+index 3ee16b5..71dfd8b 100644
 --- a/VSSurvivalMod/Entity/Behavior/BehaviorBodyTemperature.cs
 +++ b/VSSurvivalMod/Entity/Behavior/BehaviorBodyTemperature.cs
 @@ -39,10 +39,11 @@ namespace Vintagestory.GameContent
@@ -32,7 +32,7 @@ index 3ee16b5..832ed91 100644
              eagent = entity as EntityAgent;
          }
  
-@@ -111,10 +119,41 @@ namespace Vintagestory.GameContent
+@@ -111,10 +119,58 @@ namespace Vintagestory.GameContent
  
              tempTree = entity.WatchedAttributes.GetTreeAttribute("bodyTemp");
  
@@ -40,13 +40,9 @@ index 3ee16b5..832ed91 100644
  
 +            bodyTemperatureResistance = entity.World.Config.GetString("bodyTemperatureResistance").ToFloat(0);
 +
-+            float updateOffset = (float)entity.World.Rand.NextDouble();
-+            accum = updateOffset * 2f;
-+            slowaccum = updateOffset * 5f;
-+            veryslowaccum = updateOffset * 10f;
-+            freezingAnimAccum = updateOffset;
-+
-+            // Stratum: pull configurable intervals and jitter them per entity.
++            // Stratum: the switch replaces vanilla timing. Off means vanilla's 1s update,
++            // 3s heat-source pass, every-tick freezing animation, 10s frost check, and no start offset.
++            bool stratumThrottle = false;
 +            try
 +            {
 +                var runtimeType = Type.GetType("Vintagestory.Server.StratumRuntime, VintagestoryLib");
@@ -55,6 +51,7 @@ index 3ee16b5..832ed91 100644
 +                var bt = perf?.GetType().GetProperty("BodyTemperature")?.GetValue(perf);
 +                if (bt != null && (bool)(bt.GetType().GetProperty("Enabled")?.GetValue(bt) ?? false))
 +                {
++                    stratumThrottle = true;
 +                    float upd = (float)bt.GetType().GetProperty("UpdateIntervalSeconds").GetValue(bt);
 +                    float heat = (float)bt.GetType().GetProperty("HeatSourceIntervalSeconds").GetValue(bt);
 +                    float anim = (float)bt.GetType().GetProperty("FreezingAnimIntervalSeconds").GetValue(bt);
@@ -69,12 +66,32 @@ index 3ee16b5..832ed91 100644
 +            }
 +            catch { /* server-only / reflective lookup may fail on client */ }
 +
++            if (stratumThrottle)
++            {
++                float updateOffset = (float)entity.World.Rand.NextDouble();
++                accum = updateOffset * stratumUpdateThreshold;
++                slowaccum = updateOffset * stratumHeatSourceThreshold;
++                veryslowaccum = updateOffset * stratumDamageCheckThreshold;
++                freezingAnimAccum = updateOffset * Math.Max(stratumFreezingAnimThreshold, 0.05f);
++            }
++            else
++            {
++                stratumUpdateThreshold = 1f;
++                stratumHeatSourceThreshold = 3f;
++                stratumFreezingAnimThreshold = 0f;
++                stratumDamageCheckThreshold = 10f;
++                accum = 0f;
++                slowaccum = 0f;
++                veryslowaccum = 0f;
++                freezingAnimAccum = 0f;
++            }
++
              if (tempTree == null)
              {
                  entity.WatchedAttributes.SetAttribute("bodyTemp", tempTree = new TreeAttribute());
  
                  CurBodyTemperature = NormalBodyTemperature + 4;
-@@ -127,12 +166,10 @@ namespace Vintagestory.GameContent
+@@ -127,12 +183,10 @@ namespace Vintagestory.GameContent
              }
  
              // Run this every time a entity spawns so it doesnt freeze while unloaded / offline
@@ -87,7 +104,7 @@ index 3ee16b5..832ed91 100644
  
          public override void OnEntityDespawn(EntityDespawnData despawn)
          {
-@@ -156,20 +193,33 @@ namespace Vintagestory.GameContent
+@@ -156,20 +210,33 @@ namespace Vintagestory.GameContent
                      };
                  }
              }
@@ -124,7 +141,7 @@ index 3ee16b5..832ed91 100644
                  {
                      entity.ReceiveDamage(new DamageSource() { DamageTier = 0, Source = EnumDamageSource.Weather, Type = EnumDamageType.Frost }, 0.2f);
                  }
-@@ -183,11 +233,11 @@ namespace Vintagestory.GameContent
+@@ -183,11 +250,11 @@ namespace Vintagestory.GameContent
                  {
                      sprinterCounter = GameMath.Clamp(sprinterCounter - 1, 0, 10);
                  }
@@ -137,7 +154,7 @@ index 3ee16b5..832ed91 100644
                  if (api.Side == EnumAppSide.Server)
                  {
                      try
-@@ -204,11 +254,11 @@ namespace Vintagestory.GameContent
+@@ -204,11 +271,11 @@ namespace Vintagestory.GameContent
                  updateWearableConditions();
                  entity.WatchedAttributes.MarkPathDirty("bodyTemp");
                  slowaccum = 0;

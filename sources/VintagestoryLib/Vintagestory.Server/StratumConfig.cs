@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 
 namespace Vintagestory.Server;
@@ -27,6 +28,8 @@ internal class StratumConfig
 	public StratumClientModPolicyConfig ClientModPolicy { get; set; } = new StratumClientModPolicyConfig();
 
 	public StratumPerformanceConfig Performance { get; set; } = new StratumPerformanceConfig();
+
+	public StratumShardConfig Shard { get; set; } = new StratumShardConfig();
 
 	public StratumWorldgenConfig Worldgen { get; set; } = new StratumWorldgenConfig();
 
@@ -56,7 +59,11 @@ internal class StratumConfig
 
 	public StratumCoopCombatConfig CoopCombat { get; set; } = new StratumCoopCombatConfig();
 
+	public StratumFriendlyFireConfig FriendlyFire { get; set; } = new StratumFriendlyFireConfig();
+
 	public StratumServerStatsConfig ServerStats { get; set; } = new StratumServerStatsConfig();
+
+	public StratumGroupsConfig Groups { get; set; } = new StratumGroupsConfig();
 
 	public void EnsurePopulated()
 	{
@@ -69,6 +76,7 @@ internal class StratumConfig
 		Anticheat ??= new StratumAnticheatConfig();
 		ClientModPolicy ??= new StratumClientModPolicyConfig();
 		Performance ??= new StratumPerformanceConfig();
+		Shard ??= new StratumShardConfig();
 		Worldgen ??= new StratumWorldgenConfig();
 		MobSpawning ??= new StratumMobSpawningConfig();
 		Commands ??= new StratumCommandsConfig();
@@ -83,13 +91,16 @@ internal class StratumConfig
 		Announcements ??= new StratumAnnouncementsConfig();
 		CombatLog ??= new StratumCombatLogConfig();
 		CoopCombat ??= new StratumCoopCombatConfig();
+		FriendlyFire ??= new StratumFriendlyFireConfig();
 		ServerStats ??= new StratumServerStatsConfig();
+		Groups ??= new StratumGroupsConfig();
 		PacketLimits.EnsureSane();
 		PacketBackPressure.EnsureSane();
 		BlockBreakGuards.EnsureSane();
 		Anticheat.EnsureSane();
 		ClientModPolicy.EnsurePopulated();
 		Performance.EnsurePopulated();
+		Shard.EnsureSane();
 		MobSpawning.EnsureSane();
 		Commands.EnsurePopulated();
 		Chat.EnsurePopulated();
@@ -103,7 +114,9 @@ internal class StratumConfig
 		Announcements.EnsureSane();
 		CombatLog.EnsureSane();
 		CoopCombat.EnsureSane();
+		FriendlyFire.EnsureSane();
 		ServerStats.EnsureSane();
+		Groups.EnsurePopulated();
 		UpdateChecker.EnsureSane();
 	}
 
@@ -368,9 +381,20 @@ internal class StratumHardeningConfig
 
 	public bool BlockBreakGuards { get; set; } = true;
 
-	public bool InventoryGuards { get; set; }
+	// Private inventory contents are the safe default. Set false only for vanilla visibility compatibility.
+	public bool InventoryGuards { get; set; } = true;
 
 	public bool EntityGuards { get; set; }
+
+	// Drop entity packets aimed at an entity further away than the sender's picking range plus
+	// slack. Mods that drive entities from a distance (teleporters, remote UIs) need this off.
+	public bool EntityPacketRangeGuard { get; set; } = true;
+
+	// Same guard for block entity packets, measured from the sender's eyes to the block. Vanilla
+	// range-checks most of its own block entity handlers but not all of them, so with this off a
+	// few (locust nests among them) accept an inventory-less packet from anywhere in the loaded
+	// world. The dev command block path keeps its range check either way.
+	public bool BlockEntityPacketRangeGuard { get; set; } = true;
 }
 
 internal class StratumPacketLimitsConfig
@@ -518,11 +542,16 @@ internal class StratumPerformanceConfig
 
 	public StratumPregenConfig Pregen { get; set; } = new StratumPregenConfig();
 
+	public StratumItemClumpConfig ItemClump { get; set; } = new StratumItemClumpConfig();
+	public StratumFallingBlocksConfig FallingBlocks { get; set; } = new StratumFallingBlocksConfig();
+
 	public StratumSimulationDistanceConfig SimulationDistance { get; set; } = new StratumSimulationDistanceConfig();
 
 	public StratumPhysicsConfig Physics { get; set; } = new StratumPhysicsConfig();
 
 	public StratumEntityTickingConfig EntityTicking { get; set; } = new StratumEntityTickingConfig();
+
+	public StratumEntitySelectionConfig EntitySelection { get; set; } = new StratumEntitySelectionConfig();
 
 	public StratumChunkIoConfig ChunkIo { get; set; } = new StratumChunkIoConfig();
 
@@ -533,6 +562,8 @@ internal class StratumPerformanceConfig
 	public StratumBlockTickConfig BlockTicks { get; set; } = new StratumBlockTickConfig();
 
 	public StratumTimingsConfig Timings { get; set; } = new StratumTimingsConfig();
+
+	public StratumInventoryFlushConfig InventoryFlush { get; set; } = new StratumInventoryFlushConfig();
 
 	public StratumPathfindingConfig Pathfinding { get; set; } = new StratumPathfindingConfig();
 
@@ -564,14 +595,18 @@ internal class StratumPerformanceConfig
 		ChunkGeneration ??= new StratumChunkGenerationConfig();
 		ChunkRequestManagement ??= new StratumChunkRequestManagementConfig();
 		Pregen ??= new StratumPregenConfig();
+		ItemClump ??= new StratumItemClumpConfig();
+		FallingBlocks ??= new StratumFallingBlocksConfig();
 		SimulationDistance ??= new StratumSimulationDistanceConfig();
 		Physics ??= new StratumPhysicsConfig();
 		EntityTicking ??= new StratumEntityTickingConfig();
+		EntitySelection ??= new StratumEntitySelectionConfig();
 		AutoSave ??= new StratumAutoSaveConfig();
 		BlockTicks ??= new StratumBlockTickConfig();
 		ChunkIo ??= new StratumChunkIoConfig();
 		ChunkPriority ??= new StratumChunkPriorityConfig();
 		Timings ??= new StratumTimingsConfig();
+		InventoryFlush ??= new StratumInventoryFlushConfig();
 		Pathfinding ??= new StratumPathfindingConfig();
 		RegionTicking ??= new StratumRegionTickingConfig();
 		BodyTemperature ??= new StratumBodyTemperatureConfig();
@@ -588,14 +623,20 @@ internal class StratumPerformanceConfig
 		ChunkGeneration.EnsureSane();
 		ChunkRequestManagement.EnsureSane();
 		Pregen.EnsureSane();
+		ItemClump.EnsureSane();
+		StratumItemClumpConfig.Active = ItemClump; // read by ModSystemItemClump
+		FallingBlocks.EnsureSane();
+		StratumFallingBlocksConfig.Active = FallingBlocks; // read by ModSystemFallingBlocks
 		SimulationDistance.EnsureSane();
 		Physics.EnsureSane();
 		EntityTicking.EnsureSane();
+		EntitySelection.EnsureSane();
 		AutoSave.EnsureSane();
 		BlockTicks.EnsureSane();
 		ChunkIo.EnsureSane();
 		ChunkPriority.EnsureSane();
 		Timings.EnsureSane();
+		InventoryFlush.EnsureSane();
 		Pathfinding.EnsureSane();
 		RegionTicking.EnsureSane();
 		BodyTemperature.EnsureSane();
@@ -613,10 +654,10 @@ internal class StratumPerformanceConfig
 
 internal class StratumNetworkConfig
 {
-	// Off by default. The queue removes the packet reordering bug from the old
-	// StratumNetworkFlush (disabled after client crashes, see PR #138), but it is new code
-	// on the hottest path in the server. Soak on a community server before flipping the
-	// shipped default.
+	// Off by default. The queue is the only sender for the connection and runs on the
+	// thread pool. The short-write loop, MaxPendingBytes disconnect, and shutdown flush
+	// are in place. The shipped default stays off until a 1000-bot run, a slow real
+	// client, and a play session are recorded on this code. Set this true to enable it.
 	public bool SendQueueEnabled { get; set; } = false;
 
 	// Packets at or above this size skip coalescing and go out alone. Matches the TCP MTU
@@ -627,10 +668,20 @@ internal class StratumNetworkConfig
 	// a single SendAsync call carries.
 	public int CoalesceLimitBytes { get; set; } = 65536;
 
+	// Bytes StratumSendQueue may retain for one connection, not counting one
+	// in-flight packet that is already at or above this cap. That oversized packet
+	// is accepted even when smaller packets are already queued, and it is not added
+	// to the pending total. A second packet that large, or an enqueue that would
+	// grow the pending total past the cap, disconnects the connection. Chunk
+	// scheduling already slows that client at OutboundPressurePendingBytesHardLimit
+	// (1 MiB). See #345.
+	public int MaxPendingBytes { get; set; } = 8 * 1024 * 1024;
+
 	public void EnsureSane()
 	{
 		LargeThresholdBytes = Math.Max(64, LargeThresholdBytes);
 		CoalesceLimitBytes = Math.Max(LargeThresholdBytes, CoalesceLimitBytes);
+		MaxPendingBytes = Math.Max(CoalesceLimitBytes, MaxPendingBytes);
 	}
 }
 
@@ -1111,10 +1162,20 @@ internal class StratumPhysicsConfig
 	// "thread 1 gets the first 480 + a share" partition (which overloads thread 1).
 	public bool EvenThreadPartition { get; set; } = true;
 
+	// Entity tracking hysteresis: a tracked entity keeps its tracking slot until it passes an
+	// outer radius 10% beyond the tracking range, instead of despawning the moment it crosses
+	// the exact boundary. Stops spawn/despawn oscillation for entities sitting on the edge.
+	// Set false for vanilla's hard cutoff.
+	public bool EntityTrackingHysteresisEnabled { get; set; } = true;
+
+	// Reuse the per-tick client list instead of allocating a fresh one every physics tick.
+	// Set false for vanilla's allocate-per-tick behaviour.
+	public bool ClientListReuseEnabled { get; set; } = true;
+
 	// Stratum: Paper-style Entity Activation Range for PhysicsManager.
-	// Far-tracked entities (IsTracked == 1, >50 blocks from any player) tick threadsafe
-	// behaviors and OnPhysicsTick at reduced frequency, interleaved deterministically by
-	// EntityId so the cost spreads evenly across physics steps.
+	// Far entities still integrate physics every step so motion and collision stay smooth.
+	// Threadsafe behaviors run on the distance stride, and the skipped time is handed
+	// to the stride that runs them.
 	public bool ActivationRangeEnabled { get; set; } = true;
 
 	// Frame stride for entities in the MID band (NearActivationRadiusBlocks .. MidActivationRadiusBlocks).
@@ -1235,6 +1296,37 @@ internal class StratumChunkRequestManagementConfig
 		MaxCancelledRequestsPerCleanup = Math.Max(1, MaxCancelledRequestsPerCleanup);
 		ForwardPredictionBlocks = Math.Max(0, ForwardPredictionBlocks);
 		MinimumMovementSpeed = Math.Max(0, MinimumMovementSpeed);
+	}
+}
+
+internal class StratumEntitySelectionConfig
+{
+	// Re-trace at least this often. One extra tick of skip is added for every
+	// PlayersPerExtraSkip playing clients from the previous tick, and the result
+	// is clamped to MaxSkipTicks. A held mouse button traces on that tick anyway,
+	// because the trace is what writes the selection a break is checked against.
+	public int BaseSkipTicks { get; set; } = 3;
+
+	public int PlayersPerExtraSkip { get; set; } = 100;
+
+	public int MaxSkipTicks { get; set; } = 20;
+
+	public int SkipTicks(int onlinePlayers)
+	{
+		int extra = onlinePlayers > 0 ? onlinePlayers / PlayersPerExtraSkip : 0;
+		long skip = (long)BaseSkipTicks + extra;
+		if (skip > MaxSkipTicks)
+		{
+			skip = MaxSkipTicks;
+		}
+		return (int)skip;
+	}
+
+	public void EnsureSane()
+	{
+		BaseSkipTicks = Math.Max(1, BaseSkipTicks);
+		PlayersPerExtraSkip = Math.Max(1, PlayersPerExtraSkip);
+		MaxSkipTicks = Math.Max(BaseSkipTicks, MaxSkipTicks);
 	}
 }
 
@@ -1494,6 +1586,13 @@ internal class StratumBlockTickConfig
 
 	public int MaxMainThreadBlockTicksPerPass { get; set; } = 5000;
 
+	// One pass publishes at most this many distinct DirtyBlocks. Repeat positions in
+	// the same pass do not consume a slot. Modified and no-relight queues are not
+	// capped. The cap stays in force when BlockTicks is off. When the queue is more
+	// than 8 times this cap, that pass may publish up to 4 times the cap. The
+	// default stays 512.
+	public int MaxDirtyBlocksPerPass { get; set; } = 512;
+
 	// Spread the random tick pass across N smaller slices instead of one burst. Each slice
 	// runs at BlockTickInterval/SliceCount ms and processes 1/SliceCount of the chunk set.
 	// Same aggregate rate per chunk, removes the periodic sawtooth spike. 1 = vanilla batch.
@@ -1516,10 +1615,29 @@ internal class StratumBlockTickConfig
 		MaxChunksPerPass = Math.Max(1, MaxChunksPerPass);
 		MaxRandomTicksPerChunk = Math.Max(0, MaxRandomTicksPerChunk);
 		MaxMainThreadBlockTicksPerPass = Math.Max(1, MaxMainThreadBlockTicksPerPass);
+		// budget * 8 must stay inside a signed 32-bit value. The lib builds unchecked.
+		MaxDirtyBlocksPerPass = Math.Clamp(MaxDirtyBlocksPerPass, 1, int.MaxValue / 8);
 		RandomTickSliceCount = Math.Max(1, Math.Min(16, RandomTickSliceCount));
 		OverloadTickMs = Math.Max(10, Math.Min(1000, OverloadTickMs));
 		OverloadScale = Math.Max(0.05f, Math.Min(1f, OverloadScale));
 		OverloadFloor = Math.Max(0, OverloadFloor);
+	}
+}
+
+internal class StratumInventoryFlushConfig
+{
+	// One dirty-slot flush broadcasts player data for at most this many character
+	// inventories. Slot packets still go out. Whoever did not get a broadcast is
+	// first in line on the next pass. The listener runs every 30 ms. Zero or less
+	// means no limit.
+	public int MaxPlayerDataBroadcastsPerPass { get; set; } = 4;
+
+	public void EnsureSane()
+	{
+		if (MaxPlayerDataBroadcastsPerPass < 0)
+		{
+			MaxPlayerDataBroadcastsPerPass = 0;
+		}
 	}
 }
 
@@ -1601,6 +1719,8 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig CoopCombat { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
 
+	public StratumCommandAccessConfig FriendlyFire { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.friendlyfire");
+
 	public StratumCommandAccessConfig StaffBroadcast { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 
 	public StratumCommandAccessConfig InfoCommands { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.info");
@@ -1646,6 +1766,15 @@ internal class StratumCommandsConfig
 
 	public StratumCommandAccessConfig KitEdit { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
 
+	// Stratum #335: /group admin, staff authority over player groups.
+	public StratumCommandAccessConfig GroupAdmin { get; set; } = StratumCommandAccessConfig.ForPrivilege("manageotherplayergroups");
+
+	public StratumCommandAccessConfig ClassChange { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.classchange");
+
+	public StratumCommandAccessConfig ClassChangeManage { get; set; } = StratumCommandAccessConfig.ForPrivilege("stratum.classrequests");
+
+	public StratumClassChangeConfig ClassChangeSettings { get; set; } = new StratumClassChangeConfig();
+
 	public int NearDefaultRadiusBlocks { get; set; } = 128;
 
 	public int NearMaxRadiusBlocks { get; set; } = 512;
@@ -1672,6 +1801,7 @@ internal class StratumCommandsConfig
 		StaffChat ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffchat");
 		ChatControl ??= StratumCommandAccessConfig.ForPrivilege("stratum.chatcontrol");
 		CoopCombat ??= StratumCommandAccessConfig.ForPrivilege("stratum.coopcombat");
+		FriendlyFire ??= StratumCommandAccessConfig.ForPrivilege("stratum.friendlyfire");
 		StaffBroadcast ??= StratumCommandAccessConfig.ForPrivilege("stratum.staffbroadcast");
 		InfoCommands ??= StratumCommandAccessConfig.ForPrivilege("stratum.info");
 		Vanish ??= StratumCommandAccessConfig.ForPrivilege("stratum.vanish");
@@ -1691,6 +1821,10 @@ internal class StratumCommandsConfig
 		ClearItems ??= StratumCommandAccessConfig.ForPrivilege("stratum.clearitems");
 		Kits ??= StratumCommandAccessConfig.ForPrivilege("stratum.kits");
 		KitEdit ??= StratumCommandAccessConfig.ForPrivilege("stratum.kitedit");
+		GroupAdmin ??= StratumCommandAccessConfig.ForPrivilege("manageotherplayergroups");
+		ClassChange ??= StratumCommandAccessConfig.ForPrivilege("stratum.classchange");
+		ClassChangeManage ??= StratumCommandAccessConfig.ForPrivilege("stratum.classrequests");
+		ClassChangeSettings ??= new StratumClassChangeConfig();
 		JailSettings ??= new StratumJailConfig();
 		Spawn.EnsurePopulated("stratum.spawn");
 		SetSpawn.EnsurePopulated("setspawn");
@@ -1706,6 +1840,7 @@ internal class StratumCommandsConfig
 		StaffChat.EnsurePopulated("stratum.staffchat");
 		ChatControl.EnsurePopulated("stratum.chatcontrol");
 		CoopCombat.EnsurePopulated("stratum.coopcombat");
+		FriendlyFire.EnsurePopulated("stratum.friendlyfire");
 		StaffBroadcast.EnsurePopulated("stratum.staffbroadcast");
 		InfoCommands.EnsurePopulated("stratum.info");
 		Vanish.EnsurePopulated("stratum.vanish");
@@ -1725,12 +1860,33 @@ internal class StratumCommandsConfig
 		ClearItems.EnsurePopulated("stratum.clearitems");
 		Kits.EnsurePopulated("stratum.kits");
 		KitEdit.EnsurePopulated("stratum.kitedit");
+		GroupAdmin.EnsurePopulated("manageotherplayergroups");
+		ClassChange.EnsurePopulated("stratum.classchange");
+		ClassChangeManage.EnsurePopulated("stratum.classrequests");
+		ClassChangeSettings.EnsureSane();
 		NearDefaultRadiusBlocks = Math.Max(1, NearDefaultRadiusBlocks);
 		NearMaxRadiusBlocks = Math.Max(NearDefaultRadiusBlocks, NearMaxRadiusBlocks);
 		SlowmodeMaxSeconds = Math.Max(0, SlowmodeMaxSeconds);
 		ClearChatLines = Math.Min(200, Math.Max(1, ClearChatLines));
 		VanishReminderIntervalSeconds = Math.Min(30, Math.Max(3, VanishReminderIntervalSeconds));
 		JailSettings.EnsureSane();
+	}
+}
+
+// #278: /class lets a player switch class on their own a limited number of times, then files a
+// request that holders of Commands.ClassChangeManage approve or deny with /classrequests.
+internal class StratumClassChangeConfig
+{
+	// How many times a player may change class with /class change before a change needs staff
+	// approval. -1 means unlimited, 0 means every change goes through a request.
+	public int SelfServiceChanges { get; set; } = 0;
+
+	public int MaxReasonLength { get; set; } = 200;
+
+	public void EnsureSane()
+	{
+		SelfServiceChanges = Math.Max(-1, SelfServiceChanges);
+		MaxReasonLength = Math.Min(1000, Math.Max(1, MaxReasonLength));
 	}
 }
 
@@ -1965,5 +2121,54 @@ internal class StratumAnnouncementsConfig
 		Messages ??= Array.Empty<string>();
 		Prefix ??= "";
 		Suffix ??= "";
+	}
+}
+
+internal class StratumShardConfig
+{
+	public bool Enabled { get; set; }
+
+	// Minimum world block coordinate (inclusive).
+	public int MinX { get; set; }
+
+	// Maximum world block coordinate (inclusive, so X < MaxX + 1 belongs to this shard).
+	public int MaxX { get; set; } = int.MaxValue;
+
+	// Minimum world block coordinate (inclusive).
+	public int MinZ { get; set; }
+
+	// Maximum world block coordinate (inclusive, so Z < MaxZ + 1 belongs to this shard).
+	public int MaxZ { get; set; } = int.MaxValue;
+
+	public void EnsureSane()
+	{
+		if (MaxX < MinX) MaxX = MinX;
+		if (MaxZ < MinZ) MaxZ = MinZ;
+	}
+}
+
+internal static class StratumShard
+{
+	public static bool AllowsEntity(Entity entity)
+	{
+		StratumShardConfig shard = StratumRuntime.Config.Shard;
+		if (shard == null || !shard.Enabled) return true;
+		double x = entity.Pos.X;
+		double z = entity.Pos.Z;
+		return x >= shard.MinX && x < (double)shard.MaxX + 1.0 && z >= shard.MinZ && z < (double)shard.MaxZ + 1.0;
+	}
+
+	public static bool AllowsColumn(int chunkX, int chunkZ)
+	{
+		StratumShardConfig shard = StratumRuntime.Config.Shard;
+		if (shard == null || !shard.Enabled) return true;
+		long minBlockX = (long)chunkX * 32L;
+		long minBlockZ = (long)chunkZ * 32L;
+		// A column is allowed if it overlaps the shard rectangle or the 1-chunk border buffer around it.
+		// Shard covers [MinX, MaxX + 1). With 32-block buffer: [MinX - 32, MaxX + 1 + 32).
+		// Chunk covers [minBlockX, minBlockX + 32).
+		bool xOverlap = (minBlockX + 32L > (long)shard.MinX - 32L) && (minBlockX < (long)shard.MaxX + 1L + 32L);
+		bool zOverlap = (minBlockZ + 32L > (long)shard.MinZ - 32L) && (minBlockZ < (long)shard.MaxZ + 1L + 32L);
+		return xOverlap && zOverlap;
 	}
 }

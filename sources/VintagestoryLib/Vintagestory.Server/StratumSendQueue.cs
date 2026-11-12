@@ -30,9 +30,16 @@ internal sealed class StratumSendQueue
 	private readonly CancellationToken cancellationToken;
 	private readonly int largeThreshold;
 	private readonly int coalesceLimit;
+	private readonly long maxPendingBytes;
+
+	private readonly object startGate = new object();
+	private Task drainTask;
+	private int closed;
 
 	private int pendingCount;
 	private long pendingBytes;
+	private int exemptInFlight;
+	private int overflowDisconnectStarted;
 
 	public int PendingCount => Volatile.Read(ref pendingCount);
 
@@ -46,6 +53,7 @@ internal sealed class StratumSendQueue
 		StratumNetworkConfig config = StratumRuntime.Config.Performance.Network;
 		largeThreshold = config.LargeThresholdBytes;
 		coalesceLimit = config.CoalesceLimitBytes;
+		maxPendingBytes = config.MaxPendingBytes;
 		channel = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
 		{
 			SingleReader = true,
@@ -54,41 +62,165 @@ internal sealed class StratumSendQueue
 		});
 	}
 
-	public void Start()
+	// The drain task and its coalesce buffer stay unallocated until the first packet.
+	// A connection that never sends (a scanner holding the socket open) then costs the
+	// socket alone, not a 64 KiB buffer and a thread-pool task.
+	private void EnsureDrainStarted()
 	{
-		TyronThreadPool.QueueTask((Func<Task>)DrainAsync, "StratumSendQueueDrain");
+		if (drainTask != null)
+		{
+			return;
+		}
+
+		var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		drainTask = done.Task;
+		TyronThreadPool.QueueTask(async () =>
+		{
+			try
+			{
+				await DrainAsync().ConfigureAwait(false);
+				done.TrySetResult();
+			}
+			catch (Exception ex)
+			{
+				done.TrySetException(ex);
+			}
+		}, "StratumSendQueueDrain");
+	}
+
+	// Stop accepting packets and let the drain finish what is already queued. Returns
+	// immediately. shutdownSocket runs after the drain completes, or after timeoutMs,
+	// whichever comes first. The caller must not wait: DisconnectPlayer runs on the
+	// main thread, and a peer that never reads would otherwise stall that thread.
+	public void ScheduleShutdown(int timeoutMs, Action shutdownSocket)
+	{
+		Task task;
+		lock (startGate)
+		{
+			closed = 1;
+			channel.Writer.TryComplete();
+			task = drainTask;
+		}
+
+		if (task == null)
+		{
+			shutdownSocket();
+			return;
+		}
+
+		_ = ObserveShutdown(task, Math.Max(0, timeoutMs), shutdownSocket);
+	}
+
+	private static async Task ObserveShutdown(Task drain, int timeoutMs, Action shutdownSocket)
+	{
+		try
+		{
+			await Task.WhenAny(drain, Task.Delay(timeoutMs)).ConfigureAwait(false);
+		}
+		catch (Exception)
+		{
+		}
+
+		try
+		{
+			shutdownSocket();
+		}
+		catch (Exception)
+		{
+		}
 	}
 
 	// dataWithLength must already carry the 4-byte length prefix. Callers hand off a buffer
 	// they will not mutate again (a fresh array per send), so no copy is needed here.
 	public void Enqueue(byte[] dataWithLength)
 	{
-		Interlocked.Increment(ref pendingCount);
-		Interlocked.Add(ref pendingBytes, dataWithLength.Length);
-		if (!channel.Writer.TryWrite(dataWithLength))
+		if (Volatile.Read(ref overflowDisconnectStarted) != 0)
 		{
-			// Writer already completed (connection closing). Drop, matches vanilla behavior
-			// of a send attempted after Close()/Dispose().
-			Interlocked.Decrement(ref pendingCount);
-			Interlocked.Add(ref pendingBytes, -dataWithLength.Length);
+			return;
 		}
+
+		int length = dataWithLength.Length;
+		bool exempt = length >= maxPendingBytes;
+		if (exempt)
+		{
+			// One packet at or above the cap is accepted even when smaller packets
+			// are already queued. It is not added to pendingBytes, so those packets
+			// are judged on their own size. A second packet that large disconnects.
+			if (Interlocked.Increment(ref exemptInFlight) != 1)
+			{
+				Interlocked.Decrement(ref exemptInFlight);
+				DisconnectOverflow();
+				return;
+			}
+		}
+		else
+		{
+			long queued = Interlocked.Add(ref pendingBytes, length);
+			if (queued > maxPendingBytes)
+			{
+				Interlocked.Add(ref pendingBytes, -length);
+				DisconnectOverflow();
+				return;
+			}
+		}
+
+		Interlocked.Increment(ref pendingCount);
+		lock (startGate)
+		{
+			if (closed != 0 || !channel.Writer.TryWrite(dataWithLength))
+			{
+				// Writer already completed (connection closing). Drop, matches vanilla behavior
+				// of a send attempted after Close()/Dispose().
+				Release(length);
+				return;
+			}
+
+			EnsureDrainStarted();
+		}
+	}
+
+	private void DisconnectOverflow()
+	{
+		if (Interlocked.Exchange(ref overflowDisconnectStarted, 1) != 0)
+		{
+			return;
+		}
+
+		string player = connection.client?.PlayerName;
+		if (string.IsNullOrEmpty(player))
+		{
+			player = "unidentified";
+		}
+
+		string address = connection.Address;
+		if (string.IsNullOrEmpty(address))
+		{
+			address = connection.TcpSocket?.RemoteEndPoint?.ToString() ?? "unknown";
+		}
+
+		StratumRuntime.LogWarning("StratumSendQueue disconnected " + player + " at " + address + ": pending bytes exceeded Performance.Network.MaxPendingBytes (" + maxPendingBytes + ").");
+		connection.InvokeDisconnected();
 	}
 
 	public void Complete()
 	{
-		channel.Writer.TryComplete();
+		lock (startGate)
+		{
+			closed = 1;
+			channel.Writer.TryComplete();
+		}
 	}
 
 	private async Task DrainAsync()
 	{
 		ChannelReader<byte[]> reader = channel.Reader;
-		byte[] coalesceBuffer = new byte[coalesceLimit];
+		byte[] coalesceBuffer = null;
 		try
 		{
 			while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
 			{
 				int coalescedLength = 0;
-				while (coalescedLength < coalesceBuffer.Length && reader.TryRead(out byte[] packet))
+				while (coalescedLength < coalesceLimit && reader.TryRead(out byte[] packet))
 				{
 					if (packet.Length >= largeThreshold)
 					{
@@ -100,18 +232,19 @@ internal sealed class StratumSendQueue
 							coalescedLength = 0;
 						}
 
-						Decrement(packet.Length);
+						Release(packet.Length);
 						if (!await SendAsync(packet, packet.Length).ConfigureAwait(false)) return;
 						continue;
 					}
 
-					if (coalescedLength + packet.Length > coalesceBuffer.Length)
+					coalesceBuffer ??= new byte[coalesceLimit];
+					if (coalescedLength + packet.Length > coalesceLimit)
 					{
 						if (!await SendAsync(coalesceBuffer, coalescedLength).ConfigureAwait(false)) return;
 						coalescedLength = 0;
 					}
 
-					Decrement(packet.Length);
+					Release(packet.Length);
 					Buffer.BlockCopy(packet, 0, coalesceBuffer, coalescedLength, packet.Length);
 					coalescedLength += packet.Length;
 				}
@@ -128,9 +261,15 @@ internal sealed class StratumSendQueue
 		}
 	}
 
-	private void Decrement(int bytes)
+	private void Release(int bytes)
 	{
 		Interlocked.Decrement(ref pendingCount);
+		if (bytes >= maxPendingBytes)
+		{
+			Interlocked.Decrement(ref exemptInFlight);
+			return;
+		}
+
 		Interlocked.Add(ref pendingBytes, -bytes);
 	}
 
@@ -138,7 +277,23 @@ internal sealed class StratumSendQueue
 	{
 		try
 		{
-			await socket.SendAsync(new ReadOnlyMemory<byte>(buffer, 0, length), SocketFlags.None, cancellationToken).ConfigureAwait(false);
+			// This overload returns the number of bytes accepted. A short write leaves a
+			// truncated length-prefixed frame, and the next packet would be parsed as the
+			// rest of it. Retry the tail. A non-positive count means the socket took
+			// nothing; disconnect instead of spinning.
+			int offset = 0;
+			while (offset < length)
+			{
+				int sent = await socket.SendAsync(new ReadOnlyMemory<byte>(buffer, offset, length - offset), SocketFlags.None, cancellationToken).ConfigureAwait(false);
+				if (sent <= 0)
+				{
+					connection.InvokeDisconnected();
+					return false;
+				}
+
+				offset += sent;
+			}
+
 			return true;
 		}
 		catch (OperationCanceledException)

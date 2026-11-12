@@ -1,0 +1,38 @@
+diff --git a/VintagestoryApi/Server/PlayerGroup.cs b/VintagestoryApi/Server/PlayerGroup.cs
+index 8f5e5d3..26600b1 100644
+--- a/VintagestoryApi/Server/PlayerGroup.cs
++++ b/VintagestoryApi/Server/PlayerGroup.cs
+@@ -25,10 +25,33 @@ namespace Vintagestory.API.Server
+         [JsonProperty]
+         public bool CreatedByPrivateMessage;
+         [JsonProperty]
+         public string JoinPolicy = null;
+ 
++        // Stratum start: issue #335 group administration. These persist to playergroups.json and
++        // never reach a client: the wire format is the generated Packet_PlayerGroup, not this type.
++        //
++        // Kind code from Groups.Kinds in the Stratum config, or null for an unclassified group,
++        // which is what every group made before this feature is. Null keeps vanilla behaviour.
++        [JsonProperty]
++        public string StratumKind = null;
++
++        // Roster freeze. While set, players cannot join, leave, invite, accept or kick in this
++        // group; staff commands still go through and are audited.
++        [JsonProperty]
++        public bool StratumRosterFrozen = false;
++
++        // Short tag rendered before member names in chat and on nametags, e.g. "RED".
++        [JsonProperty]
++        public string StratumTag = null;
++
++        // Relation to other groups by their Uid: "ally" or "enemy". Written to both sides when
++        // staff set one, so a lookup only ever reads the group it starts from.
++        [JsonProperty]
++        public Dictionary<int, string> StratumRelations = null;
++        // Stratum end
++
+         public List<IPlayer> OnlinePlayers = new List<IPlayer>();
+ 
+ 
+         public PlayerGroup()
+         {

@@ -261,7 +261,7 @@ index 9dc87af..bc6bd65 100644
  			Code = "suvisitor",
  			Name = "Survival Visitor",
  			Description = "Can only visit this world and chat but not use/place/break anything",
-@@ -778,32 +837,125 @@ public class ServerConfig : IServerConfig
+@@ -778,32 +837,127 @@ public class ServerConfig : IServerConfig
  			Color = Color.LightBlue,
  			DefaultGameMode = EnumGameMode.Survival,
  			AutoGrant = true
@@ -285,7 +285,8 @@ index 9dc87af..bc6bd65 100644
 +		"stratum.back",
 +		"stratum.msg",
 +		"stratum.info",
-+		"stratum.report"
++		"stratum.report",
++		"stratum.classchange"
 +	};
 +
 +	private static readonly string[] StratumStaffPrivileges = new[]
@@ -306,6 +307,7 @@ index 9dc87af..bc6bd65 100644
 +		"stratum.mute",
 +		"stratum.notes",
 +		"stratum.reports",
++		"stratum.classrequests",
 +		"stratum.privacy.bypass"
 +	};
 +

@@ -16,7 +16,7 @@ Windows:
 git clone https://github.com/StratumServer/Stratum.git
 cd Stratum
 .\scripts\bootstrap.ps1
-dotnet build VintageStory.slnx -c Release
+dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true
 ```
 
 Linux and macOS:
@@ -27,12 +27,19 @@ cd Stratum
 make build
 ```
 
+`-p:EmbedPatchedFiles=true` embeds this working tree's compiled DLLs into
+`StratumServer` so the launcher overlays them onto the downloaded base game.
+Without it the server boots on the unpatched vanilla assemblies with no error.
+`make build` and `scripts/pack-release.ps1` pass it for you. `make build` uses
+two passes: the first creates the sibling project outputs that `StratumServer`
+embeds, and the second runs with `-p:EmbedPatchedFiles=true`.
+
 Bootstrap does this:
 
 1. Resolves the official server archive from Anego's release manifest.
 2. Verifies the archive MD5 from the manifest.
 3. Extracts the archive into `.vanilla/`.
-4. Installs `ilspycmd` if needed.
+4. Restores the repository-local `ilspycmd` version from `.config/dotnet-tools.json` when decompilation is needed.
 5. Decompiles `VintagestoryLib.dll` and `VintagestoryServer.dll`.
 6. Clones the open-source Anego forks pinned in `forks.json`.
 7. Applies Stratum patches and copies `sources/` into the working tree.

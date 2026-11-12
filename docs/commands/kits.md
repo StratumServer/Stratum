@@ -11,7 +11,7 @@ step that would otherwise need a typed item code instead snapshots a live
 
 | Command | Audience | Access config key | Default privilege | Storage |
 | --- | --- | --- | --- | --- |
-| `/kit` | Players | `Commands.Kits` | `stratum.kits` | `stratum-kits.json` |
+| `/kit` | Players, once granted | `Commands.Kits` | `stratum.kits` | `stratum-kits.json` |
 | `/kitedit` | Staff | `Commands.KitEdit` | `stratum.kitedit` | `stratum-kits.json` |
 
 ## Prerequisites
@@ -20,10 +20,10 @@ step that would otherwise need a typed item code instead snapshots a live
   all default to `true`. Setting one to `false` skips registering that
   command entirely; the change takes effect on the next server restart,
   since registration happens once when the server boots.
-- `stratum.kits` and `stratum.kitedit` are **not** granted to any default
-  role, including `admin`. Grant them with `/roles grant <role>
-  stratum.kitedit` (see the roles command reference) or by editing
-  `serverroles.json` directly.
+- Roles with auto-grant, normally `admin`, receive `stratum.kits` and
+  `stratum.kitedit` automatically. Other roles need them granted explicitly,
+  with `/roles grant <role> stratum.kits` and `/roles grant <role>
+  stratum.kitedit`, or by editing `serverroles.json` directly.
 - The server console always passes Stratum's own access check (see
   `StratumCommandAccessCatalog.CallerHasAccess`), so both commands can be run
   from the console for diagnostics. A console caller has no player entity,
@@ -225,6 +225,7 @@ Every mutating action writes `stratum-kits.json` immediately. `create` and
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `Programming error: Incomplete command - no name or required privilege has been set` | Running a Stratum build older than this fix | Upgrade; `/kitedit` was missing its base command privilege and could not run at all. |
+| `You do not have permission to use /kit.` | Your role does not hold the configured privilege | Grant `stratum.kits` (or your configured privilege) to the role. |
 | `You do not have permission to use /kitedit.` | Your role does not hold the configured privilege | Grant `stratum.kitedit` (or your configured privilege) to the role. |
 | `/kitedit is disabled.` | `Commands.KitEdit.Enabled` is `false` | Enable it and restart the server. |
 | `Your inventory is empty; nothing to snapshot.` | `create` with nothing in the hotbar or character inventory | Pick up items first. |

@@ -8,16 +8,11 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install PowerShell
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y powershell
 
       - name: Install .NET 10 SDK
         uses: actions/setup-dotnet@v6

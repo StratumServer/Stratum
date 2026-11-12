@@ -12,4 +12,7 @@
   <Folder Name="/Stratum/">
     <Project Path="StratumServer/StratumServer.csproj" />
   </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="tests/InventoryPrivacySmoke/InventoryPrivacySmoke.csproj" />
+  </Folder>
 </Solution>

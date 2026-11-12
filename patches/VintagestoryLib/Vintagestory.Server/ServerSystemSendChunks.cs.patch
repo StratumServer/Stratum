@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
-index 277d286..c6f15c9 100644
+index 277d286..50e02a3 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSendChunks.cs
 @@ -1,15 +1,17 @@
@@ -293,7 +293,19 @@ index 277d286..c6f15c9 100644
  		}
  		foreach (ServerMapChunkWithCoord item4 in mapChunksToSend)
  		{
-@@ -203,16 +395,36 @@ internal class ServerSystemSendChunks : ServerSystem
+@@ -193,26 +385,48 @@ internal class ServerSystemSendChunks : ServerSystem
+ 			{
+ 				Id = 10,
+ 				Chunks = packet_ServerChunks2
+ 			});
+ 		}
++		// Stratum: Restore the viewer's inventory data after a chunk resend.
++		StratumInventorySync.RestoreChunkViews(server, client.Player, chunksToSend);
+ 		foreach (long forceSendMapRegion in client.forceSendMapRegions)
+ 		{
+ 			if (server.loadedMapRegions.TryGetValue(forceSendMapRegion, out var value3))
+ 			{
+ 				Vec3i vec3i = server.api.WorldManager.MapRegionPosFromIndex2D(forceSendMapRegion);
  				server.SendPacketFast(client.Id, value3.ToPacket(vec3i.X, vec3i.Z));
  				client.SetMapRegionSent(forceSendMapRegion);
  			}
@@ -332,7 +344,7 @@ index 277d286..c6f15c9 100644
  		for (int i = 0; i < octagonPoints.Length; i++)
  		{
  			int x = octagonPoints[i].X;
-@@ -238,10 +450,18 @@ internal class ServerSystemSendChunks : ServerSystem
+@@ -238,10 +452,18 @@ internal class ServerSystemSendChunks : ServerSystem
  						chunksToSend.Add(new ServerChunkWithCoord
  						{
  							chunk = loadedChunk,
@@ -351,7 +363,7 @@ index 277d286..c6f15c9 100644
  						{
  							if (!client.DidSendMapChunk(num4))
  							{
-@@ -258,41 +478,407 @@ internal class ServerSystemSendChunks : ServerSystem
+@@ -258,41 +480,407 @@ internal class ServerSystemSendChunks : ServerSystem
  					}
  					num2++;
  				}

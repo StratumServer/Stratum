@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
-index 55b134c..28229c8 100644
+index 55b134c..011ba18 100644
 --- a/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 +++ b/VSEssentials/Systems/WorldGen/Standard/ChunkGen/4.GenBlockLayers/GenBlockLayers.cs
 @@ -14,10 +14,14 @@ namespace Vintagestory.ServerMods
@@ -62,7 +62,7 @@ index 55b134c..28229c8 100644
 +        {
 +            api = source.api;
 +            LoadGlobalConfig(api);
-+            BlockLayersIds = new List<int>(source.BlockLayersIds);
++            BlockLayersIds = new List<int>();
 +            rnd = new LCGRandom(api.WorldManager.Seed);
 +            mapheight = source.mapheight;
 +            grassDensity = source.grassDensity;
@@ -80,21 +80,28 @@ index 55b134c..28229c8 100644
              var chunks = request.Chunks;
              int chunkX = request.ChunkX;
              int chunkZ = request.ChunkZ;
-@@ -359,10 +394,17 @@ namespace Vintagestory.ServerMods
+@@ -358,10 +393,24 @@ namespace Vintagestory.ServerMods
+                 }
              }
          }
  
          public void PlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
-         {
-+            // Stratum: external callers use the same per-thread generator as the registered handler.
-+            if (stratumWorkers != null)
++        {
++            // Stratum: during the serial Terrain stage this is the generator that just
++            // seeded the column. A prefix on the handler (Watersheds) calls this public
++            // method and has to draw from that seed. Any other caller gets the worker.
++            if (stratumWorkers == null || StratumTerrainSplit.SerialTerrainStageActive)
 +            {
-+                stratumWorkers.Current.PlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++                StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
 +                return;
 +            }
 +
++            stratumWorkers.Current.StratumPlaceTallGrass(x, posY, z, chunks, rainRel, tempRel, temp, forestRel, biome);
++        }
++
++        private void StratumPlaceTallGrass(int x, int posY, int z, IServerChunk[] chunks, float rainRel, float tempRel, float temp, float forestRel, int biome)
+         {
              double rndVal = blockLayerConfig.Tallgrass.RndWeight * rnd.NextDouble() + blockLayerConfig.Tallgrass.PerlinWeight * grassDensity.Noise(x, z, -0.5f);
  
              double extraGrass = Math.Max(0, rainRel * tempRel - 0.25);
  
-             if (rndVal <= GameMath.Clamp(forestRel - extraGrass, 0.05, 0.99) || posY >= mapheight - 1 || posY < 1) return;

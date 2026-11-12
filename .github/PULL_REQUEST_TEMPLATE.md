@@ -13,7 +13,7 @@ What changed and why.
 ## Checklist
 
 - [ ] `.\scripts\extract-patches.ps1` ran clean.
-- [ ] `dotnet build VintageStory.slnx -c Release` is green.
+- [ ] `dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true` is green.
 - [ ] Every vanilla edit has a `// Stratum` marker.
 - [ ] No vanilla source committed.
 - [ ] Tested on a real server start, not just compilation.
