@@ -34,8 +34,8 @@ public class ChestTickScenarios : AtlasScenarioBase
 
 	private static object Container(object blockEntity)
 	{
-		FieldInfo field = null;
-		for (Type type = blockEntity.GetType(); type != null && field == null; type = type.BaseType)
+		FieldInfo? field = null;
+		for (Type? type = blockEntity.GetType(); type != null && field == null; type = type.BaseType)
 		{
 			field = type.GetField("container", BindingFlags.Instance | BindingFlags.NonPublic);
 		}
