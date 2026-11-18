@@ -1799,7 +1799,7 @@ index 4d0bf91..ce34102 100644
  		{
  			int num = 1 << index3d;
  			index3d /= 32;
-@@ -464,65 +1807,69 @@ public class ChunkDataLayer
+@@ -464,65 +1807,71 @@ public class ChunkDataLayer
  				dataBits[i][index3d] &= num2;
  			}
  		}
@@ -1865,10 +1865,12 @@ index 4d0bf91..ce34102 100644
 +					if (palette[paletteIndex] == value) break;
 +					paletteIndex++;
  				}
-+				if (paletteIndex == palette.Length) paletteIndex = MakeSpaceInPalette();
-+
-+				palette[paletteIndex] = value;
-+				paletteCount++;
++				if (paletteIndex == count)
++				{
++					if (paletteIndex == palette.Length) paletteIndex = MakeSpaceInPalette();
++					palette[paletteIndex] = value;
++					paletteCount++;
++				}
 +				setBlockIndexCached = paletteIndex;
 +				setBlockValueCached = value;
  			}
@@ -1903,7 +1905,7 @@ index 4d0bf91..ce34102 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -535,10 +1882,11 @@ public class ChunkDataLayer
+@@ -535,10 +1884,11 @@ public class ChunkDataLayer
  		palette[1] = value;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1915,7 +1917,7 @@ index 4d0bf91..ce34102 100644
  		if (bitsize > 6 && CleanUpPalette())
  		{
  			return paletteCount;
-@@ -555,10 +1903,11 @@ public class ChunkDataLayer
+@@ -555,10 +1905,11 @@ public class ChunkDataLayer
  		Get = selectDelegate(bitsize + 1);
  		bitsize++;
  		return num;
@@ -1927,7 +1929,7 @@ index 4d0bf91..ce34102 100644
  		if (pool.server == null)
  		{
  			if (bitsize < 14)
-@@ -653,10 +2002,11 @@ public class ChunkDataLayer
+@@ -653,10 +2004,11 @@ public class ChunkDataLayer
  			}
  		}
  		return true;
@@ -1939,7 +1941,7 @@ index 4d0bf91..ce34102 100644
  		if (paletteCount == 0)
  		{
  			return 0;
-@@ -668,10 +2018,11 @@ public class ChunkDataLayer
+@@ -668,10 +2020,11 @@ public class ChunkDataLayer
  			num2++;
  		}
  		return num2;
@@ -1951,7 +1953,7 @@ index 4d0bf91..ce34102 100644
  		int num = paletteCount - 1;
  		for (int num2 = num / 32; num2 >= 0; num2--)
  		{
-@@ -698,23 +2049,24 @@ public class ChunkDataLayer
+@@ -698,23 +2051,24 @@ public class ChunkDataLayer
  				}
  			}
  		}
@@ -1984,7 +1986,7 @@ index 4d0bf91..ce34102 100644
  		Get = GetFromBits0;
  		int num = bitsize;
  		bitsize = 0;
-@@ -731,10 +2083,11 @@ public class ChunkDataLayer
+@@ -731,10 +2085,11 @@ public class ChunkDataLayer
  		}
  		setBlockIndexCached = 0;
  		setBlockValueCached = 0;
@@ -1996,7 +1998,7 @@ index 4d0bf91..ce34102 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -746,19 +2099,21 @@ public class ChunkDataLayer
+@@ -746,19 +2101,21 @@ public class ChunkDataLayer
  		paletteCount = 1;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -2018,7 +2020,7 @@ index 4d0bf91..ce34102 100644
  		int num = 0;
  		readWriteLock.AcquireReadLock();
  		try
-@@ -774,10 +2129,11 @@ public class ChunkDataLayer
+@@ -774,10 +2131,11 @@ public class ChunkDataLayer
  			readWriteLock.ReleaseReadLock();
  		}
  		return Compression.CompressAndCombine(arrayStatic, palette, paletteCount);
@@ -2030,7 +2032,7 @@ index 4d0bf91..ce34102 100644
  		int num = 0;
  		lock (palette ?? ((object)readWriteLock))
  		{
-@@ -806,10 +2162,11 @@ public class ChunkDataLayer
+@@ -806,10 +2164,11 @@ public class ChunkDataLayer
  			paletteCompressed = Compression.Compress(palette, paletteCount, chunkdataVersion);
  		}
  		return Compression.Compress(arrayStatic, num, chunkdataVersion);
@@ -2042,7 +2044,7 @@ index 4d0bf91..ce34102 100644
  		paletteCount = 0;
  		palette = Compression.DecompressCombined(layerCompressed, ref dataBits, ref paletteCount, pool.NewData);
  		if (palette != null)
-@@ -827,10 +2184,11 @@ public class ChunkDataLayer
+@@ -827,10 +2186,11 @@ public class ChunkDataLayer
  		{
  			bitsize = 0;
  		}
@@ -2054,7 +2056,7 @@ index 4d0bf91..ce34102 100644
  		palette = Compression.DecompressToInts(paletteCompressed, ref paletteCount);
  		if (palette != null)
  		{
-@@ -872,10 +2230,11 @@ public class ChunkDataLayer
+@@ -872,10 +2232,11 @@ public class ChunkDataLayer
  			Get = GetFromBits0;
  			bitsize = 0;
  		}
@@ -2066,7 +2068,7 @@ index 4d0bf91..ce34102 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -910,39 +2269,195 @@ public class ChunkDataLayer
+@@ -910,39 +2271,195 @@ public class ChunkDataLayer
  		{
  			pool.FreeArrays(this);
  		}
@@ -2272,7 +2274,7 @@ index 4d0bf91..ce34102 100644
  		readWriteLock.AcquireReadLock();
  		try
  		{
-@@ -950,54 +2465,48 @@ public class ChunkDataLayer
+@@ -950,54 +2467,48 @@ public class ChunkDataLayer
  			for (int i = 0; i < blocksOut.Length; i += 32)
  			{
  				int num2 = i / 32;
@@ -2340,7 +2342,7 @@ index 4d0bf91..ce34102 100644
  	{
  		int num = -1;
  		for (int i = 0; i < bitsize; i++)
-@@ -1005,10 +2514,11 @@ public class ChunkDataLayer
+@@ -1005,10 +2516,11 @@ public class ChunkDataLayer
  			num &= (((needle & (1 << i)) != 0) ? dataBits[i][intIndex] : (~dataBits[i][intIndex]));
  		}
  		return num;
@@ -2352,7 +2354,7 @@ index 4d0bf91..ce34102 100644
  		for (int i = 0; i < paletteCount; i++)
  		{
  			if (palette[i] != id)
-@@ -1025,18 +2535,20 @@ public class ChunkDataLayer
+@@ -1025,18 +2537,20 @@ public class ChunkDataLayer
  			return false;
  		}
  		return false;
@@ -2373,7 +2375,7 @@ index 4d0bf91..ce34102 100644
  		int num = ~mask;
  		readWriteLock.AcquireWriteLock();
  		for (int i = 0; i < bitsize; i++)
-@@ -1051,10 +2563,11 @@ public class ChunkDataLayer
+@@ -1051,10 +2565,11 @@ public class ChunkDataLayer
  			}
  		}
  		readWriteLock.ReleaseWriteLock();
@@ -2385,7 +2387,7 @@ index 4d0bf91..ce34102 100644
  		int num = paletteCount - 1;
  		readWriteLock.AcquireWriteLock();
  		int num2 = bitsize;
-@@ -1088,10 +2601,195 @@ public class ChunkDataLayer
+@@ -1088,10 +2603,195 @@ public class ChunkDataLayer
  		palette[deletePosition] = palette[num];
  		paletteCount--;
  		readWriteLock.ReleaseWriteLock();
@@ -2581,7 +2583,7 @@ index 4d0bf91..ce34102 100644
  		int[] array = palette;
  		if (array == null)
  		{
-@@ -1104,6 +2802,6 @@ public class ChunkDataLayer
+@@ -1104,6 +2804,6 @@ public class ChunkDataLayer
  			{
  				array[i] = 0;
  			}
