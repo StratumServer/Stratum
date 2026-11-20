@@ -72,7 +72,7 @@ public class DespawnClockScenarios : AtlasScenarioBase
 		Assert.True(raw > clamped + 0.5f, "raw " + raw + " clamped " + clamped);
 		Assert.True(clamped > 0.2f, "despawn clamp collapsed the payout to one tick");
 
-		object behavior = null;
+		object? behavior = null;
 		foreach (EntityBehavior candidate in far.SidedProperties.Behaviors)
 		{
 			if (candidate.GetType().Name == "EntityBehaviorDespawn")
@@ -81,19 +81,20 @@ public class DespawnClockScenarios : AtlasScenarioBase
 				break;
 			}
 		}
-		Assert.NotNull(behavior);
-		FieldInfo accum = behavior.GetType().GetField("accumSeconds", BindingFlags.Instance | BindingFlags.NonPublic)!;
-		float before = (float)accum.GetValue(behavior)!;
+		object foundBehavior = behavior ?? throw new System.InvalidOperationException("Despawn behavior was missing.");
+		FieldInfo accum = foundBehavior.GetType().GetField("accumSeconds", BindingFlags.Instance | BindingFlags.NonPublic)
+			?? throw new System.InvalidOperationException("Despawn accumulator was missing.");
+		float before = (float)accum.GetValue(foundBehavior)!;
 		StratumEntityBehaviorTimings.DespawnDeltaTime = clamped;
 		try
 		{
-			((EntityBehavior)behavior).OnGameTick(raw);
+			((EntityBehavior)foundBehavior).OnGameTick(raw);
 		}
 		finally
 		{
 			StratumEntityBehaviorTimings.DespawnDeltaTime = float.NaN;
 		}
-		float gained = (float)accum.GetValue(behavior)! - before;
+		float gained = (float)accum.GetValue(foundBehavior)! - before;
 		Assert.True(gained > clamped - 0.05f && gained < raw, "despawn gained " + gained + " from raw " + raw + " clamped " + clamped);
 	}
 
@@ -124,17 +125,18 @@ public class DespawnClockScenarios : AtlasScenarioBase
 	// class uses its own item: a stone left by the other scenario cannot absorb this one.
 	private Entity SpawnRestingItem(BlockPos pos, string code = "game:stone-granite")
 	{
-		Item item = World.Api.World.GetItem(new AssetLocation(code));
-		Entity entity = World.Api.World.SpawnItemEntity(new ItemStack(item, 1), pos.ToVec3d());
+		Item item = World.Api.World.GetItem(new AssetLocation(code))
+			?? throw new System.InvalidOperationException("Resting item collectible was missing: " + code);
+		Entity entity = World.Api.World.SpawnItemEntity(new ItemStack(item, 1), pos.ToVec3d())
+			?? throw new System.InvalidOperationException("Resting item could not be spawned.");
 		entity.Pos.Motion.Set(0, 0, 0);
-		entity.ServerPos.Motion.Set(0, 0, 0);
 		return entity;
 	}
 
 	private static float Clock(Entity entity)
 	{
 		float deathTime = entity.Attributes.GetFloat("deathTime");
-		object behavior = null;
+		object? behavior = null;
 		foreach (EntityBehavior candidate in entity.SidedProperties.Behaviors)
 		{
 			if (candidate.GetType().Name == "EntityBehaviorDespawn")
@@ -144,7 +146,7 @@ public class DespawnClockScenarios : AtlasScenarioBase
 			}
 		}
 		if (behavior == null) return deathTime;
-		FieldInfo accum = behavior.GetType().GetField("accumSeconds", BindingFlags.Instance | BindingFlags.NonPublic);
+		FieldInfo? accum = behavior.GetType().GetField("accumSeconds", BindingFlags.Instance | BindingFlags.NonPublic);
 		float pending = accum == null ? 0f : (float)accum.GetValue(behavior)!;
 		return deathTime + pending;
 	}

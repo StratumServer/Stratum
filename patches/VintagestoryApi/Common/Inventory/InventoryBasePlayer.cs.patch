@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs b/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs
-index dbb47de..f95ef62 100644
+index dbb47de..3c90c20 100644
 --- a/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs
 +++ b/VintagestoryApi/Common/Inventory/InventoryBasePlayer.cs
 @@ -59,10 +59,11 @@ namespace Vintagestory.API.Common
@@ -8,7 +8,7 @@ index dbb47de..f95ef62 100644
                      if (handling != EnumHandling.PassThrough) continue;
  
                      dirtySlots.Add(i);
-+                    StratumAnySlotDirty = 1;
++                    System.Threading.Interlocked.Exchange(ref InventoryBase.StratumAnySlotDirty, 1);
  
                      if (maxStackSize > 0)
                      {

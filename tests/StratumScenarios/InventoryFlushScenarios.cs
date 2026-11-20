@@ -124,8 +124,8 @@ public class InventoryFlushScenarios : AtlasScenarioBase
 			}
 			SetInventoryGuards(false);
 			object manager = viewer.Player.InventoryManager;
-			FieldInfo inventories = null;
-			for (Type type = manager.GetType(); type != null && inventories == null; type = type.BaseType)
+			FieldInfo? inventories = null;
+			for (Type? type = manager.GetType(); type != null && inventories == null; type = type.BaseType)
 			{
 				inventories = type.GetField("Inventories", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 			}

@@ -3198,3 +3198,55 @@ index 159b06c..1f0888d 100644
 +		}
  	}
  }
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
+--- a/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerSystemSupplyChunks.cs
+@@ -2878,19 +2878,35 @@
+ 		{
+ 			return;
+ 		}
+-		for (int i = 0; i < list.Count; i++)
+-		{
+-			try
+-			{
+-				list[i](chunkRequest);
+-			}
+-			catch (Exception ex)
+-			{
+-				ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
+-				if (chunkRequest.CurrentIncompletePass <= EnumWorldGenPass.Terrain)
+-				{
+-					break; // Critical error at an early stage — abort
+-				}
++		// Stratum: keep public Terrain generator calls on the serial fallback thread.
++		bool stratumSerialTerrain = forPass == StratumWorldGenStages.Terrain && StratumWorldgenCompat.TerrainRequiresSerialFallback;
++		if (stratumSerialTerrain)
++		{
++			StratumTerrainSplit.SerialTerrainStageActive = true;
++		}
++		try
++		{
++			for (int i = 0; i < list.Count; i++)
++			{
++				try
++				{
++					list[i](chunkRequest);
++				}
++				catch (Exception ex)
++				{
++					ServerMain.Logger.Worldgen("An error was thrown in pass {5} when generating chunk column X={0},Z={1} in world '{3}' with seed {4}\nException {2}\n\n", chunkRequest.chunkX, chunkRequest.chunkZ, ex, server.SaveGameData.WorldName, server.SaveGameData.Seed, chunkRequest.CurrentIncompletePass.ToString());
++					if (chunkRequest.CurrentIncompletePass <= EnumWorldGenPass.Terrain)
++					{
++						break; // Critical error at an early stage — abort
++					}
++				}
++			}
++		}
++		finally
++		{
++			if (stratumSerialTerrain)
++			{
++				StratumTerrainSplit.SerialTerrainStageActive = false;
+ 			}
+ 		}
+ 		}

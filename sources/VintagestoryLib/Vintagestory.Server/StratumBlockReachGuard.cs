@@ -16,6 +16,13 @@ internal static class StratumBlockReachGuard
 		return TryAccept(server, client, selection, "interact", out disconnectReason);
 	}
 
+	public static bool IsWithinBlockInteractionRange(IPlayer player, BlockPos blockPos, float slack)
+	{
+#pragma warning disable CS0618 // Vintage Story 1.22 exposes no replacement for the BlockPos overload.
+		return player.IsInInteractionRangeOf(blockPos, slack);
+#pragma warning restore CS0618
+	}
+
 	private static bool TryAccept(ServerMain server, ConnectedClient client, BlockSelection selection, string action, out string disconnectReason)
 	{
 		disconnectReason = null;

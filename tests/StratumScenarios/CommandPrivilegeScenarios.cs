@@ -20,7 +20,7 @@ public class CommandPrivilegeScenarios : AtlasScenarioBase
 		var codes = new System.Collections.Generic.HashSet<string>();
 		foreach (object privilege in privileges)
 		{
-			codes.Add(privilege.ToString());
+			codes.Add(privilege.ToString() ?? string.Empty);
 		}
 
 		Assert.Contains("stratum.revive", codes);

@@ -42,13 +42,12 @@ public class EntitySelectionTraceScenarios : AtlasScenarioBase
 			await World.Ticks(1);
 			object entity = player.Player.Entity;
 			object pos = entity.GetType().GetProperty("Pos")!.GetValue(entity)!;
-			object serverPos = entity.GetType().GetProperty("ServerPos")!.GetValue(entity)!;
 			PropertyInfo standX = pos.GetType().GetProperty("X")!;
 			PropertyInfo standY = pos.GetType().GetProperty("Y")!;
 			PropertyInfo standZ = pos.GetType().GetProperty("Z")!;
 			double lifted = (double)standY.GetValue(pos)! + 4;
 			standY.SetValue(pos, lifted);
-			player.Player.Entity.ServerPos.Y = lifted;
+			player.Player.Entity.Pos.Y = lifted;
 			int fx = (int)Math.Floor((double)standX.GetValue(pos)!);
 			int fy = (int)Math.Floor(lifted);
 			int fz = (int)Math.Floor((double)standZ.GetValue(pos)!);
@@ -56,7 +55,7 @@ public class EntitySelectionTraceScenarios : AtlasScenarioBase
 			BlockPos second = new BlockPos(fx + 3, fy, fz);
 			World.SetBlock("game:soil-medium-normal", first);
 			World.SetBlock("game:soil-medium-normal", second);
-			AimOnce(pos, serverPos, -MathF.PI / 2f, -0.4f);
+			AimOnce(pos, -MathF.PI / 2f, -0.4f);
 			HoldMouse(player, true);
 			await World.Ticks(1);
 			Assert.Equal(Format(first), Format(SelectedBlock(entity)));
@@ -78,14 +77,12 @@ public class EntitySelectionTraceScenarios : AtlasScenarioBase
 		}
 	}
 
-	private static void AimOnce(object pos, object serverPos, float yaw, float pitch)
+	private static void AimOnce(object pos, float yaw, float pitch)
 	{
 		PropertyInfo yawProperty = pos.GetType().GetProperty("Yaw")!;
 		PropertyInfo pitchProperty = pos.GetType().GetProperty("Pitch")!;
 		yawProperty.SetValue(pos, yaw);
 		pitchProperty.SetValue(pos, pitch);
-		yawProperty.SetValue(serverPos, yaw);
-		pitchProperty.SetValue(serverPos, pitch);
 	}
 
 	private static BlockPos SelectedBlock(object entity)

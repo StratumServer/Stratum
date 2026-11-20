@@ -654,10 +654,10 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 
 	private static FieldInfo ApiField(object collectible)
 	{
-		Type type = collectible.GetType();
+		Type? type = collectible.GetType();
 		while (type != null)
 		{
-			FieldInfo field = type.GetField("api", BindingFlags.Instance | BindingFlags.NonPublic);
+			FieldInfo? field = type.GetField("api", BindingFlags.Instance | BindingFlags.NonPublic);
 			if (field != null) return field;
 			type = type.BaseType;
 		}
@@ -712,13 +712,16 @@ public class ItemBreakResilienceScenarios : AtlasScenarioBase
 		await World.Ticks(5);
 		await player.GiveItem("game:pickaxe-iron", 1);
 		ItemSlot activeSlot = player.Player.InventoryManager.ActiveHotbarSlot;
-		CollectibleObject pickaxe = activeSlot.Itemstack.Collectible;
+		ItemStack stack = activeSlot.Itemstack
+			?? throw new InvalidOperationException("Iron pickaxe stack was missing.");
+		CollectibleObject pickaxe = stack.Collectible
+			?? throw new InvalidOperationException("Iron pickaxe collectible was missing.");
 		CollectibleBehavior[] originalBehaviors = pickaxe.CollectibleBehaviors;
 		Block block = World.BlockAt(blockPos);
 		BlockBehavior[] originalBlockBehaviors = block.BlockBehaviors;
 		var oneShot = new OneShotBlockBehavior(block);
 		FieldInfo apiField = ApiField(pickaxe);
-		object previousApi = apiField.GetValue(pickaxe);
+		object? previousApi = apiField.GetValue(pickaxe);
 		int didBreakCount = 0;
 		BlockBrokenDelegate didBreakHandler = (_, _, _) => didBreakCount++;
 		World.Api.Event.DidBreakBlock += didBreakHandler;

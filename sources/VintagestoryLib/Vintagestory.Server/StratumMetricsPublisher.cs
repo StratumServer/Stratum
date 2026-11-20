@@ -251,11 +251,11 @@ internal static class StratumMetricsPublisher
 			string role = c.ServerData?.RoleCode ?? "unknown";
 			string uid = c.Player?.PlayerUID ?? "";
 			double x = 0, y = 0, z = 0;
-			if (c.Player?.Entity?.ServerPos != null)
+			if (c.Player?.Entity?.Pos != null)
 			{
-				x = c.Player.Entity.ServerPos.X;
-				y = c.Player.Entity.ServerPos.Y;
-				z = c.Player.Entity.ServerPos.Z;
+				x = c.Player.Entity.Pos.X;
+				y = c.Player.Entity.Pos.Y;
+				z = c.Player.Entity.Pos.Z;
 			}
 			sb.Append('{');
 			AppendString(sb, "name", c.PlayerName ?? ""); sb.Append(',');

@@ -69,7 +69,7 @@ public class PhysicsDespawnScenarios : AtlasScenarioBase
 			.GetValue(server)!;
 		foreach (object system in systems)
 		{
-			FieldInfo field = system.GetType().GetField("physicsManager", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+			FieldInfo? field = system.GetType().GetField("physicsManager", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 			if (field != null) return field.GetValue(system)!;
 		}
 		throw new System.InvalidOperationException("physicsManager was not on a server system");

@@ -1,6 +1,7 @@
 using System;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Datastructures;
+using Vintagestory.API.MathTools;
 
 namespace Vintagestory.API.Common;
 
@@ -33,8 +34,15 @@ public static class StratumInventoryPrivacy
 		}
 
 		return inventory.Pos.dimension == player.Entity.Pos.Dimension
-			&& player.IsInInteractionRangeOf(inventory.Pos)
+			&& IsInBlockInteractionRange(player, inventory.Pos)
 			&& inventory.Api.World.Claims.TestAccess(player, inventory.Pos, EnumBlockAccessFlags.Use) == EnumWorldAccessResponse.Granted;
+	}
+
+	private static bool IsInBlockInteractionRange(IPlayer player, BlockPos blockPos)
+	{
+#pragma warning disable CS0618 // Vintage Story 1.22 exposes no replacement for the BlockPos overload.
+		return player.IsInInteractionRangeOf(blockPos);
+#pragma warning restore CS0618
 	}
 
 	/// <summary>Requires an open inventory and current access.</summary>

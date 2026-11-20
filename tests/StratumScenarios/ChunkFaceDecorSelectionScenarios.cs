@@ -51,8 +51,9 @@ public class ChunkFaceDecorSelectionScenarios : AtlasScenarioBase
 		Assert.True(gameMainType.IsInstanceOfType(world),
 			$"Server world is {world.GetType().FullName}, not a GameMain: the reflection target is wrong.");
 
-		Block rug = world.GetBlock(new AssetLocation(RugCode));
-		Assert.True(rug != null && rug.BlockId != 0, $"Rug block '{RugCode}' not found.");
+		Block rug = world.GetBlock(new AssetLocation(RugCode))
+			?? throw new InvalidOperationException($"Rug block '{RugCode}' not found.");
+		Assert.NotEqual(0, rug.BlockId);
 
 		Cuboidf[]? Boxes(BlockPos pos) => (Cuboidf[]?)getBoxes!.Invoke(world, new object[] { pos, false });
 
