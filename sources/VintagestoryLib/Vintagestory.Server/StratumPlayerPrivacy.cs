@@ -1,4 +1,4 @@
-using System.Linq;
+using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 
 namespace Vintagestory.Server;
@@ -50,6 +50,12 @@ internal static class StratumPlayerPrivacy
 
 	private static bool? AllowMapPinDisclosure(IServerPlayer sender, IServerPlayer receiver)
 	{
+		if (sender?.WorldData?.CurrentGameMode == EnumGameMode.Spectator
+			&& receiver != null && sender.PlayerUID != receiver.PlayerUID)
+		{
+			return false;
+		}
+
 		// Vanish hides the map pin too, independent of the Enabled/HideMapPins config below:
 		// a vanished player is meant to disappear entirely, not just off the entity tracker.
 		// Mirrors the /near and entity-visibility rule exactly (see StratumStaffCommandState),
@@ -66,7 +72,7 @@ internal static class StratumPlayerPrivacy
 		bool senderIsStaff = StratumCommandAccessCatalog.PlayerHasAccess(sender, cfg.StaffOverride);
 		if (senderIsStaff && cfg.ShowStaffPinsToAll) return true;
 
-		if (cfg.AllowGroupMapVisibility && SharesGroup(sender, receiver)) return true;
+		if (cfg.AllowGroupMapVisibility && StratumPlayerGroups.SharesGroup(sender, receiver)) return true;
 
 		if (cfg.HideMapPins) return false;
 
@@ -80,7 +86,7 @@ internal static class StratumPlayerPrivacy
 
 		// Staff and group members get exact coords.
 		if (StratumCommandAccessCatalog.PlayerHasAccess(receiver, cfg.StaffOverride)) return 0;
-		if (cfg.AllowGroupMapVisibility && SharesGroup(sender, receiver)) return 0;
+		if (cfg.AllowGroupMapVisibility && StratumPlayerGroups.SharesGroup(sender, receiver)) return 0;
 
 		return cfg.CoordinateSnapBlocks;
 	}
@@ -95,10 +101,9 @@ internal static class StratumPlayerPrivacy
 		return !receiverSeesVanished;
 	}
 
-	private static bool SharesGroup(IServerPlayer a, IServerPlayer b)
-	{
-		if (a?.Groups == null || b?.Groups == null || a.Groups.Length == 0 || b.Groups.Length == 0) return false;
-		int[] aGroups = a.Groups.Select(g => g.GroupUid).ToArray();
-		return b.Groups.Any(g => aGroups.Contains(g.GroupUid));
-	}
+	// Group check moved to StratumPlayerGroups.SharesGroup (issue #277 follow-up). The old local
+	// copy matched on any shared GroupUid including a membership downgraded to Level None, which
+	// leaked exact coordinates to a player who is no longer really in the group. The shared
+	// helper requires a live membership on both sides and is allocation free, which matters on
+	// the 100ms map-disclosure tick.
 }

@@ -25,6 +25,7 @@ internal class ServerSystemStratum : ServerSystem
 	public override void OnBeginConfiguration()
 	{
 		bool loaded = StratumRuntime.LoadOrCreateConfig(server, out string message);
+		StratumInventoryPrivacy.InventoryGuardsEnabled = StratumRuntime.Config.Hardening.InventoryGuards;
 		StratumRuntime.RestartScheduler = new StratumRestartScheduler(server);
 		if (StratumRuntime.Config.Diagnostics.LogStartupSummary)
 		{
@@ -106,6 +107,8 @@ internal class ServerSystemStratum : ServerSystem
 		StratumUpdateChecker.Start(server);
 		StratumServerStats.Start(server);
 		StratumHarmonyVisibility.LogPatchedMethods(server);
+		StratumHarmonyVisibility.WarnFriendlyFireConflicts();
+		StratumGroupPolicy.WarnExclusiveViolations(server);
 		if (StratumRuntime.Config.Backup.Enabled)
 		{
 			new StratumBackupScheduler(server);

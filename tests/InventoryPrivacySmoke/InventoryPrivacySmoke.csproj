@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Configurations>Debug;Release;PerfTest</Configurations>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\VintagestoryApi\VintagestoryAPI.csproj" />
+  </ItemGroup>
+</Project>

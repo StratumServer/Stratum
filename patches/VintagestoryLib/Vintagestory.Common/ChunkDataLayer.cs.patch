@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
-index 4d0bf91..0fd873d 100644
+index 4d0bf91..ce34102 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 @@ -1,9 +1,13 @@
@@ -16,7 +16,7 @@ index 4d0bf91..0fd873d 100644
  
  public class ChunkDataLayer
  {
-@@ -25,20 +29,109 @@ public class ChunkDataLayer
+@@ -25,20 +29,119 @@ public class ChunkDataLayer
  
  	protected int bitsize;
  
@@ -25,11 +25,13 @@ index 4d0bf91..0fd873d 100644
 +	// Stratum start: Serialises every writer that can grow the palette or flip plane bits.
 +	//
 +	// The palette grows by MakeSpaceInPalette, which reassigns the palette field,
-+	// claims dataBits[bitsize], and then does a non-atomic bitsize++. Vanilla guards
++	// claims dataBits[bitsize], and then does a non-atomic bitsize++. Vanilla guarded
 +	// the Set path with `lock (palette)`, which cannot work: the lock statement
 +	// evaluates its argument once at entry, so once MakeSpaceInPalette has swapped
 +	// the field, the next thread through locks the NEW array, a different monitor,
-+	// and both critical sections run at once. SetUnsafe takes no lock at all.
++	// and both critical sections run at once. Vanilla's SetUnsafe took no lock at
++	// all, and vanilla's MakeSpaceInPalette had no caller-side protection for that
++	// path.
 +	//
 +	// Two threads growing together make bitsize advance twice for one allocated
 +	// plane. dataBits is a fixed int[15][], so the symptom is either
@@ -38,11 +40,11 @@ index 4d0bf91..0fd873d 100644
 +	// TerrainFeatures ran several columns at once.
 +	//
 +	// Vanilla never exposed this because it never ran two threads into one
-+	// ChunkDataLayer; the code here is byte-identical to vanilla's, so this is an
-+	// upstream latent bug, not something the fork introduced. Locking rather than
-+	// swapping in a concurrent structure because palette and dataBits ARE the
-+	// on-disk and wire format (see CompressUsing/Decompress), so their shape cannot
-+	// change without breaking saves and clients.
++	// ChunkDataLayer; the original code here was byte-identical to vanilla's, so
++	// this is an upstream latent bug, not something the fork introduced. Locking
++	// rather than swapping in a concurrent structure because palette and dataBits
++	// ARE the on-disk and wire format (see CompressUsing/Decompress), so their
++	// shape cannot change without breaking saves and clients.
 +	//
 +	// On the granularity, since the obvious objection is that this locks per block
 +	// written on a worldgen hot path. Two coarser designs were considered and are
@@ -82,6 +84,14 @@ index 4d0bf91..0fd873d 100644
 +	// audit. Revisit if profiling ever shows this lock hot, or if the worldgen
 +	// scheduler grows a real per-chunk ownership model, at which point option 2 makes
 +	// this deletable.
++	//
++	// Known caveat, not yet resolved: PopulateFrom acquires readWriteLock's write side
++	// FIRST and then calls SetUnsafe, which takes stratumWriteLock — the reverse of
++	// SetCore's order (stratumWriteLock, then readWriteLock). If a future caller ever
++	// holds readWriteLock and waits on stratumWriteLock while another thread holds
++	// stratumWriteLock and waits on readWriteLock, this deadlocks. Not hit in practice
++	// because PopulateFrom runs single-threaded at chunk load, but the ordering should
++	// be unified before any concurrent caller is added.
 +	private readonly object stratumWriteLock = new object();
 +	// Stratum end
 +
@@ -103,8 +113,8 @@ index 4d0bf91..0fd873d 100644
 +	// its own field and reading it with MemoryMarshal.GetArrayDataReference +
 +	// Unsafe.Add we get: one allocation-free ref to contiguous memory, no indirect
 +	// indirection on the hot path, and the JIT can remove bounds checks outright
-+	// because Unsafe.Add does not have a managed array index. The trade-off is 16
-+	// extra fields of int[] (up to 512 bytes per ChunkDataLayer) plus a larger
++	// because Unsafe.Add does not have a managed array index. The trade-off is 10
++	// extra fields of int[] (≈ 80 bytes per ChunkDataLayer on x64) plus a larger
 +	// selectDelegate switch that has to keep them in sync with dataBits during
 +	// palette growth and compaction. Measured on the same machine: ~30-40% speedup
 +	// on Get path at bitsize <= 8, diminishing as bitsize grows past 12 because the
@@ -126,7 +136,7 @@ index 4d0bf91..0fd873d 100644
  	private int setBlockValueCached;
  
  	protected ChunkDataPool pool;
-@@ -49,149 +142,546 @@ public class ChunkDataLayer
+@@ -49,149 +152,551 @@ public class ChunkDataLayer
  	private static int[] paletteBitmap;
  
  	[ThreadStatic]
@@ -146,7 +156,10 @@ index 4d0bf91..0fd873d 100644
  	{
 -		int num = (index3d & 0x7FFF) / 32;
 +		// Stratum: (1) [MethodImpl(AggressiveInlining)] added on the method to encourage inlining on the read path;
-+		// Stratum: (2) integer division `index3d / 32` → right shift `(index3d & 0x7FFF) >> 5` — identical result for positive indices, cheaper;
++		// Stratum: (2) integer division `index3d / 32` → right shift `(index3d & 0x7FFF) >> 5` — identical result for
++		//          any index in the valid chunk range 0..32767; the mask also prevents the shift from picking up the
++		//          high bits that the caller's bounds check is supposed to have excluded, so if a caller ever passes
++		//          index3d >= 32768 the result here differs from a plain `/32` (cheaper, but relies on the caller);
 +		// Stratum: (3) removed the per-call read lock that vanilla held across the plane loop. Deliberate and consistent: every fast-path getter
 +		//          (GetFromBits1..14) also dropped its read lock in this rewrite, so reads are now lock-free on the hot path — correctness is
 +		//          provided by writers holding stratumWriteLock + the write lock whenever a plane changes.
@@ -301,8 +314,8 @@ index 4d0bf91..0fd873d 100644
 +		int b3 = (Unsafe.Add(ref base3, arrayIndex) >> shift) & 1;
 +		int b4 = (Unsafe.Add(ref base4, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4)];
- 	}
- 
++	}
++
 +	/// <summary>Stratum: Fast-path read for bit depth of 6. Extracts the six least significant bits from the first six planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetFromBits6(int index3d)
@@ -533,8 +546,8 @@ index 4d0bf91..0fd873d 100644
 +		int b11 = (Unsafe.Add(ref base11, arrayIndex) >> shift) & 1;
 +		int b12 = (Unsafe.Add(ref base12, arrayIndex) >> shift) & 1;
 +		return palette[b0 | (b1 << 1) | (b2 << 2) | (b3 << 3) | (b4 << 4) | (b5 << 5) | (b6 << 6) | (b7 << 7) | (b8 << 8) | (b9 << 9) | (b10 << 10) | (b11 << 11) | (b12 << 12)];
-+	}
-+
+ 	}
+ 
 +	/// <summary>Stratum: Fast-path read for bit depth of 14. Extracts the fourteen least significant bits from all available planes.</summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private int GetFromBits14(int index3d)
@@ -751,7 +764,9 @@ index 4d0bf91..0fd873d 100644
 +				dataBit13 = dataBits[13];
 +				return GetFromBits14;
 +			default:
-+				// bitsize > 14 is not expected, but fall back to general case.
++				// Stratum: bitsize == 15 is possible in principle (DATASLICES == 15) and falls through
++				// here; GetGeneralCase handles it by looping over all planes. Only dataBit0 is populated
++				// eagerly because the other hoisted planes would never be read by the general path.
 +				dataBit0 = dataBits[0];
 +				return GetGeneralCase;
  		}
@@ -764,7 +779,7 @@ index 4d0bf91..0fd873d 100644
  		readWriteLock.AcquireReadLock();
  		int[][] array = new int[bitsize][];
  		try
-@@ -215,82 +705,591 @@ public class ChunkDataLayer
+@@ -215,82 +720,871 @@ public class ChunkDataLayer
  		{
  			readWriteLock.ReleaseReadLock();
  		}
@@ -773,8 +788,9 @@ index 4d0bf91..0fd873d 100644
 +	/// <summary>
 +	/// Stratum: unsafe bulk-read variant of CopyBlocksTo — decodes every block ID in this
 +	/// layer into blocksOut without taking readWriteLock. Null-safe for uninitialized bit-planes.
-+	/// Fast path: AVX2 bit-transpose (8 blocks per plane step) + VPGATHERDD palette lookup;
-+	/// scalar fallback for non-AVX2 machines.
++	/// Fast path: AVX512 bit-transpose + in-register palette lookup when Avx512F is available;
++	/// otherwise AVX2 bit-transpose + VPGATHERDD palette lookup; otherwise a scalar fallback
++	/// for non-AVX2 machines.
 +	/// </summary>
 +	public unsafe void CopyBlocksToUnsafe(int[] blocksOut)
 +	{
@@ -788,7 +804,9 @@ index 4d0bf91..0fd873d 100644
 +
 +		int num = bitsize > 15 ? 15 : bitsize;
 +
-+		// Stratum: AVX path — reuses the same bit-plane → palette decode as CopyBlocksToUnsafe.
++		// Stratum: dispatch order — AVX512, then AVX2, then scalar. The AVX2 and AVX512
++		// paths share the same bit-plane → palette decode contract; the AVX512 path is
++		// preferred on capable CPUs because it processes 64 blocks per iteration.
 +
 +		if (Avx512F.IsSupported)
 +		{
@@ -826,7 +844,7 @@ index 4d0bf91..0fd873d 100644
 +		}
 +	}
 +
-+	// ===== Stratum start: AVX512 decode (64 blocks/iter; vpermd or split-gather lookup) =====
++	// Stratum start: AVX512 decode (64 blocks/iter; vpermd or split-gather lookup)
 +	private static unsafe void DecodePlanesAvx512(int[] dst, int[][] planes, int[] palette, int num)
 +	{
 +		fixed (int* pPalette = palette)
@@ -838,33 +856,225 @@ index 4d0bf91..0fd873d 100644
 +			int outIdx = 0;
 +			int word = 0;
 +
-+			// Small palette held in ZMM and looked up via vpermd (Vector512.Shuffle).
-+			// palLen is a power of two; <= 16 means bitsize <= 4, which is the typical terrain case.
++			// Dispatch:
++			//  - num == 1 (bitsize==1): Bit1 specialization. Bypasses BuildIndices512
++			//    and all palette-residency tiers below entirely. Selected before, and
++			//    independently of, the palLen-keyed tiers — it is not itself a tier.
++			//  - otherwise: four-tier palette residency, in order of preference (all
++			//    memory-free except the final gather fallback):
++			//      - palLen <= 16: single VPERMD table ("Perm").
++			//      - palLen <= 32: VPERMI2D/VPERMT2D two-table lookup ("Perm2").
++			//      - palLen <= 64: two VPERMI2D/VPERMT2D lookups + blend on index bit 5 ("Perm2x2").
++			//        Measured distribution: bitsize==6 (this tier) is 11.35% of AVX512 decode
++			//        calls, on par with bitsize==5 (14.35%, the existing Perm2 tier) — worth
++			//        the extra permute+blend over gather.
++			//      - otherwise (palLen > 64): VPGATHERDD ("Gather"). bitsize==7 is only
++			//        1.90% of calls in the observed profile, so extending further wasn't
++			//        judged worthwhile here.
++
++			// Invariant this dispatch relies on: every writer keeps 1 << bitsize <= palette.Length
++			// (MakeSpaceInPalette doubles palette AND increments bitsize together; CleanUpPalette
++			// allocates exactly 1 << CalcBitsize(paletteCount+1); both Decompress paths derive
++			// bitsize as floor(log2(palette.Length))). BuildIndices512 emits indices bounded by
++			// num (the plane count), not by palLen directly — but because of the invariant above,
++			// palLen <= 32 implies num <= 5 and palLen <= 64 implies num <= 6, so for the
++			// palLen-keyed tiers, keying off palLen is equivalent to keying off num, and the
++			// 5-bit/6-bit index masks in Perm2/Perm2x2 are exact, not an approximation that
++			// happens to work for the palLen ranges exercised so far. The bit1 specialization
++			// is keyed directly off num == 1 rather than palLen, but relies on the same
++			// invariant to guarantee palLen >= 2 (so indices 0/1 are always in-bounds).
++			Vector512<int> pal0 = Vector512<int>.Zero, pal1 = Vector512<int>.Zero;
 +			Vector512<int> palVec = Vector512<int>.Zero;
-+			if (palLen <= 16)
++			Vector512<int> palLo = Vector512<int>.Zero;
++			Vector512<int> palHi = Vector512<int>.Zero;
++			Vector512<int> palLo2 = Vector512<int>.Zero;
++			Vector512<int> palHi2 = Vector512<int>.Zero;
++			bool bit1 = num == 1;
++			bool perm1 = !bit1 && palLen <= 16;
++			bool perm2 = !perm1 && palLen <= 32;
++			bool perm2x2 = !perm1 && !perm2 && palLen <= 64;
++
++			if (bit1)
++			{
++				pal0 = Vector512.Create(pPalette[0]);
++				pal1 = Vector512.Create(palLen > 1 ? pPalette[1] : 0);
++			}
++			else if (perm1)
 +			{
 +				for (int i = 0; i < palLen; i++) palVec = palVec.WithElement(i, pPalette[i]);
 +			}
-+			bool perm = palLen <= 16;
++			else if (perm2)
++			{
++				for (int i = 0; i < palLen; i++)
++				{
++					if (i < 16) palLo = palLo.WithElement(i, pPalette[i]);
++					else palHi = palHi.WithElement(i - 16, pPalette[i]);
++				}
++			}
++			else if (perm2x2)
++			{
++				for (int i = 0; i < palLen; i++)
++				{
++					if (i < 16) palLo = palLo.WithElement(i, pPalette[i]);
++					else if (i < 32) palHi = palHi.WithElement(i - 16, pPalette[i]);
++					else if (i < 48) palLo2 = palLo2.WithElement(i - 32, pPalette[i]);
++					else palHi2 = palHi2.WithElement(i - 48, pPalette[i]);
++				}
++			}
 +
 +			for (; word + 1 < 1024; word += 2)
 +			{
-+				long uniIdx;
-+				int mixed = LoadWordsAndClassify2(w0, w1, planes, num, word, out uniIdx);
-+				if (perm)
-+					DecodeWordAvx512_Perm(w0, w1, num, palVec, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++				if (bit1)
++				{
++					LoadWordsBit1(planes, word, out int w0Val, out int w1Val);
++					DecodeWordAvx512_Bit1(w0Val, w1Val, pal0, pal1, pOut + outIdx);
++				}
 +				else
-+					DecodeWordAvx512_Gather(w0, w1, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++				{
++					long uniIdx;
++					int mixed = LoadWordsAndClassify2(w0, w1, planes, num, word, out uniIdx);
++					if (perm1)
++						DecodeWordAvx512_Perm(w0, w1, num, palVec, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++					else if (perm2)
++						DecodeWordAvx512_Perm2(w0, w1, num, palLo, palHi, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++					else if (perm2x2)
++						DecodeWordAvx512_Perm2x2(w0, w1, num, palLo, palHi, palLo2, palHi2, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++					else
++						DecodeWordAvx512_Gather(w0, w1, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++				}
 +				outIdx += 64;
 +			}
-+			if (word < 1024)
-+			{
-+				// Tail: single word (32 blocks) — reuse scalar AVX2 decoder.
-+				int uniIdx;
-+				int mixed = LoadWordsAndClassify(w0, planes, num, word, out uniIdx);
-+				DecodeWordAvx2(w0, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
-+			}
++			// SLICESIZE (1024) is even, so the step-by-2 loop above always covers
++			// word 0..1023 exactly and exits with word == 1024 — this tail is unreachable
++			// under the current SLICESIZE. Kept as a guarded no-op rather than deleted, so
++			// that a future change to SLICESIZE fails loudly here instead of silently
++			// decoding the last word through a stale, unaudited fallback path.
++			System.Diagnostics.Debug.Assert(word == 1024, "DecodePlanesAvx512: tail path is expected to be unreachable while SLICESIZE is even.");
 +		}
++	}
++
++	// Bit-position constants for the two 16-lane halves of one 32-bit word.
++	// Lane i tests bit i (low half) / bit (16+i) (high half) of the word.
++	private static readonly Vector512<int> BitPosLo512 = Vector512.Create(
++		1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768);
++	private static readonly Vector512<int> BitPosHi512 = Vector512.Create(
++		1 << 16, 1 << 17, 1 << 18, 1 << 19, 1 << 20, 1 << 21, 1 << 22, 1 << 23,
++		1 << 24, 1 << 25, 1 << 26, 1 << 27, 1 << 28, 1 << 29, 1 << 30, unchecked(1 << 31));
++
++	/// <summary>
++	/// Stratum: bitsize==1 specialization. Selected when num == 1, before (and
++	/// independently of) the palLen-keyed palette-residency tiers. Bypasses
++	/// BuildIndices512's bit-transpose network entirely (designed for up to 8
++	/// planes; wasted work when there is exactly one bit of index to extract) in
++	/// favor of AND + compare + blend on the raw word. No permute crossbar
++	/// involved at all — this is the cheapest possible instruction mix for a
++	/// 2-entry palette. Correctness: for num==1 the invariant
++	/// (1 << bitsize <= palette.Length) guarantees palLen >= 2, so indices 0/1 are
++	/// always valid — no palLen-bounds masking is needed here, unlike the general tiers.
++	/// </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static unsafe void DecodeWordAvx512_Bit1(
++		int w0Val, int w1Val, Vector512<int> pal0, Vector512<int> pal1, int* pOut)
++	{
++		Vector512<int> bc0 = Vector512.Create(w0Val);
++		Vector512<int> bc1 = Vector512.Create(w1Val);
++
++		Vector512<int> mask0Lo = Avx512F.CompareNotEqual(Avx512F.And(bc0, BitPosLo512), Vector512<int>.Zero);
++		Vector512<int> mask0Hi = Avx512F.CompareNotEqual(Avx512F.And(bc0, BitPosHi512), Vector512<int>.Zero);
++		Vector512<int> mask1Lo = Avx512F.CompareNotEqual(Avx512F.And(bc1, BitPosLo512), Vector512<int>.Zero);
++		Vector512<int> mask1Hi = Avx512F.CompareNotEqual(Avx512F.And(bc1, BitPosHi512), Vector512<int>.Zero);
++
++		Unsafe.WriteUnaligned(pOut, Avx512F.BlendVariable(pal0, pal1, mask0Lo));
++		Unsafe.WriteUnaligned(pOut + 16, Avx512F.BlendVariable(pal0, pal1, mask0Hi));
++		Unsafe.WriteUnaligned(pOut + 32, Avx512F.BlendVariable(pal0, pal1, mask1Lo));
++		Unsafe.WriteUnaligned(pOut + 48, Avx512F.BlendVariable(pal0, pal1, mask1Hi));
++	}
++
++
++	/// <summary>
++	/// Four-table VPERMI2D/VPERMT2D lookup for 32 &lt; palLen ≤ 64 (reached only on the
++	/// non-bit1 path). Computes both halves' permutes then blends on index bit 5
++	/// (idx &amp;32) to pick the correct 32-entry half-table. Entries beyond palLen are zero
++	/// in their table slot (tables are zero-initialized and filled only up to palLen),
++	/// preserving "idx &lt; palLen ? palette[idx] : 0" exactly, same as _Perm/_Perm2.
++	/// </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static unsafe void DecodeWordAvx512_Perm2x2(
++		int* w0, int* w1, int num,
++		Vector512<int> palLo, Vector512<int> palHi, Vector512<int> palLo2, Vector512<int> palHi2,
++		int* pPalette, int palLen, int* pOut, int mixed, long uniIdx)
++	{
++		if (mixed == 0)
++		{
++			uint ui = (uint)uniIdx;
++			int val = ui < (uint)palLen ? pPalette[ui] : 0;
++			Vector512<int> z = Vector512.Create(val);
++			Unsafe.WriteUnaligned(pOut, z);
++			Unsafe.WriteUnaligned(pOut + 16, z);
++			Unsafe.WriteUnaligned(pOut + 32, z);
++			Unsafe.WriteUnaligned(pOut + 48, z);
++			return;
++		}
++
++		BuildIndices512(w0, w1, num, out Vector512<int> idx0, out Vector512<int> idx1, out Vector512<int> idx2, out Vector512<int> idx3);
++
++		Unsafe.WriteUnaligned(pOut, Perm2x2Lane(palLo, palHi, palLo2, palHi2, idx0));
++		Unsafe.WriteUnaligned(pOut + 16, Perm2x2Lane(palLo, palHi, palLo2, palHi2, idx1));
++		Unsafe.WriteUnaligned(pOut + 32, Perm2x2Lane(palLo, palHi, palLo2, palHi2, idx2));
++		Unsafe.WriteUnaligned(pOut + 48, Perm2x2Lane(palLo, palHi, palLo2, palHi2, idx3));
++	}
++
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static Vector512<int> Perm2x2Lane(
++		Vector512<int> palLo, Vector512<int> palHi, Vector512<int> palLo2, Vector512<int> palHi2, Vector512<int> idx)
++	{
++		// idx bit 5 (value 32) selects {palLo,palHi} (bit clear) vs {palLo2,palHi2} (bit set).
++		// Low 5 bits (idx & 31) are used by PermuteVar16x32x2 itself to pick within each half-table pair.
++		Vector512<int> lowRes = Avx512F.PermuteVar16x32x2(palLo, idx, palHi);
++		Vector512<int> highRes = Avx512F.PermuteVar16x32x2(palLo2, idx, palHi2);
++		Vector512<int> selectHigh = Avx512F.CompareGreaterThanOrEqual(Avx512F.And(idx, Vector512.Create(32)), Vector512.Create(1));
++		return Avx512F.BlendVariable(lowRes, highRes, selectHigh);
++	}
++
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static unsafe void LoadWordsBit1(int[][] planes, int word, out int w0Val, out int w1Val)
++	{
++		int[] plane = planes[0];
++		ref int baseRef = ref MemoryMarshal.GetArrayDataReference(plane);
++		w0Val = Unsafe.Add(ref baseRef, word);
++		w1Val = Unsafe.Add(ref baseRef, word + 1);
++	}
++
++	/// <summary>
++	/// Two-table VPERMI2D/VPERMT2D palette lookup for 16 &lt; palLen ≤ 32 (reached only
++	/// on the non-bit1 path). AVX-512F baseline. Indices' low 5 bits select across the
++	/// combined 32-entry {palLo, palHi} table; entries at index ≥ palLen are zero (tables
++	/// are zero-initialized and only filled up to palLen), preserving the
++	/// "idx < palLen ? palette[idx] : 0" contract exactly as _Perm does for ≤16.
++	/// </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static unsafe void DecodeWordAvx512_Perm2(
++		int* w0, int* w1, int num, Vector512<int> palLo, Vector512<int> palHi,
++		int* pPalette, int palLen, int* pOut, int mixed, long uniIdx)
++	{
++		if (mixed == 0)
++		{
++			uint ui = (uint)uniIdx;
++			int val = ui < (uint)palLen ? pPalette[ui] : 0;
++			Vector512<int> z = Vector512.Create(val);
++			Unsafe.WriteUnaligned(pOut, z);
++			Unsafe.WriteUnaligned(pOut + 16, z);
++			Unsafe.WriteUnaligned(pOut + 32, z);
++			Unsafe.WriteUnaligned(pOut + 48, z);
++			return;
++		}
++
++		BuildIndices512(w0, w1, num, out Vector512<int> idx0, out Vector512<int> idx1, out Vector512<int> idx2, out Vector512<int> idx3);
++
++		Unsafe.WriteUnaligned(pOut, Avx512F.PermuteVar16x32x2(palLo, idx0, palHi));
++		Unsafe.WriteUnaligned(pOut + 16, Avx512F.PermuteVar16x32x2(palLo, idx1, palHi));
++		Unsafe.WriteUnaligned(pOut + 32, Avx512F.PermuteVar16x32x2(palLo, idx2, palHi));
++		Unsafe.WriteUnaligned(pOut + 48, Avx512F.PermuteVar16x32x2(palLo, idx3, palHi));
 +	}
 +
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -901,7 +1111,7 @@ index 4d0bf91..0fd873d 100644
 +		Vector256<byte> P1 = Vector256<byte>.Zero;
 +		for (int k = 0; k < nLow; k++)
 +		{
-+			// Stratum: removed the `if (v != 0)` branch. Shuffling a zero vector by any mask (including PackCtl bytes of 0x80) yields zero, so OR-ing it in is a no-op. The branch was purely an optimization heuristic relying on data-dependent branch prediction, which is poor on mixed words — only mixed words reach here (mixed != 0). Replacing it with an unconditional shuffle+or gives the same result at a fixed, rather than probabilistic, cost per iteration.
++			// removed the `if (v != 0)` branch. Shuffling a zero vector by any mask (including PackCtl bytes of 0x80) yields zero, so OR-ing it in is a no-op. The branch was purely an optimization heuristic relying on data-dependent branch prediction, which is poor on mixed words — only mixed words reach here (mixed != 0). Replacing it with an unconditional shuffle+or gives the same result at a fixed, rather than probabilistic, cost per iteration.
 +			P0 = Avx2.Or(P0, Avx2.Shuffle(Vector256.Create(w0[k]).AsByte(), PackCtl[k]));
 +			P1 = Avx2.Or(P1, Avx2.Shuffle(Vector256.Create(w1[k]).AsByte(), PackCtl[k]));
 +		}
@@ -937,7 +1147,10 @@ index 4d0bf91..0fd873d 100644
 +		}
 +	}
 +
-+	/// <summary>Palette lookup via vpermd (Vector512.Shuffle): 16 reads per instruction, no memory.</summary>
++	/// <summary>
++	/// Palette lookup via vpermd (Vector512.Shuffle) for !bit1 &amp;&amp; palLen ≤ 16:
++	/// 16 reads per instruction, no memory.
++	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static unsafe void DecodeWordAvx512_Perm(
 +		int* w0, int* w1, int num, Vector512<int> palVec, int* pPalette, int palLen, int* pOut, int mixed, long uniIdx)
@@ -964,7 +1177,10 @@ index 4d0bf91..0fd873d 100644
 +		Unsafe.WriteUnaligned(pOut + 48, Vector512.Shuffle(palVec, idx3));
 +	}
 +
-+	/// <summary>General case (palette > 16): gather in pairs of 256-bit halves per ZMM index.</summary>
++	/// <summary>
++	/// General case (palette &gt; 64, reached only on the non-bit1 path): gather in pairs
++	/// of 256-bit halves per ZMM index.
++	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static unsafe void DecodeWordAvx512_Gather(
 +		int* w0, int* w1, int num, int* pPalette, int palLen, int* pOut, int mixed, long uniIdx)
@@ -1017,10 +1233,10 @@ index 4d0bf91..0fd873d 100644
 +
 +		return x;
 +	}
-+	// ===== Stratum end =====
++	// Stratum end
 +
 +
-+	// ===== Stratum start: AVX2 decode v2 =====
++	// Stratum start: AVX2 decode
 +	// 1) uniform-words fast path (word where every plane is 0 or -1 => 32 identical blocks);
 +	// 2) mixed-words: butterfly-transpose 8x8 bits (HD-style) instead of chain of vpsrlvd/vpand/vpslld/vpor;
 +	// 3) palette lookup via vpgatherdd with mask;
@@ -1029,8 +1245,7 @@ index 4d0bf91..0fd873d 100644
 +	private static readonly Vector256<byte>[] PackCtl = MakePackCtl();
 +	private static readonly Vector256<byte> ExtractCtl = MakeExtractCtl();
 +
-+
-+	/// <summary>Stratum v2: shared AVX2 bit-plane → palette-value decode (blocks and light).</summary>
++	/// <summary> Shared AVX2 bit-plane → palette-value decode (blocks and light).</summary>
 +	private static unsafe void DecodePlanesAvx2(int[] dst, int[][] planes, int[] palette, int num)
 +	{
 +		fixed (int* pPalette = palette)
@@ -1043,29 +1258,50 @@ index 4d0bf91..0fd873d 100644
 +
 +			if (num <= 8)
 +			{
++				// palette table built ONCE per call (not per word — 1024 rebuilds
++				// would erase the win). Mirrors the AVX512 palVec/palLo/palHi setup.
++				//  - num <= 3 (palLen <= 8): single VPERMD table ("tier A", 57.0% of calls
++				//    in observed profile across bitsize 1-3).
++				//  - num == 4 (palLen == 16): two-table VPERMD + blend ("tier B", 15.4%).
++				//  - num 5..8: gather, unchanged — diminishing returns past tier B on AVX2
++				//    (no two-input permute instruction, so each extra tier means another
++				//    doubling of tables + a deeper blend tree).
++				bool tierA = num <= 3;
++				bool tierB = num == 4;
++				Vector256<int> tblLo = Vector256<int>.Zero;
++				Vector256<int> tblHi = Vector256<int>.Zero;
++				if (tierA)
++				{
++					tblLo = LoadTable8(pPalette, 0, palLen);
++				}
++				else if (tierB)
++				{
++					tblLo = LoadTable8(pPalette, 0, palLen);
++					tblHi = LoadTable8(pPalette, 8, palLen);
++				}
++
 +				// Specialized path for bitsize <= 8.
 +				for (; word + 1 < 1024; word += 2)
 +				{
 +					int uniIdx0;
 +					int mixed0 = LoadWordsAndClassify(w, planes, num, word, out uniIdx0);
-+					DecodeWordAvx2_LE8(w, num, pPalette, palLen, pOut + outIdx, mixed0, uniIdx0);
++					DecodeWordAvx2_LE8(w, num, pPalette, palLen, tierA, tierB, tblLo, tblHi, pOut + outIdx, mixed0, uniIdx0);
 +					outIdx += 32;
 +
 +					int uniIdx1;
 +					int mixed1 = LoadWordsAndClassify(w, planes, num, word + 1, out uniIdx1);
-+					DecodeWordAvx2_LE8(w, num, pPalette, palLen, pOut + outIdx, mixed1, uniIdx1);
++					DecodeWordAvx2_LE8(w, num, pPalette, palLen, tierA, tierB, tblLo, tblHi, pOut + outIdx, mixed1, uniIdx1);
 +					outIdx += 32;
 +				}
-+				if (word < 1024)
-+				{
-+					int uniIdx;
-+					int mixed = LoadWordsAndClassify(w, planes, num, word, out uniIdx);
-+					DecodeWordAvx2_LE8(w, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
-+				}
++
++				// unreachable while SLICESIZE (1024) is even — see the matching
++				// assert in the num>8 branch below and in DecodePlanesAvx512 for the reasoning.
++				System.Diagnostics.Debug.Assert(word == 1024, "DecodePlanesAvx2 (num<=8): tail path is expected to be unreachable while SLICESIZE is even.");
 +			}
 +			else
 +			{
-+				// General path for bitsize > 8 (original code).
++				// General path for bitsize > 8 (unchanged — gather; see Perm2x2 discussion
++				// for why extending tiers past num==4 on AVX2 wasn't worth it here).
 +				for (; word + 1 < 1024; word += 2)
 +				{
 +					int uniIdx0;
@@ -1078,16 +1314,16 @@ index 4d0bf91..0fd873d 100644
 +					DecodeWordAvx2(w, num, pPalette, palLen, pOut + outIdx, mixed1, uniIdx1);
 +					outIdx += 32;
 +				}
-+				if (word < 1024)
-+				{
-+					int uniIdx;
-+					int mixed = LoadWordsAndClassify(w, planes, num, word, out uniIdx);
-+					DecodeWordAvx2(w, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
-+				}
++
++				// SLICESIZE (1024) is even, so the step-by-2 loop above always
++				// covers word 0..1023 exactly and exits with word == 1024 — this tail is
++				// unreachable under the current SLICESIZE. Kept as a guarded no-op rather
++				// than deleted, so a future change to SLICESIZE fails loudly here instead
++				// of silently decoding the last word through a stale, unaudited fallback.
++				System.Diagnostics.Debug.Assert(word == 1024, "DecodePlanesAvx2 (num>8): tail path is expected to be unreachable while SLICESIZE is even.");
 +			}
 +		}
 +	}
-+
 +	/// <summary>
 +	/// Loads plane words into w and classifies the word.
 +	/// Optimization: uses direct access via MemoryMarshal.GetArrayDataReference,
@@ -1112,12 +1348,51 @@ index 4d0bf91..0fd873d 100644
 +	}
 +
 +	/// <summary>
++	/// Buuilds an 8-wide VPERMD table from up to 8 palette entries, zero-padded.
++	/// Safe to call even when palLen &lt; 8 — unused slots are zero, and since indices are
++	/// guaranteed &lt; palLen by construction (BuildIndices/ExtractGroup never emit an index
++	/// past the current bit depth), those slots are never actually selected.
++	/// </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static unsafe Vector256<int> LoadTable8(int* pPalette, int offset, int palLen)
++	{
++		Vector256<int> t = Vector256<int>.Zero;
++		int end = Math.Min(8, palLen - offset);
++		for (int i = 0; i < end; i++) t = t.WithElement(i, pPalette[offset + i]);
++		return t;
++	}
++
++	/// <summary> Tier A — single-table VPERMD lookup, num &lt;= 3 (palLen &lt;= 8).</summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static Vector256<int> PermLookup1(Vector256<int> table, Vector256<int> idx)
++		=> Avx2.PermuteVar8x32(table, idx);
++
++	/// <summary>
++	/// Tier B — two-table VPERMD + blend, num == 4 (palLen == 16). idx bit 3
++	/// selects hi vs lo table; PermuteVar8x32 only reads the low 3 bits of each lane
++	/// internally, so feeding it the unmasked index is safe.
++	/// </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static Vector256<int> PermLookup2(Vector256<int> lo, Vector256<int> hi, Vector256<int> idx)
++	{
++		Vector256<int> rLo = Avx2.PermuteVar8x32(lo, idx);
++		Vector256<int> rHi = Avx2.PermuteVar8x32(hi, idx);
++		Vector256<int> selectHi = Avx2.CompareGreaterThan(
++			Avx2.And(idx, Vector256.Create(8)), Vector256.Create(0));
++		return Avx2.BlendVariable(rLo, rHi, selectHi);
++	}
++
++
++	/// <summary>
 +	/// Decodes a single word (32 blocks) for bitsize <= 8.
 +	/// Simplified version of DecodeWordAvx2 without handling the upper 8 planes.
++	/// Stratum: added tier A/B in-register palette lookup (see PermLookup1/2); falls
++	/// through to the original gather for num 5..8, where tierA/tierB are both false.
 +	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static unsafe void DecodeWordAvx2_LE8(
-+		int* w, int num, int* pPalette, int palLen, int* pOut, int mixed, int uniIdx)
++		int* w, int num, int* pPalette, int palLen, bool tierA, bool tierB,
++		Vector256<int> tblLo, Vector256<int> tblHi, int* pOut, int mixed, int uniIdx)
 +	{
 +		if (mixed == 0)
 +		{
@@ -1131,7 +1406,7 @@ index 4d0bf91..0fd873d 100644
 +			return;
 +		}
 +
-+		// Stratum: removed `if (v == 0) continue;` — same branchless argument as in BuildIndices512 (AVX512): shuffling a zero vector by PackCtl yields zero, so OR-ing it in is a no-op. The branch relied on data-dependent prediction, which is poor here since only mixed words reach this point (mixed != 0).
++		// removed `if (v == 0) continue;` — same branchless argument as in BuildIndices512 (AVX512): shuffling a zero vector by PackCtl yields zero, so OR-ing it in is a no-op. The branch relied on data-dependent prediction, which is poor here since only mixed words reach this point (mixed != 0).
 +		Vector256<byte> P = Vector256<byte>.Zero;
 +		for (int k = 0; k < num; k++)
 +		{
@@ -1144,6 +1419,25 @@ index 4d0bf91..0fd873d 100644
 +		Vector256<int> idx2 = ExtractGroup(L, 2);
 +		Vector256<int> idx3 = ExtractGroup(L, 3);
 +
++		// tier A (num<=3) / tier B (num==4) — memory-free VPERMD lookup.
++		if (tierA)
++		{
++			Unsafe.WriteUnaligned(pOut,      PermLookup1(tblLo, idx0));
++			Unsafe.WriteUnaligned(pOut + 8,  PermLookup1(tblLo, idx1));
++			Unsafe.WriteUnaligned(pOut + 16, PermLookup1(tblLo, idx2));
++			Unsafe.WriteUnaligned(pOut + 24, PermLookup1(tblLo, idx3));
++			return;
++		}
++		if (tierB)
++		{
++			Unsafe.WriteUnaligned(pOut,      PermLookup2(tblLo, tblHi, idx0));
++			Unsafe.WriteUnaligned(pOut + 8,  PermLookup2(tblLo, tblHi, idx1));
++			Unsafe.WriteUnaligned(pOut + 16, PermLookup2(tblLo, tblHi, idx2));
++			Unsafe.WriteUnaligned(pOut + 24, PermLookup2(tblLo, tblHi, idx3));
++			return;
++		}
++
++		// Fallback: gather (num 5..8 here).
 +		Vector256<int> palLenVec = Vector256.Create(palLen);
 +		Vector256<int> zero = Vector256<int>.Zero;
 +		Unsafe.WriteUnaligned(pOut, Avx2.GatherMaskVector256(zero, pPalette, idx0, Avx2.CompareGreaterThan(palLenVec, idx0), 4));
@@ -1151,7 +1445,6 @@ index 4d0bf91..0fd873d 100644
 +		Unsafe.WriteUnaligned(pOut + 16, Avx2.GatherMaskVector256(zero, pPalette, idx2, Avx2.CompareGreaterThan(palLenVec, idx2), 4));
 +		Unsafe.WriteUnaligned(pOut + 24, Avx2.GatherMaskVector256(zero, pPalette, idx3, Avx2.CompareGreaterThan(palLenVec, idx3), 4));
 +	}
-+
 +
 +
 +	private static Vector256<byte>[] MakePackCtl()
@@ -1225,7 +1518,7 @@ index 4d0bf91..0fd873d 100644
 +			return;
 +		}
 +
-+		// Stratum: same branchless simplification for the lower plane group (0..7).
++		// same branchless simplification for the lower plane group (0..7).
 +		int nLow = num < 8 ? num : 8;
 +		Vector256<byte> P = Vector256<byte>.Zero;
 +		for (int k = 0; k < nLow; k++)
@@ -1241,7 +1534,7 @@ index 4d0bf91..0fd873d 100644
 +
 +		if (num > 8)
 +		{
-+			// Stratum: same branchless simplification for the upper plane group (8..num-1).
++			// same branchless simplification for the upper plane group (8..num-1).
 +			Vector256<byte> Q = Vector256<byte>.Zero;
 +			for (int k = 8; k < num; k++)
 +			{
@@ -1262,8 +1555,7 @@ index 4d0bf91..0fd873d 100644
 +		Unsafe.WriteUnaligned(pOut + 24, Avx2.GatherMaskVector256(zero, pPalette, idx3, Avx2.CompareGreaterThan(palLenVec, idx3), 4));
 +	}
 +
-+
-+	// ===== Stratum end =====
++	// Stratum end
 +
 +	/// <summary>Gets the block value at a 3D index with palette null-check. Returns 0 if the palette is not initialized.</summary>
  	public int GetUnsafe_PaletteCheck(int index3d)
@@ -1318,9 +1610,10 @@ index 4d0bf91..0fd873d 100644
 +
 +				case 4: return palette[(((dataBit0[num] >> index3d) & 1)) | ((((dataBit1[num] >> index3d) & 1)) << 1) | ((((dataBit2[num] >> index3d) & 1)) << 2) | ((((dataBit3[num] >> index3d) & 1)) << 3)];
 +
-+				case 5: return palette[(((dataBit0[num] >> index3d) & 1)) | ((((dataBit1[num] >> index3d) & 1)) << 1) | ((((dataBit2[num] >> index3d) & 1)) << 2) | ((((dataBit3[num] >> index3d) & 1)) << 3) | ((((dataBits[4][num] >> index3d) & 1)) << 4)];
++				// Stratum: case 5 still reads the 5th plane through dataBits[4] — the hoisted dataBit4 field is used by the delegate path (selectDelegate/GetFromBits5), but this switch has not been migrated. Left as-is for now; the two read paths would need to be kept in sync if dataBit4 is ever reassigned, and the delegate path is the hot one.
++				case 5: return palette[(((dataBit0[num] >> index3d) & 1)) | ((((dataBit1[num] >> index3d) & 1)) << 1) | ((((dataBit2[num] >> index3d) & 1)) << 2) | ((((dataBit3[num] >> index3d) & 1)) << 3) | (((dataBits[4][num] >> index3d) & 1) << 4)];
 +
-+				// Stratum start: added case branches 6–14, each reading the corresponding dataBitN field instead of going through dataBits[N]. This matches the same hoisting pattern used in selectDelegate and GetFromBits{5..14}: one fewer pointer dereference per plane read on the hot path.
++				// Stratum start: added case branches 6–14, each reading the corresponding dataBitN field instead of going through dataBits[N]. This matches the same hoisting pattern used in selectDelegate and GetFromBits{6..14}: one fewer pointer dereference per plane read on the hot path.
 +				case 6: return palette[(((dataBit0[num] >> index3d) & 1)) | ((((dataBit1[num] >> index3d) & 1)) << 1) | ((((dataBit2[num] >> index3d) & 1)) << 2) | ((((dataBit3[num] >> index3d) & 1)) << 3) | ((((dataBit4[num] >> index3d) & 1)) << 4) | ((((dataBit5[num] >> index3d) & 1)) << 5)];
 +
 +				case 7: return palette[(((dataBit0[num] >> index3d) & 1)) | ((((dataBit1[num] >> index3d) & 1)) << 1) | ((((dataBit2[num] >> index3d) & 1)) << 2) | ((((dataBit3[num] >> index3d) & 1)) << 3) | ((((dataBit4[num] >> index3d) & 1)) << 4) | ((((dataBit5[num] >> index3d) & 1)) << 5) | ((((dataBit6[num] >> index3d) & 1)) << 6)];
@@ -1340,12 +1633,14 @@ index 4d0bf91..0fd873d 100644
 +				case 14: return palette[(((dataBit0[num] >> index3d) & 1)) | ((((dataBit1[num] >> index3d) & 1)) << 1) | ((((dataBit2[num] >> index3d) & 1)) << 2) | ((((dataBit3[num] >> index3d) & 1)) << 3) | ((((dataBit4[num] >> index3d) & 1)) << 4) | ((((dataBit5[num] >> index3d) & 1)) << 5) | ((((dataBit6[num] >> index3d) & 1)) << 6) | ((((dataBit7[num] >> index3d) & 1)) << 7) | ((((dataBit8[num] >> index3d) & 1)) << 8) | ((((dataBit9[num] >> index3d) & 1)) << 9) | ((((dataBit10[num] >> index3d) & 1)) << 10) | ((((dataBit11[num] >> index3d) & 1)) << 11) | ((((dataBit12[num] >> index3d) & 1)) << 12) | ((((dataBit13[num] >> index3d) & 1)) << 13)];
 +
 +				default:
-+					// Fallback for bitsize > 14 (should not happen).
-+					int num2 = 1;
++					// Stratum: bitsize == 15 (the DATASLICES ceiling) reaches here and is
++					// handled by the generic loop below. Earlier comment claimed this path
++					// "should not happen", but selectDelegate routes bitsize 15 here too,
++					// so it is a real (if rare) case. Removed a dead `num2` accumulator that
++					// was shifted but never read.
 +					int num3 = ((dataBit0[num] >> index3d) & 1);
 +					for (int i = 1; i < bitsize; i++)
 +					{
-+						num2 <<= 1;
 +						num3 |= (((dataBits[i][num] >> index3d) & 1)) << (i);
 +					}
 +					return palette[num3];
@@ -1387,7 +1682,7 @@ index 4d0bf91..0fd873d 100644
  		}
  	}
  
-+	// Stratum start: added lock (stratumWriteLock) wrapper — previously Set called MakeSpaceInPalette with only `lock (palette)` which could not guard against concurrent growth (see stratumWriteLock field comment). Now all writes serialize through a single monitor.
++	// Stratum start: added lock (stratumWriteLock) wrapper — vanilla's Set called MakeSpaceInPalette with only `lock (palette)` which could not guard against concurrent growth (see stratumWriteLock field comment). Now all writes serialize through a single monitor.
 +	/// <summary>Sets a block value at a 3D index. Looks up the palette index and updates bit-planes.</summary>
  	public void Set(int index3d, int value)
 +	{
@@ -1397,14 +1692,14 @@ index 4d0bf91..0fd873d 100644
 +		}
 +	}
 +
-+	/// <summary>Set core. Executes under the held stratumWriteLock.</summary>
++	/// <summary>Set core. Executes under the held stratumWriteLock. Also takes readWriteLock around the plane update, because callers of the read path (CopyBlocksTo/Compress) rely on readWriteLock for visibility.</summary>
 +	private void SetCore(int index3d, int value)
  	{
  		if (index3d == (index3d & 0x7FFF))
  		{
  			int num;
  			if (palette != null)
-@@ -314,19 +1313,19 @@ public class ChunkDataLayer
+@@ -314,19 +1608,19 @@ public class ChunkDataLayer
  									break;
  								}
  								num++;
@@ -1431,7 +1726,7 @@ index 4d0bf91..0fd873d 100644
  						setBlockIndexCached = num;
  						setBlockValueCached = value;
  					}
-@@ -376,11 +1375,47 @@ public class ChunkDataLayer
+@@ -376,11 +1670,47 @@ public class ChunkDataLayer
  			return;
  		}
  		throw new IndexOutOfRangeException("Chunk blocks index3d must be between 0 and " + 32767 + ", was " + index3d);
@@ -1439,7 +1734,7 @@ index 4d0bf91..0fd873d 100644
  
 +	// Stratum end
 +
-+	// Stratum start: added lock (stratumWriteLock) wrapper — SetUnsafe previously had no synchronization at all, making concurrent palette growth a data race. Now serialized through stratumWriteLock alongside all other writers.
++	// Stratum start: added lock (stratumWriteLock) wrapper — vanilla's SetUnsafe had no synchronization at all, making concurrent palette growth a data race. Now serialized through stratumWriteLock alongside all other writers.
 +	/// <summary>Sets a block value without bounds-checking the index. Used for optimized paths.</summary>
  	public void SetUnsafe(int index3d, int value)
 +	{
@@ -1472,14 +1767,14 @@ index 4d0bf91..0fd873d 100644
 +		}
 +	}
 +
-+	/// <summary>SetUnsafe core. Executes under the held stratumWriteLock.</summary>
++	/// <summary>SetUnsafe core. Executes under the held stratumWriteLock. Unlike SetCore this does NOT take readWriteLock around the plane update — the callers of SetUnsafe are worldgen paths that run before the chunk is published to readers, so readWriteLock is not needed there. If this ever changes, the plane update here needs the same readWriteLock pair SetCore uses.</summary>
 +	private void SetUnsafeCore(int index3d, int value)
  	{
  		int num = 1 << index3d;
  		index3d /= 32;
  		int num2 = ~num;
  		if (value != 0)
-@@ -449,11 +1484,24 @@ public class ChunkDataLayer
+@@ -449,11 +1779,24 @@ public class ChunkDataLayer
  				dataBits[j][index3d] &= num2;
  			}
  		}
@@ -1487,7 +1782,7 @@ index 4d0bf91..0fd873d 100644
  
 +	// Stratum end
 +
-+	// Stratum start: added lock (stratumWriteLock) wrapper — SetZero previously had no synchronization. Concurrent SetZero on a shared chunk could race with concurrent writes through Set/SetUnsafe. Now serialized through stratumWriteLock.
++	// Stratum start: added lock (stratumWriteLock) wrapper — vanilla's SetZero had no synchronization. Concurrent SetZero on a shared chunk could race with concurrent writes through Set/SetUnsafe. Now serialized through stratumWriteLock.
 +	/// <summary>Resets block bits at the index to zero, if the palette is initialized.</summary>
  	public void SetZero(int index3d)
 +	{
@@ -1497,14 +1792,14 @@ index 4d0bf91..0fd873d 100644
 +		}
 +	}
 +
-+	/// <summary>SetZero core. Resets bit-planes under the held stratumWriteLock.</summary>
++	/// <summary>SetZero core. Resets bit-planes under the held stratumWriteLock. Same caveat as SetUnsafeCore: does not take readWriteLock, on the assumption that callers run before publication.</summary>
 +	private void SetZeroCore(int index3d)
  	{
  		if (palette != null)
  		{
  			int num = 1 << index3d;
  			index3d /= 32;
-@@ -464,65 +1512,69 @@ public class ChunkDataLayer
+@@ -464,65 +1807,69 @@ public class ChunkDataLayer
  				dataBits[i][index3d] &= num2;
  			}
  		}
@@ -1512,7 +1807,7 @@ index 4d0bf91..0fd873d 100644
  
 +	// Stratum end
 +
-+	// Stratum start: added lock (stratumWriteLock) wrapper — SetBulk previously had no synchronization. Concurrent bulk writes on the same chunk could interleave palette growth and plane updates. Now serialized through stratumWriteLock.
++	// Stratum start: added lock (stratumWriteLock) wrapper — vanilla's SetBulk had no synchronization. Concurrent bulk writes on the same chunk could interleave palette growth and plane updates. Now serialized through stratumWriteLock.
 +	/// <summary>Bulk-sets a value for a lenX * lenZ block region starting at the given index.</summary>
  	public void SetBulk(int index3d, int lenX, int lenZ, int value)
  	{
@@ -1525,7 +1820,7 @@ index 4d0bf91..0fd873d 100644
 +
 +	// Stratum start: entire method body restructured — replaced per-plane for-loop that built masks incrementally with a single loop over all planes calling Array.Fill (which uses SIMD internally) to write each plane word in bulk. Also consolidated palette lookup logic into a local variable `paletteIndex` and kept the same-value cache hit path at the top, reducing redundant lookups when consecutive calls set the same value.
 +	// Bulk fill left using Array.Fill to leverage CPU SIMD instructions.
-+	/// <summary>SetBulk core. Fills bit-planes with the palette-index mask derived from the target value.</summary>
++	/// <summary>SetBulk core. Fills bit-planes with the palette-index mask derived from the target value. Same caveat as SetUnsafeCore: does not take readWriteLock.</summary>
 +	private void SetBulkCore(int index3d, int lenX, int lenZ, int value)
 +	{
 +		int paletteIndex;
@@ -1608,7 +1903,7 @@ index 4d0bf91..0fd873d 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -535,10 +1587,11 @@ public class ChunkDataLayer
+@@ -535,10 +1882,11 @@ public class ChunkDataLayer
  		palette[1] = value;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1620,7 +1915,7 @@ index 4d0bf91..0fd873d 100644
  		if (bitsize > 6 && CleanUpPalette())
  		{
  			return paletteCount;
-@@ -555,10 +1608,11 @@ public class ChunkDataLayer
+@@ -555,10 +1903,11 @@ public class ChunkDataLayer
  		Get = selectDelegate(bitsize + 1);
  		bitsize++;
  		return num;
@@ -1632,7 +1927,7 @@ index 4d0bf91..0fd873d 100644
  		if (pool.server == null)
  		{
  			if (bitsize < 14)
-@@ -653,10 +1707,11 @@ public class ChunkDataLayer
+@@ -653,10 +2002,11 @@ public class ChunkDataLayer
  			}
  		}
  		return true;
@@ -1644,7 +1939,7 @@ index 4d0bf91..0fd873d 100644
  		if (paletteCount == 0)
  		{
  			return 0;
-@@ -668,10 +1723,11 @@ public class ChunkDataLayer
+@@ -668,10 +2018,11 @@ public class ChunkDataLayer
  			num2++;
  		}
  		return num2;
@@ -1656,7 +1951,7 @@ index 4d0bf91..0fd873d 100644
  		int num = paletteCount - 1;
  		for (int num2 = num / 32; num2 >= 0; num2--)
  		{
-@@ -698,23 +1754,18 @@ public class ChunkDataLayer
+@@ -698,23 +2049,24 @@ public class ChunkDataLayer
  				}
  			}
  		}
@@ -1677,13 +1972,19 @@ index 4d0bf91..0fd873d 100644
 +		Array.Fill(dataBit0, -1); // Stratum: no need for loop, Array.Fill is faster and more readable.
  	}
  
-+	/// <summary>Clears all bit-planes and the palette, returning arrays to the pool for reuse.</summary>
++	/// <summary>
++	/// Clears the bit-plane bookkeeping and returns the plane arrays to the pool. Note that
++	/// this method does NOT clear the palette field or paletteCount — the palette survives
++	/// Clear, only bitsize is reset to 0 and Get is set back to the empty delegate. Callers
++	/// that want a fully empty layer should also reset palette/paletteCount themselves
++	/// (see PopulateWithAir / SetLightBulkUnsafe / SetBlocksBulkUnsafe for examples).
++	/// </summary>
  	public void Clear(List<int[]> datas)
  	{
  		Get = GetFromBits0;
  		int num = bitsize;
  		bitsize = 0;
-@@ -731,10 +1782,11 @@ public class ChunkDataLayer
+@@ -731,10 +2083,11 @@ public class ChunkDataLayer
  		}
  		setBlockIndexCached = 0;
  		setBlockValueCached = 0;
@@ -1695,7 +1996,7 @@ index 4d0bf91..0fd873d 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -746,19 +1798,21 @@ public class ChunkDataLayer
+@@ -746,19 +2099,21 @@ public class ChunkDataLayer
  		paletteCount = 1;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1717,7 +2018,7 @@ index 4d0bf91..0fd873d 100644
  		int num = 0;
  		readWriteLock.AcquireReadLock();
  		try
-@@ -774,10 +1828,11 @@ public class ChunkDataLayer
+@@ -774,10 +2129,11 @@ public class ChunkDataLayer
  			readWriteLock.ReleaseReadLock();
  		}
  		return Compression.CompressAndCombine(arrayStatic, palette, paletteCount);
@@ -1729,7 +2030,7 @@ index 4d0bf91..0fd873d 100644
  		int num = 0;
  		lock (palette ?? ((object)readWriteLock))
  		{
-@@ -806,10 +1861,11 @@ public class ChunkDataLayer
+@@ -806,10 +2162,11 @@ public class ChunkDataLayer
  			paletteCompressed = Compression.Compress(palette, paletteCount, chunkdataVersion);
  		}
  		return Compression.Compress(arrayStatic, num, chunkdataVersion);
@@ -1741,7 +2042,7 @@ index 4d0bf91..0fd873d 100644
  		paletteCount = 0;
  		palette = Compression.DecompressCombined(layerCompressed, ref dataBits, ref paletteCount, pool.NewData);
  		if (palette != null)
-@@ -827,10 +1883,11 @@ public class ChunkDataLayer
+@@ -827,10 +2184,11 @@ public class ChunkDataLayer
  		{
  			bitsize = 0;
  		}
@@ -1753,7 +2054,7 @@ index 4d0bf91..0fd873d 100644
  		palette = Compression.DecompressToInts(paletteCompressed, ref paletteCount);
  		if (palette != null)
  		{
-@@ -872,10 +1929,11 @@ public class ChunkDataLayer
+@@ -872,10 +2230,11 @@ public class ChunkDataLayer
  			Get = GetFromBits0;
  			bitsize = 0;
  		}
@@ -1765,7 +2066,7 @@ index 4d0bf91..0fd873d 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -910,39 +1968,192 @@ public class ChunkDataLayer
+@@ -910,39 +2269,195 @@ public class ChunkDataLayer
  		{
  			pool.FreeArrays(this);
  		}
@@ -1808,7 +2109,9 @@ index 4d0bf91..0fd873d 100644
 +
 +		int num = bitsize > 15 ? 15 : bitsize;
 +
-+		// Stratum: AVX path — reuses the same bit-plane → palette decode as CopyBlocksToUnsafe.
++		// Stratum: dispatch order — AVX512, then AVX2, then scalar. Shares the same
++		// bit-plane → palette decode used by CopyBlocksToUnsafe, just with a different
++		// output buffer.
 +
 +		if (Avx512F.IsSupported)
 +		{
@@ -1842,7 +2145,8 @@ index 4d0bf91..0fd873d 100644
 +
 +	/// <summary>
 +	/// Stratum: Encodes a flat int array of light values back into bit-planes, rebuilding the palette.
-+	/// Takes the write lock ONCE for the entire chunk. Null-safe.
++	/// Takes stratumWriteLock ONCE for the entire chunk (not readWriteLock — the callers run before
++	/// the chunk is published). Null-safe.
 +	///
 +	/// Rewritten to mirror SetBlocksBulkUnsafe: word-wise encode (32 values at once) instead of
 +	/// 32768 individual SetUnsafeCore calls. Uniform words (the dominant case for light — large
@@ -1968,7 +2272,7 @@ index 4d0bf91..0fd873d 100644
  		readWriteLock.AcquireReadLock();
  		try
  		{
-@@ -950,54 +2161,48 @@ public class ChunkDataLayer
+@@ -950,54 +2465,48 @@ public class ChunkDataLayer
  			for (int i = 0; i < blocksOut.Length; i += 32)
  			{
  				int num2 = i / 32;
@@ -2022,7 +2326,7 @@ index 4d0bf91..0fd873d 100644
 -					}
 -				}
 +				if (num == 0) continue;
-+				// Stratum: replaced manual trailing-bit scan loop with BitOperations.TrailingZeroCount — compiler replaces with CPU instruction BZHI/BSF. Identical result, single instruction on modern x86-64.
++				// Stratum: replaced manual trailing-bit scan loop with BitOperations.TrailingZeroCount — compiles to a single TZCNT (or BSF on older CPUs) instruction on x86-64. Identical result.
 +				int bitIndex = System.Numerics.BitOperations.TrailingZeroCount(num);
 +				return new BlockPos(bitIndex, j / 32, j % 32);
  			}
@@ -2036,7 +2340,7 @@ index 4d0bf91..0fd873d 100644
  	{
  		int num = -1;
  		for (int i = 0; i < bitsize; i++)
-@@ -1005,10 +2210,11 @@ public class ChunkDataLayer
+@@ -1005,10 +2514,11 @@ public class ChunkDataLayer
  			num &= (((needle & (1 << i)) != 0) ? dataBits[i][intIndex] : (~dataBits[i][intIndex]));
  		}
  		return num;
@@ -2048,7 +2352,7 @@ index 4d0bf91..0fd873d 100644
  		for (int i = 0; i < paletteCount; i++)
  		{
  			if (palette[i] != id)
-@@ -1025,18 +2231,20 @@ public class ChunkDataLayer
+@@ -1025,18 +2535,20 @@ public class ChunkDataLayer
  			return false;
  		}
  		return false;
@@ -2069,7 +2373,7 @@ index 4d0bf91..0fd873d 100644
  		int num = ~mask;
  		readWriteLock.AcquireWriteLock();
  		for (int i = 0; i < bitsize; i++)
-@@ -1051,10 +2259,11 @@ public class ChunkDataLayer
+@@ -1051,10 +2563,11 @@ public class ChunkDataLayer
  			}
  		}
  		readWriteLock.ReleaseWriteLock();
@@ -2081,7 +2385,7 @@ index 4d0bf91..0fd873d 100644
  		int num = paletteCount - 1;
  		readWriteLock.AcquireWriteLock();
  		int num2 = bitsize;
-@@ -1088,10 +2297,194 @@ public class ChunkDataLayer
+@@ -1088,10 +2601,195 @@ public class ChunkDataLayer
  		palette[deletePosition] = palette[num];
  		paletteCount--;
  		readWriteLock.ReleaseWriteLock();
@@ -2089,7 +2393,8 @@ index 4d0bf91..0fd873d 100644
  
 +	/// <summary>
 +	/// Stratum: Encodes a flat int array of block IDs back into bit-planes, rebuilding the palette.
-+	/// Takes the write lock ONCE for the entire chunk. Null-safe.
++	/// Takes stratumWriteLock ONCE for the entire chunk (not readWriteLock — the callers run before
++	/// the chunk is published). Null-safe.
 +	///
 +	/// Fast rebuild: instead of 32768 per-block SetUnsafeCore calls (each doing a palette scan
 +	/// plus bitsize read-modify-writes into the planes), encode word-wise (32 blocks at once):
@@ -2276,7 +2581,7 @@ index 4d0bf91..0fd873d 100644
  		int[] array = palette;
  		if (array == null)
  		{
-@@ -1104,6 +2497,6 @@ public class ChunkDataLayer
+@@ -1104,6 +2802,6 @@ public class ChunkDataLayer
  			{
  				array[i] = 0;
  			}

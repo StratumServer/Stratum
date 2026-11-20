@@ -440,6 +440,7 @@ internal class CmdStratumStaffCommands
 		var nearby = server.Clients.Values
 			.Where(client => client.State.IsAdmitted() && client.Player?.Entity?.Pos != null && client.Player.PlayerUID != player.PlayerUID)
 			.Where(client => client.Player.Entity.Pos.Dimension == pos.Dimension)
+			.Where(client => client.Player.WorldData.CurrentGameMode != EnumGameMode.Spectator)
 			// Stratum #213: mirror the entity-visibility rule exactly, including the
 			// per-viewer "hide other vanished" preference, so /near never lists someone
 			// the caller cannot see.
@@ -1006,7 +1007,7 @@ internal class CmdStratumStaffCommands
 		}
 
 		bool enable = string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase) || (!string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase) && !StratumStaffCommandState.IsVanished(player.PlayerUID));
-		StratumStaffCommandState.SetVanished(player, enable);
+		StratumStaffCommandState.SetVanished(server, player, enable);
 		if (enable)
 		{
 			StratumStaffCommandState.HideVanishedPlayerFromOthers(server, player);
@@ -1910,6 +1911,7 @@ internal class CmdStratumStaffCommands
 
 	private void OnPlayerJoin(IServerPlayer player)
 	{
+		StratumStaffCommandState.RestoreVanishedState(server, player);
 		StratumStaffCommandState.MarkSeen(server, player, "online");
 		ApplyJailOnJoin(player);
 		CacheMuteStateOnJoin(player);

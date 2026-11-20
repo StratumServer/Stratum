@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs b/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs
-index 9eabde1..0846399 100644
+index 9eabde1..b4fed75 100644
 --- a/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ModAssemblyLoader.cs
-@@ -11,30 +11,47 @@ public class ModAssemblyLoader : IDisposable
+@@ -11,30 +11,78 @@ public class ModAssemblyLoader : IDisposable
  {
  	private readonly IReadOnlyCollection<string> modSearchPaths;
  
@@ -25,6 +25,10 @@ index 9eabde1..0846399 100644
 +				StratumCecilResolver.AddSearchDirectory(searchPath);
 +			}
 +		}
++		// Cecil freezes the directory list above; a directory that appears later (a zip code
++		// mod unpacked mid-load, an output folder populated late) would never be searched.
++		// This re-probes the current paths when a resolve is about to fail.
++		StratumCecilResolver.ResolveFailure += StratumResolveFailure;
 +		// Stratum end
  		AppDomain.CurrentDomain.AssemblyResolve += AssemblyResolveHandler;
  	}
@@ -32,8 +36,35 @@ index 9eabde1..0846399 100644
  	public void Dispose()
  	{
  		AppDomain.CurrentDomain.AssemblyResolve -= AssemblyResolveHandler;
++		StratumCecilResolver.ResolveFailure -= StratumResolveFailure; // Stratum: cleanup
 +		StratumCecilResolver.Dispose(); // Stratum: cleanup
++	}
++
++	// Stratum start: last chance to resolve a mod dependency before Cecil throws and the
++	// whole mod is dropped. Re-enumerates the same search paths and reads the assembly by
++	// name; returns null to let Cecil raise its own error if nothing matches.
++	private AssemblyDefinition StratumResolveFailure(object sender, AssemblyNameReference reference)
++	{
++		foreach (string searchPath in GetAssemblySearchPaths())
++		{
++			if (!Directory.Exists(searchPath))
++			{
++				continue;
++			}
++
++			foreach (string extension in new string[] { ".dll", ".exe" })
++			{
++				string candidate = Path.Combine(searchPath, reference.Name + extension);
++				if (File.Exists(candidate))
++				{
++					return AssemblyDefinition.ReadAssembly(candidate, new ReaderParameters { AssemblyResolver = StratumCecilResolver });
++				}
++			}
++		}
++
++		return null;
  	}
++	// Stratum end
  
  	public Assembly LoadFrom(string path)
  	{

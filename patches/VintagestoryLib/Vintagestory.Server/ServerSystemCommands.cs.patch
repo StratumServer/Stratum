@@ -1,23 +1,26 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
-index 1d4be19..8acd529 100644
+index 1d4be19..b9c3e36 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemCommands.cs
-@@ -21,10 +21,22 @@ internal class ServerSystemCommands : ServerSystem
+@@ -21,10 +21,25 @@ internal class ServerSystemCommands : ServerSystem
  		new CmdEntity(server);
  		new CmdGive(server);
  		new CmdDebug(server);
  		new CmdStop(server);
  		new CmdStats(server);
++		StratumGroupPolicy.Install(server); // Stratum: issue #335 point the friendly fire group test at this server's group kinds and relations
 +		new CmdStratum(server);
 +		new CmdStratumUtility(server);
 +		new CmdStratumEssentials(server);
 +		new CmdStratumStaffCommands(server);
 +		new CmdStratumRoles(server); // Stratum: runtime role editing
 +		new CmdStratumKits(server); // Stratum: issue #210 kit creator
++		new CmdStratumClassChanges(server); // Stratum: issue #278 class change requests
 +		new StratumMobSpawningSystem(server); // Stratum: issue #216 natural mob spawning controls
 +		new StratumLoginProtection(server);
 +		new StratumCombatLogSystem(server);
 +		new StratumCoopCombatSystem(server); // Stratum: cooperative PvE combat toggle
++		new StratumFriendlyFireSystem(server); // Stratum: issue #277 group friendly fire toggle
 +		new StratumNametags(server);
 +		new StratumEntityCaps(server);
  		new CmdInfo(server);
@@ -25,7 +28,7 @@ index 1d4be19..8acd529 100644
  		new CmdModDBUtil(server);
  		if (!server.IsDedicatedServer)
  		{
-@@ -33,6 +45,10 @@ internal class ServerSystemCommands : ServerSystem
+@@ -33,6 +48,10 @@ internal class ServerSystemCommands : ServerSystem
  		new CmdSetBlock(server);
  		new CmdExecuteAs(server);
  		new CmdActivate(server);

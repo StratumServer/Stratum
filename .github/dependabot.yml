@@ -1,6 +1,13 @@
 version: 2
 updates:
+  # Actions only. NuGet is deliberately not listed: the packages the server
+  # references are pinned to what the game ships (Newtonsoft, protobuf and
+  # friends), and a bump there would break the overlay against vanilla.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

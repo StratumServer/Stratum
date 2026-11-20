@@ -1,8 +1,18 @@
 diff --git a/VSEssentials/Loading/RegistryObjectType.cs b/VSEssentials/Loading/RegistryObjectType.cs
-index 7c78fc7..fa5a8a5 100644
 --- a/VSEssentials/Loading/RegistryObjectType.cs
 +++ b/VSEssentials/Loading/RegistryObjectType.cs
-@@ -276,19 +276,11 @@ namespace Vintagestory.ServerMods.NoObf
+@@ -1,9 +1,10 @@
+ using Newtonsoft.Json;
+ using Newtonsoft.Json.Linq;
+ using System;
+ using System.Collections.Generic;
++using System.Linq;
+ using System.Text.RegularExpressions;
+ using Vintagestory.API;
+ using Vintagestory.API.Client;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Config;
+@@ -276,19 +277,11 @@ namespace Vintagestory.ServerMods.NoObf
                  Enabled = Enabled,
                  jsonObject = jobject,
                  Variant = variant
@@ -23,7 +33,7 @@ index 7c78fc7..fa5a8a5 100644
              {
                  JsonUtil.PopulateObject(resolvedType, jobject, deserializer);
              }
-@@ -301,86 +293,175 @@ namespace Vintagestory.ServerMods.NoObf
+@@ -301,86 +294,175 @@ namespace Vintagestory.ServerMods.NoObf
              resolvedType.Code = fullcode;
              resolvedType.jsonObject = null;
              return resolvedType;
@@ -67,8 +77,7 @@ index 7c78fc7..fa5a8a5 100644
 +                string str = (string)val.Value;
 +                return str != null && str.Contains("{");
 +            }
- 
--                foreach (var entry in jsonObj)
++
 +            return false;
 +        }
 +
@@ -81,7 +90,8 @@ index 7c78fc7..fa5a8a5 100644
 +        {
 +            if (token == null)
 +                return null;
-+
+ 
+-                foreach (var entry in jsonObj)
 +            // Check if the token needs resolution
 +            if (token is JObject obj)
 +            {
@@ -123,12 +133,13 @@ index 7c78fc7..fa5a8a5 100644
 +                {
 +                    return token; // Share the original object since nothing changes
 +                }
- 
--                if (propertiesToRemove != null)
-+                // Create a new JObject only if needed
++
++                // An object byType merges into a clone of the object sibling, then that merge is resolved.
++                // A number, string, array, or null does not replace an object sibling.
 +                var newObj = new JObject();
 +                Dictionary<string, JToken> propertiesToAdd = null;
-+
+ 
+-                if (propertiesToRemove != null)
 +                foreach (var prop in obj.Properties())
                  {
 -                    foreach (var property in propertiesToRemove)
@@ -148,12 +159,12 @@ index 7c78fc7..fa5a8a5 100644
 +                        foreach (var byTypeProp in byTypeObj.Properties())
                          {
 -                            if (jsonObj[property.Key] is JObject jobject)
-+                            if (WildcardUtil.Match(byTypeProp.Name, codePath))
-                             {
+-                            {
 -                                jobject.Merge(property.Value);
 -                            }
 -                            else
--                            {
++                            if (WildcardUtil.Match(byTypeProp.Name, codePath))
+                             {
 -                                jsonObj[property.Key] = property.Value;
 +                                selected = byTypeProp.Value;
 +                                break; // First matched
@@ -163,7 +174,7 @@ index 7c78fc7..fa5a8a5 100644
 +                        if (selected != null)
 +                        {
 +                            if (propertiesToAdd == null) propertiesToAdd = new Dictionary<string, JToken>();
-+                            propertiesToAdd[trueKey] = selected; // Store JToken directly
++                            propertiesToAdd[trueKey] = selected;
 +                        }
 +                    }
 +                    else
@@ -173,7 +184,6 @@ index 7c78fc7..fa5a8a5 100644
                  }
  
 -                foreach (var entry in jsonObj)
-+                // Add the resolved "byType" properties
 +                if (propertiesToAdd != null)
                  {
 -                    solveByType(entry.Value, codePath, searchReplace);
@@ -181,15 +191,15 @@ index 7c78fc7..fa5a8a5 100644
 +                    {
 +                        string trueKey = add.Key;
 +                        JToken selected = add.Value;
-+                        JToken resolvedSelected = Resolve(selected, codePath, searchReplace);
-+
-+                        if (newObj[trueKey] is JObject existing)
++                        if (obj[trueKey] is JObject sibling && selected is JObject)
 +                        {
-+                            existing.Merge(resolvedSelected);  // No mergeSettings, to match original (default Concat for arrays)
++                            var merged = (JObject)sibling.DeepClone();
++                            merged.Merge(selected);
++                            newObj[trueKey] = Resolve(merged, codePath, searchReplace);
 +                        }
-+                        else
++                        else if (!(newObj[trueKey] is JObject))
 +                        {
-+                            newObj[trueKey] = resolvedSelected;
++                            newObj[trueKey] = Resolve(selected, codePath, searchReplace);
 +                        }
 +                    }
                  }

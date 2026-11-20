@@ -1,0 +1,79 @@
+diff --git a/VSEssentials/Inventory/InWorldContainer.cs b/VSEssentials/Inventory/InWorldContainer.cs
+--- a/VSEssentials/Inventory/InWorldContainer.cs
++++ b/VSEssentials/Inventory/InWorldContainer.cs
+@@ -93,10 +93,11 @@ namespace Vintagestory.GameContent
+             prevInventory = Inventory;
+         }
+ 
+         private void Inventory_SlotModified(int obj)
+         {
++            stratumContentStamp++;
+             if (Inventory is InventoryBasePlayer) return;
+ 
+             Api.World.BlockAccessor.GetChunkAtBlockPos(positionProvider())?.MarkModified();
+         }
+ 
+@@ -111,15 +112,35 @@ namespace Vintagestory.GameContent
+             {
+                 // We don't have to do this client side. The item stack renderer already updates those states for us
+                 return;
+             }
+ 
++            double now = Api.World.Calendar.TotalHours;
++            if (stratumContentStamp == stratumSeenContent
++                && stratumNeighbourStamp == stratumSeenNeighbour
++                && now < stratumNextCheckHours)
++            {
++                return;
++            }
++            stratumSeenContent = stratumContentStamp;
++            stratumSeenNeighbour = stratumNeighbourStamp;
++            StratumFullTicks++;
++
+             temperatureCached = -1000f;     // reset the cached temperature; it will be updated by the first perishable in the loop below, if there is one
+-            if (!HasTransitionables()) return;   // Skip the room check if this container currently has no transitionables
++            if (!HasTransitionables())
++            {
++                // Nothing in here spoils. A slot change or a neighbour change wakes the next tick.
++                stratumNextCheckHours = now + 48;
++                return;
++            }
+ 
+             room = roomReg.GetRoomForPosition(positionProvider());
+-            if (room.AnyChunkUnloaded != 0) return;
++            if (room.AnyChunkUnloaded != 0)
++            {
++                stratumNextCheckHours = now;
++                return;
++            }
+ 
+             bool aSlotWasCleared = false;
+             foreach (ItemSlot slot in Inventory)
+             {
+                 if (slot.Itemstack == null) continue;
+@@ -135,10 +156,25 @@ namespace Vintagestory.GameContent
+             }
+ 
+             if (aSlotWasCleared && Inventory.Empty) OnInventoryClearedMidTick();
+ 
+             temperatureCached = -1000f;      // reset the cached temperature in case any code needs to call GetPerishRate() between ticks of this entity
++            // The transition update reads absolute calendar time, so the next visit catches up.
++            stratumNextCheckHours = now + 0.25;
++        }
++
++        internal int StratumFullTicks;
++
++        private int stratumContentStamp;
++        private int stratumSeenContent = -1;
++        private int stratumNeighbourStamp;
++        private int stratumSeenNeighbour = -1;
++        private double stratumNextCheckHours;
++
++        public void StratumNoteNeighbour()
++        {
++            stratumNeighbourStamp++;
+         }
+ 
+         protected virtual void OnInventoryClearedMidTick()
+         {
+             BlockEntity be = Api.World.BlockAccessor.GetBlockEntity(positionProvider());

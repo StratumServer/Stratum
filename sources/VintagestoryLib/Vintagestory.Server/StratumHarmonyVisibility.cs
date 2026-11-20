@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using HarmonyLib;
+using Vintagestory.API.Server;
 
 namespace Vintagestory.Server;
 
@@ -65,6 +66,79 @@ internal static class StratumHarmonyVisibility
 			{
 				StratumRuntime.LogInfo($"harmony visibility: mod '{entry.Key}' ({detail})");
 			}
+		}
+	}
+
+	// Methods the group friendly fire toggle (#277) relies on to drop a hit between group mates.
+	// A mod that Harmony-patches one of these and skips the original can silently defeat the
+	// toggle. No server platform can stop that, so when friendly fire is off we name the mod in the
+	// log for triage. Keyed by the declaring type's simple name plus the method name, which is
+	// enough to be unambiguous here and avoids caring about overloads or full namespaces.
+	private static readonly HashSet<string> FriendlyFireCriticalMethods = new HashSet<string>(System.StringComparer.Ordinal)
+	{
+		"Entity.ReceiveDamage",
+		"Entity.ShouldReceiveDamage",
+		"EntityAgent.ReceiveDamage",
+		"EntityAgent.ShouldReceiveDamage",
+		"EntityHumanoid.ShouldReceiveDamage",
+		"EntityPlayer.ShouldReceiveDamage",
+		"EntityAgent.OnInteract",
+		"EntityBehaviorHealth.OnEntityReceiveDamage",
+		"ServerSystemEntitySimulation.HandleEntityInteraction",
+		"EntityProjectileBase.CanDealDamage",
+		"EntityProjectileBase.DealDamage",
+		"EntityProjectileBase.ImpactOnEntity",
+		"ServerMain.CreateExplosion",
+	};
+
+	// Runs regardless of Diagnostics.LogModHarmonyPatches: this is a targeted safety warning for
+	// one feature, not the full patch dump. It is called after the friendly-fire state is applied,
+	// including startup, /friendlyfire changes, and /stratum reload.
+	public static void WarnFriendlyFireConflicts()
+	{
+		if (!StratumFriendlyFireHook.BlockGroupDamage)
+		{
+			return;
+		}
+
+		foreach (MethodBase method in Harmony.GetAllPatchedMethods())
+		{
+			string key = (method.DeclaringType?.Name ?? "?") + "." + method.Name;
+			if (!FriendlyFireCriticalMethods.Contains(key))
+			{
+				continue;
+			}
+
+			Patches info = Harmony.GetPatchInfo(method);
+			if (info == null)
+			{
+				continue;
+			}
+
+			HashSet<string> owners = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+			CollectOwners(owners, info.Prefixes);
+			CollectOwners(owners, info.Postfixes);
+			CollectOwners(owners, info.Transpilers);
+			CollectOwners(owners, info.Finalizers);
+			if (owners.Count == 0)
+			{
+				continue;
+			}
+
+			StratumRuntime.LogWarning($"harmony visibility: group friendly fire (/friendlyfire) relies on {key}, which mod(s) {string.Join(", ", owners.OrderBy(o => o, System.StringComparer.OrdinalIgnoreCase))} also patch. Confirm a hit between two group members is still blocked with that mod loaded.");
+		}
+	}
+
+	private static void CollectOwners(HashSet<string> owners, IReadOnlyCollection<Patch> patches)
+	{
+		if (patches == null)
+		{
+			return;
+		}
+
+		foreach (Patch patch in patches)
+		{
+			owners.Add(string.IsNullOrWhiteSpace(patch.owner) ? "(unknown)" : patch.owner);
 		}
 	}
 

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryApi/Common/Model/Animation/AnimationManager.cs b/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
-index 573ec12..21aa3dc 100644
+index 573ec12..ddd9d6b 100644
 --- a/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
 +++ b/VintagestoryApi/Common/Model/Animation/AnimationManager.cs
 @@ -27,11 +27,23 @@ namespace Vintagestory.API.Common
@@ -168,7 +168,7 @@ index 573ec12..21aa3dc 100644
                  AnimationsDirty = true;
              }
  
-@@ -254,10 +320,93 @@ namespace Vintagestory.API.Common
+@@ -254,10 +320,94 @@ namespace Vintagestory.API.Common
              {
                  entity.UpdateDebugAttributes();
              }
@@ -212,6 +212,7 @@ index 573ec12..21aa3dc 100644
 +        {
 +            return string.Equals(code, "walk", StringComparison.OrdinalIgnoreCase)
 +                || string.Equals(code, "run", StringComparison.OrdinalIgnoreCase)
++                || string.Equals(code, "sprint", StringComparison.OrdinalIgnoreCase)
 +                || string.Equals(code, "swim", StringComparison.OrdinalIgnoreCase)
 +                || string.Equals(code, "crawl", StringComparison.OrdinalIgnoreCase)
 +                || string.Equals(code, "fly", StringComparison.OrdinalIgnoreCase);
@@ -262,7 +263,7 @@ index 573ec12..21aa3dc 100644
          {
              if (entity == null) return;
  
-@@ -352,11 +501,11 @@ namespace Vintagestory.API.Common
+@@ -352,11 +502,11 @@ namespace Vintagestory.API.Common
          }
  
          protected virtual void onReceivedServerAnimation(AnimationMetaData animmetadata)
@@ -275,7 +276,7 @@ index 573ec12..21aa3dc 100644
              {
                  ActiveAnimationsByAnimCode[animmetadata.Animation] = animmetadata;
              }
-@@ -367,11 +516,11 @@ namespace Vintagestory.API.Common
+@@ -367,11 +517,11 @@ namespace Vintagestory.API.Common
          /// </summary>
          /// <param name="tree"></param>
          /// <param name="forClient"></param>
@@ -288,7 +289,7 @@ index 573ec12..21aa3dc 100644
              tree["activeAnims"] = animtree;
              SerializeActiveAnimations(forClient, (code, ms) => { animtree[code] = new ByteArrayAttribute(ms); });
          }
-@@ -381,11 +530,11 @@ namespace Vintagestory.API.Common
+@@ -381,11 +531,11 @@ namespace Vintagestory.API.Common
          /// </summary>
          /// <param name="stream"></param>
          /// <param name="forClient"></param>
@@ -301,7 +302,7 @@ index 573ec12..21aa3dc 100644
              streamedAnimTree.WithKey("activeAnims");
              SerializeActiveAnimations(forClient, (code, ms) => { streamedAnimTree[code] = new StreamedByteArrayAttribute(ms); } );
              streamedAnimTree.EndKey();
-@@ -401,11 +550,11 @@ namespace Vintagestory.API.Common
+@@ -401,11 +551,11 @@ namespace Vintagestory.API.Common
              {
                  if (val.Value.Code == null) val.Value.Code = val.Key; // ah wtf.
  
@@ -314,7 +315,7 @@ index 573ec12..21aa3dc 100644
                      val.Value.StartFrameOnce = anim.CurrentFrame;
                  }
  
-@@ -446,15 +595,28 @@ namespace Vintagestory.API.Common
+@@ -446,15 +596,28 @@ namespace Vintagestory.API.Common
          /// The event fired at each server tick.
          /// </summary>
          /// <param name="dt"></param>
@@ -347,7 +348,7 @@ index 573ec12..21aa3dc 100644
              runTriggers();
          }
  
-@@ -495,10 +657,11 @@ namespace Vintagestory.API.Common
+@@ -495,10 +658,11 @@ namespace Vintagestory.API.Common
              }
          }
  
@@ -359,7 +360,7 @@ index 573ec12..21aa3dc 100644
          }
  
          private void runTriggers()
-@@ -537,11 +700,11 @@ namespace Vintagestory.API.Common
+@@ -537,11 +701,11 @@ namespace Vintagestory.API.Common
              }
          }
  

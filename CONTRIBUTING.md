@@ -9,7 +9,8 @@ Stratum is a patch set over the vanilla Vintage Story server. The repo does not 
 - `patches/` is unified diffs against the decompiled vanilla baseline.
 - `sources/` is files that exist only in Stratum. No vanilla equivalent.
 - `StratumServer/` is the launcher and the first-run vanilla downloader.
-- `scripts/` holds bootstrap, extract-patches, and smoke-test scripts (`.sh` for Linux/macOS, `.ps1` for Windows).
+- `scripts/` holds bootstrap, extract-patches, smoke-test, and scenarios scripts (`.sh` for Linux/macOS, `.ps1` for Windows).
+- `tests/` holds the Atlas scenario suite. Outside the solution, run with `make scenarios`.
 - `VintageStory.slnx` is the solution. It only opens after `bootstrap.ps1` has run.
 
 The working tree itself is gitignored. Only `patches/` and `sources/` are tracked.
@@ -61,17 +62,23 @@ You need the .NET 10 SDK. Linux and macOS contributors use `scripts/bootstrap.sh
 ```bash
 # Linux / macOS
 scripts/bootstrap.sh
-dotnet build VintageStory.slnx -c Release
+dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true
 
-# Or use make (runs bootstrap if needed):
+# Or use make (runs bootstrap if needed, and sets the flag for you):
 make build
 ```
 
 ```powershell
 # Windows
 .\scripts\bootstrap.ps1
-dotnet build VintageStory.slnx -c Release
+dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true
 ```
+
+`-p:EmbedPatchedFiles=true` is what embeds your compiled working tree into
+`StratumServer`. Build without it and the launcher has nothing to overlay, so
+the server boots the downloaded vanilla assemblies unpatched, with no error and
+no warning until this change. `make build` runs an unembedded pass first to
+produce the sibling outputs, then runs the embedded pass.
 
 `bootstrap.ps1` downloads the matching vanilla server zip, decompiles the assemblies into the working tree, applies every patch, then copies `sources/` on top. After that you have a normal C# solution to edit.
 
@@ -148,9 +155,14 @@ Rules of thumb:
 
 Compilation is not enough. Before opening a PR:
 
-1. `dotnet build VintageStory.slnx -c Release` is green with zero warnings on files you touched.
+1. `dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true` (or `make build`) is green with zero warnings on files you touched.
 2. Run the smoke test: `make smoke` (or `bash scripts/smoke-test.sh` / `.\scripts\smoke-test.ps1`). It builds, boots the server, waits for RunGame, checks for fatal errors, and (bash only, set `SMOKE_TEST_PROBE=0` to skip) pipes a small set of console commands into the running server to cover command registration and argument handling end to end.
-3. If your change touches a hot path (entity ticking, chunk IO, packet handling), get a before/after measurement. Server timings, frame profiler output, or a sampling profiler are all fine. "Feels faster" is not.
+3. If your change touches chunk IO, entity ticking, or the simulation distance limits, run
+   `make scenarios` (or `bash scripts/scenarios.sh` / `.\scripts\scenarios.ps1`). It runs the
+   scenario suite in `tests/StratumScenarios` against a prepared install, one in-process
+   server per test class. That project sits outside `VintageStory.slnx` and nothing else
+   builds it, so a normal build never pays for it. See its README.
+4. If your change touches a hot path (entity ticking, chunk IO, packet handling), get a before/after measurement. Server timings, frame profiler output, or a sampling profiler are all fine. "Feels faster" is not.
 
 ## Commits
 

@@ -47,6 +47,21 @@ probe_commands=(
   "/kitedit list extra"
   "/kitedit create starter_kit 1 2"
   "/kit"
+  "/friendlyfire"
+  "/friendlyfire off"
+  "/friendlyfire status"
+  "/friendlyfire toggle"
+  "/friendlyfire nonsense"
+  "/stratum get hardening.inventoryGuards"
+  "/stratum set hardening.inventoryGuards false"
+  "/stratum get hardening.inventoryGuards"
+  "/stratum set hardening.inventoryGuards true"
+  "/stratum timings start"
+  "/stratum timings stop"
+  "/stratum timings report"
+  "/class"
+  "/classrequests"
+  "/classrequests approve 999999"
 )
 probe_expect=(
   "No kits exist yet."
@@ -57,6 +72,21 @@ probe_expect=(
   "/kitedit list takes no arguments."
   ""
   "Only a connected player can use /kit."
+  "Group friendly fire is on, players in the same group can damage each other."
+  "Group friendly fire disabled, players in the same group can no longer damage each other."
+  "Group friendly fire is off, players in the same group cannot damage each other."
+  "Group friendly fire enabled, players in the same group can damage each other again."
+  ""
+  "Hardening.InventoryGuards:</font> true"
+  "Hardening.InventoryGuards = false (was true)"
+  "Hardening.InventoryGuards:</font> false"
+  "Hardening.InventoryGuards = true (was false)"
+  "Stratum timings started"
+  "Stratum timings stopped"
+  "Stratum Timings"
+  "Only a connected player can use /class."
+  "No pending class change requests."
+  "No class change request #999999."
 )
 
 # Data path handling.
@@ -68,6 +98,45 @@ else
   data_path="$(mktemp -d)"
 fi
 mkdir -p "$data_path"
+
+# Role-prefix regression seed (StratumServer/Stratum#274). Written before the server starts
+# so the boot config load runs the prefix-list converter for real: "suvisitor" carries two
+# prefixes as an array, deliberately in the wrong file order so the probe below proves
+# Priority reorders them rather than the file order being echoed back, and "admin" stays a
+# bare single object so the pre-#274 shape is covered too. GamePaths.Config resolves to the
+# data path root, not a Config subfolder. Never replace a caller-supplied data path.
+#
+# Hardening.InventoryGuards is seeded explicitly false at ConfigVersion 3: this is the exact
+# shape LoadOrCreateConfig wrote to disk for every server booted before inventory privacy
+# existed (the flag defaulted false and every boot re-saved it), so it reproduces an upgraded
+# server rather than a fresh install. The version-4 migration should force it back to true;
+# the first inventoryGuards probe below asserts that, and the two checks after the probe loop
+# assert the migration ran and persisted.
+if [[ "$own_data" == "1" ]]; then
+  probe_commands+=("/stratum chat")
+  probe_expect+=("[Moderator][XYZ Villager]")
+  cat >"$data_path/stratum.json" <<'JSON'
+{
+  "ConfigVersion": 3,
+  "Hardening": {
+    "InventoryGuards": false
+  },
+  "Appearance": {
+    "RolePrefixes": {
+      "Enabled": true,
+      "Format": "[{tag}]",
+      "Roles": {
+        "suvisitor": [
+          { "Enabled": true, "Tag": "XYZ Villager", "Color": "#4cc9f0", "Bold": true, "Priority": 10 },
+          { "Enabled": true, "Tag": "Moderator", "Color": "#ff5f57", "Bold": true, "Priority": 100 }
+        ],
+        "admin": { "Enabled": true, "Tag": "Admin", "Color": "#ff5f57", "Bold": true, "Priority": 100 }
+      }
+    }
+  }
+}
+JSON
+fi
 
 cleanup() {
   exec 3>&- 2>/dev/null || true
@@ -100,6 +169,8 @@ if [[ -z "$server_bin" || ! -f "$server_bin" ]]; then
   exit 1
 fi
 
+dotnet run --project tests/InventoryPrivacySmoke/InventoryPrivacySmoke.csproj -c Release
+
 # Pick an ephemeral port.
 if [[ "$port" == "0" ]]; then
   port=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
@@ -115,11 +186,11 @@ mkfifo "$console_fifo"
 exec 3<>"$console_fifo"
 
 log_file="$data_path/smoke-test.log"
-# Run from the server's own directory, not repo_root: Mono.Cecil's default assembly
-# resolver searches the process's current directory, and modinfo scanning at boot
-# fails to resolve VintagestoryAPI (silently dropping every mod, "game" included)
-# when launched from anywhere else.
-(cd "$server_dir" && exec "$server_bin" --dataPath "$data_path" --port "$port" <"$console_fifo" >"$log_file" 2>&1) &
+# Launched from repo_root, not the server's own directory: the Mono.Cecil resolver
+# in ModAssemblyLoader must find VintagestoryAPI.dll for the boot modinfo scan
+# regardless of the working directory (StratumServer/Stratum#276), and running the
+# smoke test from a neutral directory is what keeps that covered.
+"$server_bin" --dataPath "$data_path" --port "$port" <"$console_fifo" >"$log_file" 2>&1 &
 server_pid=$!
 
 last_line_count=0
@@ -200,6 +271,32 @@ if [[ "${SMOKE_TEST_PROBE:-1}" == "1" ]] \
 
   if log_contains "Incomplete command"; then
     probe_failures+="    command registration incomplete: \"Incomplete command\" appeared in the log"$'\n'
+  fi
+
+  if [[ "$own_data" == "1" ]]; then
+    # #274: the boot rewrite of stratum.json must not reshape the seeded file. Two prefixes
+    # stay an array, one stays a bare object. This guards against a future change to the
+    # converter that drops the single-object write-back.
+    if [[ -f "$data_path/stratum.json" ]]; then
+      if ! grep -q '"suvisitor": \[' "$data_path/stratum.json"; then
+        probe_failures+="    stratum.json rewrite reshaped the two-prefix role away from an array"$'\n'
+      fi
+      if ! grep -q '"admin": {' "$data_path/stratum.json"; then
+        probe_failures+="    stratum.json rewrite reshaped the single-prefix role into an array"$'\n'
+      fi
+    fi
+
+    # The seed above is a version 3 config with InventoryGuards explicitly false, matching
+    # what every server booted before inventory privacy existed has on disk. This must
+    # migrate to version 4 and force the guard back on; the first inventoryGuards probe above
+    # already exercises the runtime effect, these two confirm the migration itself ran and
+    # the config file it wrote back reflects it.
+    if ! log_contains "upgraded config from version 3 to 4"; then
+      probe_failures+="    config migration did not run on the seeded version 3 config"$'\n'
+    fi
+    if [[ -f "$data_path/stratum.json" ]] && ! grep -q '"ConfigVersion": 4' "$data_path/stratum.json"; then
+      probe_failures+="    stratum.json was not rewritten at config version 4"$'\n'
+    fi
   fi
 fi
 

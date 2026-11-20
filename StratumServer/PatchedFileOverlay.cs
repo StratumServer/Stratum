@@ -15,13 +15,20 @@ internal static class PatchedFileOverlay
 	private const string ModsPrefix = "Stratum.PatchedMods.";
 	private const string DataPrefix = "Stratum.PatchedData.";
 
+	/// <summary>
+	/// Writes the embedded patched files into <paramref name="installDir"/>.
+	/// Returns the number of files written, 0 if the install is already current, or
+	/// -1 if this build carries no embedded patched files at all (built without
+	/// -p:EmbedPatchedFiles=true), in which case the server would run the downloaded
+	/// vanilla assemblies unpatched.
+	/// </summary>
 	internal static int Apply(string installDir, string overlayStamp)
 	{
 		Assembly self = typeof(PatchedFileOverlay).Assembly;
 		string[] names = GetOverlayResourceNames(self);
 		if (names.Length == 0)
 		{
-			return 0;
+			return -1;
 		}
 
 		string markerPath = Path.Combine(installDir, ".stratum-patched-files");

@@ -1,5 +1,5 @@
 diff --git a/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs b/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs
-index 48a886b..3fabd9b 100644
+index 48a886b..3904c9a 100644
 --- a/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs
 +++ b/VSEssentials/Entity/Pathfinding/PathfindingAsync.cs
 @@ -1,15 +1,46 @@
@@ -290,7 +290,7 @@ index 48a886b..3fabd9b 100644
 +                Entity owner = api?.World?.GetEntityById(task.SourceEntityId);
 +                if (owner != null)
 +                {
-+                    taskPos = owner.ServerPos?.XYZ ?? owner.Pos?.XYZ;
++                    taskPos = owner.Pos?.XYZ;
 +                }
 +            }
 +
@@ -307,7 +307,7 @@ index 48a886b..3fabd9b 100644
 +                        continue;
 +                    }
 +
-+                    double distanceSq = playerEntity.ServerPos.SquareDistanceTo(taskPos);
++                    double distanceSq = playerEntity.Pos.SquareDistanceTo(taskPos);
 +                    if (distanceSq < nearestSq)
 +                    {
 +                        nearestSq = distanceSq;

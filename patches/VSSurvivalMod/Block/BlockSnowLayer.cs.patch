@@ -1,0 +1,18 @@
+diff --git a/VSSurvivalMod/Block/BlockSnowLayer.cs b/VSSurvivalMod/Block/BlockSnowLayer.cs
+index 29025c6..f251512 100644
+--- a/VSSurvivalMod/Block/BlockSnowLayer.cs
++++ b/VSSurvivalMod/Block/BlockSnowLayer.cs
+@@ -79,11 +79,12 @@ namespace Vintagestory.GameContent
+             var fallingBlock = block;
+             if (fallingBlock != null && targetPosBlock?.GetSnowLevel(pos) < 8)
+             {
+                 var originalPos = new FastVec3i(pos);
+                 // if the target is snow, move all snow from falling to target
+-                while (fallingBlock is BlockSnowLayer && targetPosBlock.GetSnowLevel(pos) < 8)
++                // Stratum: also merge falling BlockSnow when ModSystemFallingBlocks is active
++                while ((fallingBlock is BlockSnowLayer || (ModSystemFallingBlocks.Instance != null && fallingBlock is BlockSnow)) && targetPosBlock.GetSnowLevel(pos) < 8)
+                 {
+                     var nextnBlock = targetPosBlock.GetSnowCoveredVariant(pos, targetPosBlock.GetSnowLevel(pos) + 1);
+                     if (nextnBlock == null) break;
+ 
+                     targetPosBlock = nextnBlock;

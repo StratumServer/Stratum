@@ -24,7 +24,7 @@ ifneq ($(VERSION),1.22.7)
   BOOTSTRAP_ARGS += --version $(VERSION)
 endif
 
-.PHONY: bootstrap build smoke clean refresh help
+.PHONY: bootstrap build smoke scenarios clean refresh help
 
 help: ## Show available targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sort | awk -F ':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -34,6 +34,8 @@ bootstrap: ## Download, decompile, and apply patches
 
 build: ## Build Release (runs bootstrap if working tree is missing)
 	@if [ ! -f VintagestoryApi/VintagestoryAPI.csproj ]; then $(MAKE) bootstrap; fi
+# The first pass intentionally omits EmbedPatchedFiles because the sibling outputs
+# it embeds do not exist until this pass completes.
 	dotnet build VintageStory.slnx -c $(CONFIGURATION)
 # Second pass, only if embedding is on: StratumServer's EmbeddedResource list
 # points at sibling projects' bin output by raw path, not a ProjectReference,
@@ -47,6 +49,9 @@ endif
 
 smoke: build ## Build and boot-test the server
 	bash scripts/smoke-test.sh
+
+scenarios: build ## Build and run the Atlas scenario suite in tests/StratumScenarios
+	CONFIGURATION=$(CONFIGURATION) bash scripts/scenarios.sh
 
 clean: ## Remove intermediate build files (use refresh for full reset)
 	find . -type d -name obj -not -path './.baseline/*' -not -path './.vanilla/*' | xargs -r rm -rf

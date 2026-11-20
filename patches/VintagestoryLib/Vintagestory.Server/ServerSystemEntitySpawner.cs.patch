@@ -1,5 +1,4 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
-index 52a073b..34b2679 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerSystemEntitySpawner.cs
 @@ -65,10 +65,19 @@ public class ServerSystemEntitySpawner : ServerSystem
@@ -35,6 +34,19 @@ index 52a073b..34b2679 100644
  		int skyHeight = SkyHeight;
  		ushort[] array = heightMap;
  		Random random = rand;
+@@ -547,11 +556,11 @@ public class ServerSystemEntitySpawner : ServerSystem
+ 
+ 	private ClimateCondition GetSuitableClimateTemperatureRainfall(ServerWorldMap worldMap, RuntimeSpawnConditions sc)
+ 	{
+ 		int y = tmpPos.Y;
+ 		tmpPos.Y = (int)((double)server.seaLevel * 1.09);
+-		ClimateCondition worldGenClimateAt = worldMap.getWorldGenClimateAt(tmpPos, temperatureRainfallOnly: true);
++		ClimateCondition worldGenClimateAt = worldMap.getWorldGenClimateAt(tmpPos, temperatureRainfallOnly: true, stratumUseCache: true);
+ 		if (worldGenClimateAt == null)
+ 		{
+ 			tmpPos.Y = y;
+ 			return null;
+ 		}
 @@ -567,11 +576,13 @@ public class ServerSystemEntitySpawner : ServerSystem
  		return worldGenClimateAt;
  	}

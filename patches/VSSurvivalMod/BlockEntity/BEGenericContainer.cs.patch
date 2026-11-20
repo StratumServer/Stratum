@@ -1,0 +1,17 @@
+diff --git a/VSSurvivalMod/BlockEntity/BEGenericContainer.cs b/VSSurvivalMod/BlockEntity/BEGenericContainer.cs
+index 7f32147..1132a24 100644
+--- a/VSSurvivalMod/BlockEntity/BEGenericContainer.cs
++++ b/VSSurvivalMod/BlockEntity/BEGenericContainer.cs
+@@ -124,10 +124,12 @@ namespace Vintagestory.GameContent
+ 
+         public override bool OnPlayerRightClick(IPlayer byPlayer, BlockSelection blockSel)
+         {
+             if (Api.World is IServerWorldAccessor)
+             {
++                // Stratum: Check access before sending the inventory.
++                if (!StratumInventoryPrivacy.CanAccess(inventory, byPlayer)) return false;
+                 var data = BlockEntityContainerOpen.ToBytes("BlockEntityInventory", Lang.Get(dialogTitleLangCode), 4, inventory);
+                 ((ICoreServerAPI)Api).Network.SendBlockEntityPacket(
+                     (IServerPlayer)byPlayer,
+                     Pos,
+                     (int)EnumBlockContainerPacketId.OpenInventory,

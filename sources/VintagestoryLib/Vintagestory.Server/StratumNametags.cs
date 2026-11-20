@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Server;
@@ -49,31 +50,59 @@ internal sealed class StratumNametags
 	/// </summary>
 	public static bool RefreshFor(IServerPlayer player)
 	{
-		return instance?.Refresh(player) == true;
+		return instance?.Refresh(player, entitlements: true) == true;
 	}
 
-	private bool Refresh(IServerPlayer player)
+	/// <summary>
+	/// Stratum #335: re-applies the name after a group membership, kind or tag change. Called
+	/// from the vanilla group packet senders, which every join, leave, kick, disband and staff
+	/// move already goes through, so no membership path can leave a stale tag behind. Leaves
+	/// the role entitlement alone: that only changes with the role, and swapping it here would
+	/// churn the entitlement list on every group packet.
+	/// </summary>
+	public static void RefreshGroupTagFor(IServerPlayer player)
 	{
+		instance?.Refresh(player, entitlements: false);
+	}
+
+	private bool Refresh(IServerPlayer player, bool entitlements)
+	{
+		if (player == null) return false;
+
 		StratumNametagsConfig cfg = Cfg;
-		if (cfg == null || !cfg.Enabled) return false;
-		if (player?.Role == null) return false;
-
 		StratumConfig root = StratumRuntime.Config;
-		StratumRolePrefixConfig prefix = FindRolePrefix(root?.Appearance?.RolePrefixes?.Roles, player.Role.Code);
 
-		if (cfg.ApplyRolePrefix)
+		// Stratum #335: group tags ride the same nametag rewrite as role prefixes, but they are
+		// their own feature with their own switch. A server can run group tags with
+		// Appearance.Nametags off, so the role half below is gated separately.
+		StratumGroupsConfig groups = root?.Groups;
+		bool groupTags = groups != null && groups.Enabled && groups.ShowTagInNametag;
+		bool roleTags = cfg != null && cfg.Enabled && player.Role != null;
+		if (!groupTags && !roleTags) return false;
+
+		// Null when the player holds no tagged group, which also has to reach
+		// ApplyNametagPrefix: that is how a cleared tag gets stripped off the name again.
+		string groupTag = groupTags ? StratumGroupPolicy.FormatTag(StratumGroupPolicy.ResolveTag(server, player)) : null;
+		bool rolePrefixes = roleTags && cfg.ApplyRolePrefix;
+		List<StratumRolePrefixConfig> prefixes = rolePrefixes ? root?.Appearance?.RolePrefixes?.ResolveFor(player.Role.Code) : null;
+
+		if (rolePrefixes || groupTags)
 		{
-			ApplyNametagPrefix(player, prefix, cfg.PrefixFormat);
+			ApplyNametagPrefix(player, prefixes, cfg?.PrefixFormat, groupTag);
 		}
 
-		RemoveInjectedEntitlement(player);
-		MaybeInjectEntitlement(player, cfg);
+		if (roleTags && entitlements)
+		{
+			RemoveInjectedEntitlement(player);
+			MaybeInjectEntitlement(player, cfg);
+		}
+
 		return true;
 	}
 
 	private void OnPlayerJoin(IServerPlayer player)
 	{
-		Refresh(player);
+		Refresh(player, entitlements: true);
 	}
 
 	private void OnPlayerDisconnect(IServerPlayer player)
@@ -82,7 +111,7 @@ internal sealed class StratumNametags
 		injectedByUid.Remove(player.PlayerUID);
 	}
 
-	private void ApplyNametagPrefix(IServerPlayer player, StratumRolePrefixConfig prefix, string format)
+	private void ApplyNametagPrefix(IServerPlayer player, List<StratumRolePrefixConfig> prefixes, string format, string groupTag)
 	{
 		EntityPlayer entity = player.Entity;
 		if (entity == null) return;
@@ -90,19 +119,25 @@ internal sealed class StratumNametags
 		string baseName = player.PlayerName;
 		if (string.IsNullOrEmpty(baseName)) return;
 
-		string desired;
-		if (prefix != null && prefix.Enabled && !string.IsNullOrWhiteSpace(prefix.Tag))
+		string fmt = string.IsNullOrEmpty(format) ? "[{tag}] " : format;
+		StringBuilder prefixText = new StringBuilder();
+		if (groupTag != null)
 		{
-			string fmt = string.IsNullOrEmpty(format) ? "[{tag}] " : format;
-			string prefixText = fmt.Replace("{tag}", prefix.Tag);
-			desired = prefixText + baseName;
+			prefixText.Append(groupTag).Append(' ');
 		}
-		else
+
+		if (prefixes != null)
 		{
-			// New role has no prefix \u2014 strip back to the bare player name so a demoted
-			// admin loses their "[Admin] " badge instead of keeping it stuck.
-			desired = baseName;
+			foreach (StratumRolePrefixConfig prefix in prefixes)
+			{
+				if (string.IsNullOrWhiteSpace(prefix.Tag)) continue;
+				prefixText.Append(fmt.Replace("{tag}", prefix.Tag));
+			}
 		}
+
+		// Nothing left for the new role, so strip back to the bare player name and a demoted
+		// admin loses their "[Admin] " badge instead of keeping it stuck.
+		string desired = prefixText.Length == 0 ? baseName : prefixText + baseName;
 
 		string current = entity.WatchedAttributes.GetTreeAttribute("nametag")?.GetString("name");
 		if (string.Equals(current, desired, StringComparison.Ordinal)) return;
@@ -151,13 +186,4 @@ internal sealed class StratumNametags
 		StratumRuntime.LogInfo("nametag: injected entitlement '" + entCode + "' for " + player.PlayerName + " (role " + player.Role.Code + ")");
 	}
 
-	private static StratumRolePrefixConfig FindRolePrefix(Dictionary<string, StratumRolePrefixConfig> prefixes, string roleCode)
-	{
-		if (prefixes == null || string.IsNullOrWhiteSpace(roleCode)) return null;
-		return prefixes
-			.Where(kv => kv.Value != null && kv.Value.Enabled && string.Equals(kv.Key, roleCode, StringComparison.OrdinalIgnoreCase))
-			.OrderByDescending(kv => kv.Value.Priority)
-			.Select(kv => kv.Value)
-			.FirstOrDefault();
-	}
 }

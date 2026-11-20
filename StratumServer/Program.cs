@@ -32,6 +32,11 @@ internal static class Program
 		bool refresh = HasOption(args, "--stratum-refresh");
 		bool skipBootstrap = HasOption(args, "--stratum-skip-bootstrap");
 		bool prepareOnly = HasOption(args, "--stratum-prepare-only");
+		if (prepareOnly && skipBootstrap)
+		{
+			Console.Error.WriteLine("Stratum: --stratum-prepare-only cannot be combined with --stratum-skip-bootstrap, which skips the preparation it asks for.");
+			return 2;
+		}
 		string[] serverArgs = RemoveOption(args, "--stratum-no-banner", "--stratum-refresh", "--stratum-skip-bootstrap", "--stratum-prepare-only");
 		bool printBanner = !HasOption(args, "--stratum-no-banner");
 		serverArgs = AddDefaultDataPath(serverArgs, out string defaultDataPathAdded);
@@ -49,7 +54,10 @@ internal static class Program
 			catch (Exception exception)
 			{
 				Console.Error.WriteLine($"Stratum: vanilla asset bootstrap failed: {exception.Message}");
-				Console.Error.WriteLine("Pass --stratum-skip-bootstrap to launch anyway if the assets are already in place.");
+				if (!prepareOnly)
+				{
+					Console.Error.WriteLine("Pass --stratum-skip-bootstrap to launch anyway if the assets are already in place.");
+				}
 				return 1;
 			}
 
@@ -57,7 +65,20 @@ internal static class Program
 			{
 				string stamp = StratumInfo.Version;
 				int written = PatchedFileOverlay.Apply(AppContext.BaseDirectory, refresh ? stamp + ":refresh:" + Guid.NewGuid().ToString("N") : stamp);
-				if (written > 0)
+				if (written < 0)
+				{
+					Console.Error.WriteLine("Stratum: WARNING this build carries no embedded patched files, so the server is about to run the downloaded vanilla assemblies unpatched.");
+					Console.Error.WriteLine("Stratum: build with 'make build', or 'dotnet build VintageStory.slnx -c Release -p:EmbedPatchedFiles=true'.");
+					if (prepareOnly)
+					{
+						// Preparing is the whole job of this mode, and it wrote nothing. The
+						// install is left holding whatever an earlier build put there, which
+						// on a repeat run is a stale patched lib that looks prepared, so
+						// callers must not treat this as a success.
+						return 1;
+					}
+				}
+				else if (written > 0)
 				{
 					Console.WriteLine($"Stratum: applied patched files ({written} file(s))");
 				}
@@ -290,6 +311,8 @@ internal static class Program
 		Console.WriteLine("  --stratum-refresh          Re-download and re-extract vanilla assets");
 		Console.WriteLine("  --stratum-skip-bootstrap   Skip the first-run vanilla asset bootstrap");
 		Console.WriteLine("  --stratum-prepare-only     Download/extract/patch the install, then exit");
+		Console.WriteLine("                             (non-zero if nothing is patched; refused with");
+		Console.WriteLine("                             --stratum-skip-bootstrap)");
 		Console.WriteLine();
 		Console.WriteLine("If --dataPath is omitted, Stratum uses the local Data folder next to StratumServer.exe.");
 		Console.WriteLine("All other arguments are passed through to the Stratum server core.");

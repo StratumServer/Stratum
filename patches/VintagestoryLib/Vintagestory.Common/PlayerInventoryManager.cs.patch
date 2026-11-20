@@ -1,0 +1,33 @@
+diff --git a/VintagestoryLib/Vintagestory.Common/PlayerInventoryManager.cs b/VintagestoryLib/Vintagestory.Common/PlayerInventoryManager.cs
+index 3ead593..580229d 100644
+--- a/VintagestoryLib/Vintagestory.Common/PlayerInventoryManager.cs
++++ b/VintagestoryLib/Vintagestory.Common/PlayerInventoryManager.cs
+@@ -5,10 +5,11 @@ using System.Linq;
+ using System.Text;
+ using Vintagestory.API.Client;
+ using Vintagestory.API.Common;
+ using Vintagestory.API.Common.Entities;
+ using Vintagestory.API.Datastructures;
++using Vintagestory.Server;
+ 
+ namespace Vintagestory.Common;
+ 
+ public abstract class PlayerInventoryManager : IPlayerInventoryManager
+ {
+@@ -335,11 +336,15 @@ public abstract class PlayerInventoryManager : IPlayerInventoryManager
+ 	}
+ 
+ 	public object OpenInventory(IInventory inventory)
+ 	{
+ 		Inventories[inventory.InventoryID] = (InventoryBase)inventory;
+-		return inventory.Open(player);
++		// Stratum: Send the contents once the server has opened the inventory.
++		bool wasOpened = ((InventoryBase)inventory).openedByPlayerGUIds.Contains(player.PlayerUID);
++		object packet = inventory.Open(player);
++		if (!wasOpened) StratumInventorySync.SendOpenedInventory((InventoryBase)inventory, player);
++		return packet;
+ 	}
+ 
+ 	public object CloseInventory(IInventory inventory)
+ 	{
+ 		if (inventory.RemoveOnClose)

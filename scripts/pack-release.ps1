@@ -5,7 +5,7 @@ Builds and packages Stratum launcher zips.
 Produces a tiny zip per RID containing only:
   StratumServer.exe (single-file, framework-dependent, with Stratum patched managed files embedded as resources)
   StratumServer.runtimeconfig.json
-  LICENSE, README.md
+  LICENSE, NOTICE.md, README.md
 
 The launcher resolves the matching official server archive through https://api.vintagestory.at/stable-unstable.json on first run
 then writes the embedded Stratum patched files over the extracted server.
@@ -96,6 +96,7 @@ try {
         if (Test-Path $runtimeCfg) { Copy-Item $runtimeCfg $stage }
         Copy-Item (Join-Path $repoRoot 'LICENSE')  $stage
         Copy-Item (Join-Path $repoRoot 'README.md') $stage
+        Copy-Item (Join-Path $repoRoot 'NOTICE.md') $stage
 
 		$zipName = "stratum-$Version-$rid.zip"
         $zipPath = Join-Path $OutDir $zipName

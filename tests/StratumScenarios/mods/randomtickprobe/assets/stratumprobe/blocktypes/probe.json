@@ -1,0 +1,12 @@
+{
+  "code": "probe",
+  "class": "RandomTickProbeBlock",
+  "drawtype": "cube",
+  "resistance": 3.5,
+  "textures": {
+    "all": { "base": "game:block/stone/rock/granite1" }
+  },
+  "sounds": {
+    "place": "game:block/loosestone"
+  }
+}

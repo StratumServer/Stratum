@@ -1,0 +1,12 @@
+diff --git a/VintagestoryApi/Properties/AssemblyInfo.cs b/VintagestoryApi/Properties/AssemblyInfo.cs
+index 48ed7b1..40eeb68 100644
+--- a/VintagestoryApi/Properties/AssemblyInfo.cs
++++ b/VintagestoryApi/Properties/AssemblyInfo.cs
+@@ -35,5 +35,7 @@ using Vintagestory.API.Config;
+ // [assembly: AssemblyVersion("1.0.*")]
+ [assembly: AssemblyVersion(GameVersion.AssemblyVersion)]
+ [assembly: AssemblyFileVersion(GameVersion.APIVersion)]
+ 
+ [assembly: InternalsVisibleTo("VintagestoryLib")]
++// Stratum: InventoryPrivacySmoke needs access to the internal IPlayer range member.
++[assembly: InternalsVisibleTo("InventoryPrivacySmoke")]

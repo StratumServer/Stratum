@@ -1,4 +1,7 @@
-* @StratumServer/core
-/docs/ @StratumServer/docs
-.github/ @StratumServer/core
-/scripts/ @StratumServer/core
+# Review suggestions, not a gate: no branch rule requires a code owner review.
+# The org has no GitHub teams yet, so owners are listed by login. Add yourself
+# when you take an area.
+*           @trevorftp @Zaldaryon @Pixnop
+/docs/      @trevorftp @Pixnop @Zaldaryon
+/.github/   @trevorftp @Zaldaryon @Pixnop
+/scripts/   @trevorftp @Zaldaryon @Pixnop

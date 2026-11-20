@@ -1,8 +1,7 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs b/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
-index 95784e8..f09dff7 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerWorldMap.cs
-@@ -52,10 +52,29 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+@@ -52,10 +52,51 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
  
  	private int regionMapSizeZ;
  
@@ -10,29 +9,51 @@ index 95784e8..f09dff7 100644
  
 +	// Stratum: per-thread climate cache for temperatureRainfallOnly queries.
 +	// WorldGen climate data never changes at runtime, so entries are permanent.
-+	// [ThreadStatic] avoids all lock/interlocked overhead — each thread (spawner
-+	// off-thread, main thread, etc.) gets its own dictionary, initialized lazily.
-+	// Cache key: packed (chunkX, chunkZ, Y-group) so spawner calls with a fixed
-+	// normalized Y (~seaLevel*1.09) all share one entry per chunk column, yielding
-+	// >99% hit rate after the first candidate is checked per chunk.
++	// The key is the full chunk column and Y. A packed 10-bit key aliased columns
++	// 1024 chunks apart.
 +	[ThreadStatic]
-+	private static Dictionary<long, ClimateCondition>? stratumClimateCache;
++	private static Dictionary<StratumClimateKey, ClimateCondition>? stratumClimateCache;
++
++	private readonly struct StratumClimateKey : IEquatable<StratumClimateKey>
++	{
++		public readonly int ChunkX;
++		public readonly int ChunkZ;
++		public readonly int Y;
++
++		public StratumClimateKey(int chunkX, int chunkZ, int y)
++		{
++			ChunkX = chunkX;
++			ChunkZ = chunkZ;
++			Y = y;
++		}
++
++		public bool Equals(StratumClimateKey other)
++		{
++			return ChunkX == other.ChunkX && ChunkZ == other.ChunkZ && Y == other.Y;
++		}
++
++		public override bool Equals(object obj)
++		{
++			return obj is StratumClimateKey other && Equals(other);
++		}
++
++		public override int GetHashCode()
++		{
++			return HashCode.Combine(ChunkX, ChunkZ, Y);
++		}
++	}
 +	// Scratch ClimateCondition reused on cache hits to avoid per-call heap allocation.
 +	// Safe because callers (spawner CanSpawnAt_offthread) never store the reference
 +	// beyond the immediate call — it's used, checked, and discarded each invocation.
 +	[ThreadStatic]
 +	private static ClimateCondition? stratumClimateScratch;
-+	// Stratum: scratch for !temperatureRainfallOnly calls (weather ticks). Same safety
-+	// guarantee: callers read fields and discard within the same call frame.
-+	[ThreadStatic]
-+	private static ClimateCondition? stratumFullClimateScratch;
 +
  	public override ILogger Logger => ServerMain.Logger;
  
  	ILogger IChunkProvider.Logger => ServerMain.Logger;
  
  	public override IList<Block> Blocks => server.Blocks;
-@@ -427,11 +446,11 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+@@ -427,11 +468,11 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
  		//IL_0027: Expected O, but got Unknown
  		//IL_0098: Unknown result type (might be due to invalid IL or missing references)
  		//IL_010f: Unknown result type (might be due to invalid IL or missing references)
@@ -45,56 +66,31 @@ index 95784e8..f09dff7 100644
  		{
  			foreach (long key in server.loadedChunks.Keys)
  			{
-@@ -588,16 +607,14 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
- 	public override ClimateCondition GetClimateAt(BlockPos pos, int climate)
- 	{
- 		float scaledAdjustedTemperatureFloat = Climate.GetScaledAdjustedTemperatureFloat((climate >> 16) & 0xFF, pos.Y - server.seaLevel);
- 		float num = (float)Climate.GetRainFall((climate >> 8) & 0xFF, pos.Y) / 255f;
- 		float posYRel = ((float)pos.Y - (float)server.seaLevel) / ((float)MapSizeY - (float)server.seaLevel);
--		ClimateCondition climate2 = new ClimateCondition
--		{
--			Temperature = scaledAdjustedTemperatureFloat,
--			Rainfall = num,
--			Fertility = (float)Climate.GetFertility((int)num, scaledAdjustedTemperatureFloat, posYRel) / 255f
--		};
-+		ClimateCondition climate2 = stratumFullClimateScratch ??= new ClimateCondition(); // Stratum: reuse scratch
-+		climate2.Temperature = scaledAdjustedTemperatureFloat;
-+		climate2.Rainfall = num;
-+		climate2.Fertility = (float)Climate.GetFertility((int)num, scaledAdjustedTemperatureFloat, posYRel) / 255f;
- 		server.EventManager.TriggerOnGetClimate(ref climate2, pos, EnumGetClimateMode.NowValues, server.Calendar.TotalDays);
- 		return climate2;
+@@ -610,16 +651,31 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+ 		Vec3d windSpeed = new Vec3d();
+ 		server.EventManager.TriggerOnGetWindSpeed(pos, ref windSpeed);
+ 		return windSpeed;
  	}
  
- 	public override Vec3d GetWindSpeedAt(BlockPos pos)
-@@ -616,10 +633,36 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
+-	public ClimateCondition getWorldGenClimateAt(BlockPos pos, bool temperatureRainfallOnly)
++	public ClimateCondition getWorldGenClimateAt(BlockPos pos, bool temperatureRainfallOnly, bool stratumUseCache = false)
  	{
  		if (!IsValidPos(pos))
  		{
  			return null;
  		}
 +
-+		// Stratum: fast-path cache for the entity spawner's repeated temperatureRainfallOnly
-+		// queries. The spawner normalizes Y to ~seaLevel*1.09 before every call, so all
-+		// candidates within the same chunk column share a single cache entry and compute the
-+		// bilinear interpolation only once. Cache is permanent (world-gen climate never changes).
-+		// Returns a fresh ClimateCondition copy so callers can mutate it (AddWorldGenForestShrub,
-+		// GetClimateAt) without corrupting the stored entry.
-+		long stratumCacheKey = 0L;
-+		if (temperatureRainfallOnly)
++		// Stratum: the spawner's direct call is the only one that may reuse an entry.
++		// It normalizes Y to ~seaLevel*1.09, so candidates in one chunk column share
++		// a key. The stored entry stays here. Public GetClimateAt always takes a new object.
++		StratumClimateKey stratumCacheKey = default;
++		if (stratumUseCache && temperatureRainfallOnly)
 +		{
 +			stratumClimateCache ??= [];
-+			// Pack (chunkX 10 bits, chunkZ 10 bits, Y-group 9 bits) into one long key.
-+			stratumCacheKey = ((long)(pos.X >> 5) & 0x3FF)
-+				| (((long)(pos.Z >> 5) & 0x3FF) << 10)
-+				| (((long)pos.Y & 0x1FF) << 20);
++			stratumCacheKey = new StratumClimateKey(pos.X >> 5, pos.Z >> 5, pos.Y);
 +			if (stratumClimateCache.TryGetValue(stratumCacheKey, out ClimateCondition hit))
 +			{
-+				ClimateCondition scratch = stratumClimateScratch ??= new ClimateCondition();
-+				scratch.Temperature = hit.Temperature;
-+				scratch.Rainfall = hit.Rainfall;
-+				scratch.WorldgenRainfall = hit.WorldgenRainfall;
-+				scratch.WorldGenTemperature = hit.WorldGenTemperature;
-+				return scratch;
++				return StratumFillClimateScratch(hit);
 +			}
 +		}
 +
@@ -103,48 +99,43 @@ index 95784e8..f09dff7 100644
  		{
  			return null;
  		}
-@@ -628,24 +671,37 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
- 		int unpaddedColorLerpedForNormalizedPos = mapRegion.ClimateMap.GetUnpaddedColorLerpedForNormalizedPos(x, z);
- 		float scaledAdjustedTemperatureFloat = Climate.GetScaledAdjustedTemperatureFloat((unpaddedColorLerpedForNormalizedPos >> 16) & 0xFF, pos.Y - server.seaLevel);
- 		float num = Climate.GetRainFall((unpaddedColorLerpedForNormalizedPos >> 8) & 0xFF, pos.Y);
- 		int rain = (int)num;
- 		num /= 255f;
--		ClimateCondition climateCondition = new ClimateCondition
--		{
--			Temperature = scaledAdjustedTemperatureFloat,
--			Rainfall = num,
--			WorldgenRainfall = num,
--			WorldGenTemperature = scaledAdjustedTemperatureFloat
--		};
-+		ClimateCondition climateCondition;
- 		if (!temperatureRainfallOnly)
- 		{
-+			// Stratum: reuse ThreadStatic scratch for full-climate callers (weather ticks).
-+			// Callers read fields within the same frame and never store the reference.
-+			climateCondition = stratumFullClimateScratch ??= new ClimateCondition();
-+			climateCondition.Temperature = scaledAdjustedTemperatureFloat;
-+			climateCondition.Rainfall = num;
-+			climateCondition.WorldgenRainfall = num;
-+			climateCondition.WorldGenTemperature = scaledAdjustedTemperatureFloat;
+@@ -642,13 +698,39 @@ public sealed class ServerWorldMap : WorldMap, IChunkProvider, ILandClaimAPI
  			float posYRel = ((float)pos.Y - (float)server.seaLevel) / ((float)MapSizeY - (float)server.seaLevel);
  			climateCondition.Fertility = (float)Climate.GetFertilityFromUnscaledTemp(rain, (unpaddedColorLerpedForNormalizedPos >> 16) & 0xFF, posYRel) / 255f;
  			climateCondition.GeologicActivity = (float)(unpaddedColorLerpedForNormalizedPos & 0xFF) / 255f;
  			AddWorldGenForestShrub(climateCondition, mapRegion, pos);
  		}
-+		else
++		else if (stratumUseCache)
 +		{
-+			// Cache miss: allocate a new entry for the permanent cache.
-+			climateCondition = new ClimateCondition
-+			{
-+				Temperature = scaledAdjustedTemperatureFloat,
-+				Rainfall = num,
-+				WorldgenRainfall = num,
-+				WorldGenTemperature = scaledAdjustedTemperatureFloat
-+			};
 +			stratumClimateCache![stratumCacheKey] = climateCondition;
++			return StratumFillClimateScratch(climateCondition);
 +		}
  		return climateCondition;
  	}
  
++	private static ClimateCondition StratumFillClimateScratch(ClimateCondition source)
++	{
++		ClimateCondition scratch = stratumClimateScratch ??= new ClimateCondition();
++		StratumCopyClimateFields(source, scratch);
++		return scratch;
++	}
++
++	private static void StratumCopyClimateFields(ClimateCondition source, ClimateCondition dest)
++	{
++		dest.Temperature = source.Temperature;
++		dest.Rainfall = source.Rainfall;
++		dest.WorldgenRainfall = source.WorldgenRainfall;
++		dest.WorldGenTemperature = source.WorldGenTemperature;
++		dest.GeologicActivity = source.GeologicActivity;
++		dest.Fertility = source.Fertility;
++		dest.ForestDensity = source.ForestDensity;
++		dest.ShrubDensity = source.ShrubDensity;
++		dest.RainCloudOverlay = source.RainCloudOverlay;
++		dest.Biome = source.Biome;
++	}
++
  	public void AddWorldGenForestShrub(ClimateCondition conds, IMapRegion mapregion, BlockPos pos)
  	{
+ 		float x = (float)((double)pos.X / (double)RegionSize % 1.0);
+ 		float z = (float)((double)pos.Z / (double)RegionSize % 1.0);
+ 		int unpaddedColorLerpedForNormalizedPos = mapregion.ForestMap.GetUnpaddedColorLerpedForNormalizedPos(x, z);

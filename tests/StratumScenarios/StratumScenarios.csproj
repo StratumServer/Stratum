@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!--
+      Atlas locates the game install through VINTAGE_STORY. In this repo that install is
+      the launcher's own output directory once a "stratum-prepare-only" run has
+      materialized vanilla plus the patched overlay into it, which is what the fallback
+      below points at. Without that run the directory holds only StratumServer.dll and
+      the build fails on the reference, which is the intended failure: there is nothing
+      to test yet.
+    -->
+    <VintageStoryPath Condition="'$(VintageStoryPath)' == ''">$(VINTAGE_STORY)</VintageStoryPath>
+    <VintageStoryPath Condition="'$(VintageStoryPath)' == ''">$(MSBuildThisFileDirectory)../../StratumServer/bin/$(Configuration)/$(FrameworkVersion)</VintageStoryPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Pixnop.Atlas.XUnit" Version="0.16.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Private=true (the default) copies VintagestoryAPI.dll next to the test assembly so the
+      runner can JIT test methods before Atlas installs its AssemblyResolve hook. It copies
+      VintagestoryAPI.pdb along with it, which Atlas requires: the game's logger derives
+      source paths from debug information during type initialization and the in-process
+      server cannot boot without it.
+    -->
+    <Reference Include="VintagestoryAPI">
+      <HintPath>$(VintageStoryPath)/VintagestoryAPI.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="fixtures/**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Test-only source mod staged per class through [AtlasWorld(Mods = ...)]; the game's
+         ModLoader compiles it at boot. Excluded from this project's own compilation. -->
+    <None Include="mods/**" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Remove="mods/**" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,57 @@
+# Editor defaults for the tracked tree. Mirrors CONTRIBUTING.md: tabs in Stratum
+# C#, match the surrounding style when editing vanilla, LF everywhere except
+# PowerShell (see .gitattributes).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Stratum-owned C#: tabs, file-scoped namespaces (enforced by review, not here).
+# A few older files under sources/ are still space-indented; they are the ones
+# out of line, and reformatting them is a separate cleanup.
+[{sources,StratumServer,tests}/**.cs]
+indent_style = tab
+
+# Generated working trees. extract-patches diffs them against the pristine
+# baseline, so an editor that trims or reformats one of these files on save
+# turns into real hunks in patches/. Leave their whitespace alone.
+#
+# Decompiled by bootstrap into baseline/, tab-indented by ilspycmd.
+[baseline/{VintagestoryLib,VintagestoryServer}/**.cs]
+indent_style = tab
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+# Anego forks cloned by bootstrap (forks.json), four spaces.
+[{VintagestoryApi,Cairo,VSCreativeMod,VSEssentials,VSSurvivalMod}/**.cs]
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+# Unified diffs must keep their trailing whitespace and context lines byte for byte.
+[*.patch]
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+[*.{csproj,props,slnx,json,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.sh]
+indent_style = space
+indent_size = 2
+
+[*.ps1]
+end_of_line = crlf
+indent_style = space
+indent_size = 4
+
+[Makefile]
+indent_style = tab
